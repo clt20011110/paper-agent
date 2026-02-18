@@ -137,7 +137,7 @@ def save_config(config: Dict, filepath: Path):
 def run_stage1(config: Dict) -> Optional[Path]:
     """运行阶段1: 爬取论文"""
     conference_dict = {'ICLR':'iclr.cc',
-                        'NeurIPS':'neurips.cc',
+                        'NeurIPS':'NeurIPS.cc',
                         'ICML':'icml.cc',
                         'AAAI':'aaai.org'}
     venues = []
