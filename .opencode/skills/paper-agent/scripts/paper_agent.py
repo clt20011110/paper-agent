@@ -136,10 +136,14 @@ def save_config(config: Dict, filepath: Path):
 
 def run_stage1(config: Dict) -> Optional[Path]:
     """运行阶段1: 爬取论文"""
+    conference_dict = {'ICLR':'iclr.cc',
+                        'NeurIPS':'neurips.cc',
+                        'ICML':'icml.cc',
+                        'AAAI':'aaai.org'}
     venues = []
     for conf in config['conferences']:
         for year in config['years']:
-            venues.append(f"{conf}.cc/{year}/Conference")
+            venues.append(f"{conference_dict[conf]}/{year}/Conference")
     
     output_dir = Path(config['output_dir']) / 'data'
     papers, summary_path = crawl_venues(

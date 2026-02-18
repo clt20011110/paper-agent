@@ -1,0 +1,26 @@
+output_dir: ./nips25_chemical_reaction_prediction
+conferences:
+  - NeurIPS
+years:
+  - 2025
+topic: Chemical Reaction Prediction
+keywords: reaction, chemical, prediction, retrosynthesis, yield, molecular, chemistry
+filter:
+  include_groups:
+    - [reaction, prediction]
+    - [chemical, prediction]
+    - [retrosynthesis]
+    - [yield, prediction]
+    - [reaction, mechanism]
+  exclude:
+    - survey
+    - review
+  match_fields:
+    - title
+    - abstract
+  case_sensitive: false
+  whole_word: false
+options:
+  workers: 4
+  delay: 1.0
+  accepted_only: true
