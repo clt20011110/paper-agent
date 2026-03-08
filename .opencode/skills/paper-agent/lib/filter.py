@@ -15,23 +15,23 @@ from dataclasses import dataclass, field
 
 # 内置同义词库
 BUILTIN_SYNONYMS = {
-    # 分子/药物相关
-    'molecular': ['molecule', 'molecules', 'chemical', 'chemistry'],
-    'drug': ['pharmaceutical', 'medication', 'medicine', 'therapeutic'],
-    'compound': ['chemical compound', 'small molecule'],
-    'generation': ['generative', 'generating', 'synthesis', 'synthesizing'],
-    'design': ['designing', 'discovery', 'screening'],
+    # # 分子/药物相关
+    # 'molecular': ['molecule', 'molecules', 'chemical', 'chemistry'],
+    # 'drug': ['pharmaceutical', 'medication', 'medicine', 'therapeutic'],
+    # 'compound': ['chemical compound', 'small molecule'],
+    # 'generation': ['generative', 'generating', 'synthesis', 'synthesizing'],
+    # 'design': ['designing', 'discovery', 'screening'],
     
-    # AI/ML相关
-    'diffusion': ['diffusion model', 'diffusion-based'],
-    'transformer': ['attention', 'self-attention'],
-    'graph': ['graph neural network', 'gnn', 'graph-based'],
-    'learning': ['machine learning', 'ml', 'deep learning'],
+    # # AI/ML相关
+    # 'diffusion': ['diffusion model', 'diffusion-based'],
+    # 'transformer': ['attention', 'self-attention'],
+    # 'graph': ['graph neural network', 'gnn', 'graph-based'],
+    # 'learning': ['machine learning', 'ml', 'deep learning'],
     
-    # 生物相关
-    'protein': ['proteins', 'peptide', 'amino acid'],
-    'binding': ['affinity', 'docking', 'interaction'],
-    'target': ['receptor', 'enzyme', 'protein target'],
+    # # 生物相关
+    # 'protein': ['proteins', 'peptide', 'amino acid'],
+    # 'binding': ['affinity', 'docking', 'interaction'],
+    # 'target': ['receptor', 'enzyme', 'protein target'],
 }
 
 

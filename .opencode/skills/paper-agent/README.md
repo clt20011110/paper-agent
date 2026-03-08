@@ -25,7 +25,7 @@ export OPENROUTER_API_KEY="sk-xx"
 ### 2. 使用流程
 
 ```bash
-python .opencode/skills/scripts/paper_agent.py all --config xxx.yaml
+python .opencode/skills/paper-agent/scripts/paper_agent.py all --config xxx.yaml
 ```
 
 ### 3. 配置示例

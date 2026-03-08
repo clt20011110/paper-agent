@@ -221,7 +221,7 @@ def run_stage4(config: Dict, input_dir: Path, output_dir: Optional[Path] = None,
         input_dir=Path(input_dir),
         output_dir=output_dir,
         api_key=api_key,
-        max_workers=config.get('workers', 4)
+        max_workers=config.get('workers', 1)
     )
     
     print(f"\nSTAGE4_STATS:total={stats['total']},success={stats['success']},failed={stats['failed']}")

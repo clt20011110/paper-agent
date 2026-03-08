@@ -42,7 +42,7 @@ class PDFDownloader:
         self.stats['total'] += 1
         
         # 生成文件名
-        year = paper.get('year', 2024)
+        year = paper.get('venue_id', 2024).split('/')[1] if 'venue_id' in paper else '2024'
         authors = paper.get('authors', [])
         first_author = authors[0].split()[-1] if authors else 'Unknown'
         safe_title = self._sanitize_filename(title)[:50]

@@ -228,32 +228,43 @@ def analyze_papers(
     # 统计
     success_count = 0
     fail_count = 0
+    total = len(pdf_files)
+    for i, pdf_path in enumerate(pdf_files[25:], 26):
+        success,message=process_single_pdf(pdf_path, output_dir, api_key, model, overwrite)
+        if success:
+            success_count += 1
+            print(f"[{i}/{total}] ✅ {message}")
+        else:
+            fail_count += 1
+            print(f"[{i}/{total}] ❌ {message}")
+
     
     # 使用ThreadPoolExecutor并行处理
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    # with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 提交所有任务
-        future_to_pdf = {
-            executor.submit(
-                process_single_pdf, pdf_path, output_dir, api_key, model, overwrite
-            ): pdf_path for pdf_path in pdf_files
-        }
+
+        # future_to_pdf = {
+        #     executor.submit(
+        #         process_single_pdf, pdf_path, output_dir, api_key, model, overwrite
+        #     ): pdf_path for pdf_path in pdf_files
+        # }
         
         # 显示进度
-        total = len(pdf_files)
-        for i, future in enumerate(future_to_pdf, 1):
-            pdf_path = future_to_pdf[future]
-            try:
-                success, message = future.result()
-                if success:
-                    success_count += 1
-                    print(f"[{i}/{total}] ✅ {message}")
-                else:
-                    fail_count += 1
-                    print(f"[{i}/{total}] ❌ {message}")
+        # total = len(pdf_files)
+        # for i, future in enumerate(future_to_pdf, 1):
+        #     pdf_path = future_to_pdf[future]
+        #     try:
+        #         success, message = future.result()
+        #         if success:
+        #             success_count += 1
+        #             print(f"[{i}/{total}] ✅ {message}")
+        #         else:
+        #             fail_count += 1
+        #             print(f"[{i}/{total}] ❌ {message}")
                     
-            except Exception as e:
-                fail_count += 1
-                print(f"[{i}/{total}] ❌ 任务异常 {pdf_path.name}: {e}")
+        #     except Exception as e:
+        #         fail_count += 1
+        #         print(f"[{i}/{total}] ❌ 任务异常 {pdf_path.name}: {e}")
     
     # 输出统计
     print(f"\n{'='*60}")

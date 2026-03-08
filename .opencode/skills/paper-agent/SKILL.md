@@ -32,10 +32,10 @@ filter:
   include_groups:
     - [diffusion, molecular]      # AND logic
     - [diffusion, generation]     # AND logic
-    - [score, based]              # AND logic
   exclude:
     - survey
     - review
+    - peptide
   match_fields:
     - title
     - abstract
