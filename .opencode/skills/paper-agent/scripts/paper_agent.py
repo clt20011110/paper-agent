@@ -41,6 +41,7 @@ try:
     from filter import FilterConfig, filter_papers_from_file
     from downloader import download_papers_from_file
     from analyzer import analyze_papers
+    from database import DatabaseManager, Paper
 except ImportError as e:
     print(f"ERROR:IMPORT_FAILED:{e}")
     sys.exit(1)
@@ -90,8 +91,10 @@ def load_config(config_path: Path) -> Dict:
         whole_word=filter_dict.get('whole_word', False)
     )
     
+    output_dir = config_dict.get('output_dir', './paper_research')
+    
     config = {
-        'output_dir': config_dict.get('output_dir', './paper_research'),
+        'output_dir': output_dir,
         'conferences': config_dict.get('conferences', ['ICLR']),
         'years': config_dict.get('years', [2024]),
         'topic': config_dict.get('topic', 'Research'),
@@ -103,6 +106,18 @@ def load_config(config_path: Path) -> Dict:
     config['workers'] = options.get('workers', 4)
     config['delay'] = options.get('delay', 1.0)
     config['accepted_only'] = options.get('accepted_only', True)
+    
+    # Parse database configuration (optional)
+    database_config = config_dict.get('database', {})
+    if database_config:
+        config['database'] = {
+            'format': database_config.get('format', 'json'),
+            'path': database_config.get('path', f"{output_dir}/papers.json"),
+            'incremental': database_config.get('incremental', True),
+            'backup': database_config.get('backup', True)
+        }
+    else:
+        config['database'] = None
     
     return config
 
@@ -135,7 +150,14 @@ def save_config(config: Dict, filepath: Path):
 
 
 def run_stage1(config: Dict) -> Optional[Path]:
-    """运行阶段1: 爬取论文"""
+    """运行阶段1: 爬取论文
+    
+    Args:
+        config: Configuration dictionary with database settings
+        
+    Returns:
+        Path to summary JSON file, or None if failed
+    """
     conference_dict = {'ICLR':'ICLR.cc',
                         'NeurIPS':'NeurIPS.cc',
                         'ICML':'ICML.cc',
@@ -151,6 +173,38 @@ def run_stage1(config: Dict) -> Optional[Path]:
         output_dir=output_dir,
         accepted_only=config.get('accepted_only', True)
     )
+    
+    # Handle database integration if configured
+    database_config = config.get('database')
+    if database_config and papers:
+        db_path = Path(database_config['path'])
+        db_format = database_config.get('format', 'json')
+        incremental = database_config.get('incremental', True)
+        
+        # Create or load database
+        db = DatabaseManager(db_path, format=db_format)
+        
+        if incremental:
+            # Incremental update - only add new papers
+            paper_objects = [Paper.from_legacy_dict(p) for p in papers]
+            added, updated = db.incremental_update(paper_objects)
+            print(f"\nDATABASE_INCREMENTAL:added={added},updated={updated}")
+        else:
+            # Full replace - clear existing and add all
+            paper_objects = [Paper.from_legacy_dict(p) for p in papers]
+            added = db.add_papers(paper_objects)
+            print(f"\nDATABASE_ADDED:{added}")
+        
+        # Save database
+        db.save()
+        
+        # Print database statistics
+        stats = db.get_statistics()
+        print(f"\nDATABASE_STATS:")
+        print(f"  Total papers: {stats['total_papers']}")
+        print(f"  By venue: {stats['by_venue']}")
+        print(f"  By year: {stats['by_year']}")
+        print(f"  With PDF URL: {stats['with_pdf_url']}")
     
     return summary_path
 
@@ -229,6 +283,77 @@ def run_stage4(config: Dict, input_dir: Path, output_dir: Optional[Path] = None,
     return stats['success'] > 0
 
 
+def run_db_convert(input_path: Path, output_path: Optional[Path] = None, 
+                   format: str = 'json') -> Optional[Path]:
+    """Convert legacy JSON to new database format.
+    
+    Args:
+        input_path: Path to legacy JSON file
+        output_path: Output path for new database file
+        format: Output format ('json' or 'csv')
+        
+    Returns:
+        Path to converted database file, or None if failed
+    """
+    from database import convert_legacy_json
+    
+    try:
+        result_path = convert_legacy_json(input_path, output_path, format)
+        print(f"CONVERT_SUCCESS:{result_path}")
+        return result_path
+    except Exception as e:
+        print(f"ERROR:CONVERT_FAILED:{e}")
+        return None
+
+
+def run_db_stats(database_path: Path) -> bool:
+    """Show database statistics.
+    
+    Args:
+        database_path: Path to database file
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        db = DatabaseManager(database_path)
+        stats = db.get_statistics()
+        
+        import json
+        print(json.dumps(stats, indent=2, ensure_ascii=False))
+        return True
+    except Exception as e:
+        print(f"ERROR:DB_STATS_FAILED:{e}")
+        return False
+
+
+def run_db_merge(source_path: Path, target_path: Path) -> bool:
+    """Merge two databases.
+    
+    Args:
+        source_path: Path to source database file
+        target_path: Path to target database file
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Load target database
+        target_db = DatabaseManager(target_path)
+        
+        # Merge source into target
+        added, updated = target_db.merge(source_path)
+        
+        # Save merged database
+        target_db.save()
+        
+        print(f"MERGE_SUCCESS:added={added},updated={updated},total={len(target_db)}")
+        return True
+    except Exception as e:
+        print(f"ERROR:MERGE_FAILED:{e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Paper Agent - 非交互式论文搜索分析工具',
@@ -241,6 +366,9 @@ def main():
   stage3      阶段3: 下载PDF
   stage4      阶段4: 深度分析
   all         运行所有阶段
+  db-convert  转换旧版JSON到新版数据库格式
+  db-stats    显示数据库统计信息
+  db-merge    合并两个数据库
 
 输出格式:
   check命令输出JSON格式:
@@ -257,10 +385,14 @@ def main():
   python paper_agent.py stage1 --config config.yaml
   python paper_agent.py stage2 --input data/all_papers.json --config config.yaml
   python paper_agent.py all --config config.yaml --api-key xxx
+  python paper_agent.py db-convert --input old_papers.json --output papers.json
+  python paper_agent.py db-stats --database papers.json
+  python paper_agent.py db-merge --source source.json --target target.json
         """
     )
     
-    parser.add_argument('command', choices=['check', 'stage1', 'stage2', 'stage3', 'stage4', 'all'],
+    parser.add_argument('command', choices=['check', 'stage1', 'stage2', 'stage3', 'stage4', 'all', 
+                                            'db-convert', 'db-stats', 'db-merge'],
                        help='要执行的命令')
     parser.add_argument('--config', '-c', type=str,
                        help='配置文件路径 (YAML格式)')
@@ -270,6 +402,15 @@ def main():
                        help='输出文件/目录路径')
     parser.add_argument('--api-key', type=str,
                        help='OpenRouter API密钥（覆盖环境变量）')
+    parser.add_argument('--database', '-d', type=str,
+                       help='数据库文件路径 (用于db-stats命令)')
+    parser.add_argument('--source', '-s', type=str,
+                       help='源数据库路径 (用于db-merge命令)')
+    parser.add_argument('--target', '-t', type=str,
+                       help='目标数据库路径 (用于db-merge命令)')
+    parser.add_argument('--format', '-f', type=str, default='json',
+                       choices=['json', 'csv'],
+                       help='输出格式 (json或csv, 默认json)')
     
     args = parser.parse_args()
     
@@ -279,6 +420,38 @@ def main():
         results = check_environment()
         print(json.dumps(results))
         sys.exit(0 if results['ready'] else 1)
+    
+    # 数据库命令 - 不需要配置文件
+    if args.command == 'db-convert':
+        if not args.input:
+            print("ERROR:INPUT_REQUIRED")
+            sys.exit(1)
+        
+        result = run_db_convert(
+            Path(args.input),
+            Path(args.output) if args.output else None,
+            args.format
+        )
+        if result:
+            sys.exit(0)
+        else:
+            sys.exit(1)
+    
+    elif args.command == 'db-stats':
+        if not args.database:
+            print("ERROR:DATABASE_REQUIRED")
+            sys.exit(1)
+        
+        success = run_db_stats(Path(args.database))
+        sys.exit(0 if success else 1)
+    
+    elif args.command == 'db-merge':
+        if not args.source or not args.target:
+            print("ERROR:SOURCE_AND_TARGET_REQUIRED")
+            sys.exit(1)
+        
+        success = run_db_merge(Path(args.source), Path(args.target))
+        sys.exit(0 if success else 1)
     
     # 加载配置
     if not args.config:
