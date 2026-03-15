@@ -210,7 +210,14 @@ JSON response:"""
             pass
         
         # Fallback: try to extract score with regex
+        # Match patterns like "score: 0.75", "score is 75", "75 percent"
         score_match = re.search(r'score[:\s]+(\d+\.?\d*)', response.lower())
+        if not score_match:
+            # Try to match "X percent" pattern
+            percent_match = re.search(r'(\d+\.?\d*)\s*percent', response.lower())
+            if percent_match:
+                score_match = percent_match
+        
         if score_match:
             try:
                 score = float(score_match.group(1))
