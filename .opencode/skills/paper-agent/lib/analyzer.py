@@ -66,6 +66,39 @@ ANALYSIS_PROMPT = """请作为资深研究员分析这篇学术论文，从PDF�
 请基于PDF内容准确提取信息，如果某些信息未在论文中明确提及，请标注"未提及"。不要添加额外的评价或个人观点。"""
 
 
+# Add new prompt for abstract-only analysis
+ABSTRACT_ANALYSIS_PROMPT = """Analyze this paper based on title and abstract only.
+Note: Full PDF was not available, so analysis is limited to abstract content.
+
+## Paper Information
+- **Title**: {title}
+- **Authors**: {authors}
+- **Venue**: {venue}
+- **Year**: {year}
+
+## Abstract
+{abstract}
+
+## Analysis Structure
+
+### Research Problem
+What is the main research question or problem addressed?
+
+### Proposed Approach
+What is the high-level approach or methodology?
+
+### Key Claims
+What are the main claims or contributions (as stated in abstract)?
+
+### Limitations of this Analysis
+- Analysis based on abstract only (typically 150-250 words)
+- Full methodology, experiments, and results not available
+- Detailed technical contributions may be missing
+
+**Confidence Level**: abstract_only (limited)
+"""
+
+
 def encode_pdf_to_base64(pdf_path: str) -> str:
     """将PDF文件编码为base64字符串"""
     with open(pdf_path, "rb") as pdf_file:
@@ -284,3 +317,317 @@ def analyze_papers(
         'success': success_count,
         'failed': fail_count
     }
+
+
+class EnhancedAnalyzer:
+    """Enhanced analyzer with PDF fallback and summary generation"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+    
+    def analyze_paper(
+        self,
+        paper: Dict,
+        pdf_path: Optional[Path] = None,
+        api_key: Optional[str] = None,
+        model: str = "stepfun/step-3.5-flash:free"
+    ) -> Dict:
+        """
+        Analyze paper with automatic PDF fallback.
+        
+        Args:
+            paper: Paper dictionary with title, abstract, etc.
+            pdf_path: Path to PDF file (optional)
+            api_key: OpenRouter API key
+            model: Model to use for analysis
+            
+        Returns:
+            Analysis result dictionary with 'confidence' field
+        """
+        if pdf_path and Path(pdf_path).exists():
+            result = self._analyze_pdf(pdf_path, api_key, model)
+            result['confidence'] = 'full_pdf'
+        else:
+            result = self._analyze_abstract(paper, api_key, model)
+            result['confidence'] = 'abstract_only'
+        
+        return result
+    
+    def _analyze_pdf(self, pdf_path: Path, api_key: Optional[str], model: str) -> Dict:
+        """Analyze using full PDF content"""
+        analysis = analyze_pdf(str(pdf_path), api_key or '', model)
+        
+        return {
+            'analysis': analysis,
+            'pdf_path': str(pdf_path),
+            'method': 'full_pdf'
+        }
+    
+    def _analyze_abstract(self, paper: Dict, api_key: Optional[str], model: str) -> Dict:
+        """Analyze using only title and abstract"""
+        prompt = ABSTRACT_ANALYSIS_PROMPT.format(
+            title=paper.get('title', ''),
+            authors=', '.join(paper.get('authors', [])),
+            venue=paper.get('venue', ''),
+            year=paper.get('year', ''),
+            abstract=paper.get('abstract', '')
+        )
+        
+        response = self._call_api(prompt, api_key, model)
+        
+        return {
+            'analysis': response,
+            'paper_id': paper.get('id'),
+            'title': paper.get('title'),
+            'method': 'abstract_only'
+        }
+    
+    def _call_api(self, prompt: str, api_key: Optional[str], model: str, max_retries: int = 3, timeout: int = 120) -> Optional[str]:
+        """Call OpenRouter API with text prompt"""
+        if not api_key:
+            self.logger.error("API key is required")
+            return None
+        
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        messages = [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+        
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False
+        }
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    url, headers=headers, json=payload, timeout=timeout
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if 'choices' in result and len(result['choices']) > 0:
+                        return result['choices'][0]['message']['content']
+                    else:
+                        self.logger.warning(f"API returned unexpected format: {result}")
+                else:
+                    self.logger.warning(f"API request failed (attempt {attempt + 1}/{max_retries}): HTTP {response.status_code}")
+                    
+            except requests.exceptions.RequestException as e:
+                self.logger.warning(f"Request exception (attempt {attempt + 1}/{max_retries}): {e}")
+            
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+        
+        self.logger.error("Analysis failed after max retries")
+        return None
+
+
+class ResearchSummaryGenerator:
+    """Generate comprehensive research summary from multiple analyses"""
+    
+    SUMMARY_PROMPT = """Based on the following paper analyses, generate a comprehensive research summary report.
+
+## Research Topic: {topic}
+
+## Number of Papers Analyzed: {paper_count}
+
+## Individual Paper Summaries:
+{paper_summaries}
+
+---
+
+Please generate a research summary report with the following sections:
+
+# Research Summary Report
+
+## 1. Overview and Trends
+- What are the main research directions in this topic?
+- How has the field evolved based on the papers analyzed?
+
+## 2. Methodological Approaches
+- What are the dominant methods/techniques?
+- Categorize papers by their methodological approach
+
+## 3. Key Findings and Contributions
+- What are the most significant contributions?
+- Any consensus or disagreements in the field?
+
+## 4. Datasets and Benchmarks
+- What datasets are commonly used?
+- What evaluation metrics are standard?
+
+## 5. Open Source Resources
+- List available code repositories
+- List public datasets mentioned
+
+## 6. Research Gaps and Future Directions
+- What problems remain unsolved?
+- What are promising future directions?
+
+Format as Markdown with clear headings and bullet points.
+"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+    
+    def generate_summary(
+        self,
+        analyses: List[Dict],
+        topic: str,
+        api_key: str,
+        model: str = "anthropic/claude-3.5-sonnet"
+    ) -> str:
+        """
+        Generate research summary from paper analyses.
+        
+        Args:
+            analyses: List of analysis results from EnhancedAnalyzer
+            topic: Research topic description
+            api_key: OpenRouter API key
+            model: High-capability model for summary generation
+            
+        Returns:
+            Markdown formatted summary report
+        """
+        max_papers = 50
+        if len(analyses) > max_papers:
+            self.logger.info(f"Truncating {len(analyses)} analyses to {max_papers}")
+            analyses = analyses[:max_papers]
+        
+        paper_summaries = []
+        for i, analysis in enumerate(analyses, 1):
+            summary = f"### Paper {i}: {analysis.get('title', 'Unknown')}\n"
+            analysis_text = analysis.get('analysis', '')
+            summary += analysis_text[:500] if analysis_text else 'No analysis available'
+            summary += "\n\n"
+            paper_summaries.append(summary)
+        
+        prompt = self.SUMMARY_PROMPT.format(
+            topic=topic,
+            paper_count=len(analyses),
+            paper_summaries='\n'.join(paper_summaries)
+        )
+        
+        return self._call_api(prompt, api_key, model)
+    
+    def _call_api(self, prompt: str, api_key: str, model: str, max_retries: int = 3, timeout: int = 180) -> str:
+        """Call OpenRouter API with text prompt"""
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        messages = [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+        
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False
+        }
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    url, headers=headers, json=payload, timeout=timeout
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if 'choices' in result and len(result['choices']) > 0:
+                        return result['choices'][0]['message']['content']
+                    else:
+                        self.logger.warning(f"API returned unexpected format: {result}")
+                else:
+                    self.logger.warning(f"API request failed (attempt {attempt + 1}/{max_retries}): HTTP {response.status_code}")
+                    
+            except requests.exceptions.RequestException as e:
+                self.logger.warning(f"Request exception (attempt {attempt + 1}/{max_retries}): {e}")
+            
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+        
+        self.logger.error("Summary generation failed after max retries")
+        return "# Error: Summary generation failed\n\nPlease check API key and try again."
+
+
+def generate_research_summary(
+    analysis_dir: Path,
+    output_file: Path,
+    topic: str,
+    api_key: str,
+    model: str = "anthropic/claude-3.5-sonnet"
+) -> bool:
+    """
+    Generate research summary from analysis results.
+    
+    Args:
+        analysis_dir: Directory containing analysis markdown files
+        output_file: Output file path for summary
+        topic: Research topic description
+        api_key: OpenRouter API key
+        model: Model for summary generation
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    print(f"\n{'='*60}")
+    print(f"📊 阶段4B: 研究总结生成")
+    print(f"{'='*60}")
+    print(f"输入目录: {analysis_dir}")
+    print(f"输出文件: {output_file}")
+    print(f"主题: {topic}")
+    print(f"模型: {model}")
+    print(f"{'='*60}\n")
+    
+    if not analysis_dir.exists():
+        print(f"ERROR: 分析目录不存在: {analysis_dir}")
+        return False
+    
+    analysis_files = sorted(analysis_dir.glob("*.md"))
+    
+    if not analysis_files:
+        print(f"ERROR: 未找到分析文件")
+        return False
+    
+    print(f"找到 {len(analysis_files)} 个分析文件")
+    
+    analyses = []
+    for md_file in analysis_files:
+        with open(md_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        analyses.append({
+            'title': md_file.stem.replace('_analysis', ''),
+            'analysis': content
+        })
+    
+    generator = ResearchSummaryGenerator()
+    summary = generator.generate_summary(
+        analyses=analyses,
+        topic=topic,
+        api_key=api_key,
+        model=model
+    )
+    
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(summary)
+    
+    print(f"\n✅ 研究总结已生成: {output_file}")
+    return True

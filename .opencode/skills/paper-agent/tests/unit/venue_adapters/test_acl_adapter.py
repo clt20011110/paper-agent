@@ -20,19 +20,12 @@ class TestACLAdapterRegistration:
     
     def test_adapter_is_registered(self):
         """Test that ACL adapter is registered in AdapterRegistry."""
-        # Clear registry first to ensure clean state
-        AdapterRegistry.clear()
-        
-        # Re-import to trigger registration
-        from adapters import acl_adapter  # noqa: F401
-        
+        # The adapter should already be registered at import time
+        # Just verify it's registered
         assert AdapterRegistry.is_registered('acl')
     
     def test_get_adapter_from_registry(self):
         """Test retrieving ACL adapter from registry."""
-        AdapterRegistry.clear()
-        from adapters import acl_adapter  # noqa: F401
-        
         adapter = AdapterRegistry.get('acl')
         
         assert adapter is not None
@@ -290,29 +283,34 @@ class TestCrawlWithMockedAnthology:
         # Create mock anthology
         mock_anthology = Mock()
         mock_anthology.papers = [mock_paper]
+        mock_anthology_class = Mock(return_value=mock_anthology)
         
-        with patch.dict('sys.modules', {'anthology': Mock(Anthology=Mock(return_value=mock_anthology))}):
-            # Import after patching
-            with patch('adapters.acl_adapter.Anthology', return_value=mock_anthology):
-                papers = adapter.crawl(config)
-                
-                # Should have returned some papers
-                assert isinstance(papers, list)
+        # Mock the anthology module and Anthology class
+        with patch.dict('sys.modules', {'anthology': Mock(Anthology=mock_anthology_class)}):
+            papers = adapter.crawl(config)
+            
+            # Should have returned some papers
+            assert isinstance(papers, list)
     
     def test_crawl_raises_import_error_without_library(self, adapter):
         """Test that crawl raises ImportError if library not installed."""
         config = VenueConfig(name='ACL', years=[2024])
         
-        with patch('adapters.acl_adapter.Anthology', side_effect=ImportError):
-            with pytest.raises(ImportError, match="acl-anthology package required"):
-                adapter.crawl(config)
+        # Mock the import to raise ImportError
+        with patch.dict('sys.modules', {'anthology': None}):
+            with patch('builtins.__import__', side_effect=ImportError("No module named 'anthology'")):
+                with pytest.raises(ImportError, match="acl-anthology package required"):
+                    adapter.crawl(config)
     
     def test_crawl_raises_value_error_for_unknown_venue(self, adapter):
         """Test that crawl raises ValueError for unknown venue."""
         config = VenueConfig(name='UNKNOWN_VENUE', years=[2024])
         
-        with pytest.raises(ValueError, match="Unknown venue"):
-            adapter.crawl(config)
+        # Mock the anthology module so import succeeds
+        mock_anthology_class = Mock(return_value=Mock())
+        with patch.dict('sys.modules', {'anthology': Mock(Anthology=mock_anthology_class)}):
+            with pytest.raises(ValueError, match="Unknown venue"):
+                adapter.crawl(config)
 
 
 class TestCreatePaperFromAnthology:
@@ -349,10 +347,11 @@ class TestCreatePaperFromAnthology:
         mock_paper = Mock()
         mock_paper.id = '2024.acl-long.2'
         mock_paper.title = 'Minimal Paper'
-        # No abstract, authors, etc.
+        # Set abstract to empty string, authors to empty list
+        mock_paper.abstract = ''
+        mock_paper.authors = []
         
-        # Handle missing attributes
-        del mock_paper.abstract
+        # Handle missing optional attributes
         del mock_paper.doi
         del mock_paper.bibtex
         

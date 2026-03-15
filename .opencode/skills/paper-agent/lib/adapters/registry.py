@@ -6,14 +6,19 @@ Provides a registry pattern for venue adapters with automatic registration.
 """
 
 from typing import Dict, Type, Optional, List, Any
-
-from .base import VenueAdapter, VenueConfig
 import sys
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add both lib directory and adapters directory to path for imports
+lib_dir = str(Path(__file__).parent.parent)
+adapters_dir = str(Path(__file__).parent)
+if lib_dir not in sys.path:
+    sys.path.insert(0, lib_dir)
+if adapters_dir not in sys.path:
+    sys.path.insert(0, adapters_dir)
+
 from database import Paper
+from base import VenueAdapter, VenueConfig
 
 
 class AdapterRegistry:
@@ -341,10 +346,47 @@ class AdapterRegistry:
         
         cls._initialized = True
         
-        # Register built-in adapters lazily
+        # Register built-in adapters lazily using relative imports
         try:
             from .openreview_adapter import OpenReviewAdapter
             cls._adapters[OpenReviewAdapter().platform_name] = OpenReviewAdapter
+        except ImportError:
+            pass
+        
+        # Register ACL adapter
+        try:
+            from .acl_adapter import ACLAdapter
+            cls._adapters[ACLAdapter().platform_name] = ACLAdapter
+        except ImportError:
+            pass
+        
+        # Register Nature journal adapters
+        try:
+            from .nature_adapter import (
+                NatureMachineIntelligenceAdapter,
+                NatureChemistryAdapter,
+                NatureCommunicationsAdapter,
+                NatureMainAdapter
+            )
+            cls._adapters[NatureMachineIntelligenceAdapter().platform_name] = NatureMachineIntelligenceAdapter
+            cls._adapters[NatureChemistryAdapter().platform_name] = NatureChemistryAdapter
+            cls._adapters[NatureCommunicationsAdapter().platform_name] = NatureCommunicationsAdapter
+            cls._adapters[NatureMainAdapter().platform_name] = NatureMainAdapter
+        except ImportError:
+            pass
+        
+        # Register CVF adapters (CVPR, ICCV)
+        try:
+            from .cvf_adapter import CVPRAdapter, ICCVAdapter
+            cls._adapters[CVPRAdapter().platform_name] = CVPRAdapter
+            cls._adapters[ICCVAdapter().platform_name] = ICCVAdapter
+        except ImportError:
+            pass
+        
+        # Register arXiv adapter
+        try:
+            from .arxiv_adapter import ArxivAdapter
+            cls._adapters[ArxivAdapter().platform_name] = ArxivAdapter
         except ImportError:
             pass
 

@@ -40,7 +40,7 @@ try:
     from crawler import crawl_venues
     from filter import FilterConfig, filter_papers_from_file
     from downloader import download_papers_from_file
-    from analyzer import analyze_papers
+    from analyzer import analyze_papers, generate_research_summary
     from database import DatabaseManager, Paper
 except ImportError as e:
     print(f"ERROR:IMPORT_FAILED:{e}")
@@ -283,6 +283,34 @@ def run_stage4(config: Dict, input_dir: Path, output_dir: Optional[Path] = None,
     return stats['success'] > 0
 
 
+def run_stage4b(config: Dict, input_dir: Path, output_file: Optional[Path] = None, 
+                topic: Optional[str] = None, api_key: Optional[str] = None,
+                model: str = "anthropic/claude-3.5-sonnet") -> bool:
+    """运行阶段4B: 生成研究总结"""
+    if api_key is None:
+        api_key = os.environ.get('OPENROUTER_API_KEY')
+    
+    if not api_key:
+        print("ERROR:NO_API_KEY")
+        return False
+    
+    if output_file is None:
+        output_file = Path(config['output_dir']) / 'research_summary.md'
+    
+    if topic is None:
+        topic = config.get('topic', 'Research Topic')
+    
+    success = generate_research_summary(
+        analysis_dir=Path(input_dir),
+        output_file=output_file,
+        topic=topic,
+        api_key=api_key,
+        model=model
+    )
+    
+    return success
+
+
 def run_db_convert(input_path: Path, output_path: Optional[Path] = None, 
                    format: str = 'json') -> Optional[Path]:
     """Convert legacy JSON to new database format.
@@ -365,6 +393,7 @@ def main():
   stage2      阶段2: 关键词过滤
   stage3      阶段3: 下载PDF
   stage4      阶段4: 深度分析
+  stage4b     阶段4B: 生成研究总结
   all         运行所有阶段
   db-convert  转换旧版JSON到新版数据库格式
   db-stats    显示数据库统计信息
@@ -384,6 +413,7 @@ def main():
   python paper_agent.py check
   python paper_agent.py stage1 --config config.yaml
   python paper_agent.py stage2 --input data/all_papers.json --config config.yaml
+  python paper_agent.py stage4b --input ./analysis --output summary.md --config config.yaml
   python paper_agent.py all --config config.yaml --api-key xxx
   python paper_agent.py db-convert --input old_papers.json --output papers.json
   python paper_agent.py db-stats --database papers.json
@@ -391,7 +421,7 @@ def main():
         """
     )
     
-    parser.add_argument('command', choices=['check', 'stage1', 'stage2', 'stage3', 'stage4', 'all', 
+    parser.add_argument('command', choices=['check', 'stage1', 'stage2', 'stage3', 'stage4', 'stage4b', 'all', 
                                             'db-convert', 'db-stats', 'db-merge'],
                        help='要执行的命令')
     parser.add_argument('--config', '-c', type=str,
@@ -411,6 +441,10 @@ def main():
     parser.add_argument('--format', '-f', type=str, default='json',
                        choices=['json', 'csv'],
                        help='输出格式 (json或csv, 默认json)')
+    parser.add_argument('--topic', type=str,
+                       help='研究主题 (用于stage4b命令)')
+    parser.add_argument('--model', type=str, default='anthropic/claude-3.5-sonnet',
+                       help='模型名称 (用于stage4b命令)')
     
     args = parser.parse_args()
     
@@ -506,6 +540,23 @@ def main():
             success = run_stage4(config, Path(args.input), Path(args.output) if args.output else None, args.api_key)
             if not success:
                 print("ERROR:STAGE4_FAILED")
+                sys.exit(1)
+        
+        elif args.command == 'stage4b':
+            if not args.input:
+                print("ERROR:INPUT_REQUIRED")
+                sys.exit(1)
+            
+            success = run_stage4b(
+                config, 
+                Path(args.input), 
+                Path(args.output) if args.output else None,
+                args.topic,
+                args.api_key,
+                args.model
+            )
+            if not success:
+                print("ERROR:STAGE4B_FAILED")
                 sys.exit(1)
         
         elif args.command == 'all':

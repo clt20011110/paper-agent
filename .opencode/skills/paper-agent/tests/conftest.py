@@ -10,8 +10,10 @@ from pathlib import Path
 from datetime import datetime
 
 # Add lib to path
+# conftest.py is at: .../paper-agent/tests/conftest.py
+# lib is at: .../paper-agent/lib
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'lib'))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
 
 from database import Paper, DatabaseManager
 
