@@ -420,7 +420,7 @@ class NatureAdapter(VenueAdapter):
 # Specific Journal Adapters
 # =============================================================================
 
-@AdapterRegistry.register
+# @AdapterRegistry.register - disabled, use _ensure_initialized instead
 class NatureMachineIntelligenceAdapter(NatureAdapter):
     """
     Adapter for Nature Machine Intelligence (journal code: 42256).
@@ -440,7 +440,7 @@ class NatureMachineIntelligenceAdapter(NatureAdapter):
         return "nature_machine_intelligence"
 
 
-@AdapterRegistry.register
+# @AdapterRegistry.register - disabled, use _ensure_initialized instead
 class NatureChemistryAdapter(NatureAdapter):
     """
     Adapter for Nature Chemistry (journal code: 41557).
@@ -459,7 +459,7 @@ class NatureChemistryAdapter(NatureAdapter):
         return "nature_chemistry"
 
 
-@AdapterRegistry.register
+# @AdapterRegistry.register - disabled, use _ensure_initialized instead
 class NatureCommunicationsAdapter(NatureAdapter):
     """
     Adapter for Nature Communications (journal code: 41467).
@@ -479,7 +479,7 @@ class NatureCommunicationsAdapter(NatureAdapter):
         return "nature_communications"
 
 
-@AdapterRegistry.register
+# @AdapterRegistry.register - disabled, use _ensure_initialized instead
 class NatureMainAdapter(NatureAdapter):
     """
     Adapter for Nature main journal (journal code: 41586).

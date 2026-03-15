@@ -10,6 +10,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any
 
+# Handle imports for both module and direct execution
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from database import DatabaseManager, Paper
 
 

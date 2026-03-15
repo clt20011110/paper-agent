@@ -25,7 +25,7 @@ from .registry import AdapterRegistry
 logger = logging.getLogger(__name__)
 
 
-@AdapterRegistry.register
+# @AdapterRegistry.register - disabled, use _ensure_initialized instead
 class ACLAdapter(VenueAdapter):
     """
     Adapter for ACL Anthology (Association for Computational Linguistics).
