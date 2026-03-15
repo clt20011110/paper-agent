@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+testpaths = [".opencode/skills/paper-agent/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+pythonpath = [".opencode/skills/paper-agent/lib", "."]
+filterwarnings = [
+    "ignore::DeprecationWarning"
+]
