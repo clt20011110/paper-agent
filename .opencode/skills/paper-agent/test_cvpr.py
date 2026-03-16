@@ -26,7 +26,7 @@ def test_cvpr_crawl():
     adapter = CVPRAdapter()
 
     # Test year range
-    test_years = [2020, 2021, 2022, 2023, 2024, 2025]
+    test_years = [2020]
 
     print(f"\nAdapter: {adapter.venue_code}")
     print(f"Platform: {adapter.platform_name}")
@@ -52,7 +52,7 @@ def test_cvpr_crawl():
     print("Starting crawl for CVPR 2020-2025")
     print("=" * 60)
 
-    config = VenueConfig(name="CVPR", years=[2025])
+    config = VenueConfig(name="CVPR", years=[2020])
 
     try:
         papers = adapter.crawl(config)

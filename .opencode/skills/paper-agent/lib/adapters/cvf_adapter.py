@@ -112,8 +112,8 @@ class CVFAdapter(VenueAdapter):
         
         CVF uses different URL patterns across years:
         - 2013 and earlier: /{CONF}{YEAR} (e.g., /CVPR2013)
-        - 2014-2021: /{CONF}{YEAR} with day parameter, may not support ?day=all
-        - 2022 and later: /{CONF}{YEAR}?day=all typically supported
+        - 2014-2020: /{CONF}{YEAR} with day parameter, may not support ?day=all
+        - 2021 and later: /{CONF}{YEAR}?day=all typically supported
         
         This method intelligently detects the supported mode:
         1. First tries ?day=all (faster, single request)

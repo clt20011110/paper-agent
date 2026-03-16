@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test CVPR 2021 and ICCV 2019 paper crawling functionality
+Test CVPR 2020 and ICCV 2019 paper crawling functionality
 Tests the smart detection mechanism for day=all support
 """
 import sys
@@ -16,24 +16,24 @@ from cvf_adapter import CVPRAdapter, ICCVAdapter
 from base import VenueConfig
 
 
-def test_cvpr_2021():
-    """Test CVPR 2021 - Should use per-day crawling"""
+def test_cvpr_2020():
+    """Test CVPR 2020 - Should use per-day crawling"""
     print("\n" + "=" * 60)
-    print("Testing CVPR 2021 Paper Crawling")
+    print("Testing CVPR 2020 Paper Crawling")
     print("Expected: Day=all NOT supported, using per-day mode")
     print("=" * 60)
 
     adapter = CVPRAdapter()
     
     # First test if day=all is detected as unsupported
-    url_with_all = f"{adapter.BASE_URL}/CVPR2021?day=all"
-    is_supported = adapter._is_day_all_supported(2021, url_with_all)
+    url_with_all = f"{adapter.BASE_URL}/CVPR2020?day=all"
+    is_supported = adapter._is_day_all_supported(2020, url_with_all)
     print(f"\nDay=all support check: {'✓ Supported' if is_supported else '✗ Not supported'}")
     print("Expected: Not supported (should use per-day crawling)")
     
     # Test crawling
     print("\nTesting crawl...")
-    config = VenueConfig(name="CVPR", years=[2021])
+    config = VenueConfig(name="CVPR", years=[2020])
     
     try:
         papers = adapter.crawl(config)
@@ -51,7 +51,7 @@ def test_cvpr_2021():
                 print(f"     Abstract length: {len(paper.abstract)} chars")
                 print()
         
-        success = len(papers) > 100  # CVPR 2021 should have hundreds of papers
+        success = len(papers) > 100  # CVPR 2020 should have hundreds of papers
         if success:
             print(f"✓ Crawled {len(papers)} papers (>100 expected)")
         else:
@@ -169,8 +169,8 @@ def test_cvpr_2022():
 if __name__ == "__main__":
     results = []
     
-    # Test CVPR 2021 (per-day mode)
-    results.append(("CVPR 2021 (per-day mode)", test_cvpr_2021()))
+    # Test CVPR 2020 (per-day mode)
+    results.append(("CVPR 2020 (per-day mode)", test_cvpr_2020()))
     
     # Test ICCV 2019 (per-day mode)
     results.append(("ICCV 2019 (per-day mode)", test_iccv_2019()))
