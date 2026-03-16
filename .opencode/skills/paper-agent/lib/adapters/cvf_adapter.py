@@ -110,11 +110,14 @@ class CVFAdapter(VenueAdapter):
         """
         Crawl papers for a specific year.
         
-        CVF uses different URL patterns:
+        CVF uses different URL patterns across years:
         - 2013 and earlier: /{CONF}{YEAR} (e.g., /CVPR2013)
-        - 2014-2019: /{CONF}{YEAR} with day parameter (e.g., /CVPR2019.py?day=2019-06-16)
-        - 2020: Special handling - need to get day links first
-        - 2021 and later: /{CONF}{YEAR}?day=all (e.g., /CVPR2021?day=all)
+        - 2014-2021: /{CONF}{YEAR} with day parameter, may not support ?day=all
+        - 2022 and later: /{CONF}{YEAR}?day=all typically supported
+        
+        This method intelligently detects the supported mode:
+        1. First tries ?day=all (faster, single request)
+        2. If not supported, fetches all available days and crawls each
         
         Args:
             year: Publication year
@@ -124,28 +127,88 @@ class CVFAdapter(VenueAdapter):
         """
         papers = []
         
-        # Special handling for CVPR 2020
-        if self.venue_code == 'CVPR' and year == 2020:
-            papers = self._crawl_cvpr2020()
+        # Build the day=all URL
+        if year <= 2013:
+            # 2013 and earlier use simple URL without day parameter
+            url = f"{self.BASE_URL}/{self.venue_code}{year}"
+            papers = self._crawl_single_url(url, year)
         else:
-            # Standard handling for other years
-            papers = self._crawl_year_standard(year)
+            # Try day=all first
+            url_with_all = f"{self.BASE_URL}/{self.venue_code}{year}?day=all"
+            
+            if self._is_day_all_supported(year, url_with_all):
+                # day=all is supported, crawl it
+                logger.info(f"Using ?day=all mode for {self.venue_code} {year}")
+                papers = self._crawl_single_url(url_with_all, year)
+            else:
+                # day=all not supported, crawl by days
+                logger.info(f"Day=all not supported for {self.venue_code} {year}, using per-day mode")
+                papers = self._crawl_by_days(year)
         
         return papers
     
-    def _crawl_cvpr2020(self) -> List[Paper]:
+    def _is_day_all_supported(self, year: int, url: str) -> bool:
         """
-        Special handling for CVPR 2020.
-        
-        CVPR 2020 doesn't support ?day=all, need to crawl each day separately.
-        
-        Returns:
-            List of Paper objects
+        Check if ?day=all is supported for a given year.
+        """
+        try:
+            response = self._fetch_page(url)
+            if response is None:
+                return False
+            
+            # Check for error indicators in response text
+            if "Error" in response.text or "error" in response.text.lower():
+                if "1525" in response.text or "DATE value" in response.text:
+                    return False
+                if "Incorrect DATE" in response.text:
+                    return False
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Check if page contains any paper elements
+            paper_elements = (
+                soup.find_all('dt', class_='ptitle') or
+                soup.find_all('div', class_='ptitle') or
+                soup.find_all('table')
+            )
+            
+            has_papers = len(paper_elements) > 0
+            
+            if has_papers:
+                logger.debug(f"day=all supported: found {len(paper_elements)} paper elements")
+            else:
+                logger.debug(f"day=all appears unsupported: no paper elements found")
+            
+            return has_papers
+            
+        except Exception as e:
+            logger.warning(f"Failed to check day=all support for {url}: {e}")
+            return False
+    
+    def _crawl_single_url(self, url: str, year: int) -> List[Paper]:
+        """
+        Crawl papers from a single URL.
         """
         papers = []
-        year = 2020
         
-        # First, get the main page to find day links
+        try:
+            response = self._fetch_page(url)
+            if response is None:
+                return papers
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            papers = self._parse_papers_page(soup, year)
+            
+        except Exception as e:
+            logger.error(f"Failed to crawl {url}: {e}")
+        
+        return papers
+    
+    def _crawl_by_days(self, year: int) -> List[Paper]:
+        """
+        Crawl papers by fetching all available days and crawling each.
+        """
+        papers = []
         main_url = f"{self.BASE_URL}/{self.venue_code}{year}"
         
         try:
@@ -154,97 +217,64 @@ class CVFAdapter(VenueAdapter):
                 return papers
             
             soup = BeautifulSoup(response.text, 'html.parser')
+            day_urls = self._get_day_urls(soup, year)
             
-            # Find all day links
-            day_links = []
-            for link in soup.find_all('a', href=True):
-                href = link.get('href', '')
-                if 'day=' in href and 'CVPR2020.py' in href:
-                    if href.startswith('http'):
-                        day_url = href
-                    else:
-                        day_url = f"{self.BASE_URL}/{href.lstrip('/')}"
-                    day_links.append(day_url)
+            if not day_urls:
+                logger.warning(f"No day links found for {self.venue_code} {year}, trying main page")
+                return self._parse_papers_page(soup, year)
             
-            # Remove duplicates
-            day_links = list(dict.fromkeys(day_links))
+            logger.info(f"Found {len(day_urls)} day links for {self.venue_code} {year}")
             
-            logger.info(f"Found {len(day_links)} day links for CVPR 2020")
-            
-            # Crawl each day
-            for day_url in day_links:
+            for day_url in day_urls:
                 try:
-                    day_papers = self._crawl_day_url(day_url, year)
+                    day_papers = self._crawl_single_url(day_url, year)
                     papers.extend(day_papers)
                     logger.debug(f"Crawled {len(day_papers)} papers from {day_url}")
-                    
-                    # Rate limiting
                     time.sleep(self.rate_limit_delay())
                 except Exception as e:
                     logger.warning(f"Failed to crawl {day_url}: {e}")
                     continue
             
         except Exception as e:
-            logger.error(f"Failed to crawl CVPR 2020: {e}")
+            logger.error(f"Failed to crawl {self.venue_code} {year} by days: {e}")
         
         return papers
+    
+    def _get_day_urls(self, soup: BeautifulSoup, year: int) -> List[str]:
+        """
+        Extract all day URLs from the main page.
+        """
+        day_urls = []
+        
+        for link in soup.find_all('a', href=True):
+            href = link.get('href', '')
+            
+            if 'day=' in href:
+                if href.startswith('http'):
+                    day_url = href
+                else:
+                    if href.startswith('/'):
+                        day_url = f"{self.BASE_URL}{href}"
+                    else:
+                        day_url = f"{self.BASE_URL}/{href}"
+                
+                day_urls.append(day_url)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_urls = []
+        for url in day_urls:
+            if url not in seen:
+                seen.add(url)
+                unique_urls.append(url)
+        
+        return unique_urls
     
     def _crawl_day_url(self, url: str, year: int) -> List[Paper]:
         """
         Crawl papers from a specific day URL.
-        
-        Args:
-            url: Day URL to crawl
-            year: Publication year
-            
-        Returns:
-            List of Paper objects
         """
-        papers = []
-        
-        try:
-            response = self._fetch_page(url)
-            if response is None:
-                return papers
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            papers = self._parse_papers_page(soup, year)
-            
-        except Exception as e:
-            logger.error(f"Failed to crawl {url}: {e}")
-        
-        return papers
-    
-    def _crawl_year_standard(self, year: int) -> List[Paper]:
-        """
-        Standard crawling for years other than CVPR 2020.
-        
-        Args:
-            year: Publication year
-            
-        Returns:
-            List of Paper objects
-        """
-        papers = []
-        
-        # Build URL based on year
-        if year <= 2013:
-            url = f"{self.BASE_URL}/{self.venue_code}{year}"
-        else:
-            url = f"{self.BASE_URL}/{self.venue_code}{year}?day=all"
-        
-        try:
-            response = self._fetch_page(url)
-            if response is None:
-                return papers
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            papers = self._parse_papers_page(soup, year)
-            
-        except Exception as e:
-            logger.error(f"Failed to crawl {url}: {e}")
-        
-        return papers
+        return self._crawl_single_url(url, year)
     
     def _fetch_page(self, url: str, timeout: int = 30) -> Optional[requests.Response]:
         """
