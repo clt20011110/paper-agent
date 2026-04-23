@@ -1,0 +1,66 @@
+# DBLP EDA Conferences Configuration (NO API KEY REQUIRED)
+# 
+# This configuration uses DBLP (dblp.org) to crawl papers from
+# ICCAD and DAC without requiring any API key.
+#
+# IMPORTANT: DBLP provides bibliographic metadata only (title, authors, year, DOI)
+# It does NOT provide abstracts. If you need abstracts, use IEEE Xplore adapter
+# (requires API key from https://developer.ieee.org/)
+
+output_dir: ./eda_papers_dblp
+conferences:
+  - ICCAD
+  - DAC
+years:
+  - 2024
+topic: Machine Learning for Electronic Design Automation
+keywords: machine learning, EDA, placement, routing, optimization
+
+# Filter configuration
+filter:
+  include_groups:
+    - [machine, learning]
+    - [deep, learning]
+    - [reinforcement, learning]
+    - [neural, network]
+  exclude:
+    - workshop
+    - tutorial
+  match_fields:
+    - title
+    # Note: Cannot filter by abstract - DBLP doesn't provide abstracts
+  case_sensitive: false
+  whole_word: false
+
+# Venue configuration using DBLP (NO API KEY NEEDED)
+venues:
+  ICCAD:
+    platform: dblp_iccad  # Use DBLP instead of IEEE
+    # No additional_params needed - DBLP is completely free
+      
+  DAC:
+    platform: dblp_dac  # Use DBLP instead of IEEE
+    # No additional_params needed - DBLP is completely free
+
+# Download options
+options:
+  workers: 2  # Lower workers for DBLP to be respectful
+  delay: 1.0  # DBLP doesn't require strict rate limiting, but be nice
+  accepted_only: true
+
+# Analysis configuration
+analysis:
+  model: "stepfun/step-3.5-flash:free"
+  workers: 4
+
+# IMPORTANT NOTES:
+# 1. DBLP does NOT provide abstracts - only title, authors, year, DOI
+# 2. DBLP is completely FREE and OPEN - no registration or API key needed
+# 3. If you need abstracts, switch to IEEE Xplore adapter (requires API key):
+#    
+#    venues:
+#      ICCAD:
+#        platform: iccad  # IEEE Xplore adapter
+#        additional_params:
+#          api_key: "your_ieee_api_key"
+# 4. DBLP data is under CC0 license (public domain)
