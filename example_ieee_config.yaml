@@ -1,0 +1,63 @@
+# IEEE Xplore EDA Conferences Configuration Example
+# 
+# This configuration demonstrates how to crawl papers from
+# ICCAD, DAC, and TCAD using the IEEE Xplore adapter.
+#
+# Prerequisites:
+# 1. Obtain an IEEE Xplore API key from: https://developer.ieee.org/
+# 2. Set the API key in your environment or pass it in additional_params
+
+output_dir: ./eda_papers_2024
+conferences:
+  - ICCAD
+  - DAC
+  - TCAD
+years:
+  - 2024
+topic: Machine Learning for Electronic Design Automation
+keywords: machine learning, EDA, placement, routing, optimization
+
+# Filter configuration
+filter:
+  include_groups:
+    - [machine, learning]
+    - [deep, learning]
+    - [reinforcement, learning]
+    - [neural, network]
+  exclude:
+    - workshop
+    - tutorial
+  match_fields:
+    - title
+    - abstract
+  case_sensitive: false
+  whole_word: false
+
+# Venue-specific configuration
+# Note: IEEE Xplore API key is required
+venues:
+  ICCAD:
+    platform: iccad
+    additional_params:
+      api_key: ${IEEE_API_KEY}  # Set via environment variable
+      
+  DAC:
+    platform: dac
+    additional_params:
+      api_key: ${IEEE_API_KEY}
+      
+  TCAD:
+    platform: tcad
+    additional_params:
+      api_key: ${IEEE_API_KEY}
+
+# Download options
+options:
+  workers: 4
+  delay: 5.0  # IEEE Xplore has rate limits (100 calls/day for free tier)
+  accepted_only: true
+
+# Analysis configuration
+analysis:
+  model: "stepfun/step-3.5-flash:free"
+  workers: 4

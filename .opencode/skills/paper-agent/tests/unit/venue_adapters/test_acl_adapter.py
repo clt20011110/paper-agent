@@ -6,7 +6,8 @@ Tests the ACLAdapter class with mocked anthology library.
 """
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
+import requests
 
 # Import from lib - pytest.ini pythonpath should handle this
 from adapters.base import VenueAdapter, VenueConfig
@@ -233,28 +234,27 @@ class TestConfigValidation:
 class TestCheckAvailability:
     """Test availability checking."""
     
-    def test_check_availability_with_library(self):
-        """Test availability when anthology library is installed."""
+    def test_check_availability_with_website(self):
+        """Test availability when the ACL Anthology website is reachable."""
         adapter = ACLAdapter()
-        
-        with patch.dict('sys.modules', {'anthology': MagicMock()}):
-            # This will try to import anthology
-            result = adapter.check_availability()
-            assert result is True
+        response = Mock()
+        response.status_code = 200
+
+        with patch("adapters.acl_adapter.requests.get", return_value=response):
+            assert adapter.check_availability() is True
     
-    def test_check_availability_without_library(self):
-        """Test availability when anthology library is not installed."""
+    def test_check_availability_without_website(self):
+        """Test availability when the ACL Anthology website is unreachable."""
         adapter = ACLAdapter()
-        
-        # Mock the import to raise ImportError
-        with patch.dict('sys.modules', {'anthology': None}):
-            with patch('builtins.__import__', side_effect=ImportError):
-                result = adapter.check_availability()
-                assert result is False
+        with patch(
+            "adapters.acl_adapter.requests.get",
+            side_effect=requests.RequestException("down"),
+        ):
+            assert adapter.check_availability() is False
 
 
-class TestCrawlWithMockedAnthology:
-    """Test crawling with mocked anthology library."""
+class TestCrawlWithMockedWeb:
+    """Test crawling with mocked ACL Anthology pages."""
     
     @pytest.fixture
     def adapter(self):
@@ -262,55 +262,69 @@ class TestCrawlWithMockedAnthology:
         return ACLAdapter()
     
     @pytest.fixture
-    def mock_paper(self):
-        """Create a mock paper object."""
-        paper = Mock()
-        paper.id = '2024.acl-long.1'
-        paper.title = 'Test Paper Title'
-        paper.abstract = 'This is a test abstract.'
-        paper.authors = [
-            Mock(name='John Doe'),
-            Mock(name='Jane Smith')
-        ]
-        paper.doi = '10.1234/test.001'
-        paper.bibtex = '@article{test, title="Test"}'
-        return paper
-    
-    def test_crawl_returns_papers(self, adapter, mock_paper):
+    def event_html(self):
+        return """
+        <html><body>
+          <a href="/volumes/2024.acl-long/">Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)</a>
+        </body></html>
+        """
+
+    @pytest.fixture
+    def volume_html(self):
+        return """
+        <html><body>
+          <a href="/2024.acl-long.1/">Test Paper Title</a>
+        </body></html>
+        """
+
+    @pytest.fixture
+    def detail_html(self):
+        return """
+        <html><head>
+          <meta name="citation_title" content="Test Paper Title" />
+          <meta name="citation_author" content="John Doe" />
+          <meta name="citation_author" content="Jane Smith" />
+          <meta name="citation_abstract" content="This is a test abstract." />
+          <meta name="citation_pdf_url" content="https://aclanthology.org/2024.acl-long.1.pdf" />
+          <meta name="citation_doi" content="10.18653/v1/2024.acl-long.1" />
+        </head><body></body></html>
+        """
+
+    def test_crawl_returns_papers(self, adapter, event_html, volume_html, detail_html):
         """Test that crawl returns Paper objects."""
         config = VenueConfig(name='ACL', years=[2024])
-        
-        # Create mock anthology
-        mock_anthology = Mock()
-        mock_anthology.papers = [mock_paper]
-        mock_anthology_class = Mock(return_value=mock_anthology)
-        
-        # Mock the anthology module and Anthology class
-        with patch.dict('sys.modules', {'anthology': Mock(Anthology=mock_anthology_class)}):
+
+        def fake_get(url, headers=None, timeout=None):
+            response = Mock()
+            response.raise_for_status = Mock()
+            if url.endswith("/events/acl-2024/"):
+                response.text = event_html
+                return response
+            if url.rstrip("/").endswith("/volumes/2024.acl-long"):
+                response.text = volume_html
+                return response
+            if url.rstrip("/").endswith("/2024.acl-long.1"):
+                response.text = detail_html
+                return response
+            raise AssertionError(f"unexpected url: {url}")
+
+        with patch("adapters.acl_adapter.requests.get", side_effect=fake_get):
             papers = adapter.crawl(config)
-            
-            # Should have returned some papers
-            assert isinstance(papers, list)
-    
-    def test_crawl_raises_import_error_without_library(self, adapter):
-        """Test that crawl raises ImportError if library not installed."""
-        config = VenueConfig(name='ACL', years=[2024])
-        
-        # Mock the import to raise ImportError
-        with patch.dict('sys.modules', {'anthology': None}):
-            with patch('builtins.__import__', side_effect=ImportError("No module named 'anthology'")):
-                with pytest.raises(ImportError, match="acl-anthology package required"):
-                    adapter.crawl(config)
-    
+
+        assert isinstance(papers, list)
+        assert len(papers) == 1
+        paper = papers[0]
+        assert paper.title == "Test Paper Title"
+        assert paper.abstract == "This is a test abstract."
+        assert paper.authors == ["John Doe", "Jane Smith"]
+        assert paper.pdf_url == "https://aclanthology.org/2024.acl-long.1.pdf"
+        assert paper.source_platform == "acl"
+
     def test_crawl_raises_value_error_for_unknown_venue(self, adapter):
         """Test that crawl raises ValueError for unknown venue."""
         config = VenueConfig(name='UNKNOWN_VENUE', years=[2024])
-        
-        # Mock the anthology module so import succeeds
-        mock_anthology_class = Mock(return_value=Mock())
-        with patch.dict('sys.modules', {'anthology': Mock(Anthology=mock_anthology_class)}):
-            with pytest.raises(ValueError, match="Unknown venue"):
-                adapter.crawl(config)
+        with pytest.raises(ValueError, match="Unknown venue"):
+            adapter.crawl(config)
 
 
 class TestCreatePaperFromAnthology:
