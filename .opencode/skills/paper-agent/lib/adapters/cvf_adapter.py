@@ -63,6 +63,7 @@ class CVFAdapter(VenueAdapter):
             venue_code: Venue identifier ('CVPR' or 'ICCV')
         """
         self.venue_code = venue_code.upper()
+        self.fetch_abstract = False
         if self.venue_code not in self.VENUE_MAPPING:
             raise ValueError(
                 f"Unknown venue: {venue_code}. "
@@ -90,6 +91,7 @@ class CVFAdapter(VenueAdapter):
             List of Paper objects
         """
         papers = []
+        self.fetch_abstract = bool((config.additional_params or {}).get("fetch_abstract", False))
         
         for year in config.years:
             logger.info(f"Crawling {self.venue_code} {year}...")
@@ -139,7 +141,7 @@ class CVFAdapter(VenueAdapter):
             if self._is_day_all_supported(year, url_with_all):
                 # day=all is supported, crawl it
                 logger.info(f"Using ?day=all mode for {self.venue_code} {year}")
-                papers = self._crawl_single_url(url_with_all, year)
+                papers = self._crawl_single_url(url_with_all, year, timeout=120)
             else:
                 # day=all not supported, crawl by days
                 logger.info(f"Day=all not supported for {self.venue_code} {year}, using per-day mode")
@@ -152,7 +154,8 @@ class CVFAdapter(VenueAdapter):
         Check if ?day=all is supported for a given year.
         """
         try:
-            response = self._fetch_page(url)
+            probe_timeout = 120 if "day=all" in url else 45
+            response = self._fetch_page(url, timeout=probe_timeout)
             if response is None:
                 return False
             
@@ -185,14 +188,14 @@ class CVFAdapter(VenueAdapter):
             logger.warning(f"Failed to check day=all support for {url}: {e}")
             return False
     
-    def _crawl_single_url(self, url: str, year: int) -> List[Paper]:
+    def _crawl_single_url(self, url: str, year: int, timeout: int = 45) -> List[Paper]:
         """
         Crawl papers from a single URL.
         """
         papers = []
         
         try:
-            response = self._fetch_page(url)
+            response = self._fetch_page(url, timeout=timeout)
             if response is None:
                 return papers
             
@@ -212,7 +215,7 @@ class CVFAdapter(VenueAdapter):
         main_url = f"{self.BASE_URL}/{self.venue_code}{year}"
         
         try:
-            response = self._fetch_page(main_url)
+            response = self._fetch_page(main_url, timeout=60)
             if response is None:
                 return papers
             
@@ -227,7 +230,7 @@ class CVFAdapter(VenueAdapter):
             
             for day_url in day_urls:
                 try:
-                    day_papers = self._crawl_single_url(day_url, year)
+                    day_papers = self._crawl_single_url(day_url, year, timeout=75)
                     papers.extend(day_papers)
                     logger.debug(f"Crawled {len(day_papers)} papers from {day_url}")
                     time.sleep(self.rate_limit_delay())
@@ -419,7 +422,7 @@ class CVFAdapter(VenueAdapter):
         
         # Fetch abstract if we have a paper page URL
         abstract = ""
-        if paper_url:
+        if paper_url and self.fetch_abstract:
             abstract = self._fetch_abstract(paper_url)
         
         # Generate unique paper ID
@@ -460,6 +463,9 @@ class CVFAdapter(VenueAdapter):
         papers = []
         
         dt_tags = soup.find_all('dt', class_='ptitle')
+        if not dt_tags:
+            # Older pages may use plain <dt> tags inside <dl> without class.
+            dt_tags = [dt for dt in soup.find_all('dt') if dt.find('a')]
         
         for dt in dt_tags:
             try:
@@ -515,10 +521,20 @@ class CVFAdapter(VenueAdapter):
             authors_dd = next_siblings[0]
             authors = self._extract_authors_from_dd(authors_dd)
         
-        # Extract PDF from second dd
+        # Extract PDF from second dd, or from first dd when legacy markup
+        # stores both authors and links in a single block.
         pdf_url = None
         if len(next_siblings) >= 2:
             links_dd = next_siblings[1]
+            pdf_link = links_dd.find('a', href=lambda x: x and '.pdf' in x.lower())
+            if pdf_link:
+                pdf_href = pdf_link.get('href', '')
+                if pdf_href and not pdf_href.startswith('http'):
+                    pdf_url = f"{self.BASE_URL}/{pdf_href.lstrip('/')}"
+                else:
+                    pdf_url = pdf_href
+        elif len(next_siblings) == 1:
+            links_dd = next_siblings[0]
             pdf_link = links_dd.find('a', href=lambda x: x and '.pdf' in x.lower())
             if pdf_link:
                 pdf_href = pdf_link.get('href', '')
@@ -532,7 +548,7 @@ class CVFAdapter(VenueAdapter):
         
         # Fetch abstract from paper detail page
         abstract = ""
-        if paper_url:
+        if paper_url and self.fetch_abstract:
             abstract = self._fetch_abstract(paper_url)
         
         return Paper(
@@ -570,6 +586,18 @@ class CVFAdapter(VenueAdapter):
                 author_name = input_field.get('value', '').strip()
                 if author_name:
                     authors.append(author_name)
+
+        # Some legacy pages expose authors as plain text:
+        # "Authors: A, B"
+        if not authors:
+            text = dd.get_text(" ", strip=True)
+            match = re.search(r'Authors?:\s*(.*?)(?:\bPDF\b|$)', text, flags=re.IGNORECASE)
+            if match:
+                raw_authors = match.group(1).strip().strip(':')
+                for candidate in raw_authors.split(','):
+                    name = candidate.strip()
+                    if name:
+                        authors.append(name)
         
         return authors
     

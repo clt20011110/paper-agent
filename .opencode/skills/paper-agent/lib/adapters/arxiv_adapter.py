@@ -33,7 +33,6 @@ import feedparser
 import time
 from typing import List, Optional, Dict, Any, Tuple, Set
 from datetime import datetime
-from urllib.parse import quote
 
 from .base import VenueAdapter, VenueConfig
 from .registry import AdapterRegistry
@@ -54,7 +53,11 @@ class ArxivAdapter(VenueAdapter):
     Supports category filtering, date ranges, and keyword search.
     """
     
-    API_BASE_URL = "http://export.arxiv.org/api/query"
+    API_BASE_URL = "https://export.arxiv.org/api/query"
+    REQUEST_HEADERS = {
+        # arXiv asks clients to send a descriptive User-Agent.
+        "User-Agent": "paper-agent/1.0 (academic crawler; contact: noreply@example.com)"
+    }
     
     # Common arXiv categories
     CATEGORIES = {
@@ -185,12 +188,21 @@ class ArxivAdapter(VenueAdapter):
         
         # Add keyword filter
         if keywords:
-            # Search in title and abstract
-            keyword_query = quote(keywords)
-            query_parts.append(f'(ti:{keyword_query} OR abs:{keyword_query})')
-        
+            # Support comma-separated phrases and query each phrase in title/abstract.
+            raw_terms = [t.strip() for t in str(keywords).split(",") if t.strip()]
+            if not raw_terms:
+                raw_terms = [" ".join(str(keywords).split())]
+            keyword_clauses = []
+            for term in raw_terms:
+                safe_term = " ".join(term.split())
+                keyword_clauses.append(f'(ti:"{safe_term}" OR abs:"{safe_term}")')
+            query_parts.append("(" + " OR ".join(keyword_clauses) + ")")
+
         # Add date filter
-        query_parts.append(f'submittedDate:[{start_date} TO {end_date}]')
+        # arXiv expects compact datetime values: YYYYMMDDHHMM
+        start_compact = start_date.replace('-', '') + "0000"
+        end_compact = end_date.replace('-', '') + "2359"
+        query_parts.append(f'submittedDate:[{start_compact} TO {end_compact}]')
         
         query = ' AND '.join(query_parts)
         
@@ -204,8 +216,35 @@ class ArxivAdapter(VenueAdapter):
         }
         
         try:
-            response = requests.get(self.API_BASE_URL, params=params, timeout=30)
-            response.raise_for_status()
+            response = None
+            last_error: Optional[Exception] = None
+            for attempt in range(4):
+                try:
+                    response = requests.get(
+                        self.API_BASE_URL,
+                        params=params,
+                        timeout=30,
+                        headers=self.REQUEST_HEADERS,
+                    )
+                    # Handle arXiv throttling with backoff.
+                    if response.status_code == 429:
+                        wait_secs = 5 * (2 ** attempt)
+                        print(f"  arXiv rate-limited (429), retry in {wait_secs}s...")
+                        time.sleep(wait_secs)
+                        continue
+                    response.raise_for_status()
+                    break
+                except requests.exceptions.RequestException as e:
+                    last_error = e
+                    wait_secs = 3 * (attempt + 1)
+                    if attempt < 3:
+                        time.sleep(wait_secs)
+                        continue
+                    raise
+            if response is None:
+                if last_error:
+                    raise last_error
+                return []
             
             # Parse Atom feed
             feed = feedparser.parse(response.content)

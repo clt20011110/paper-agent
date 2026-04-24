@@ -382,11 +382,82 @@ class AdapterRegistry:
             cls._adapters[ICCVAdapter().platform_name] = ICCVAdapter
         except ImportError:
             pass
+
+        # Register AAAI official proceedings adapter
+        try:
+            from .aaai_adapter import AAAIAdapter
+            cls._adapters[AAAIAdapter().platform_name] = AAAIAdapter
+        except ImportError:
+            pass
         
         # Register arXiv adapter
         try:
             from .arxiv_adapter import ArxivAdapter
             cls._adapters[ArxivAdapter().platform_name] = ArxivAdapter
+        except ImportError:
+            pass
+        
+        # Register IEEE Xplore adapters (ICCAD, DAC, TCAD)
+        try:
+            from .ieee_adapter import ICCADAdapter, DACAdapter, TCADAdapter
+            cls._adapters[ICCADAdapter().platform_name] = ICCADAdapter
+            cls._adapters[DACAdapter().platform_name] = DACAdapter
+            cls._adapters[TCADAdapter().platform_name] = TCADAdapter
+        except ImportError:
+            pass
+        
+        # Register DBLP adapters (ICCAD, DAC, TCAD) - NO API key required
+        try:
+            from .dblp_adapter import (
+                DBLP_ICCAD_Adapter,
+                DBLP_DAC_Adapter,
+                DBLP_TCAD_Adapter,
+                DBLP_AAAI_Adapter,
+                DBLP_ACL_Adapter,
+                DBLP_CVPR_Adapter,
+                DBLP_ICCV_Adapter,
+                DBLP_IJCAI_Adapter,
+            )
+            cls._adapters[DBLP_ICCAD_Adapter().platform_name] = DBLP_ICCAD_Adapter
+            cls._adapters[DBLP_DAC_Adapter().platform_name] = DBLP_DAC_Adapter
+            cls._adapters[DBLP_TCAD_Adapter().platform_name] = DBLP_TCAD_Adapter
+            cls._adapters[DBLP_AAAI_Adapter().platform_name] = DBLP_AAAI_Adapter
+            cls._adapters[DBLP_ACL_Adapter().platform_name] = DBLP_ACL_Adapter
+            cls._adapters[DBLP_CVPR_Adapter().platform_name] = DBLP_CVPR_Adapter
+            cls._adapters[DBLP_ICCV_Adapter().platform_name] = DBLP_ICCV_Adapter
+            cls._adapters[DBLP_IJCAI_Adapter().platform_name] = DBLP_IJCAI_Adapter
+        except ImportError:
+            pass
+
+        # Register IJCAI adapter
+        try:
+            from .ijcai_adapter import IJCAIAdapter
+            cls._adapters[IJCAIAdapter().platform_name] = IJCAIAdapter
+        except ImportError:
+            pass
+
+        # Register Crossref journal adapters
+        try:
+            from .journal_crossref_adapter import (
+                NatureComputerScienceAdapter,
+                NatureCatalysisAdapter,
+                NatureBiotechnologyAdapter,
+                NatureBiomedicalEngineeringXrefAdapter,
+                NatureMachineIntelligenceXrefAdapter,
+                NatureChemistryXrefAdapter,
+                NatureCommunicationsXrefAdapter,
+                CellAdapter,
+                ScienceAdapter,
+            )
+            cls._adapters[NatureComputerScienceAdapter().platform_name] = NatureComputerScienceAdapter
+            cls._adapters[NatureCatalysisAdapter().platform_name] = NatureCatalysisAdapter
+            cls._adapters[NatureBiotechnologyAdapter().platform_name] = NatureBiotechnologyAdapter
+            cls._adapters[NatureBiomedicalEngineeringXrefAdapter().platform_name] = NatureBiomedicalEngineeringXrefAdapter
+            cls._adapters[NatureMachineIntelligenceXrefAdapter().platform_name] = NatureMachineIntelligenceXrefAdapter
+            cls._adapters[NatureChemistryXrefAdapter().platform_name] = NatureChemistryXrefAdapter
+            cls._adapters[NatureCommunicationsXrefAdapter().platform_name] = NatureCommunicationsXrefAdapter
+            cls._adapters[CellAdapter().platform_name] = CellAdapter
+            cls._adapters[ScienceAdapter().platform_name] = ScienceAdapter
         except ImportError:
             pass
 

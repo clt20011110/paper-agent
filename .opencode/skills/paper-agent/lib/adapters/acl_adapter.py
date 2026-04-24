@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ACL Anthology Adapter using acl-anthology Python library
+ACL Anthology adapter using the official ACL Anthology website.
 
 Implements venue adapter for ACL Anthology, supporting:
 - ACL (Annual Meeting of the Association for Computational Linguistics)
@@ -13,9 +13,17 @@ Implements venue adapter for ACL Anthology, supporting:
 - CL (Computational Linguistics Journal)
 """
 
-from typing import List, Optional, Dict, Any
+import hashlib
 from datetime import datetime
 import logging
+import re
+import time
+from typing import List, Optional, Dict, Any
+from urllib.parse import urljoin
+from tqdm import tqdm
+
+import requests
+from bs4 import BeautifulSoup
 
 from database import Paper
 from .base import VenueAdapter, VenueConfig
@@ -30,7 +38,7 @@ class ACLAdapter(VenueAdapter):
     """
     Adapter for ACL Anthology (Association for Computational Linguistics).
     
-    Uses the official acl-anthology Python library to access paper metadata.
+    Uses the official ACL Anthology website to access paper metadata.
     All papers are open access and freely downloadable.
     
     Documentation: https://acl-anthology.readthedocs.io/
@@ -53,6 +61,8 @@ class ACLAdapter(VenueAdapter):
         'SEM': 'sem',
         'WS': 'ws',      # Workshops
     }
+
+    BASE_URL = "https://aclanthology.org"
     
     @property
     def platform_name(self) -> str:
@@ -65,52 +75,260 @@ class ACLAdapter(VenueAdapter):
         return "conference"  # Default, overridden per venue
     
     def crawl(self, config: VenueConfig) -> List[Paper]:
-        """
-        Crawl ACL papers for given years.
-        
-        Args:
-            config: VenueConfig with name (e.g., 'ACL', 'EMNLP', 'NAACL') and years
-            
-        Returns:
-            List of Paper objects
-            
-        Raises:
-            ImportError: If acl-anthology package is not installed
-            ValueError: If venue name is not recognized
-        """
-        try:
-            from anthology import Anthology
-        except ImportError:
-            raise ImportError(
-                "acl-anthology package required. "
-                "Install with: pip install acl-anthology"
-            )
-        
-        papers = []
-        anthology = Anthology()
-        
-        # Validate venue name
+        """Crawl ACL papers from the website, with anthology fallback."""
+        self.validate_config(config)
         venue_id = self._map_venue_name(config.name)
         if venue_id is None:
             raise ValueError(
                 f"Unknown venue: {config.name}. "
                 f"Supported venues: {list(self.VENUE_MAPPING.keys())}"
             )
-        
+
+        papers: List[Paper] = []
         for year in config.years:
-            logger.info(f"Crawling {config.name} {year}...")
+            logger.info(f"ACL {config.name} {year}: starting web crawl")
             try:
-                venue_papers = self._crawl_venue_year(
-                    anthology, venue_id, year, config.name, config.additional_params
-                )
+                venue_papers = self._crawl_web_year(config.name, year)
+                if not venue_papers:
+                    logger.info(
+                        f"ACL {config.name} {year}: web crawl returned 0 papers, trying anthology fallback"
+                    )
+                    venue_papers = self._crawl_venue_year_with_fallback(
+                        config.name, year, config.additional_params
+                    )
                 papers.extend(venue_papers)
-                logger.info(f"Found {len(venue_papers)} papers for {config.name} {year}")
+                abstract_count = sum(1 for p in venue_papers if p.abstract)
+                logger.info(
+                    f"ACL {config.name} {year}: papers={len(venue_papers)}, abstracts={abstract_count}"
+                )
             except Exception as e:
                 logger.error(f"Error crawling {config.name} {year}: {e}")
-                # Continue with other years instead of failing completely
+            time.sleep(self.rate_limit_delay())
         
         return papers
+
+    def _crawl_venue_year_with_fallback(
+        self,
+        venue_name: str,
+        year: int,
+        options: Dict[str, Any],
+    ) -> List[Paper]:
+        venue_id = self._map_venue_name(venue_name)
+        if venue_id is None:
+            return []
+
+        try:
+            from acl_anthology.anthology import Anthology
+            anthology = Anthology.from_repo(verbose=False)
+        except Exception:
+            try:
+                from anthology import Anthology  # type: ignore
+                anthology = Anthology()
+            except ImportError:
+                logger.warning(
+                    "ACL Anthology library is not available for fallback; returning web results only"
+                )
+                return []
+
+        return self._crawl_venue_year(
+            anthology, venue_id, year, venue_name, options
+        )
+
+    def _crawl_web_year(self, venue_name: str, year: int) -> List[Paper]:
+        event_url = f"{self.BASE_URL}/events/{venue_name.lower()}-{year}/"
+        event_html = self._fetch_html(event_url, timeout=60)
+        if not event_html:
+            return []
+
+        event_soup = BeautifulSoup(event_html, "html.parser")
+        volume_urls = self._extract_volume_urls(event_soup, venue_name, year)
+        logger.info(f"ACL {venue_name} {year}: found {len(volume_urls)} volume pages")
+
+        papers: List[Paper] = []
+        seen: set[str] = set()
+        for volume_url in tqdm(volume_urls):
+            volume_html = self._fetch_html(volume_url, timeout=60)
+            if not volume_html:
+                continue
+            volume_soup = BeautifulSoup(volume_html, "html.parser")
+            paper_urls = self._extract_paper_urls(volume_soup, venue_name, year)
+            logger.info(
+                f"ACL {venue_name} {year}: volume {self._volume_label(volume_url)} -> {len(paper_urls)} papers"
+            )
+            for paper_url in tqdm(paper_urls):
+                if paper_url in seen:
+                    continue
+                seen.add(paper_url)
+                detail_html = self._fetch_html(paper_url, timeout=60)
+                if not detail_html:
+                    continue
+                paper = self._parse_detail_page(
+                    BeautifulSoup(detail_html, "html.parser"),
+                    paper_url,
+                    venue_name,
+                    year,
+                )
+                if paper:
+                    papers.append(paper)
+
+        return papers
+
+    def _fetch_html(self, url: str, timeout: int = 30) -> Optional[str]:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as e:
+            logger.warning(f"Failed to fetch {url}: {e}")
+            return None
     
+    def _extract_volume_urls(self, soup: BeautifulSoup, venue_name: str, year: int) -> List[str]:
+        volume_urls: List[str] = []
+        volume_pattern = re.compile(rf"/volumes/{year}\.{re.escape(venue_name.lower())}-[a-z0-9-]+/?$")
+
+        for link in soup.find_all("a", href=True):
+            href = self._abs_url(link["href"])
+            if volume_pattern.search(href):
+                volume_urls.append(href.rstrip("/"))
+
+        dedup: List[str] = []
+        seen: set[str] = set()
+        for url in volume_urls:
+            if url not in seen:
+                seen.add(url)
+                dedup.append(url)
+        return dedup
+
+    def _extract_paper_urls(self, soup: BeautifulSoup, venue_name: str, year: int) -> List[str]:
+        urls: List[str] = []
+        paper_pattern = re.compile(rf"/{year}\.{re.escape(venue_name.lower())}-[a-z0-9-]+\.\d+/?$")
+
+        for link in soup.find_all("a", href=True):
+            href = self._abs_url(link["href"])
+            if paper_pattern.search(href):
+                tail = href.rstrip("/").split("/")[-1]
+                if tail.endswith(".0"):
+                    continue
+                urls.append(href.rstrip("/"))
+
+        dedup: List[str] = []
+        seen: set[str] = set()
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                dedup.append(url)
+        return dedup
+
+    def _parse_detail_page(
+        self,
+        soup: BeautifulSoup,
+        paper_url: str,
+        venue_name: str,
+        year: int,
+    ) -> Optional[Paper]:
+        title = self._meta_content(soup, "citation_title")
+        if not title:
+            title_node = soup.select_one("h1, h2, h3, .title")
+            if title_node:
+                title = self._clean_text(title_node.get_text(" ", strip=True))
+        if not title:
+            return None
+
+        abstract = self._extract_abstract(soup)
+        authors = self._extract_authors(soup)
+        pdf_url = self._extract_pdf_url(soup)
+        doi = self._meta_content(soup, "citation_doi") or None
+
+        paper_id = self._paper_id_from_url(paper_url, title, year)
+        return Paper(
+            id=paper_id,
+            title=title,
+            abstract=abstract,
+            authors=authors,
+            keywords=[],
+            year=year,
+            venue=venue_name,
+            venue_type=self._get_venue_type(venue_name),
+            source_platform=self.platform_name,
+            crawl_date=datetime.now().isoformat(),
+            pdf_url=pdf_url,
+            doi=doi,
+            download_available='acl' if pdf_url else 'none',
+        )
+
+    def _meta_content(self, soup: BeautifulSoup, name: str) -> str:
+        meta = soup.find("meta", attrs={"name": name})
+        if meta and meta.get("content"):
+            return self._clean_text(meta["content"])
+        return ""
+
+    def _extract_authors(self, soup: BeautifulSoup) -> List[str]:
+        authors: List[str] = []
+        for meta in soup.find_all("meta", attrs={"name": "citation_author"}):
+            value = self._clean_text(meta.get("content", ""))
+            if value and value not in authors:
+                authors.append(value)
+        if authors:
+            return authors
+
+        author_node = soup.select_one(".authors, .author, .article-author")
+        if author_node:
+            raw = self._clean_text(author_node.get_text(" ", strip=True))
+            if raw:
+                authors = [x.strip() for x in re.split(r",| and ", raw) if x.strip()]
+        return authors
+
+    def _extract_abstract(self, soup: BeautifulSoup) -> str:
+        abstract = self._meta_content(soup, "citation_abstract")
+        if abstract:
+            return abstract
+
+        abstract_node = soup.select_one("div.abstract, section.abstract, #abstract, [class*='abstract']")
+        if abstract_node:
+            text = self._clean_text(abstract_node.get_text(" ", strip=True))
+            return re.sub(r"^abstract[:\s]*", "", text, flags=re.IGNORECASE)
+        return ""
+
+    def _extract_pdf_url(self, soup: BeautifulSoup) -> Optional[str]:
+        pdf = self._meta_content(soup, "citation_pdf_url")
+        if pdf:
+            return self._abs_url(pdf)
+
+        for link in soup.find_all("a", href=True):
+            href = self._abs_url(link["href"])
+            if href.lower().endswith(".pdf") or "/pdf/" in href:
+                return href
+        return None
+
+    def _abs_url(self, href: str) -> str:
+        if not href:
+            return ""
+        if href.startswith("http://") or href.startswith("https://"):
+            return href
+        if href.startswith("/"):
+            return f"{self.BASE_URL}{href}"
+        return f"{self.BASE_URL}/{href}"
+
+    def _clean_text(self, text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "")).strip()
+
+    def _paper_id_from_url(self, paper_url: str, title: str, year: int) -> str:
+        tail = paper_url.rstrip("/").split("/")[-1]
+        if tail and re.match(r"^\d+\.[a-z0-9-]+\.\d+$", tail):
+            return tail
+        if tail and re.match(r"^\d+\.[a-z0-9-]+$", tail):
+            return tail
+        digest = hashlib.md5(f"{title}_{year}".encode("utf-8")).hexdigest()[:10]
+        return f"acl_{year}_{digest}"
+
+    def _volume_label(self, volume_url: str) -> str:
+        return volume_url.rstrip("/").split("/")[-1]
+
     def _map_venue_name(self, name: str) -> Optional[str]:
         """
         Map common conference names to ACL Anthology venue IDs.
@@ -123,7 +341,7 @@ class ACLAdapter(VenueAdapter):
         """
         return self.VENUE_MAPPING.get(name.upper())
     
-    def _crawl_venue_year(
+    def _crawl_venue_year_with_library(
         self,
         anthology,
         venue_id: str,
@@ -184,6 +402,19 @@ class ACLAdapter(VenueAdapter):
             )
         
         return papers
+
+    def _crawl_venue_year(
+        self,
+        anthology,
+        venue_id: str,
+        year: int,
+        venue_name: str,
+        options: Dict[str, Any]
+    ) -> List[Paper]:
+        """Backward-compatible wrapper around the library-based crawl."""
+        return self._crawl_venue_year_with_library(
+            anthology, venue_id, year, venue_name, options
+        )
     
     def _paper_matches_venue(self, paper_id: str, venue_id: str) -> bool:
         """
@@ -407,15 +638,21 @@ class ACLAdapter(VenueAdapter):
     
     def check_availability(self) -> bool:
         """
-        Check if the acl-anthology library is available.
+        Check if the ACL Anthology website is reachable.
         
         Returns:
-            True if the library can be imported
+            True if the website returns a successful response
         """
         try:
-            from anthology import Anthology
-            return True
-        except ImportError:
+            response = requests.get(
+                f"{self.BASE_URL}/events/acl-2025/",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                },
+                timeout=20,
+            )
+            return response.status_code == 200
+        except requests.RequestException:
             return False
     
     def validate_config(self, config: VenueConfig) -> bool:
