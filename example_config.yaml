@@ -1,29 +1,99 @@
-output_dir: ./nips25_chemical_reaction_prediction
-conferences:
-  - NeurIPS
-  - ICML
-  - ICLR
-years:
-  - 2025
-  - 2024
-topic: Chemical Reaction Prediction
-keywords: reaction, chemical, prediction, retrosynthesis, yield, molecular, chemistry
+output_dir: ./paper_research
+topic: "Diffusion Models for Molecular Generation"
+
+sources:
+  conferences:
+    - name: ICLR
+      years: [2024]
+      platform: openreview
+    - name: AAAI
+      years: [2024]
+      platform: openreview
+    - name: ACL
+      years: [2024]
+      platform: acl
+    - name: CVPR
+      years: [2024]
+      platform: cvpr
+    - name: ICCV
+      years: [2023]
+      platform: iccv
+    - name: IJCAI
+      years: [2024]
+      platform: ijcai
+    - name: DAC
+      years: [2024]
+      platform: dblp_dac
+    - name: ICCAD
+      years: [2024]
+      platform: dblp_iccad
+    - name: TCAD
+      years: [2024]
+      platform: dblp_tcad
+
+  journals:
+    - name: Nature Machine Intelligence
+      years: [2024]
+      platform: nature
+    - name: Nature Chemistry
+      years: [2024]
+      platform: nature
+    - name: Nature Computer Science
+      years: [2024]
+      platform: nature_computer_science
+    - name: Nature Communications
+      years: [2024]
+      platform: nature
+    - name: Nature Catalysis
+      years: [2024]
+      platform: nature_catalysis
+    - name: Nature Biotechnology
+      years: [2024]
+      platform: nature_biotechnology
+    - name: Nature Biomedical Engineering
+      years: [2024]
+      platform: nature_biomedical_engineering
+    - name: Cell
+      years: [2024]
+      platform: cell
+    - name: Science
+      years: [2024]
+      platform: science
+
+  arxiv:
+    enabled: true
+    categories: [cs.AI, cs.LG, cs.CL]
+    keywords: "diffusion model, molecular generation"
+    date_range: "2023-01-01 to 2024-12-31"
+    save_to_database: false
+    max_results: 100
+
+database:
+  format: json
+  path: ./paper_research/database/papers.json
+  incremental: true
+  backup: true
+
 filter:
-  include_groups:
-    - [reaction, prediction]
-    - [chemical, prediction]
-    - [retrosynthesis]
-    - [yield, prediction]
-    - [reaction, mechanism]
-  exclude:
-    - survey
-    - review
-  match_fields:
-    - title
-    - abstract
-  case_sensitive: false
-  whole_word: false
-options:
+  mode: hybrid
+  regex:
+    include_groups:
+      - [diffusion, molecular]
+      - [diffusion, generation]
+    exclude:
+      - survey
+      - review
+    match_fields: [title, abstract]
+    case_sensitive: false
+    whole_word: false
+
+analysis:
+  model: "stepfun/step-3.5-flash:free"
+  summary_model: "anthropic/claude-3.5-sonnet"
+  generate_summary: true
   workers: 4
+
+download:
   delay: 1.0
-  accepted_only: true
+  timeout: 60
+  preferred_source: auto

@@ -1,0 +1,69 @@
+output_dir: ./paper_research_smoke_supported
+topic: "Smoke test for currently supported conferences and journals"
+
+sources:
+  conferences:
+    # - name: CVPR
+    #   years: [2024]
+    #   platform: cvpr
+    #   additional_params:
+    #     fetch_abstract: true
+    # - name: ICCV
+    #   years: [2023]
+    #   platform: iccv
+    #   additional_params:
+    #     fetch_abstract: true
+    - name: DAC
+      years: [2024]
+      platform: dblp_dac
+    - name: ICCAD
+      years: [2024]
+      platform: dblp_iccad
+    - name: TCAD
+      years: [2024]
+      platform: dblp_tcad
+
+  # journals:
+  #   - name: Nature Machine Intelligence
+  #     years: [2024]
+  #     platform: nature
+  #   - name: Nature Communications
+  #     years: [2024]
+  #     platform: nature
+  #   - name: Cell
+  #     years: [2024]
+  #     platform: cell
+  #   - name: Science
+  #     years: [2024]
+  #     platform: science
+
+  # arxiv:
+  #   enabled: false
+
+database:
+  format: json
+  path: ./paper_research_smoke_supported/database/papers.json
+  incremental: true
+  backup: true
+
+filter:
+  mode: hybrid
+  regex:
+    include_groups:
+      - [diffusion, model]
+      - [language, model]
+    exclude:
+      - survey
+      - review
+    match_fields: [title, abstract]
+    case_sensitive: false
+    whole_word: false
+
+analysis:
+  generate_summary: false
+  workers: 1
+
+download:
+  delay: 1.0
+  timeout: 60
+  preferred_source: auto

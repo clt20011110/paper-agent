@@ -1,0 +1,38 @@
+output_dir: ./paper_research_abstract_focus
+topic: "Abstract extraction smoke test for AAAI, ACL, and IJCAI"
+
+sources:
+  conferences:
+    - name: IJCAI
+      years: [2025]
+      platform: ijcai
+
+  journals: []
+
+  arxiv:
+    enabled: false
+
+database:
+  format: json
+  path: ./paper_research_abstract_focus/database/papers.json
+  incremental: true
+  backup: true
+
+filter:
+  mode: hybrid
+  regex:
+    include_groups:
+      - [abstract]
+    exclude: []
+    match_fields: [title, abstract]
+    case_sensitive: false
+    whole_word: false
+
+analysis:
+  generate_summary: false
+  workers: 1
+
+download:
+  delay: 1.0
+  timeout: 60
+  preferred_source: auto

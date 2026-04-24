@@ -1,0 +1,49 @@
+output_dir: ./paper_research_journal_smoke
+topic: "Journal smoke test for supported journals"
+
+sources:
+  conferences: []
+  journals:
+    - name: Nature Machine Intelligence
+      years: [2024]
+      platform: nature
+    - name: Nature Chemistry
+      years: [2024]
+      platform: nature
+    - name: Nature Communications
+      years: [2024]
+      platform: nature
+    - name: Cell
+      years: [2024]
+      platform: cell
+    - name: Science
+      years: [2024]
+      platform: science
+  arxiv:
+    enabled: false
+
+database:
+  format: json
+  path: ./paper_research_journal_smoke/database/papers.json
+  incremental: true
+  backup: true
+
+filter:
+  mode: hybrid
+  regex:
+    include_groups:
+      - [diffusion, model]
+    exclude:
+      - review
+    match_fields: [title, abstract]
+    case_sensitive: false
+    whole_word: false
+
+analysis:
+  generate_summary: false
+  workers: 1
+
+download:
+  delay: 1.0
+  timeout: 60
+  preferred_source: auto

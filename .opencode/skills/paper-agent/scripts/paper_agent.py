@@ -27,8 +27,10 @@ import os
 import sys
 import yaml
 import argparse
+import json
+import re
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any, Tuple
 from datetime import datetime
 
 # 添加lib目录到路径
@@ -42,6 +44,7 @@ try:
     from downloader import download_papers_from_file
     from analyzer import analyze_papers, generate_research_summary
     from database import DatabaseManager, Paper
+    from adapters import AdapterRegistry, VenueConfig
 except ImportError as e:
     print(f"ERROR:IMPORT_FAILED:{e}")
     sys.exit(1)
@@ -80,9 +83,10 @@ def load_config(config_path: Path) -> Dict:
     """加载YAML配置文件"""
     with open(config_path, 'r', encoding='utf-8') as f:
         config_dict = yaml.safe_load(f)
-    
-    # 重建FilterConfig
-    filter_dict = config_dict.get('filter', {})
+
+    # Support both legacy and new filter schema.
+    raw_filter = config_dict.get('filter', {})
+    filter_dict = raw_filter.get('regex', raw_filter) if isinstance(raw_filter, dict) else {}
     filter_config = FilterConfig(
         include_groups=filter_dict.get('include_groups', []),
         exclude=filter_dict.get('exclude', []),
@@ -99,7 +103,9 @@ def load_config(config_path: Path) -> Dict:
         'years': config_dict.get('years', [2024]),
         'topic': config_dict.get('topic', 'Research'),
         'keywords': config_dict.get('keywords', ''),
-        'filter_config': filter_config
+        'filter_config': filter_config,
+        'sources': config_dict.get('sources', {}),
+        'venues': config_dict.get('venues', {}),
     }
     
     options = config_dict.get('options', {})
@@ -118,6 +124,13 @@ def load_config(config_path: Path) -> Dict:
         }
     else:
         config['database'] = None
+
+    # Ensure new-style source config has stable defaults.
+    sources = config.get('sources', {}) if isinstance(config.get('sources', {}), dict) else {}
+    sources.setdefault('conferences', [])
+    sources.setdefault('journals', [])
+    sources.setdefault('arxiv', {})
+    config['sources'] = sources
     
     return config
 
@@ -149,63 +162,392 @@ def save_config(config: Dict, filepath: Path):
         yaml.dump(config_dict, f, allow_unicode=True, default_flow_style=False)
 
 
-def run_stage1(config: Dict) -> Optional[Path]:
-    """运行阶段1: 爬取论文
-    
-    Args:
-        config: Configuration dictionary with database settings
-        
-    Returns:
-        Path to summary JSON file, or None if failed
-    """
-    conference_dict = {'ICLR':'ICLR.cc',
-                        'NeurIPS':'NeurIPS.cc',
-                        'ICML':'ICML.cc',
-                        'AAAI':'AAAI.org'}
-    venues = []
-    for conf in config['conferences']:
-        for year in config['years']:
-            venues.append(f"{conference_dict[conf]}/{year}/Conference")
-    
-    output_dir = Path(config['output_dir']) / 'data'
-    papers, summary_path = crawl_venues(
-        venues=venues,
-        output_dir=output_dir,
-        accepted_only=config.get('accepted_only', True)
-    )
-    
-    # Handle database integration if configured
-    database_config = config.get('database')
-    if database_config and papers:
-        db_path = Path(database_config['path'])
-        db_format = database_config.get('format', 'json')
-        incremental = database_config.get('incremental', True)
-        
-        # Create or load database
-        db = DatabaseManager(db_path, format=db_format)
-        
-        if incremental:
-            # Incremental update - only add new papers
-            paper_objects = [Paper.from_legacy_dict(p) for p in papers]
-            added, updated = db.incremental_update(paper_objects)
-            print(f"\nDATABASE_INCREMENTAL:added={added},updated={updated}")
+def _normalize_title(text: str) -> str:
+    text = (text or "").lower()
+    text = re.sub(r"[^a-z0-9\\s]+", " ", text)
+    return " ".join(text.split())
+
+
+def _title_similarity(t1: str, t2: str) -> float:
+    a = set(_normalize_title(t1).split())
+    b = set(_normalize_title(t2).split())
+    if not a or not b:
+        return 0.0
+    inter = a & b
+    union = a | b
+    return len(inter) / len(union)
+
+
+def _parse_date_range(value: Any) -> Optional[Tuple[str, str]]:
+    if not value:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return str(value[0]), str(value[1])
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split("to")]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            return parts[0], parts[1]
+    return None
+
+
+def _default_platform_for_conference(name: str) -> str:
+    n = name.upper()
+    if n in {"ICLR", "NEURIPS", "ICML"}:
+        return "openreview"
+    if n == "AAAI":
+        return "aaai"
+    if n == "ACL":
+        return "acl"
+    if n == "CVPR":
+        return "cvpr"
+    if n == "ICCV":
+        return "iccv"
+    if n == "IJCAI":
+        return "ijcai"
+    if n == "DAC":
+        return "dblp_dac"
+    if n == "ICCAD":
+        return "dblp_iccad"
+    if n == "TCAD":
+        return "dblp_tcad"
+    return "openreview"
+
+
+def _default_platform_for_journal(name: str) -> str:
+    mapping = {
+        "nature machine intelligence": "nature_machine_intelligence_xref",
+        "nature chemistry": "nature_chemistry_xref",
+        "nature computer science": "nature_computer_science",
+        "nature communications": "nature_communications_xref",
+        "nature catalysis": "nature_catalysis",
+        "nature biotechnology": "nature_biotechnology",
+        "nature biomedical engineering": "nature_biomedical_engineering",
+        "cell": "cell",
+        "science": "science",
+    }
+    return mapping.get(name.strip().lower(), name.strip().lower().replace(" ", "_"))
+
+
+def _resolve_platform(
+    venue_name: str,
+    declared_platform: Optional[str],
+    venue_type: str,
+    additional_params: Dict[str, Any],
+) -> str:
+    if declared_platform:
+        p = declared_platform.strip().lower()
+
+        # AAAI recent proceedings are more reliable from official OJS pages.
+        if venue_type == "conference" and venue_name.upper() == "AAAI" and p == "openreview":
+            if AdapterRegistry.supports_platform("aaai"):
+                return "aaai"
+
+        # Direct adapter platform name.
+        if AdapterRegistry.supports_platform(p):
+            return p
+
+        # Convenience aliases for EDA platforms.
+        upper_name = venue_name.upper()
+        if venue_type == "conference" and p == "ieee":
+            if upper_name in {"DAC", "ICCAD", "TCAD"}:
+                return upper_name.lower()
+        if venue_type == "conference" and p == "dblp":
+            if upper_name in {"DAC", "ICCAD", "TCAD"}:
+                return f"dblp_{upper_name.lower()}"
+
+        # "nature" can use paid Springer adapters (if key exists), otherwise
+        # fallback to Crossref-backed adapters.
+        if venue_type == "journal" and p == "nature":
+            has_key = bool(additional_params.get("api_key") or additional_params.get("nature_api_key"))
+            lower_name = venue_name.strip().lower()
+            if has_key:
+                native = {
+                    "nature machine intelligence": "nature_machine_intelligence",
+                    "nature chemistry": "nature_chemistry",
+                    "nature communications": "nature_communications",
+                    "nature": "nature_main",
+                }.get(lower_name)
+                if native and AdapterRegistry.supports_platform(native):
+                    return native
+            return _default_platform_for_journal(venue_name)
+
+    if venue_type == "conference":
+        return _default_platform_for_conference(venue_name)
+    return _default_platform_for_journal(venue_name)
+
+
+def _legacy_sources_from_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    sources = {"conferences": [], "journals": [], "arxiv": {}}
+    venue_overrides = config.get("venues", {}) or {}
+    years = config.get("years", [datetime.now().year])
+
+    for conf in config.get("conferences", []):
+        conf_override = venue_overrides.get(conf, {})
+        sources["conferences"].append(
+            {
+                "name": conf,
+                "years": conf_override.get("years", years),
+                "platform": conf_override.get("platform"),
+                "additional_params": conf_override.get("additional_params", {}),
+            }
+        )
+
+    return sources
+
+
+def _merge_arxiv_tags(main_papers: List[Paper], arxiv_pool: List[Paper]) -> None:
+    if not main_papers:
+        return
+
+    arxiv_by_norm_title = {}
+    for p in arxiv_pool:
+        key = _normalize_title(p.title)
+        if key and key not in arxiv_by_norm_title:
+            arxiv_by_norm_title[key] = p
+
+    for paper in main_papers:
+        has_open = bool(paper.pdf_url and "arxiv.org" not in (paper.pdf_url or ""))
+
+        matched = None
+        norm_title = _normalize_title(paper.title)
+        if norm_title in arxiv_by_norm_title:
+            matched = arxiv_by_norm_title[norm_title]
         else:
-            # Full replace - clear existing and add all
-            paper_objects = [Paper.from_legacy_dict(p) for p in papers]
-            added = db.add_papers(paper_objects)
-            print(f"\nDATABASE_ADDED:{added}")
-        
-        # Save database
-        db.save()
-        
-        # Print database statistics
-        stats = db.get_statistics()
-        print(f"\nDATABASE_STATS:")
-        print(f"  Total papers: {stats['total_papers']}")
-        print(f"  By venue: {stats['by_venue']}")
-        print(f"  By year: {stats['by_year']}")
-        print(f"  With PDF URL: {stats['with_pdf_url']}")
-    
+            # Cheap fuzzy fallback for near-identical titles.
+            for k, candidate in arxiv_by_norm_title.items():
+                if abs(len(k) - len(norm_title)) > 30:
+                    continue
+                if _title_similarity(norm_title, k) >= 0.8:
+                    matched = candidate
+                    break
+
+        has_arxiv = matched is not None or bool(paper.arxiv_id)
+        if matched and not paper.arxiv_id:
+            paper.arxiv_id = matched.arxiv_id
+
+        if has_open and has_arxiv:
+            paper.download_available = "both"
+        elif has_arxiv:
+            paper.download_available = "arxiv"
+        elif has_open:
+            paper.download_available = "openreview"
+        else:
+            paper.download_available = "none"
+
+
+def _collect_source_papers(
+    sources: List[Dict[str, Any]],
+    venue_type: str,
+    accepted_only: bool = True,
+) -> Tuple[List[Paper], List[Dict[str, str]]]:
+    def _fallback_chain(source_name: str, primary_platform: str) -> List[str]:
+        name = (source_name or "").upper()
+        chain: List[str] = []
+
+        by_platform = {
+            "cvpr": ["dblp_cvpr"],
+            "iccv": ["dblp_iccv"],
+            "tcad": ["dblp_tcad"],
+        }
+        chain.extend(by_platform.get(primary_platform, []))
+
+        # Venue-aware fallback, useful when user explicitly configures platform.
+        by_venue = {
+            "CVPR": ["dblp_cvpr"],
+            "ICCV": ["dblp_iccv"],
+            "TCAD": ["dblp_tcad"],
+        }
+        chain.extend(by_venue.get(name, []))
+
+        # Dedupe and keep valid adapters only.
+        dedup: List[str] = []
+        for p in chain:
+            if p == primary_platform:
+                continue
+            if p not in dedup and AdapterRegistry.supports_platform(p):
+                dedup.append(p)
+        return dedup
+
+    papers: List[Paper] = []
+    failures: List[Dict[str, str]] = []
+
+    for source in sources:
+        name = source.get("name")
+        years = source.get("years") or [datetime.now().year]
+        additional_params = source.get("additional_params", {}) or {}
+        platform = _resolve_platform(name, source.get("platform"), venue_type, additional_params)
+        fallback_candidates = _fallback_chain(name, platform)
+
+        try:
+            adapter = AdapterRegistry.get_required(platform)
+            venue_cfg = VenueConfig(
+                name=name,
+                years=years,
+                platform=platform,
+                venue_id=source.get("venue_id"),
+                additional_params=additional_params,
+                accepted_only=source.get("accepted_only", accepted_only),
+            )
+            venue_papers = adapter.crawl(venue_cfg)
+            if (not venue_papers) and fallback_candidates:
+                for fallback in fallback_candidates:
+                    print(f"[STAGE1] {name} ({platform}) -> 0, retrying with {fallback}")
+                    fallback_adapter = AdapterRegistry.get_required(fallback)
+                    fallback_cfg = VenueConfig(
+                        name=name,
+                        years=years,
+                        platform=fallback,
+                        additional_params=additional_params,
+                        accepted_only=False,
+                    )
+                    venue_papers = fallback_adapter.crawl(fallback_cfg)
+                    if venue_papers:
+                        platform = fallback
+                        break
+            if not venue_papers:
+                failures.append({"name": name, "platform": platform, "error": "0 papers fetched"})
+            print(f"[STAGE1] {name} ({platform}) -> {len(venue_papers)} papers")
+            papers.extend(venue_papers)
+        except Exception as e:
+            msg = str(e)
+            print(f"[STAGE1] WARN {name} ({platform}) failed: {msg}")
+            if fallback_candidates:
+                try:
+                    for fallback in fallback_candidates:
+                        print(f"[STAGE1] retry {name} with fallback {fallback}")
+                        fallback_adapter = AdapterRegistry.get_required(fallback)
+                        fallback_cfg = VenueConfig(
+                            name=name,
+                            years=years,
+                            platform=fallback,
+                            additional_params=additional_params,
+                            accepted_only=False,
+                        )
+                        venue_papers = fallback_adapter.crawl(fallback_cfg)
+                        print(f"[STAGE1] {name} ({fallback}) -> {len(venue_papers)} papers")
+                        if venue_papers:
+                            papers.extend(venue_papers)
+                            break
+                    else:
+                        failures.append({"name": name, "platform": fallback_candidates[-1], "error": "fallback returned 0 papers"})
+                        continue
+                    continue
+                except Exception as e2:
+                    failures.append({"name": name, "platform": fallback_candidates[-1], "error": str(e2)})
+            failures.append({"name": name, "platform": platform, "error": msg})
+
+    return papers, failures
+
+
+def run_stage1(config: Dict) -> Optional[Path]:
+    """运行阶段1增强版: 多源爬取 + 增量数据库 + arXiv补充标记。"""
+    output_dir = Path(config['output_dir']) / 'data'
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sources = config.get("sources") or {}
+    has_new_schema = bool(sources.get("conferences") or sources.get("journals") or sources.get("arxiv"))
+    if not has_new_schema:
+        sources = _legacy_sources_from_config(config)
+
+    conferences = sources.get("conferences", []) or []
+    journals = sources.get("journals", []) or []
+    arxiv_cfg = sources.get("arxiv", {}) or {}
+
+    conference_papers, conf_failures = _collect_source_papers(
+        conferences,
+        venue_type="conference",
+        accepted_only=config.get("accepted_only", True),
+    )
+    journal_papers, journal_failures = _collect_source_papers(
+        journals,
+        venue_type="journal",
+        accepted_only=True,
+    )
+
+    main_papers = conference_papers + journal_papers
+
+    # arXiv integration: supplement download availability (default no DB write).
+    arxiv_papers: List[Paper] = []
+    if arxiv_cfg.get("enabled"):
+        date_range = _parse_date_range(arxiv_cfg.get("date_range"))
+        if date_range:
+            start_year = int(date_range[0][:4])
+            end_year = int(date_range[1][:4])
+            arxiv_years = list(range(start_year, end_year + 1))
+        else:
+            arxiv_years = config.get("years", [datetime.now().year])
+
+        keywords = arxiv_cfg.get("keywords") or config.get("topic") or config.get("keywords", "")
+        arxiv_venue = VenueConfig(
+            name="arXiv Search",
+            years=arxiv_years,
+            platform="arxiv",
+            additional_params={
+                "categories": arxiv_cfg.get("categories", ["cs.AI", "cs.LG"]),
+                "keywords": keywords,
+                "date_range": date_range,
+                "max_results": arxiv_cfg.get("max_results", 200),
+            },
+            accepted_only=False,
+        )
+        try:
+            arxiv_papers = AdapterRegistry.get_required("arxiv").crawl(arxiv_venue)
+            print(f"[STAGE1] arXiv supplement -> {len(arxiv_papers)} papers")
+        except Exception as e:
+            print(f"[STAGE1] WARN arXiv supplement failed: {e}")
+
+        _merge_arxiv_tags(main_papers, arxiv_papers)
+
+        if arxiv_cfg.get("save_to_database", False):
+            main_papers.extend(arxiv_papers)
+
+    # Database-backed storage with incremental updates.
+    db_cfg = config.get("database") or {}
+    db_format = db_cfg.get("format", "json")
+    default_db_path = Path(config["output_dir"]) / "database" / f"papers.{db_format}"
+    db_path = Path(db_cfg.get("path", default_db_path))
+    incremental = db_cfg.get("incremental", True)
+
+    if not incremental and db_path.exists():
+        db_path.unlink()
+
+    db = DatabaseManager(db_path, format=db_format)
+    if incremental:
+        added, updated = db.incremental_update(main_papers)
+    else:
+        added = db.add_papers(main_papers)
+        updated = 0
+    db.save()
+
+    stats = db.get_statistics()
+    summary_path = output_dir / f"stage1_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "created_at": datetime.now().isoformat(),
+                "database_path": str(db_path),
+                "database_format": db_format,
+                "incremental": incremental,
+                "added": added,
+                "updated": updated,
+                "crawled": {
+                    "conference_papers": len(conference_papers),
+                    "journal_papers": len(journal_papers),
+                    "arxiv_supplement": len(arxiv_papers),
+                },
+                "failures": conf_failures + journal_failures,
+                "database_stats": stats,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    print(f"\nDATABASE_INCREMENTAL:added={added},updated={updated}")
+    print(f"DATABASE_PATH:{db_path}")
+    print(f"STAGE1_SUMMARY:{summary_path}")
+    print(f"DATABASE_TOTAL:{stats['total_papers']}")
+
     return summary_path
 
 
