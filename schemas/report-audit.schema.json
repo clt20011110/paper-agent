@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/report-audit.schema.json",
+  "title": "Report quality audit",
+  "type": "object", "additionalProperties": false,
+  "required": ["report_document_hash", "coverage_complete", "findings"],
+  "properties": {
+    "report_document_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "coverage_complete": {"type": "boolean"},
+    "findings": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["finding_id", "severity", "category", "description", "block_ids", "claim_ids", "recommendation"], "properties": {"finding_id": {"type": "string", "minLength": 1}, "severity": {"enum": ["blocker", "major", "minor", "note"]}, "category": {"enum": ["unsupported_claim", "miscited_claim", "coverage_gap", "conflict_erasure", "incomparable_value", "overgeneralization", "search_limitation", "plan_deviation", "other"]}, "description": {"type": "string", "minLength": 1}, "block_ids": {"type": "array", "items": {"type": "string"}}, "claim_ids": {"type": "array", "items": {"type": "string", "format": "uuid"}}, "recommendation": {"type": "string", "minLength": 1}}}}
+  }
+}

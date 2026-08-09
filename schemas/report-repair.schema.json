@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/report-repair.schema.json",
+  "title": "Typed report repair patch set",
+  "type": "object", "additionalProperties": false,
+  "required": ["base_artifact_hash", "patches"],
+  "properties": {
+    "base_artifact_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "patches": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["target", "operation", "path", "precondition_hash", "value"], "properties": {"target": {"enum": ["REPORT_DOCUMENT", "CLAIMS_EVIDENCE", "COVERAGE"]}, "operation": {"enum": ["add", "replace", "remove"]}, "path": {"type": "string", "pattern": "^/"}, "precondition_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "value": {}}}}
+  }
+}

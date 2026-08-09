@@ -539,7 +539,7 @@ rationale 使用至少 100 条按 relevant/边界/语言分层的人工审计样
 2. PMC / Europe PMC Open Access subset。
 3. Unpaywall 解析出的 OA location。
 4. 已匹配的 arXiv 版本，或用户显式开启的 arXiv-only 候选。
-5. 用户已获授权的浏览器会话与 download-authorized-paper skill。
+5. 用户已获授权的浏览器会话与 download-authorized-papers skill。
 6. manual_queue。
 
 OpenAccessResolver 只返回不可信 AccessLocationCandidate 并逐 URL 写入 download_candidates；DownloadProvider.probe 结合策略生成 FetchDecision，状态闭集为 allow、needs_grant、manual、deny。缺少 grant 时返回 needs_grant；用户提供有效 grant 后必须重新 probe，只有新的 allow decision 才包含不可变 FetchRequest；manual 表示无法可靠自动裁决，deny 是当前 policy/purpose 下的终态。DownloadProvider.fetch 只能消费 FetchRequest。candidate 至少保存 candidate_id、paper_id、resolver、URL/landing URL、host、publication_version、license、access_basis、retrieved_at、raw evidence hash 和 provenance；同一论文的不同位置/版本不得挤进单个 paper_source 字段。
@@ -922,7 +922,7 @@ download:
   treat_unknown_license_as_open: false
   authorized_skill:
     enabled: false
-    skill_name: "download-authorized-paper"
+    skill_name: "download-authorized-papers"
     authorization_grant_id: null
     data_sharing_grant_id: null
     profile: "stage3_authorized_luna"

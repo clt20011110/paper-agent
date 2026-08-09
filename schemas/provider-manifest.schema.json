@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/provider-manifest.schema.json",
+  "title": "Provider capability manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "provider", "distribution", "version", "entry_point", "artifact_sha256", "roles", "capabilities", "authentication", "rate_limit", "terms", "independence_group", "upstream_families"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "provider": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"},
+    "distribution": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "entry_point": {"type": "string", "minLength": 1},
+    "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "roles": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["venue_primary", "search", "citation", "library", "metadata_enricher", "metadata_verifier", "oa_resolver", "download"]}},
+    "capabilities": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["stable_id", "metadata", "abstract", "date_filter", "references", "citations", "oa_locations", "full_text", "supplement", "bulk_snapshot"]}},
+    "authentication": {"type": "object", "additionalProperties": false, "required": ["required"], "properties": {"required": {"type": "boolean"}, "credential_env": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}}},
+    "rate_limit": {"type": "object", "additionalProperties": false, "required": ["global_qps", "max_concurrency"], "properties": {"global_qps": {"type": "number", "exclusiveMinimum": 0}, "max_concurrency": {"type": "integer", "minimum": 1}}},
+    "terms": {"type": "object", "additionalProperties": false, "required": ["data_use"], "properties": {"data_use": {"enum": ["permitted", "restricted", "unknown"]}, "url": {"type": "string", "format": "uri"}}},
+    "independence_group": {"type": "string", "minLength": 1},
+    "upstream_families": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  }
+}
