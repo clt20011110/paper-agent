@@ -248,7 +248,7 @@ def _compile_provider(
         "provider": provider,
         "distribution": str(specification["distribution"]),
         "version": str(specification["version"]),
-        "artifact_sha256": str(specification["artifact_sha256"]),
+        "artifact_sha256": specification["artifact_sha256"],
         "manifest_hash": str(specification["manifest_hash"]),
         "roles": roles,
         "capabilities": sorted(str(capability) for capability in specification["capabilities"]),

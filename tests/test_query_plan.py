@@ -138,6 +138,17 @@ def test_exact_primary_and_domain_auto_resolution_are_frozen() -> None:
     }
 
 
+def test_uninstalled_optional_plugin_keeps_an_honest_null_digest() -> None:
+    optional = provider("exa", enabled=False)
+    optional["artifact_sha256"] = None
+    optional["manifest_trusted"] = False
+    plan = compile_query_plan(draft(), providers=[provider(), optional])
+
+    assert plan["providers"][1]["artifact_sha256"] is None
+    assert plan["providers"][1]["resolved"] is False
+    validate(plan, "query-plan.schema.json")
+
+
 def test_runtime_drift_is_rejected_for_frozen_provider_and_budget() -> None:
     plan = compile_query_plan(draft(), providers=[provider()])
     approved = approve_query_plan(plan, plan["plan_hash"], approved_by="owner", approved_at="2026-08-09T01:00:00Z")
