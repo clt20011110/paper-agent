@@ -1,10 +1,45 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-agent"
+version = "2.0.0a0"
+description = "Recoverable and auditable literature research pipeline"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+dependencies = [
+    "jsonschema>=4.23,<5",
+    "PyYAML>=6.0,<7",
+    "rfc8785>=0.1.4,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<10",
+]
+
+[project.scripts]
+paper-agent = "paper_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+paper_agent = ["storage/migrations/*.sql"]
+
+[tool.setuptools.data-files]
+"share/paper-agent/schemas" = ["schemas/*.json"]
+
 [tool.pytest.ini_options]
-testpaths = [".opencode/skills/paper-agent/tests"]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
-pythonpath = [".opencode/skills/paper-agent/lib", "."]
+addopts = "-q --tb=short"
+pythonpath = ["src"]
 filterwarnings = [
-    "ignore::DeprecationWarning"
+    "error",
+    "ignore::DeprecationWarning",
 ]

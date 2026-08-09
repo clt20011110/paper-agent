@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.pyc
+*.egg-info/
 
 # Virtual Environments
 venv/
@@ -41,4 +42,3 @@ site/
 .opencode/.env
 .opencode/bun.lock
 .opencode/package.json
-
