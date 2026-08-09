@@ -35,11 +35,19 @@ from .domain import (
     SourceEntry,
     VerificationStatus,
 )
-from .fanout import FanoutResult, ProviderOutcome, fan_out
+from .fanout import (
+    FanoutResult,
+    ProviderOutcome,
+    ProviderPage,
+    fan_out,
+    search_pages,
+    venue_pages,
+)
 from .identity import normalize_author, normalize_doi, normalize_title
 from .query_compilers import NativeQuery, compile_queries
 from .query_plan import assert_runtime_matches
 from .repository import PaperRepository
+from .providers.api import CrawlWindow, SeedInput, VenueDescriptor
 from .search_runs import SearchRunCoordinator, SourceMetrics
 from .storage import Database
 from .verification import MetadataCoordinator, ProviderTrust, VenueContext
@@ -55,6 +63,13 @@ class PipelineResult:
     citation_round_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class VenueRun:
+    descriptor: VenueDescriptor
+    window: CrawlWindow
+    context: VenueContext
+
+
 class SearchPipeline:
     """Run one approved QueryPlan without letting providers write canonical data."""
 
@@ -67,6 +82,8 @@ class SearchPipeline:
         clients: Mapping[str, Any],
         trusts: Mapping[str, ProviderTrust],
         venue: VenueContext | None = None,
+        venue_runs: Sequence[VenueRun] = (),
+        seed_inputs: Sequence[SeedInput] = (),
         citation_clients: Mapping[str, Any] | None = None,
         screener: Any | None = None,
     ) -> None:
@@ -76,6 +93,8 @@ class SearchPipeline:
         self.clients = clients
         self.trusts = trusts
         self.venue = venue
+        self.venue_runs = tuple(venue_runs)
+        self.seed_inputs = tuple(seed_inputs)
         self.citation_clients = citation_clients or {}
         self.screener = screener or DeterministicFakeScreener(frozenset())
         self.repository = PaperRepository(database)
@@ -102,33 +121,39 @@ class SearchPipeline:
             window=dict(self.plan["scope"]),
         )
 
-        fanout = fan_out(self.plan, self.clients)
+        fanout = fan_out(self.plan, self._execution_clients())
         all_paper_ids: set[str] = set()
         non_arxiv_ids: set[str] = set()
         metrics: dict[str, SourceMetrics] = {}
         source_entries: dict[str, list[SourceEntry]] = {}
         for outcome in fanout.outcomes:
             provider = self._provider(outcome.provider)
-            batches = self._source_batches(crawl_run_id, provider, outcome)
             queries = self._queries(provider)
-            for batch in batches:
-                batch = replace(batch, source_run_id=f"{crawl_run_id}:{outcome.provider}:search")
-                query = next((item for item in queries if item.query_hash == batch.query_hash), None)
-                if queries and query is None:
+            pages = self._source_pages(crawl_run_id, provider, outcome)
+            for page in pages:
+                query = page.query or next(
+                    (item for item in queries if item.query_hash == page.batch.query_hash), None
+                )
+                scope = page.scope_id or (query.variant_id if query else "default")
+                batch = replace(
+                    page.batch,
+                    source_run_id=f"{crawl_run_id}:{outcome.provider}:{page.role}:{scope}",
+                )
+                if page.role == "search" and queries and query is None:
                     raise ValueError(f"provider {outcome.provider} returned an unfrozen query hash")
                 self.runs.record_batch(
                     crawl_run_id=crawl_run_id,
                     provider=outcome.provider,
                     provider_version=str(provider["version"]),
-                    role="search",
+                    role=page.role,
                     query_text=self._query_text(query),
                     provider_params=dict(query.parameters) if query else {},
                     query_compiler_version=str(provider["query_compiler_version"]),
                     batch=batch,
                     requested_at=observed_at,
                     completed_at=observed_at,
-                    page=None,
-                    cursor=None,
+                    page=str(page.page),
+                    cursor=page.cursor,
                     alias_group=query.variant_id if query else None,
                     filters=dict(self.plan["scope"]),
                 )
@@ -146,7 +171,11 @@ class SearchPipeline:
                 )
                 if batch.status is EnvelopeStatus.FAILED:
                     continue
-                venue = self._arxiv_context() if outcome.provider == "arxiv" else self.venue
+                venue = (
+                    self._arxiv_context()
+                    if outcome.provider == "arxiv"
+                    else self._venue_context(page.scope_id)
+                )
                 papers = self.metadata.merge_batch(batch, venue)
                 ids = {paper.paper_id for paper in papers}
                 all_paper_ids.update(ids)
@@ -210,6 +239,44 @@ class SearchPipeline:
     def _provider(self, name: str) -> Mapping[str, Any]:
         return next(item for item in self.plan["providers"] if item["provider"] == name)
 
+    def _execution_clients(self) -> dict[str, Any]:
+        clients: dict[str, Any] = {}
+        for provider in self.plan["providers"]:
+            name = str(provider["provider"])
+            client = self.clients.get(name)
+            runs = tuple(run for run in self.venue_runs if run.descriptor.provider == name)
+            if client is None or callable(client) or (not runs and "library" not in provider["roles"]):
+                clients[name] = client
+                continue
+
+            def invoke(
+                specification: Mapping[str, Any],
+                queries: tuple[NativeQuery, ...],
+                *,
+                protocol_client: Any = client,
+                venue_work: tuple[VenueRun, ...] = runs,
+            ) -> tuple[ProviderPage, ...]:
+                pages = list(search_pages(protocol_client, specification, queries)) if queries else []
+                for venue_run in venue_work:
+                    pages.extend(
+                        venue_pages(protocol_client, venue_run.descriptor, venue_run.window)
+                    )
+                if "library" in specification["roles"] and self.seed_inputs:
+                    batch = protocol_client.import_seeds(self.seed_inputs)
+                    pages.append(ProviderPage("library", batch, None, 1, None))
+                return tuple(pages)
+
+            clients[name] = invoke
+        return clients
+
+    def _venue_context(self, venue_id: str | None) -> VenueContext | None:
+        if venue_id is None:
+            return self.venue
+        return next(
+            (run.context for run in self.venue_runs if run.descriptor.venue_id == venue_id),
+            self.venue,
+        )
+
     def _queries(self, provider: Mapping[str, Any]) -> tuple[NativeQuery, ...]:
         if "search" not in provider["roles"]:
             return ()
@@ -220,36 +287,96 @@ class SearchPipeline:
             page_size=int(self.plan.get("page_size", 100)),
         )
 
-    def _source_batches(
+    def _source_pages(
         self, crawl_run_id: str, provider: Mapping[str, Any], outcome: ProviderOutcome
-    ) -> tuple[SourceBatch, ...]:
+    ) -> tuple[ProviderPage, ...]:
         queries = self._queries(provider)
+        role = (
+            "search"
+            if queries
+            else "venue_primary"
+            if "venue_primary" in provider["roles"]
+            else str(provider["roles"][0])
+        )
         if outcome.status == "failed":
             return tuple(
-                SourceBatch(
-                    source_run_id=f"{crawl_run_id}:{outcome.provider}:search",
-                    query_hash=query.query_hash,
-                    entries=(),
-                    next_cursor=None,
-                    status=EnvelopeStatus.FAILED,
-                    error=outcome.error or "provider failed",
+                ProviderPage(
+                    role,
+                    SourceBatch(
+                        f"{crawl_run_id}:{outcome.provider}:{role}",
+                        query.query_hash,
+                        (),
+                        None,
+                        EnvelopeStatus.FAILED,
+                        outcome.error or "provider failed",
+                    ),
+                    query,
+                    1,
+                    None,
                 )
                 for query in queries
             ) or (
-                SourceBatch(
-                    f"{crawl_run_id}:{outcome.provider}:search", "no-query", (), None,
-                    EnvelopeStatus.FAILED, outcome.error or "provider failed",
+                ProviderPage(
+                    role,
+                    SourceBatch(
+                        f"{crawl_run_id}:{outcome.provider}:{role}",
+                        "no-query",
+                        (),
+                        None,
+                        EnvelopeStatus.FAILED,
+                        outcome.error or "provider failed",
+                    ),
+                    None,
+                    1,
+                    None,
                 ),
             )
-        batches = tuple(item for item in self._flatten(outcome.result) if isinstance(item, SourceBatch))
+        values = self._flatten(outcome.result)
+        pages = tuple(item for item in values if isinstance(item, ProviderPage))
+        if pages:
+            return pages
+        batches = tuple(item for item in values if isinstance(item, SourceBatch))
         if batches:
-            return batches
+            return tuple(
+                ProviderPage(
+                    role,
+                    batch,
+                    next((query for query in queries if query.query_hash == batch.query_hash), None),
+                    index,
+                    None,
+                )
+                for index, batch in enumerate(batches, start=1)
+            )
         return tuple(
-            SourceBatch(
-                f"{crawl_run_id}:{outcome.provider}:search", query.query_hash, (), None, EnvelopeStatus.SUCCESS
+            ProviderPage(
+                "search",
+                SourceBatch(
+                    f"{crawl_run_id}:{outcome.provider}:search",
+                    query.query_hash,
+                    (),
+                    None,
+                    EnvelopeStatus.SUCCESS,
+                ),
+                query,
+                1,
+                None,
             )
             for query in queries
-        ) or (SourceBatch(f"{crawl_run_id}:{outcome.provider}:search", "no-query", (), None, EnvelopeStatus.SUCCESS),)
+        ) or (
+            ProviderPage(
+                role,
+                SourceBatch(
+                    f"{crawl_run_id}:{outcome.provider}:{role}",
+                    "no-query",
+                    (),
+                    None,
+                    EnvelopeStatus.SUCCESS,
+                ),
+                None,
+                1,
+                None,
+            ),
+        )
 
     @staticmethod
     def _flatten(value: Any) -> tuple[Any, ...]:

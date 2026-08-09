@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
+from .canonical import content_hash
 from .domain import EnvelopeStatus, QuerySpec, SourceBatch
+from .providers.api import CrawlWindow, VenueDescriptor
 from .query_compilers import NativeQuery, compile_queries
 from .query_plan import runtime_requirements
 
@@ -18,6 +20,16 @@ class ProviderOutcome:
     status: str
     result: Any | None
     error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPage:
+    role: str
+    batch: SourceBatch
+    query: NativeQuery | None
+    page: int
+    cursor: str | None
+    scope_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +65,14 @@ def fan_out(
             except Exception as error:
                 outcomes.append(ProviderOutcome(name, "failed", None, str(error)))
             else:
-                outcomes.append(ProviderOutcome(name, "success", result, None))
+                pages = tuple(item for item in _flatten(result) if isinstance(item, ProviderPage))
+                failed_pages = tuple(page for page in pages if page.batch.status is EnvelopeStatus.FAILED)
+                partial_pages = tuple(page for page in pages if page.batch.status is EnvelopeStatus.PARTIAL)
+                status = "failed" if pages and len(failed_pages) == len(pages) else "partial" if failed_pages else "success"
+                if partial_pages and status == "success":
+                    status = "partial"
+                error = "; ".join(page.batch.error or "provider page failed" for page in failed_pages) or None
+                outcomes.append(ProviderOutcome(name, status, result, error))
     outcomes.sort(key=lambda outcome: outcome.provider)
     successful = {outcome.provider for outcome in outcomes if outcome.status == "success"}
     successful_roles = {
@@ -65,6 +84,12 @@ def fan_out(
     required_failure = not set(requirements["required_providers"]).issubset(successful)
     missing_roles = not set(requirements["required_roles"]).issubset(successful_roles)
     return FanoutResult(tuple(outcomes), incomplete=not successful or required_failure or missing_roles)
+
+
+def _flatten(value: Any) -> tuple[Any, ...]:
+    if isinstance(value, (tuple, list)):
+        return tuple(item for group in value for item in _flatten(group))
+    return (value,)
 
 
 def _queries(plan: Mapping[str, Any], provider: Mapping[str, Any]) -> tuple[NativeQuery, ...]:
@@ -89,14 +114,36 @@ def _invoke(client: Any, provider: Mapping[str, Any], queries: tuple[NativeQuery
         return client(provider, queries)
     if not queries:
         raise ValueError(f"non-search provider {provider['provider']} requires an invocation adapter")
-    batches: list[Any] = []
+    return search_pages(client, provider, queries)
+
+
+def search_pages(
+    client: Any,
+    provider: Mapping[str, Any],
+    queries: tuple[NativeQuery, ...],
+) -> tuple[Any, ...]:
+    pages: list[Any] = []
     for query in queries:
         cursor = None
         seen_cursors: set[str] = set()
+        page = 1
         while True:
-            batch = client.search(_query_spec(provider, query), cursor)
-            batches.append(batch)
-            if not isinstance(batch, SourceBatch) or batch.status is EnvelopeStatus.FAILED:
+            try:
+                batch = client.search(query_spec_for_native(provider, query), cursor)
+            except Exception as error:
+                batch = SourceBatch(
+                    f"{provider['provider']}:search",
+                    query.query_hash,
+                    (),
+                    None,
+                    EnvelopeStatus.FAILED,
+                    str(error),
+                )
+            if not isinstance(batch, SourceBatch):
+                pages.append(batch)
+                break
+            pages.append(ProviderPage("search", batch, query, page, cursor))
+            if batch.status is EnvelopeStatus.FAILED:
                 break
             cursor = batch.next_cursor
             if not cursor:
@@ -104,10 +151,52 @@ def _invoke(client: Any, provider: Mapping[str, Any], queries: tuple[NativeQuery
             if cursor in seen_cursors:
                 raise ValueError(f"provider {provider['provider']} repeated cursor {cursor}")
             seen_cursors.add(cursor)
-    return tuple(batches)
+            page += 1
+    return tuple(pages)
 
 
-def _query_spec(provider: Mapping[str, Any], query: NativeQuery) -> QuerySpec:
+def venue_pages(
+    client: Any,
+    descriptor: VenueDescriptor,
+    window: CrawlWindow,
+) -> tuple[ProviderPage, ...]:
+    pages: list[ProviderPage] = []
+    cursor = None
+    seen_cursors: set[str] = set()
+    page = 1
+    while True:
+        try:
+            batch = client.discover(descriptor, window, cursor)
+        except Exception as error:
+            batch = SourceBatch(
+                f"{descriptor.provider}:{descriptor.venue_id}",
+                content_hash(
+                    {
+                        "provider": descriptor.provider,
+                        "venue_id": descriptor.venue_id,
+                        "parameters": descriptor.parameters,
+                        "window": asdict(window),
+                    }
+                ),
+                (),
+                None,
+                EnvelopeStatus.FAILED,
+                str(error),
+            )
+        pages.append(ProviderPage("venue_primary", batch, None, page, cursor, descriptor.venue_id))
+        if batch.status is EnvelopeStatus.FAILED:
+            break
+        cursor = batch.next_cursor
+        if not cursor:
+            break
+        if cursor in seen_cursors:
+            raise ValueError(f"provider {descriptor.provider} repeated cursor {cursor}")
+        seen_cursors.add(cursor)
+        page += 1
+    return tuple(pages)
+
+
+def query_spec_for_native(provider: Mapping[str, Any], query: NativeQuery) -> QuerySpec:
     """Adapt a frozen native request to the shared provider API."""
     parameters = query.parameters
     original_query = next(

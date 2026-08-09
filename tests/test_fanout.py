@@ -1,5 +1,5 @@
 from paper_agent.domain import EnvelopeStatus, SourceBatch
-from paper_agent.fanout import fan_out
+from paper_agent.fanout import ProviderPage, fan_out
 from paper_agent.query_plan import approve_query_plan, compile_query_plan
 
 from test_query_plan import draft, provider
@@ -82,6 +82,7 @@ def test_protocol_client_paginates_until_cursor_is_empty() -> None:
 
     assert result.incomplete is False
     assert calls == [None, "next", None, "next"] or calls == [None, None, "next", "next"]
+    assert all(isinstance(page, ProviderPage) for outcome in result.outcomes for page in outcome.result)
 
 
 def test_non_search_provider_failure_is_isolated_in_outcome() -> None:
@@ -94,3 +95,23 @@ def test_non_search_provider_failure_is_isolated_in_outcome() -> None:
     failed = next(outcome for outcome in result.outcomes if outcome.provider == "openalex")
     assert failed.status == "failed"
     assert "invocation adapter" in failed.error
+
+
+def test_later_page_failure_preserves_earlier_page_and_marks_partial() -> None:
+    class Client:
+        def search(self, query_spec, cursor):
+            if cursor:
+                raise RuntimeError("page two failed")
+            return SourceBatch(
+                "source",
+                query_spec.native_query_hash,
+                (),
+                "page-2",
+                EnvelopeStatus.SUCCESS,
+            )
+
+    result = fan_out(_plan(), {"openalex": Client(), "crossref": Client()})
+
+    assert result.incomplete is True
+    assert [outcome.status for outcome in result.outcomes] == ["partial", "partial"]
+    assert all(len(outcome.result) == 2 for outcome in result.outcomes)

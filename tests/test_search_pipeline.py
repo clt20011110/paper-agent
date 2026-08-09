@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from paper_agent.citations import DeterministicFakeScreener, citation_edge, reference_edge
 from paper_agent.domain import EnvelopeStatus, MembershipStatus, ProviderRole, SourceBatch, SourceEntry
 from paper_agent.query_plan import approve_query_plan, compile_query_plan
-from paper_agent.search_pipeline import SearchPipeline
+from paper_agent.providers.api import CrawlWindow, SeedInput, VenueDescriptor
+from paper_agent.providers.builtin import FixtureTransport, create_builtin
+from paper_agent.search_pipeline import SearchPipeline, VenueRun
 from paper_agent.storage import Database
 from paper_agent.verification import ProviderTrust, VenueContext
 
@@ -145,6 +147,129 @@ def test_replay_has_the_same_canonical_ids_and_source_audit(tmp_path) -> None:
             ).fetchone()
             observed.append((result.paper_ids, tuple(audit)))
     assert observed[0] == observed[1]
+
+
+def test_protocol_client_uses_frozen_native_query_and_audits_each_page(tmp_path) -> None:
+    plan = _plan([_provider("openalex")], required=["openalex"])
+
+    class PaginatedClient:
+        def search(self, query_spec, cursor):
+            suffix = "first" if cursor is None else "second"
+            return SourceBatch(
+                "provider-source",
+                query_spec.native_query_hash,
+                (
+                    SourceEntry(
+                        "openalex",
+                        suffix,
+                        f"Paper {suffix}",
+                        ("Ada Lovelace",),
+                        doi=f"10.1000/{suffix}",
+                        year=2024,
+                    ),
+                ),
+                "page-2" if cursor is None else None,
+                EnvelopeStatus.SUCCESS,
+            )
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        result = SearchPipeline(
+            database,
+            plan,
+            clients={"openalex": PaginatedClient()},
+            trusts={"openalex": _trust("openalex")},
+        ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+        queries = database.connection.execute(
+            "SELECT page, cursor, query_hash FROM search_queries ORDER BY page"
+        ).fetchall()
+
+    assert len(result.paper_ids) == 2
+    assert [(row["page"], row["cursor"]) for row in queries] == [("1", None), ("2", "page-2")]
+    assert {row["query_hash"] for row in queries} == {plan["providers"][0]["native_query_hashes"][0]}
+
+
+def test_exact_venue_provider_routes_discover_without_a_search_compiler(tmp_path) -> None:
+    providers = [_provider("pmlr", ["venue_primary"]), _provider("openalex")]
+    plan = _plan(providers, required=["pmlr"])
+    openalex_hash = next(
+        item["native_query_hashes"][0]
+        for item in plan["providers"]
+        if item["provider"] == "openalex"
+    )
+    pmlr = create_builtin(
+        "pmlr",
+        FixtureTransport(
+            {
+                "pmlr:discover:first": {
+                    "entries": [
+                        {
+                            "id": "pmlr-v235-1",
+                            "title": "Official ICML Paper",
+                            "doi": "10.1000/icml.official",
+                        }
+                    ]
+                }
+            }
+        ),
+    )
+    venue_run = VenueRun(
+        VenueDescriptor(1, "icml", "pmlr", "pmlr", {"volume_id": "v235"}),
+        CrawlWindow(year=2024),
+        VenueContext("icml-2024", "icml", "ICML 2024", "conference", "pmlr", {}),
+    )
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        result = SearchPipeline(
+            database,
+            plan,
+            clients={
+                "pmlr": pmlr,
+                "openalex": SearchFixture((_batch("openalex", openalex_hash, ()),)),
+            },
+            trusts={"pmlr": _trust("pmlr", primary=True), "openalex": _trust("openalex")},
+            venue_runs=(venue_run,),
+        ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+        sources = database.connection.execute(
+            "SELECT provider, role, status FROM source_runs ORDER BY provider"
+        ).fetchall()
+
+    assert result.status == "complete"
+    assert len(result.paper_ids) == 1
+    assert [tuple(row) for row in sources] == [
+        ("openalex", "search", "complete"),
+        ("pmlr", "venue_primary", "complete"),
+    ]
+
+
+def test_user_library_seeds_enter_the_same_single_writer_pipeline(tmp_path) -> None:
+    providers = [_provider("user_library", ["library"]), _provider("openalex")]
+    plan = _plan(providers, required=[])
+    openalex_hash = next(
+        item["native_query_hashes"][0]
+        for item in plan["providers"]
+        if item["provider"] == "openalex"
+    )
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        result = SearchPipeline(
+            database,
+            plan,
+            clients={
+                "user_library": create_builtin("user_library", FixtureTransport({})),
+                "openalex": SearchFixture((_batch("openalex", openalex_hash, ()),)),
+            },
+            trusts={"user_library": _trust("user_library"), "openalex": _trust("openalex")},
+            seed_inputs=(SeedInput("doi", "10.1000/user-seed"),),
+        ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+        source = database.connection.execute(
+            "SELECT provider, role, status FROM source_runs WHERE provider = 'user_library'"
+        ).fetchone()
+
+    assert len(result.paper_ids) == 1
+    assert tuple(source) == ("user_library", "library", "complete")
 
 
 class CitationFixture:
