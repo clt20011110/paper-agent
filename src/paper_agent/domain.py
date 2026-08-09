@@ -352,6 +352,8 @@ class QuerySpec(Model):
     sort: str | None = None
     page_size: int | None = None
     budget: Mapping[str, int] = field(default_factory=dict)
+    native_parameters: Mapping[str, Any] = field(default_factory=dict)
+    native_query_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

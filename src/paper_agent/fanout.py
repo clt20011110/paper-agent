@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
-from .domain import QuerySpec
+from .domain import EnvelopeStatus, QuerySpec, SourceBatch
 from .query_compilers import NativeQuery, compile_queries
 from .query_plan import runtime_requirements
 
@@ -68,6 +68,8 @@ def fan_out(
 
 
 def _queries(plan: Mapping[str, Any], provider: Mapping[str, Any]) -> tuple[NativeQuery, ...]:
+    if "search" not in provider["roles"]:
+        return ()
     queries = compile_queries(
         str(provider["provider"]),
         plan["query_variants"],
@@ -85,7 +87,24 @@ def _invoke(client: Any, provider: Mapping[str, Any], queries: tuple[NativeQuery
         raise ValueError(f"no client registered for {provider['provider']}")
     if callable(client):
         return client(provider, queries)
-    return tuple(client.search(_query_spec(provider, query), None) for query in queries)
+    if not queries:
+        raise ValueError(f"non-search provider {provider['provider']} requires an invocation adapter")
+    batches: list[Any] = []
+    for query in queries:
+        cursor = None
+        seen_cursors: set[str] = set()
+        while True:
+            batch = client.search(_query_spec(provider, query), cursor)
+            batches.append(batch)
+            if not isinstance(batch, SourceBatch) or batch.status is EnvelopeStatus.FAILED:
+                break
+            cursor = batch.next_cursor
+            if not cursor:
+                break
+            if cursor in seen_cursors:
+                raise ValueError(f"provider {provider['provider']} repeated cursor {cursor}")
+            seen_cursors.add(cursor)
+    return tuple(batches)
 
 
 def _query_spec(provider: Mapping[str, Any], query: NativeQuery) -> QuerySpec:
@@ -104,4 +123,6 @@ def _query_spec(provider: Mapping[str, Any], query: NativeQuery) -> QuerySpec:
         page_size=int(
             parameters.get("rows", parameters.get("h", parameters.get("limit", parameters.get("per-page", parameters.get("retmax", parameters.get("pageSize", parameters.get("max_results", 100)))))))
         ),
+        native_parameters=dict(parameters),
+        native_query_hash=query.query_hash,
     )
