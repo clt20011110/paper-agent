@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from paper_agent.leases import LeaseQueue
@@ -115,3 +117,35 @@ def test_failed_retryable_tasks_can_be_claimed_again_and_resume_is_precise(tmp_p
         assert queue.claim(
             worker_id="worker-c", now="2026-08-09T00:05:00Z", expires_at="2026-08-09T00:06:00Z", limit=1
         )[0].attempt == 3
+
+
+def test_parallel_workers_claim_each_task_once(tmp_path) -> None:
+    path = tmp_path / "papers.sqlite3"
+    with Database(path) as database:
+        database.migrate()
+        queue = _queue(database)
+        for index in range(20):
+            queue.enqueue(
+                run_id="run-1",
+                stage="stage-2",
+                paper_id=None,
+                output_kind=f"screening-{index}",
+                input_hash="a",
+                now=NOW,
+            )
+
+    def claim(worker_id: str) -> tuple[str, ...]:
+        with Database(path) as database:
+            leases = LeaseQueue(database).claim(
+                worker_id=worker_id,
+                now=NOW,
+                expires_at="2026-08-09T00:05:00Z",
+                limit=5,
+            )
+            return tuple(lease.task_id for lease in leases)
+
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        claimed = tuple(task_id for batch in workers.map(claim, (f"worker-{index}" for index in range(4))) for task_id in batch)
+
+    assert len(claimed) == 20
+    assert len(set(claimed)) == 20
