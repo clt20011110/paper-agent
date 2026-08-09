@@ -3,13 +3,14 @@ provider: aaas_science
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.providers.builtin:AAASScienceAdapter
-artifact_sha256: 3ae057af3bbb453b6c1b2d8872ed8dc0a9318ff6408c05859879fee63f67aefc
+artifact_sha256: 7f16ec5e92db6ef333176567ea794a1722ba69a04446ce9cd911bcefe657e855
 enabled: true
 builtin: true
+authority: official
 roles: [venue_primary, metadata_enricher]
 capabilities: [stable_id, metadata, abstract, date_filter, full_text]
 authentication: {required: false}
-rate_limit: {global_qps: 1, max_concurrency: 1}
+rate_limit: {global_qps: 1, max_concurrency: 1, cache_ttl_seconds: 3600}
 terms: {data_use: restricted, url: https://www.science.org/content/page/terms-service}
 independence_group: aaas_science
 upstream_families: [aaas]

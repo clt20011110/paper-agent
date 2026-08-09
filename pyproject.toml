@@ -31,6 +31,10 @@ paper_agent = ["storage/migrations/*.sql"]
 
 [tool.setuptools.data-files]
 "share/paper-agent/schemas" = ["schemas/*.json"]
+"share/paper-agent/providers" = ["providers/*.yaml"]
+"share/paper-agent/venues" = ["venues/*.yaml"]
+"share/paper-agent/acceptance" = ["acceptance/*.yaml"]
+"share/paper-agent/tests/fixtures/providers" = ["tests/fixtures/providers/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

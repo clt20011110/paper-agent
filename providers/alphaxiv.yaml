@@ -6,10 +6,11 @@ entry_point: alphaxiv_plugin:AlphaXivProvider
 artifact_sha256: null
 enabled: false
 builtin: false
+authority: discovery_enhancement
 roles: [metadata_enricher]
 capabilities: [stable_id, metadata, abstract]
 authentication: {required: true, credential_env: ALPHAXIV_API_KEY}
-rate_limit: {global_qps: 1, max_concurrency: 1}
+rate_limit: {global_qps: 1, max_concurrency: 1, cache_ttl_seconds: 3600}
 terms: {data_use: unknown, url: https://alphaxiv.org/}
 independence_group: alphaxiv
 upstream_families: [alphaxiv]

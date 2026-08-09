@@ -83,6 +83,7 @@ def manifest_from_document(document: Mapping[str, Any]) -> ProviderManifest:
         artifact_sha256=document["artifact_sha256"],
         enabled=bool(document["enabled"]),
         builtin=bool(document["builtin"]),
+        authority=str(document["authority"]),
         credential_policy=CredentialPolicy(
             required=bool(authentication["required"]),
             environment_variables=(authentication["credential_env"],) if "credential_env" in authentication else (),
@@ -90,6 +91,7 @@ def manifest_from_document(document: Mapping[str, Any]) -> ProviderManifest:
         rate_limit_policy=RateLimitPolicy(
             queries_per_second=float(rate_limit["global_qps"]),
             max_concurrency=int(rate_limit["max_concurrency"]),
+            cache_ttl_seconds=int(rate_limit["cache_ttl_seconds"]),
         ),
         terms_url=document["terms"].get("url"),
         independence_group=str(document["independence_group"]),

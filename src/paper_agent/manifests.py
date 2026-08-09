@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+import sysconfig
 from typing import Any
 
 import yaml
@@ -27,7 +28,12 @@ for _first, _resolvers in list(_ManifestLoader.yaml_implicit_resolvers.items()):
 
 
 def manifest_directory(override: Path | None = None) -> Path:
-    return override or Path(__file__).resolve().parents[2]
+    if override:
+        return override
+    source_root = Path(__file__).resolve().parents[2]
+    if (source_root / "providers").is_dir():
+        return source_root
+    return Path(sysconfig.get_path("data")) / "share" / "paper-agent"
 
 
 def _load(path: Path, schema_name: str) -> dict[str, Any]:
@@ -116,11 +122,11 @@ def load_catalog(root: Path | None = None) -> ManifestCatalog:
         if sha256(fixture.read_bytes()).hexdigest() != acceptance["fixture_sha256"]:
             raise ManifestError(f"{venue_id}: fixture digest has drifted")
 
-    builtin_source = directory / "src" / "paper_agent" / "providers" / "builtin.py"
-    if builtin_source.exists():
-        builtin_digest = sha256(builtin_source.read_bytes()).hexdigest()
-        for provider, manifest in providers.items():
-            if manifest["enabled"] and manifest["builtin"] and manifest["artifact_sha256"] != builtin_digest:
-                raise ManifestError(f"{provider}: built-in implementation digest has drifted")
+    from paper_agent.providers import builtin
+
+    builtin_digest = sha256(Path(builtin.__file__).read_bytes()).hexdigest()
+    for provider, manifest in providers.items():
+        if manifest["enabled"] and manifest["builtin"] and manifest["artifact_sha256"] != builtin_digest:
+            raise ManifestError(f"{provider}: built-in implementation digest has drifted")
 
     return ManifestCatalog(providers=providers, venues=venues, acceptances=acceptances)
