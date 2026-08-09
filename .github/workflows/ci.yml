@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    name: Offline tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+      - name: Install locked test environment
+        run: uv sync --locked --extra dev
+      - name: Run tests with external network disabled
+        run: uv run --no-sync pytest --disable-socket --allow-unix-socket --allow-hosts=localhost,127.0.0.1,::1
+
+  wheel-install:
+    name: Build and verify wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v9
+      - name: Build wheel
+        run: uv build --wheel
+      - name: Install wheel into an isolated environment
+        run: |
+          python -m venv "${{ runner.temp }}/paper-agent-wheel"
+          "${{ runner.temp }}/paper-agent-wheel/bin/python" -m pip install dist/*.whl
+      - name: Verify installed runtime outside the source tree
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p wheel-verification
+          cd wheel-verification
+          "${{ runner.temp }}/paper-agent-wheel/bin/python" -I "$GITHUB_WORKSPACE/scripts/verify_wheel_install.py"
