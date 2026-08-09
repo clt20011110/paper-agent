@@ -1,0 +1,15 @@
+schema_version: "1"
+provider: deepxiv
+distribution: unresolved
+version: unresolved
+entry_point: deepxiv_plugin:DeepXivProvider
+artifact_sha256: null
+enabled: false
+builtin: false
+roles: [metadata_enricher]
+capabilities: [stable_id, metadata, abstract]
+authentication: {required: true, credential_env: DEEPXIV_API_KEY}
+rate_limit: {global_qps: 1, max_concurrency: 1}
+terms: {data_use: unknown, url: https://deepxiv.org/}
+independence_group: deepxiv
+upstream_families: [deepxiv]

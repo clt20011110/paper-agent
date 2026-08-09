@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: neurips
+name: Conference on Neural Information Processing Systems
+venue_type: conference
+primary_provider: neurips_proceedings
+provider_params: {series: NeurIPS}
+official_url: https://neurips.cc/

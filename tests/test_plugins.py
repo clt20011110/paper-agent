@@ -39,13 +39,17 @@ class FakeEntryPoint:
         pytest.fail("entry point was imported")
 
 
-def manifest() -> ProviderManifest:
+def manifest(*, content_digest: str | None = None, third_party: bool = False) -> ProviderManifest:
     return ProviderManifest(
         provider="example",
-        version="1.0",
+        version="1.2.3" if third_party else "1.0",
         roles=(ProviderRole.SEARCH,),
         capabilities=(ProviderCapability.METADATA,),
         stable_identifier="example-id",
+        distribution="example-plugin" if third_party else "paper-agent",
+        entry_point="plugin:factory" if third_party else "paper_agent.providers.api:ProviderManifest",
+        artifact_sha256=content_digest,
+        builtin=not third_party,
     )
 
 
@@ -59,7 +63,11 @@ def test_untrusted_plugins_are_disabled_before_any_import(tmp_path: Path) -> Non
 def test_mismatch_rejects_before_entry_point_load(tmp_path: Path) -> None:
     (tmp_path / "plugin.py").write_text("not imported")
     with pytest.raises(PluginRejected, match="exactly allowlisted"):
-        PluginRegistry(third_party_enabled=True).register_third_party(manifest(), FakeEntryPoint(), FakeDistribution(tmp_path))
+        PluginRegistry(third_party_enabled=True).register_third_party(
+            manifest(content_digest=distribution_digest(FakeDistribution(tmp_path)), third_party=True),
+            FakeEntryPoint(),
+            FakeDistribution(tmp_path),
+        )
 
 
 def test_declared_capability_is_enforced() -> None:
@@ -86,7 +94,7 @@ def test_exact_allowlist_registration(tmp_path: Path) -> None:
         "example-plugin", "1.2.3", "example", "plugin:factory", distribution_digest(distribution)
     )
     registration = PluginRegistry((allowlist,), third_party_enabled=True).register_third_party(
-        manifest(), entry_point, distribution
+        manifest(content_digest=distribution_digest(distribution), third_party=True), entry_point, distribution
     )
     assert registration.third_party is True
 
@@ -100,4 +108,6 @@ def test_declared_signature_must_be_allowlisted(tmp_path: Path) -> None:
         "example-plugin", "1.2.3", "example", "plugin:factory", distribution_digest(distribution)
     )
     with pytest.raises(PluginRejected, match="signature"):
-        PluginRegistry((allowlist,), third_party_enabled=True).register_third_party(manifest(), entry_point, distribution)
+        PluginRegistry((allowlist,), third_party_enabled=True).register_third_party(
+            manifest(content_digest=distribution_digest(distribution), third_party=True), entry_point, distribution
+        )

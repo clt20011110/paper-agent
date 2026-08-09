@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: nature_biomedical_engineering
+name: Nature Biomedical Engineering
+venue_type: journal
+primary_provider: springer_nature
+provider_params: {journal_slug: natbiomedeng, issns: [2157-846X]}
+official_url: https://www.nature.com/natbiomedeng/

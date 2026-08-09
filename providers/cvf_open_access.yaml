@@ -1,0 +1,15 @@
+schema_version: "1"
+provider: cvf_open_access
+distribution: paper-agent
+version: 2.0.0a0
+entry_point: paper_agent.providers.builtin:CVFOpenAccessAdapter
+artifact_sha256: 3ae057af3bbb453b6c1b2d8872ed8dc0a9318ff6408c05859879fee63f67aefc
+enabled: true
+builtin: true
+roles: [venue_primary]
+capabilities: [stable_id, metadata, abstract, date_filter, full_text]
+authentication: {required: false}
+rate_limit: {global_qps: 1, max_concurrency: 2}
+terms: {data_use: permitted, url: https://openaccess.thecvf.com/}
+independence_group: cvf_official
+upstream_families: [cvf]

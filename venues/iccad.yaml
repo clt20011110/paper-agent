@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: iccad
+name: IEEE/ACM International Conference on Computer-Aided Design
+venue_type: conference
+primary_provider: eda_proceedings
+provider_params: {series: ICCAD, sources: [ieee_xplore, acm_dl], upstreams: [ieee_xplore, acm_dl], resolve_platforms_by_year: true, deduplicate_by: doi}
+official_url: https://www.iccad.com/

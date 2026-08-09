@@ -1,0 +1,14 @@
+{
+  "notes": [
+    {
+      "id": "note-v1",
+      "content": {
+        "title": {"value": "OpenReview V1 Fixture"},
+        "authors": {"value": ["Ada Lovelace"]},
+        "abstract": {"value": "v1 abstract"}
+      },
+      "venue": "ICLR 2025",
+      "published": "2025-01-01"
+    }
+  ]
+}

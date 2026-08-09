@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: acl
+name: Annual Meeting of the Association for Computational Linguistics
+venue_type: conference
+primary_provider: acl_anthology
+provider_params: {collections: [main, findings, workshop], snapshot_version: 1941968b51805719b418a0b0919e335662cdd172}
+official_url: https://aclanthology.org/

@@ -1,0 +1,15 @@
+schema_version: "1"
+provider: alphaxiv
+distribution: unresolved
+version: unresolved
+entry_point: alphaxiv_plugin:AlphaXivProvider
+artifact_sha256: null
+enabled: false
+builtin: false
+roles: [metadata_enricher]
+capabilities: [stable_id, metadata, abstract]
+authentication: {required: true, credential_env: ALPHAXIV_API_KEY}
+rate_limit: {global_qps: 1, max_concurrency: 1}
+terms: {data_use: unknown, url: https://alphaxiv.org/}
+independence_group: alphaxiv
+upstream_families: [alphaxiv]

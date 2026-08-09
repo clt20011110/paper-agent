@@ -91,6 +91,10 @@ class PluginRegistry:
         self.registrations: dict[str, PluginRegistration] = {}
 
     def register_builtin(self, manifest: ProviderManifest, entry_point: str) -> PluginRegistration:
+        if not manifest.enabled or not manifest.builtin:
+            raise PluginRejected("provider is not an enabled builtin")
+        if manifest.entry_point and manifest.entry_point != entry_point:
+            raise PluginRejected("builtin entry point differs from its manifest")
         registration = PluginRegistration(
             manifest=manifest,
             entry_point=entry_point,
@@ -113,6 +117,15 @@ class PluginRegistry:
         name = distribution.metadata["Name"]
         version = distribution.version
         digest = distribution_digest(distribution)
+        if manifest.builtin or not manifest.enabled:
+            raise PluginRejected("provider manifest is not enabled for third-party loading")
+        if (
+            manifest.distribution != name
+            or manifest.version != version
+            or manifest.entry_point != entry_point.value
+            or manifest.artifact_sha256 != digest
+        ):
+            raise PluginRejected("installed provider differs from its manifest")
         candidates = [
             item
             for item in self.allowlist

@@ -1,0 +1,15 @@
+schema_version: "1"
+provider: openalex
+distribution: paper-agent
+version: 2.0.0a0
+entry_point: paper_agent.providers.builtin:OpenAlexProvider
+artifact_sha256: 3ae057af3bbb453b6c1b2d8872ed8dc0a9318ff6408c05859879fee63f67aefc
+enabled: true
+builtin: true
+roles: [search, citation, metadata_enricher, metadata_verifier, oa_resolver]
+capabilities: [stable_id, metadata, abstract, date_filter, references, citations, oa_locations, bulk_snapshot]
+authentication: {required: false}
+rate_limit: {global_qps: 5, max_concurrency: 4}
+terms: {data_use: permitted, url: https://docs.openalex.org/}
+independence_group: openalex
+upstream_families: [openalex, crossref]

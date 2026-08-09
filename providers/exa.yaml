@@ -1,0 +1,15 @@
+schema_version: "1"
+provider: exa
+distribution: exa-py
+version: unresolved
+entry_point: exa_plugin:ExaProvider
+artifact_sha256: null
+enabled: false
+builtin: false
+roles: [search]
+capabilities: [stable_id, metadata, abstract, date_filter]
+authentication: {required: true, credential_env: EXA_API_KEY}
+rate_limit: {global_qps: 1, max_concurrency: 1}
+terms: {data_use: restricted, url: https://exa.ai/terms}
+independence_group: exa
+upstream_families: [exa]

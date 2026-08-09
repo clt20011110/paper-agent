@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: iccv
+name: IEEE/CVF International Conference on Computer Vision
+venue_type: conference
+primary_provider: cvf_open_access
+provider_params: {series: ICCV, track: main, proceedings_only: true, exclude_workshops: true}
+official_url: https://iccv.thecvf.com/

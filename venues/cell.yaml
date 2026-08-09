@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: cell
+name: Cell
+venue_type: journal
+primary_provider: cell_press
+provider_params: {issns: [0092-8674]}
+official_url: https://www.cell.com/cell/home

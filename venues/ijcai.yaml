@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: ijcai
+name: International Joint Conference on Artificial Intelligence
+venue_type: conference
+primary_provider: ijcai_proceedings
+provider_params: {series: IJCAI}
+official_url: https://www.ijcai.org/

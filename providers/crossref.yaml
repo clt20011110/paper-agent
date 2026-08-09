@@ -1,0 +1,15 @@
+schema_version: "1"
+provider: crossref
+distribution: paper-agent
+version: 2.0.0a0
+entry_point: paper_agent.providers.builtin:CrossrefProvider
+artifact_sha256: 3ae057af3bbb453b6c1b2d8872ed8dc0a9318ff6408c05859879fee63f67aefc
+enabled: true
+builtin: true
+roles: [search, metadata_enricher, metadata_verifier]
+capabilities: [stable_id, metadata, abstract, date_filter]
+authentication: {required: false}
+rate_limit: {global_qps: 5, max_concurrency: 4}
+terms: {data_use: permitted, url: https://www.crossref.org/documentation/retrieve-metadata/rest-api/}
+independence_group: crossref_registry
+upstream_families: [crossref]

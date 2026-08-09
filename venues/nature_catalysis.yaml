@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: nature_catalysis
+name: Nature Catalysis
+venue_type: journal
+primary_provider: springer_nature
+provider_params: {journal_slug: natcatal, issns: [2520-1158]}
+official_url: https://www.nature.com/natcatal/

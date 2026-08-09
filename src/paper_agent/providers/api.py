@@ -99,6 +99,11 @@ class ProviderManifest:
     roles: tuple[ProviderRole, ...]
     capabilities: tuple[ProviderCapability, ...]
     stable_identifier: str
+    distribution: str | None = None
+    entry_point: str | None = None
+    artifact_sha256: str | None = None
+    enabled: bool = True
+    builtin: bool = True
     credential_policy: CredentialPolicy = CredentialPolicy()
     rate_limit_policy: RateLimitPolicy = RateLimitPolicy()
     terms_url: str | None = None

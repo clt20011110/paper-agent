@@ -1,0 +1,15 @@
+schema_version: "1"
+provider: dblp
+distribution: paper-agent
+version: 2.0.0a0
+entry_point: paper_agent.providers.builtin:DBLPProvider
+artifact_sha256: 3ae057af3bbb453b6c1b2d8872ed8dc0a9318ff6408c05859879fee63f67aefc
+enabled: true
+builtin: true
+roles: [search, metadata_enricher, metadata_verifier]
+capabilities: [stable_id, metadata, date_filter, bulk_snapshot]
+authentication: {required: false}
+rate_limit: {global_qps: 2, max_concurrency: 2}
+terms: {data_use: permitted, url: https://dblp.org/faq/How+can+I+download+and+use+the+dblp+data.html}
+independence_group: dblp
+upstream_families: [dblp]

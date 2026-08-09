@@ -8,5 +8,5 @@ def test_doctor_emits_structured_runtime(capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["python_supported"] is True
-    assert payload["schema_count"] == 17
+    assert payload["schema_count"] == 18
     assert payload["codex_cli"]

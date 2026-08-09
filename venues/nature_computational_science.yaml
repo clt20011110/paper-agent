@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: nature_computational_science
+name: Nature Computational Science
+venue_type: journal
+primary_provider: springer_nature
+provider_params: {journal_slug: natcomputsci, issns: [2662-8457]}
+official_url: https://www.nature.com/natcomputsci/

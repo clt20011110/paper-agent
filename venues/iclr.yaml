@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: iclr
+name: International Conference on Learning Representations
+venue_type: conference
+primary_provider: openreview
+provider_params: {venue_group: ICLR.cc, accepted_decision_required: true}
+official_url: https://iclr.cc/

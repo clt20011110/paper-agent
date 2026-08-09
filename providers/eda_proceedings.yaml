@@ -1,0 +1,15 @@
+schema_version: "1"
+provider: eda_proceedings
+distribution: paper-agent
+version: 2.0.0a0
+entry_point: paper_agent.providers.builtin:EDAProceedingsAdapter
+artifact_sha256: 3ae057af3bbb453b6c1b2d8872ed8dc0a9318ff6408c05859879fee63f67aefc
+enabled: true
+builtin: true
+roles: [venue_primary]
+capabilities: [stable_id, metadata, abstract, date_filter]
+authentication: {required: false}
+rate_limit: {global_qps: 0.5, max_concurrency: 1}
+terms: {data_use: restricted, url: https://www.ieee.org/site-terms-conditions.html}
+independence_group: eda_official
+upstream_families: [ieee, acm]
