@@ -10,16 +10,25 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from typing import Any, Iterable
 
 from paper_agent.domain import ProviderCapability
 
 from .api import ProviderManifest
+from .sandbox import SandboxPolicy, build_sandbox_command, interpreter_read_roots
 
 
 class PluginRejected(ValueError):
     pass
 
+
+_WORKER_BOOTSTRAP = (
+    "import os,runpy,sys;"
+    "sys.path.extend(path for path in sys.argv[1].split(os.pathsep) if path);"
+    "sys.argv=[sys.argv[0],sys.argv[2]];"
+    "runpy.run_module('paper_agent.providers.worker',run_name='__main__')"
+)
 
 @dataclass(frozen=True, slots=True)
 class PluginAllowlistEntry:
@@ -56,30 +65,68 @@ def distribution_digest(distribution: metadata.Distribution) -> str:
 class SubprocessProviderRunner:
     """Runs an approved plugin through one JSON request/response process."""
 
-    def __init__(self, command: tuple[str, ...], *, cwd: Path, environment: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        command: tuple[str, ...],
+        *,
+        cwd: Path,
+        environment: dict[str, str] | None = None,
+        environment_names: Iterable[str] | None = None,
+        read_roots: Iterable[Path] = (),
+    ) -> None:
         self.command = command
-        self.cwd = cwd
-        self.environment = {"PATH": os.defpath, **(environment or {})}
+        self.cwd = cwd.resolve()
+        self.read_roots = tuple(Path(root).resolve() for root in read_roots) or (self.cwd,)
+        supplied = environment or {}
+        names = tuple(supplied) if environment_names is None else tuple(environment_names)
+        if set(supplied) - set(names):
+            raise PluginRejected("plugin environment contains undeclared names")
+        self.environment = {name: supplied.get(name, os.environ[name]) for name in names if name in supplied or name in os.environ}
 
     @classmethod
-    def for_entry_point(cls, entry_point: str, *, cwd: Path) -> "SubprocessProviderRunner":
+    def for_entry_point(
+        cls,
+        entry_point: str,
+        *,
+        cwd: Path,
+        environment_names: Iterable[str] = (),
+        environment: dict[str, str] | None = None,
+    ) -> "SubprocessProviderRunner":
+        import_roots = (str(cwd.resolve()), *(str(Path(item).resolve()) for item in sys.path if item))
         return cls(
-            (sys.executable, "-m", "paper_agent.providers.worker", entry_point),
+            (
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                _WORKER_BOOTSTRAP,
+                os.pathsep.join(dict.fromkeys(import_roots)),
+                entry_point,
+            ),
             cwd=cwd,
-            environment={"PYTHONPATH": os.pathsep.join(sys.path)},
+            environment=environment,
+            environment_names=environment_names,
+            read_roots=(cwd,),
         )
 
+    def sandbox_command(self, work_root: Path) -> tuple[str, ...]:
+        roots = (*interpreter_read_roots(), *self.read_roots)
+        policy = SandboxPolicy(tuple(dict.fromkeys(roots)), work_root.resolve())
+        return build_sandbox_command(self.command, policy)
+
     def run(self, payload: dict[str, Any]) -> dict[str, Any]:
-        completed = subprocess.run(
-            self.command,
-            input=json.dumps(payload),
-            text=True,
-            capture_output=True,
-            check=True,
-            cwd=self.cwd,
-            env=self.environment,
-        )
-        return json.loads(completed.stdout)
+        with tempfile.TemporaryDirectory(prefix="paper-agent-plugin-") as directory:
+            work_root = Path(directory)
+            completed = subprocess.run(
+                self.sandbox_command(work_root),
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=True,
+                cwd=work_root,
+                env=self.environment,
+            )
+            return json.loads(completed.stdout)
 
 
 class PluginRegistry:
@@ -172,4 +219,9 @@ class PluginRegistry:
         registration = self.require_capability(provider, capability)
         if not registration.third_party:
             raise PluginRejected("builtin providers must be dispatched by the coordinator")
-        return SubprocessProviderRunner.for_entry_point(registration.entry_point, cwd=cwd).run(payload)
+        credentials = registration.manifest.credential_policy.environment_variables
+        return SubprocessProviderRunner.for_entry_point(
+            registration.entry_point,
+            cwd=cwd,
+            environment_names=credentials,
+        ).run(payload)

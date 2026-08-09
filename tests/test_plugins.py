@@ -3,6 +3,9 @@ from __future__ import annotations
 from email.message import Message
 from importlib import metadata
 from pathlib import Path
+import platform
+import shutil
+import socket
 import sys
 
 import pytest
@@ -16,6 +19,7 @@ from paper_agent.providers.plugins import (
     SubprocessProviderRunner,
     distribution_digest,
 )
+from paper_agent.providers.sandbox import SandboxPolicy, SandboxUnavailable, build_sandbox_command, macos_profile
 
 
 class FakeDistribution:
@@ -78,12 +82,110 @@ def test_declared_capability_is_enforced() -> None:
         registry.require_capability("example", ProviderCapability.CITATIONS)
 
 
-def test_subprocess_json_roundtrip(tmp_path: Path) -> None:
+def test_runner_exposes_only_declared_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DECLARED_TOKEN", "allowed")
+    monkeypatch.setenv("UNDECLARED_TOKEN", "blocked")
     runner = SubprocessProviderRunner(
-        (sys.executable, "-c", "import json,sys; print(json.dumps(json.load(sys.stdin)))"),
+        (sys.executable, "-c", "pass"),
         cwd=tmp_path,
+        environment_names=("DECLARED_TOKEN",),
     )
-    assert runner.run({"source_run_id": "run-1", "entries": []}) == {"entries": [], "source_run_id": "run-1"}
+    assert runner.environment == {"DECLARED_TOKEN": "allowed"}
+
+
+def test_runner_rejects_undeclared_environment(tmp_path: Path) -> None:
+    with pytest.raises(PluginRejected, match="undeclared"):
+        SubprocessProviderRunner(
+            (sys.executable, "-c", "pass"),
+            cwd=tmp_path,
+            environment={"TOKEN": "secret"},
+            environment_names=(),
+        )
+
+
+def test_macos_profile_denies_network_and_limits_writes(tmp_path: Path) -> None:
+    profile = macos_profile(SandboxPolicy((tmp_path / "read",), tmp_path / "work"))
+    assert "(deny default)" in profile
+    assert "(deny network*)" in profile
+    assert str(tmp_path / "read") in profile
+    assert str(tmp_path / "work") in profile
+    assert '(import "system.sb")' in profile
+    assert "require-not" in profile
+
+
+def test_subprocess_json_roundtrip_when_platform_sandbox_is_available(tmp_path: Path) -> None:
+    system = platform.system()
+    available = (system == "Darwin" and shutil.which("sandbox-exec")) or (
+        system == "Linux" and shutil.which("bwrap")
+    )
+    if not available:
+        pytest.skip("no platform sandbox is installed")
+    declared = tmp_path / "declared.txt"
+    declared.write_text("declared")
+    secret = tmp_path.parent / "outside-secret.txt"
+    secret.write_text("secret")
+    (tmp_path / "plugin.py").write_text(
+        "from pathlib import Path\n"
+        "import socket\n\n"
+        "def factory():\n"
+        "    def handle(payload):\n"
+        "        declared = Path(payload['declared']).read_text()\n"
+        "        try:\n"
+        "            Path(payload['secret']).read_text()\n"
+        "            secret_blocked = False\n"
+        "        except OSError:\n"
+        "            secret_blocked = True\n"
+        "        try:\n"
+        "            socket.create_connection(('127.0.0.1', payload['port']), timeout=1).close()\n"
+        "            network_blocked = False\n"
+        "        except OSError:\n"
+        "            network_blocked = True\n"
+        "        return {'declared': declared, 'secret_blocked': secret_blocked, 'network_blocked': network_blocked}\n"
+        "    return handle\n"
+    )
+    runner = SubprocessProviderRunner.for_entry_point("plugin:factory", cwd=tmp_path)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        result = runner.run({"declared": str(declared), "secret": str(secret), "port": listener.getsockname()[1]})
+    assert result == {"declared": "declared", "secret_blocked": True, "network_blocked": True}
+
+
+def test_sandbox_fails_closed_without_a_platform_enforcer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("paper_agent.providers.sandbox.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("paper_agent.providers.sandbox.shutil.which", lambda _: None)
+    with pytest.raises(SandboxUnavailable, match="sandbox-exec"):
+        build_sandbox_command((sys.executable, "-c", "pass"), SandboxPolicy((tmp_path,), tmp_path))
+
+
+def test_linux_bubblewrap_has_network_and_filesystem_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("paper_agent.providers.sandbox.platform.system", lambda: "Linux")
+    monkeypatch.setattr("paper_agent.providers.sandbox.shutil.which", lambda _: "/usr/bin/bwrap")
+    command = build_sandbox_command(
+        (sys.executable, "-c", "pass"), SandboxPolicy((tmp_path / "read",), tmp_path / "work")
+    )
+    assert command[:4] == ("/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-net")
+    assert ("--ro-bind", str(tmp_path / "read"), str(tmp_path / "read")) == command[8:11]
+    assert command.count("--ro-bind") == 1
+    assert ("--ro-bind", "/", "/") not in zip(command, command[1:], command[2:])
+    assert "--bind" in command
+
+
+def test_platform_command_has_enforceable_network_boundary(tmp_path: Path) -> None:
+    policy = SandboxPolicy((tmp_path / "read",), tmp_path / "work")
+    system = platform.system()
+    if system == "Darwin" and shutil.which("sandbox-exec"):
+        command = build_sandbox_command((sys.executable, "-c", "pass"), policy)
+        assert command[1] == "-p"
+        assert "(deny network*)" in command[2]
+    elif system == "Linux" and shutil.which("bwrap"):
+        command = build_sandbox_command((sys.executable, "-c", "pass"), policy)
+        assert "--unshare-net" in command
+        assert "--bind" in command
+    else:
+        pytest.skip("no platform sandbox is installed")
 
 
 def test_exact_allowlist_registration(tmp_path: Path) -> None:
