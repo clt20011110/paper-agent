@@ -1,0 +1,16 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message-version": "1.0.0",
+  "message": {
+    "next-cursor": "DnF1ZXJ5VGhlbkZldGNoBQAAAAA=",
+    "items": [
+      {
+        "DOI": "10.1000/CROSSREF.NATIVE",
+        "title": ["Native Crossref Fixture"],
+        "author": [{"given": "Ada", "family": "Lovelace"}],
+        "published": {"date-parts": [[2025, 2, 3]]}
+      }
+    ]
+  }
+}

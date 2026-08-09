@@ -3,7 +3,7 @@ provider: openalex
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.providers.builtin:OpenAlexProvider
-artifact_sha256: 7f16ec5e92db6ef333176567ea794a1722ba69a04446ce9cd911bcefe657e855
+artifact_sha256: 4fcd8239800d3f382c81815aef2da062e4c927a304437e26c5b1559046798ff4
 enabled: true
 builtin: true
 authority: scholarly_graph

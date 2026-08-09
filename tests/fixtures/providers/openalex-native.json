@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "count": 2,
+    "db_response_time_ms": 18,
+    "page": null,
+    "per_page": 1,
+    "next_cursor": "IlsxMDAuMCwgJ2h0dHBzOi8vb3BlbmFsZXgub3JnL1cyJ10i"
+  },
+  "results": [
+    {
+      "id": "https://openalex.org/W1234567890",
+      "doi": "https://doi.org/10.1000/OPENALEX.NATIVE",
+      "title": "Native OpenAlex Fixture",
+      "display_name": "Native OpenAlex Fixture",
+      "publication_year": 2025,
+      "publication_date": "2025-02-03",
+      "ids": {
+        "openalex": "https://openalex.org/W1234567890",
+        "doi": "https://doi.org/10.1000/OPENALEX.NATIVE"
+      },
+      "primary_location": {
+        "id": "doi:10.1000/openalex.native",
+        "is_oa": true,
+        "landing_page_url": "https://doi.org/10.1000/openalex.native",
+        "pdf_url": "https://example.test/openalex.pdf",
+        "source": {
+          "id": "https://openalex.org/S4210172943",
+          "display_name": "Proceedings of Machine Learning Research"
+        }
+      },
+      "authorships": [
+        {
+          "author_position": "first",
+          "author": {"id": "https://openalex.org/A1", "display_name": "Ada Lovelace"}
+        },
+        {
+          "author_position": "last",
+          "author": {"id": "https://openalex.org/A2", "display_name": "Grace Hopper"}
+        }
+      ],
+      "abstract_inverted_index": {
+        "Graph": [0],
+        "retrieval": [1],
+        "works": [2]
+      }
+    }
+  ]
+}

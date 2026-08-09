@@ -1,0 +1,15 @@
+{
+  "offset": 0,
+  "data": [
+    {
+      "contexts": ["Following prior work"],
+      "intents": ["methodology"],
+      "isInfluential": true,
+      "citedPaper": {
+        "paperId": "s2-cited-paper",
+        "title": "A Cited Paper"
+      }
+    }
+  ],
+  "observed_at": "2025-03-01"
+}

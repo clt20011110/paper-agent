@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from paper_agent.domain import CitationEdgeType, Paper, ProviderRole, QuerySpec
-from paper_agent.providers.api import CrawlWindow, SeedInput, VenueDescriptor
+from paper_agent.domain import AccessBasis, CitationEdgeType, Paper, ProviderRole, PublicationVersion, QuerySpec
+from paper_agent.providers.api import AccessPolicy, CrawlWindow, SeedInput, VenueDescriptor
 from paper_agent.providers.builtin import (
     AAASScienceAdapter,
     AAAIOJSAdapter,
@@ -156,6 +156,184 @@ def test_crossref_native_message_shape_maps_date_and_author() -> None:
     transport = FixtureTransport({"crossref:search:first": payload})
     entry = create_builtin("crossref", transport).search(QuerySpec(1, "rq", "fixture")).entries[0]
     assert (entry.external_id, entry.authors, entry.publication_date) == ("10.1000/crossref", ("Ada Lovelace",), "2025-02-03")
+
+
+def test_search_uses_frozen_native_parameters_and_hash() -> None:
+    transport = FixtureTransport({"crossref:search:first": fixture("crossref-native.json")})
+    spec = QuerySpec(
+        1,
+        "rq",
+        "uncompiled query",
+        native_parameters={"query.bibliographic": "native query", "rows": 25},
+        native_query_hash="frozen-native-hash",
+    )
+    batch = create_builtin("crossref", transport).search(spec)
+
+    assert transport.calls == [
+        ("crossref", "search", {"query.bibliographic": "native query", "rows": 25, "cursor": None})
+    ]
+    assert batch.query_hash == "frozen-native-hash"
+    assert batch.next_cursor == "DnF1ZXJ5VGhlbkZldGNoBQAAAAA="
+
+
+def test_dblp_native_hit_info_mapping_and_offset() -> None:
+    batch = create_builtin(
+        "dblp", FixtureTransport({"dblp:search:first": fixture("dblp-native.json")})
+    ).search(QuerySpec(1, "rq", "fixture"))
+    entry = batch.entries[0]
+
+    assert (entry.external_id, entry.title) == ("conf/icml/native-2025", "Native DBLP Fixture")
+    assert entry.authors == ("Ada Lovelace", "Grace Hopper")
+    assert (entry.doi, entry.year, entry.venue_name) == ("10.1000/dblp.native", 2025, "ICML")
+    assert batch.next_cursor == "1"
+
+
+def test_semantic_scholar_native_external_ids_and_pagination() -> None:
+    batch = create_builtin(
+        "semantic_scholar",
+        FixtureTransport({"semantic_scholar:search:first": fixture("semantic-scholar-search.json")}),
+    ).search(QuerySpec(1, "rq", "fixture"))
+    entry = batch.entries[0]
+
+    assert entry.external_id == "s2-paper-1"
+    assert (entry.doi, entry.arxiv_id) == ("10.1000/s2.native", "2501.01234")
+    assert entry.authors == ("Ada Lovelace", "Grace Hopper")
+    assert batch.next_cursor == "1"
+
+
+def test_semantic_scholar_native_citation_wrappers_preserve_direction() -> None:
+    transport = FixtureTransport(
+        {
+            "semantic_scholar:citations:first": fixture("semantic-scholar-citations.json"),
+            "semantic_scholar:references:first": fixture("semantic-scholar-references.json"),
+        }
+    )
+    provider = create_builtin("semantic_scholar", transport)
+    seed = Paper("canonical-seed", "Seed")
+
+    cited = provider.references(seed)
+    citing = provider.citations(seed)
+    assert (cited.entries[0].source_paper_id, cited.entries[0].target_paper_id) == (
+        "canonical-seed",
+        "s2-cited-paper",
+    )
+    assert (citing.entries[0].source_paper_id, citing.entries[0].target_paper_id) == (
+        "s2-citing-paper",
+        "canonical-seed",
+    )
+    assert citing.next_cursor == "100"
+    assert citing.entries[0].raw_evidence["contexts"] == ["Prior context"]
+
+
+def test_openalex_native_work_mapping_and_cursor() -> None:
+    batch = create_builtin(
+        "openalex", FixtureTransport({"openalex:search:first": fixture("openalex-native.json")})
+    ).search(QuerySpec(1, "rq", "fixture"))
+    entry = batch.entries[0]
+
+    assert entry.external_id == "https://openalex.org/W1234567890"
+    assert entry.authors == ("Ada Lovelace", "Grace Hopper")
+    assert entry.doi == "10.1000/openalex.native"
+    assert entry.abstract == "Graph retrieval works"
+    assert entry.venue_name == "Proceedings of Machine Learning Research"
+    assert batch.next_cursor == "IlsxMDAuMCwgJ2h0dHBzOi8vb3BlbmFsZXgub3JnL1cyJ10i"
+
+
+def test_pubmed_esummary_uses_uid_order_and_article_ids() -> None:
+    batch = create_builtin(
+        "pubmed", FixtureTransport({"pubmed:search:first": fixture("pubmed-esummary.json")})
+    ).search(QuerySpec(1, "rq", "fixture"))
+    entry = batch.entries[0]
+
+    assert (entry.external_id, entry.title) == ("39900001", "Native PubMed ESummary Fixture")
+    assert entry.authors == ("Lovelace A", "Hopper G")
+    assert (entry.doi, entry.year, entry.venue_name) == ("10.1000/pubmed.native", 2025, "Nature")
+    assert entry.publication_date == "2025-01-17"
+
+
+def test_europe_pmc_native_result_list_and_cursor() -> None:
+    batch = create_builtin(
+        "europe_pmc", FixtureTransport({"europe_pmc:search:first": fixture("europe-pmc-native.json")})
+    ).search(QuerySpec(1, "rq", "fixture"))
+    entry = batch.entries[0]
+
+    assert (entry.external_id, entry.doi) == ("39900001", "10.1000/epmc.native")
+    assert entry.authors == ("Ada Lovelace", "Grace Hopper")
+    assert (entry.publication_date, entry.year) == ("2025-01-17", 2025)
+    assert batch.next_cursor == "AoIIP_4r0ig1NTQ0NTA0OA=="
+
+
+def test_arxiv_decoded_atom_feed_entry_mapping() -> None:
+    batch = create_builtin(
+        "arxiv", FixtureTransport({"arxiv:search:first": fixture("arxiv-atom.json")})
+    ).search(QuerySpec(1, "rq", "fixture"))
+    entry = batch.entries[0]
+
+    assert (entry.external_id, entry.arxiv_id) == ("2501.01234v2", "2501.01234v2")
+    assert entry.title == "Native arXiv Atom Fixture"
+    assert entry.authors == ("Ada Lovelace", "Grace Hopper")
+    assert (entry.abstract, entry.doi) == ("A decoded Atom summary.", "10.1000/arxiv.native")
+    assert batch.next_cursor == "1"
+
+
+def test_openalex_native_reference_and_citation_shapes() -> None:
+    transport = FixtureTransport(
+        {
+            "openalex:references:first": {
+                "referenced_works": ["https://openalex.org/W2"],
+                "observed_at": "2025-03-01",
+            },
+            "openalex:citations:first": {
+                "results": [{"id": "https://openalex.org/W3"}],
+                "meta": {"next_cursor": "next-page"},
+                "observed_at": "2025-03-01",
+            },
+        }
+    )
+    provider = create_builtin("openalex", transport)
+    seed = Paper("canonical-seed", "Seed")
+
+    reference = provider.references(seed)
+    citation = provider.citations(seed)
+
+    assert (reference.entries[0].source_paper_id, reference.entries[0].target_paper_id) == (
+        "canonical-seed",
+        "https://openalex.org/W2",
+    )
+    assert (citation.entries[0].source_paper_id, citation.entries[0].target_paper_id) == (
+        "https://openalex.org/W3",
+        "canonical-seed",
+    )
+    assert citation.next_cursor == "next-page"
+
+
+def test_unpaywall_native_best_and_other_oa_locations() -> None:
+    provider = create_builtin(
+        "unpaywall", FixtureTransport({"unpaywall:resolve:first": fixture("unpaywall-native.json")})
+    )
+    candidates = provider.resolve(Paper("paper-1", "Fixture", doi="10.1000/unpaywall.native"), AccessPolicy("research"))
+
+    assert [candidate.url for candidate in candidates] == [
+        "https://example.test/article.pdf",
+        "https://repository.test/item/1",
+    ]
+    assert candidates[0].publication_version is PublicationVersion.PUBLISHED
+    assert candidates[0].access_basis is AccessBasis.OPEN_LICENSE
+    assert candidates[1].candidate_id == "repo-1"
+    assert candidates[1].publication_version is PublicationVersion.ACCEPTED_MANUSCRIPT
+    assert candidates[1].access_basis is AccessBasis.PUBLIC_READ_ONLY
+
+
+def test_builtin_manifest_uses_install_catalog_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from paper_agent import manifests
+
+    catalog = tmp_path / "share" / "paper-agent"
+    (catalog / "providers").mkdir(parents=True)
+    source = Path(__file__).parents[1] / "providers" / "crossref.yaml"
+    (catalog / "providers" / "crossref.yaml").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(manifests, "manifest_directory", lambda override=None: catalog)
+
+    assert load_builtin_manifest("crossref").provider == "crossref"
 
 
 def test_role_and_capability_gates_are_manifest_driven() -> None:

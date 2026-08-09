@@ -1,0 +1,34 @@
+{
+  "result": {
+    "query": "graph retrieval",
+    "status": {"@code": "200", "text": "OK"},
+    "hits": {
+      "@total": "3",
+      "@computed": "3",
+      "@sent": "1",
+      "@first": "0",
+      "hit": [
+        {
+          "@score": "2",
+          "@id": "6171759",
+          "info": {
+            "authors": {
+              "author": [
+                {"@pid": "l/AdaLovelace", "text": "Ada Lovelace"},
+                {"@pid": "h/GraceHopper", "text": "Grace Hopper"}
+              ]
+            },
+            "title": "Native DBLP Fixture",
+            "venue": "ICML",
+            "year": "2025",
+            "type": "Conference and Workshop Papers",
+            "access": "open",
+            "key": "conf/icml/native-2025",
+            "doi": "10.1000/DBLP.NATIVE",
+            "ee": "https://doi.org/10.1000/dblp.native"
+          }
+        }
+      ]
+    }
+  }
+}

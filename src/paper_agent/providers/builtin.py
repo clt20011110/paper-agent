@@ -103,8 +103,9 @@ def load_builtin_manifest(provider: str, root: Path | None = None) -> ProviderMa
     """Load a built-in manifest from the catalog instead of duplicating its facts."""
 
     import yaml
+    from paper_agent import manifests
 
-    catalog_root = root or Path(__file__).resolve().parents[3]
+    catalog_root = manifests.manifest_directory(root)
     document = yaml.safe_load((catalog_root / "providers" / f"{provider}.yaml").read_text(encoding="utf-8"))
     return manifest_from_document(document)
 
@@ -136,10 +137,12 @@ def _authors(value: Any) -> tuple[str, ...]:
         return ()
     if isinstance(value, str):
         return tuple(part.strip() for part in re.split(r"\s+and\s+|;", value) if part.strip())
+    if isinstance(value, Mapping):
+        value = (value,)
     output = []
     for author in value:
         if isinstance(author, Mapping):
-            name = author.get("name") or author.get("display_name")
+            name = author.get("name") or author.get("display_name") or author.get("fullName") or author.get("text")
             if not name:
                 name = " ".join(str(part) for part in (author.get("given"), author.get("family")) if part)
             output.append(str(name or ""))
@@ -149,7 +152,15 @@ def _authors(value: Any) -> tuple[str, ...]:
 
 
 def _date(record: Mapping[str, Any]) -> str | None:
-    for key in ("publication_date", "published", "date", "published_date", "publicationDate"):
+    for key in (
+        "publication_date",
+        "published",
+        "date",
+        "published_date",
+        "publicationDate",
+        "firstPublicationDate",
+        "pubdate",
+    ):
         raw_value = _value(record.get(key))
         if isinstance(raw_value, Mapping):
             parts = raw_value.get("date-parts")
@@ -157,12 +168,16 @@ def _date(record: Mapping[str, Any]) -> str | None:
                 return "-".join(f"{int(part):02d}" if index else str(part) for index, part in enumerate(parts[0]))
         value = _text(raw_value)
         if value:
+            pubmed_date = re.fullmatch(r"(\d{4}) ([A-Z][a-z]{2})(?: (\d{1,2}))?", value)
+            if pubmed_date:
+                month = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec").index(pubmed_date[2]) + 1
+                return f"{pubmed_date[1]}-{month:02d}-{int(pubmed_date[3] or 1):02d}"
             return value[:10]
     return None
 
 
 def _year(record: Mapping[str, Any], publication_date: str | None) -> int | None:
-    value = record.get("year") or record.get("publication_year")
+    value = record.get("year") or record.get("publication_year") or record.get("pubYear")
     if value is not None:
         return int(value)
     if publication_date and publication_date[:4].isdigit():
@@ -178,6 +193,14 @@ def _records(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return []
 
 
+def _items(value: Any) -> list[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, Mapping)]
+    return []
+
+
 def _provider_records(provider: str, payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     """Extract the documented top-level collection without doing any selection."""
 
@@ -186,20 +209,184 @@ def _provider_records(provider: str, payload: Mapping[str, Any]) -> list[Mapping
     if provider == "dblp":
         result = payload.get("result")
         if isinstance(result, Mapping) and isinstance(result.get("hits"), Mapping):
-            return _records(result["hits"])
+            return [
+                record["info"]
+                for record in _items(result["hits"].get("hit"))
+                if isinstance(record.get("info"), Mapping)
+            ]
+    if provider == "pubmed" and isinstance(payload.get("result"), Mapping):
+        result = payload["result"]
+        return [result[str(uid)] for uid in result.get("uids", ()) if isinstance(result.get(str(uid)), Mapping)]
     if provider == "europe_pmc" and isinstance(payload.get("resultList"), Mapping):
-        return _records(payload["resultList"])
+        return _items(payload["resultList"].get("result"))
     if provider == "arxiv" and isinstance(payload.get("feed"), Mapping):
-        return _records(payload["feed"])
+        return _items(payload["feed"].get("entry"))
     return _records(payload)
 
 
-def _next_cursor(payload: Mapping[str, Any]) -> str | None:
-    value = payload.get("next_cursor") or payload.get("next") or payload.get("cursor")
-    return str(value) if value else None
+def _next_cursor(provider: str, payload: Mapping[str, Any]) -> str | None:
+    if provider == "crossref" and isinstance(payload.get("message"), Mapping):
+        value = payload["message"].get("next-cursor")
+        return str(value) if value is not None else None
+    if provider == "openalex" and isinstance(payload.get("meta"), Mapping):
+        value = payload["meta"].get("next_cursor")
+        return str(value) if value is not None else None
+    if provider == "europe_pmc":
+        value = payload.get("nextCursorMark")
+        return str(value) if value is not None else None
+    if provider == "dblp" and isinstance(payload.get("result"), Mapping):
+        hits = payload["result"].get("hits")
+        if isinstance(hits, Mapping):
+            first = int(hits.get("@first", 0))
+            sent = int(hits.get("@sent", 0))
+            total = int(hits.get("@total", 0))
+            return str(first + sent) if first + sent < total else None
+    if provider == "arxiv" and isinstance(payload.get("feed"), Mapping):
+        feed = payload["feed"]
+        start = int(_text(feed.get("startIndex")) or 0)
+        sent = int(_text(feed.get("itemsPerPage")) or 0)
+        total = int(_text(feed.get("totalResults")) or 0)
+        return str(start + sent) if sent and start + sent < total else None
+    for key in ("next_cursor", "next", "cursor"):
+        value = payload.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _doi(value: Any) -> str | None:
+    text = _text(value)
+    if not text:
+        return None
+    return re.sub(r"^https?://(?:dx\.)?doi\.org/", "", text, flags=re.I).lower()
+
+
+def _openalex_abstract(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    positions = sorted(
+        (int(position), str(word))
+        for word, offsets in value.items()
+        for position in offsets
+    )
+    return " ".join(word for _, word in positions)
+
+
+def _native_source_entry(provider: str, record: Mapping[str, Any]) -> SourceEntry | None:
+    if provider == "dblp" and ("key" in record or "ee" in record):
+        authors = record.get("authors")
+        author_records = authors.get("author") if isinstance(authors, Mapping) else authors
+        return SourceEntry(
+            provider=provider,
+            external_id=str(record.get("key") or record.get("doi") or record.get("ee")),
+            title=str(record["title"]),
+            authors=_authors(author_records),
+            doi=_doi(record.get("doi")),
+            year=int(record["year"]) if record.get("year") else None,
+            venue_name=_text(record.get("venue")),
+            landing_url=_text(record.get("ee")),
+            metadata=dict(record),
+        )
+    if provider == "semantic_scholar" and "paperId" in record:
+        external_ids = record.get("externalIds") if isinstance(record.get("externalIds"), Mapping) else {}
+        publication_date = _date(record)
+        return SourceEntry(
+            provider=provider,
+            external_id=str(record["paperId"]),
+            title=str(record["title"]),
+            authors=_authors(record.get("authors")),
+            abstract=_text(record.get("abstract")),
+            doi=_doi(external_ids.get("DOI")),
+            arxiv_id=_text(external_ids.get("ArXiv")),
+            publication_date=publication_date,
+            year=_year(record, publication_date),
+            venue_name=_text(record.get("venue")),
+            landing_url=_text(record.get("url")),
+            metadata=dict(record),
+        )
+    if provider == "openalex" and ("ids" in record or "authorships" in record):
+        ids = record.get("ids") if isinstance(record.get("ids"), Mapping) else {}
+        location = record.get("primary_location") if isinstance(record.get("primary_location"), Mapping) else {}
+        source = location.get("source") if isinstance(location.get("source"), Mapping) else {}
+        authors = [
+            authorship["author"]
+            for authorship in _items(record.get("authorships"))
+            if isinstance(authorship.get("author"), Mapping)
+        ]
+        publication_date = _date(record)
+        return SourceEntry(
+            provider=provider,
+            external_id=str(record.get("id") or ids["openalex"]),
+            title=str(record.get("title") or record["display_name"]),
+            authors=_authors(authors),
+            abstract=_openalex_abstract(record.get("abstract_inverted_index")),
+            doi=_doi(record.get("doi") or ids.get("doi")),
+            arxiv_id=_text(ids.get("arxiv")),
+            publication_date=publication_date,
+            year=_year(record, publication_date),
+            venue_name=_text(source.get("display_name")),
+            landing_url=_text(location.get("landing_page_url") or record.get("id")),
+            metadata=dict(record),
+        )
+    if provider == "pubmed" and "uid" in record:
+        article_ids = _items(record.get("articleids"))
+        doi = next((_doi(item.get("value")) for item in article_ids if item.get("idtype") == "doi"), None)
+        publication_date = _date(record)
+        return SourceEntry(
+            provider=provider,
+            external_id=str(record["uid"]),
+            title=str(record["title"]),
+            authors=_authors(record.get("authors")),
+            doi=doi,
+            publication_date=publication_date,
+            year=_year(record, publication_date),
+            venue_name=_text(record.get("source")),
+            landing_url=f"https://pubmed.ncbi.nlm.nih.gov/{record['uid']}/",
+            metadata=dict(record),
+        )
+    if provider == "europe_pmc" and any(key in record for key in ("pmid", "pmcid", "authorList")):
+        author_list = record.get("authorList") if isinstance(record.get("authorList"), Mapping) else {}
+        publication_date = _date(record)
+        external_id = record.get("id") or record.get("pmcid") or record.get("pmid") or record.get("doi")
+        source = record.get("source") or ("PMC" if record.get("pmcid") else "MED")
+        return SourceEntry(
+            provider=provider,
+            external_id=str(external_id),
+            title=str(record["title"]),
+            authors=_authors(author_list.get("author") or record.get("authorString")),
+            abstract=_text(record.get("abstractText")),
+            doi=_doi(record.get("doi")),
+            publication_date=publication_date,
+            year=_year(record, publication_date),
+            venue_name=_text(record.get("journalTitle")),
+            landing_url=f"https://europepmc.org/article/{source}/{external_id}",
+            metadata=dict(record),
+        )
+    if provider == "arxiv" and "id" in record:
+        identifier = str(record["id"])
+        arxiv_id = identifier.rstrip("/").rsplit("/", 1)[-1]
+        publication_date = _date(record)
+        return SourceEntry(
+            provider=provider,
+            external_id=arxiv_id,
+            title=str(record["title"]).strip(),
+            authors=_authors(record.get("author")),
+            abstract=_text(record.get("summary")),
+            doi=_doi(record.get("doi")),
+            arxiv_id=arxiv_id,
+            publication_date=publication_date,
+            year=_year(record, publication_date),
+            venue_name=_text(record.get("journal_ref")),
+            landing_url=identifier,
+            metadata=dict(record),
+        )
+    return None
 
 
 def _source_entry(provider: str, record: Mapping[str, Any]) -> SourceEntry:
+    native = _native_source_entry(provider, record)
+    if native is not None:
+        return native
     content = record.get("content") if isinstance(record.get("content"), Mapping) else record
     external_id = (
         record.get("external_id")
@@ -235,6 +422,35 @@ def _source_entry(provider: str, record: Mapping[str, Any]) -> SourceEntry:
     )
 
 
+def _access_records(provider: str, payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    if provider != "unpaywall":
+        return _records(payload)
+    best = payload.get("best_oa_location")
+    locations = _items(payload.get("oa_locations"))
+    if not isinstance(best, Mapping):
+        return locations
+    best_url = best.get("url_for_pdf") or best.get("url")
+    return [best, *(location for location in locations if (location.get("url_for_pdf") or location.get("url")) != best_url)]
+
+
+def _publication_version(value: Any) -> PublicationVersion:
+    return PublicationVersion(
+        {
+            "publishedVersion": "published",
+            "acceptedVersion": "accepted_manuscript",
+            "submittedVersion": "preprint",
+        }.get(str(value), str(value or "unknown"))
+    )
+
+
+def _access_basis(record: Mapping[str, Any]) -> AccessBasis:
+    if record.get("access_basis"):
+        return AccessBasis(str(record["access_basis"]))
+    if record.get("license"):
+        return AccessBasis.OPEN_LICENSE
+    return AccessBasis.PUBLIC_READ_ONLY
+
+
 class BuiltinProvider:
     """Shared protocol mapping for transport-injected built-in providers."""
 
@@ -257,12 +473,13 @@ class BuiltinProvider:
         return self.transport(self.provider, operation, parameters)
 
     def _batch(self, payload: Mapping[str, Any], source_run_id: str, query_hash: str) -> SourceBatch:
-        status = EnvelopeStatus(str(payload.get("status", "success")))
+        native_status = str(payload.get("status", "success"))
+        status = EnvelopeStatus.SUCCESS if native_status == "ok" else EnvelopeStatus(native_status)
         batch = SourceBatch(
             source_run_id=source_run_id,
             query_hash=query_hash,
             entries=tuple(_source_entry(self.provider, record) for record in _provider_records(self.provider, payload)),
-            next_cursor=_next_cursor(payload),
+            next_cursor=_next_cursor(self.provider, payload),
             status=status,
             error=_text(payload.get("error")),
             raw_response_artifact_hash=_text(payload.get("raw_response_artifact_hash")),
@@ -271,7 +488,7 @@ class BuiltinProvider:
 
     def search(self, query_spec: QuerySpec, cursor: str | None = None) -> SourceBatch:
         self._require(ProviderRole.SEARCH, ProviderCapability.METADATA)
-        parameters = {
+        parameters = dict(query_spec.native_parameters) or {
             "query": query_spec.original_query,
             "synonym_groups": dict(query_spec.synonym_groups),
             "date_from": query_spec.date_from,
@@ -280,10 +497,11 @@ class BuiltinProvider:
             "venues": query_spec.venue_ids,
             "sort": query_spec.sort,
             "page_size": query_spec.page_size,
-            "cursor": cursor,
         }
+        parameters["cursor"] = cursor
         payload = self._request("search", parameters)
-        return self._batch(payload, str(payload.get("source_run_id") or f"{self.provider}:search"), _hash(query_spec.original_query))
+        query_hash = query_spec.native_query_hash or _hash(query_spec.original_query)
+        return self._batch(payload, str(payload.get("source_run_id") or f"{self.provider}:search"), query_hash)
 
     def enrich(self, raw_paper: SourceEntry) -> EnrichmentResult:
         self._require(ProviderRole.METADATA_ENRICHER, ProviderCapability.METADATA)
@@ -303,20 +521,25 @@ class BuiltinProvider:
         payload = self._request("resolve", {"paper_id": paper.paper_id, "doi": paper.doi, "purpose": policy.purpose})
         return [
             AccessLocationCandidate(
-                candidate_id=str(record.get("candidate_id") or f"{self.provider}:{paper.paper_id}:{index}"),
+                candidate_id=str(
+                    record.get("candidate_id")
+                    or record.get("endpoint_id")
+                    or record.get("pmh_id")
+                    or f"{self.provider}:{paper.paper_id}:{index}"
+                ),
                 paper_id=paper.paper_id,
                 resolver=self.provider,
-                url=str(record["url"]),
-                landing_url=_text(record.get("landing_url")),
-                host=_text(record.get("host")),
-                publication_version=PublicationVersion(str(record.get("publication_version", "unknown"))),
+                url=str(record.get("url_for_pdf") or record["url"]),
+                landing_url=_text(record.get("landing_url") or record.get("url_for_landing_page")),
+                host=_text(record.get("host") or record.get("host_type")),
+                publication_version=_publication_version(record.get("publication_version") or record.get("version")),
                 license=_text(record.get("license")),
-                access_basis=AccessBasis(str(record.get("access_basis", "unknown"))),
+                access_basis=_access_basis(record),
                 raw_evidence_hash=_text(payload.get("raw_response_artifact_hash")),
                 provenance={"provider": self.provider},
             )
-            for index, record in enumerate(_records(payload))
-            if record.get("url")
+            for index, record in enumerate(_access_records(self.provider, payload))
+            if record.get("url_for_pdf") or record.get("url")
         ]
 
     def _citations(self, direction: CitationEdgeType, seed: Paper, cursor: str | None) -> CitationBatch:
@@ -325,8 +548,20 @@ class BuiltinProvider:
         operation = "references" if direction is CitationEdgeType.REFERENCES else "citations"
         payload = self._request(operation, {"paper_id": seed.paper_id, "doi": seed.doi, "cursor": cursor})
         edges = []
-        for record in _records(payload):
-            result_id = record.get("paper_id") or record.get("external_id") or record.get("id")
+        records = _records(payload)
+        if (
+            self.provider == "openalex"
+            and direction is CitationEdgeType.REFERENCES
+            and isinstance(payload.get("referenced_works"), list)
+        ):
+            records = [{"id": identifier} for identifier in payload["referenced_works"]]
+        for record in records:
+            paper_record = record
+            if self.provider == "semantic_scholar":
+                nested = "citedPaper" if direction is CitationEdgeType.REFERENCES else "citingPaper"
+                if isinstance(record.get(nested), Mapping):
+                    paper_record = record[nested]
+            result_id = paper_record.get("paper_id") or paper_record.get("paperId") or paper_record.get("external_id") or paper_record.get("id")
             if not result_id:
                 continue
             source_id, target_id = (
@@ -348,7 +583,7 @@ class BuiltinProvider:
             str(payload.get("source_run_id") or f"{self.provider}:{operation}"),
             _hash(f"{seed.paper_id}:{operation}"),
             tuple(edges),
-            _next_cursor(payload),
+            _next_cursor(self.provider, payload),
             EnvelopeStatus(str(payload.get("status", "success"))),
             _text(payload.get("error")),
             _text(payload.get("raw_response_artifact_hash")),

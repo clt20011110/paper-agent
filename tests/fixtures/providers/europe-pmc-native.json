@@ -1,0 +1,29 @@
+{
+  "version": "6.9",
+  "hitCount": 2,
+  "nextCursorMark": "AoIIP_4r0ig1NTQ0NTA0OA==",
+  "resultList": {
+    "result": [
+      {
+        "id": "39900001",
+        "source": "MED",
+        "pmid": "39900001",
+        "pmcid": "PMC1234567",
+        "doi": "10.1000/EPMC.NATIVE",
+        "title": "Native Europe PMC Fixture",
+        "authorString": "Lovelace A; Hopper G",
+        "authorList": {
+          "author": [
+            {"fullName": "Ada Lovelace", "firstName": "Ada", "lastName": "Lovelace"},
+            {"fullName": "Grace Hopper", "firstName": "Grace", "lastName": "Hopper"}
+          ]
+        },
+        "journalTitle": "Nature",
+        "pubYear": "2025",
+        "firstPublicationDate": "2025-01-17",
+        "isOpenAccess": "Y",
+        "inEPMC": "Y"
+      }
+    ]
+  }
+}

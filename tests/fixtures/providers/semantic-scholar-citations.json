@@ -1,0 +1,16 @@
+{
+  "offset": 0,
+  "next": 100,
+  "data": [
+    {
+      "contexts": ["Prior context"],
+      "intents": ["background"],
+      "isInfluential": false,
+      "citingPaper": {
+        "paperId": "s2-citing-paper",
+        "title": "A Citing Paper"
+      }
+    }
+  ],
+  "observed_at": "2025-03-01"
+}
