@@ -1,0 +1,462 @@
+"""Deterministic coordinator for the read-only Phase 2 search pipeline.
+
+Providers only return envelopes.  This module is the single writer that
+records those envelopes, normalizes their entries, and expands citations.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, replace
+from typing import Any, Mapping, Sequence
+from uuid import NAMESPACE_URL, uuid5
+
+from .citations import (
+    CitationRepository,
+    CitationRequest,
+    DeterministicFakeScreener,
+    RoundAudit,
+    SearchRoundStore,
+    SeedCandidate,
+    StopDecision,
+    process_citation_batches,
+    schedule_requests,
+    select_seeds,
+    version_edge,
+)
+from .domain import (
+    CitationBatch,
+    CitationEdgeType,
+    EnvelopeStatus,
+    FilterStatus,
+    MembershipStatus,
+    PublicationVersion,
+    SourceBatch,
+    SourceEntry,
+    VerificationStatus,
+)
+from .fanout import FanoutResult, ProviderOutcome, fan_out
+from .identity import normalize_author, normalize_doi, normalize_title
+from .query_compilers import NativeQuery, compile_queries
+from .query_plan import assert_runtime_matches
+from .repository import PaperRepository
+from .search_runs import SearchRunCoordinator, SourceMetrics
+from .storage import Database
+from .verification import MetadataCoordinator, ProviderTrust, VenueContext
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineResult:
+    crawl_run_id: str
+    status: str
+    paper_ids: tuple[str, ...]
+    arxiv_candidate_ids: tuple[str, ...]
+    fanout: FanoutResult
+    citation_round_ids: tuple[str, ...]
+
+
+class SearchPipeline:
+    """Run one approved QueryPlan without letting providers write canonical data."""
+
+    def __init__(
+        self,
+        database: Database,
+        plan: Mapping[str, Any],
+        *,
+        runtime_providers: Sequence[Mapping[str, Any]] | None = None,
+        clients: Mapping[str, Any],
+        trusts: Mapping[str, ProviderTrust],
+        venue: VenueContext | None = None,
+        citation_clients: Mapping[str, Any] | None = None,
+        screener: Any | None = None,
+    ) -> None:
+        self.database = database
+        self.plan = dict(plan)
+        self.runtime_providers = tuple(dict(item) for item in (runtime_providers or plan["providers"]))
+        self.clients = clients
+        self.trusts = trusts
+        self.venue = venue
+        self.citation_clients = citation_clients or {}
+        self.screener = screener or DeterministicFakeScreener(frozenset())
+        self.repository = PaperRepository(database)
+        self.metadata = MetadataCoordinator(self.repository, trusts)
+        self.runs = SearchRunCoordinator(database)
+        self.citations = CitationRepository(database)
+        self.rounds = SearchRoundStore(database)
+
+    def run(
+        self,
+        *,
+        run_id: str,
+        crawl_run_id: str,
+        observed_at: str,
+        seed_paper_ids: Sequence[str] = (),
+    ) -> PipelineResult:
+        """Execute the frozen plan and persist a replayable audit trail."""
+        assert_runtime_matches(self.plan, self.runtime_providers, budgets=self.plan["budgets"])
+        self._ensure_run(run_id)
+        self.runs.start_crawl(
+            crawl_run_id=crawl_run_id,
+            run_id=run_id,
+            search_plan_id=str(self.plan["plan_id"]),
+            window=dict(self.plan["scope"]),
+        )
+
+        fanout = fan_out(self.plan, self.clients)
+        all_paper_ids: set[str] = set()
+        non_arxiv_ids: set[str] = set()
+        metrics: dict[str, SourceMetrics] = {}
+        source_entries: dict[str, list[SourceEntry]] = {}
+        for outcome in fanout.outcomes:
+            provider = self._provider(outcome.provider)
+            batches = self._source_batches(crawl_run_id, provider, outcome)
+            queries = self._queries(provider)
+            for batch in batches:
+                batch = replace(batch, source_run_id=f"{crawl_run_id}:{outcome.provider}:search")
+                query = next((item for item in queries if item.query_hash == batch.query_hash), None)
+                if queries and query is None:
+                    raise ValueError(f"provider {outcome.provider} returned an unfrozen query hash")
+                self.runs.record_batch(
+                    crawl_run_id=crawl_run_id,
+                    provider=outcome.provider,
+                    provider_version=str(provider["version"]),
+                    role="search",
+                    query_text=self._query_text(query),
+                    provider_params=dict(query.parameters) if query else {},
+                    query_compiler_version=str(provider["query_compiler_version"]),
+                    batch=batch,
+                    requested_at=observed_at,
+                    completed_at=observed_at,
+                    page=None,
+                    cursor=None,
+                    alias_group=query.variant_id if query else None,
+                    filters=dict(self.plan["scope"]),
+                )
+                prior = metrics.get(batch.source_run_id, SourceMetrics())
+                source_entries.setdefault(batch.source_run_id, []).extend(batch.entries)
+                metrics[batch.source_run_id] = SourceMetrics(
+                    raw_discovered=prior.raw_discovered + len(batch.entries),
+                    unique_after_dedup=prior.unique_after_dedup,
+                    overlap=prior.overlap,
+                    screened=prior.screened,
+                    excluded=prior.excluded,
+                    included=prior.included,
+                    full_text_available=prior.full_text_available,
+                    error_count=prior.error_count + int(batch.status is EnvelopeStatus.FAILED),
+                )
+                if batch.status is EnvelopeStatus.FAILED:
+                    continue
+                venue = self._arxiv_context() if outcome.provider == "arxiv" else self.venue
+                papers = self.metadata.merge_batch(batch, venue)
+                ids = {paper.paper_id for paper in papers}
+                all_paper_ids.update(ids)
+                if outcome.provider != "arxiv":
+                    non_arxiv_ids.update(ids)
+
+        for source_run_id, source_metrics in metrics.items():
+            entries = source_entries[source_run_id]
+            identities = {self._identity(entry) for entry in entries}
+            raw = source_metrics.raw_discovered
+            self.runs.record_metrics(
+                source_run_id,
+                replace(
+                    source_metrics,
+                    unique_after_dedup=len(identities),
+                    overlap=raw - len(identities),
+                ),
+                updated_at=observed_at,
+            )
+
+        self._link_versions(observed_at)
+        status = self.runs.finish_crawl(crawl_run_id, plan=self.plan, fanout=fanout, finished_at=observed_at)
+        round_ids = self._run_citations(crawl_run_id, observed_at, seed_paper_ids)
+        self.database.connection.execute(
+            "UPDATE pipeline_runs SET status = ?, completed_at = ? WHERE run_id = ?",
+            (status, observed_at, run_id),
+        )
+        self.database.connection.commit()
+        return PipelineResult(
+            crawl_run_id,
+            status,
+            tuple(sorted(non_arxiv_ids)),
+            tuple(sorted(all_paper_ids - non_arxiv_ids)),
+            fanout,
+            tuple(round_ids),
+        )
+
+    execute = run
+
+    def _ensure_run(self, run_id: str) -> None:
+        plan_id = str(self.plan["plan_id"])
+        self.database.connection.execute(
+            """INSERT INTO search_plans(search_plan_id, content_hash, schema_version, plan_json, approval_json, status)
+               VALUES (?, ?, ?, ?, ?, 'approved') ON CONFLICT(search_plan_id) DO NOTHING""",
+            (
+                plan_id,
+                str(self.plan["plan_hash"]),
+                str(self.plan["schema_version"]),
+                json.dumps(self.plan, sort_keys=True, separators=(",", ":")),
+                json.dumps(self.plan["approval"], sort_keys=True, separators=(",", ":")),
+            ),
+        )
+        self.database.connection.execute(
+            """INSERT INTO pipeline_runs(run_id, stage, status, input_hash, config_hash, implementation_version, started_at)
+               VALUES (?, 'stage-1', 'running', ?, ?, 'phase2-search-v1', ?)
+               ON CONFLICT(run_id) DO NOTHING""",
+            (run_id, str(self.plan["plan_hash"]), str(self.plan["filter"]["config_hash"]), self.plan["created_at"]),
+        )
+        self.database.connection.commit()
+
+    def _provider(self, name: str) -> Mapping[str, Any]:
+        return next(item for item in self.plan["providers"] if item["provider"] == name)
+
+    def _queries(self, provider: Mapping[str, Any]) -> tuple[NativeQuery, ...]:
+        if "search" not in provider["roles"]:
+            return ()
+        return compile_queries(
+            str(provider["provider"]),
+            self.plan["query_variants"],
+            self.plan["scope"],
+            page_size=int(self.plan.get("page_size", 100)),
+        )
+
+    def _source_batches(
+        self, crawl_run_id: str, provider: Mapping[str, Any], outcome: ProviderOutcome
+    ) -> tuple[SourceBatch, ...]:
+        queries = self._queries(provider)
+        if outcome.status == "failed":
+            return tuple(
+                SourceBatch(
+                    source_run_id=f"{crawl_run_id}:{outcome.provider}:search",
+                    query_hash=query.query_hash,
+                    entries=(),
+                    next_cursor=None,
+                    status=EnvelopeStatus.FAILED,
+                    error=outcome.error or "provider failed",
+                )
+                for query in queries
+            ) or (
+                SourceBatch(
+                    f"{crawl_run_id}:{outcome.provider}:search", "no-query", (), None,
+                    EnvelopeStatus.FAILED, outcome.error or "provider failed",
+                ),
+            )
+        batches = tuple(item for item in self._flatten(outcome.result) if isinstance(item, SourceBatch))
+        if batches:
+            return batches
+        return tuple(
+            SourceBatch(
+                f"{crawl_run_id}:{outcome.provider}:search", query.query_hash, (), None, EnvelopeStatus.SUCCESS
+            )
+            for query in queries
+        ) or (SourceBatch(f"{crawl_run_id}:{outcome.provider}:search", "no-query", (), None, EnvelopeStatus.SUCCESS),)
+
+    @staticmethod
+    def _flatten(value: Any) -> tuple[Any, ...]:
+        if isinstance(value, (tuple, list)):
+            return tuple(item for group in value for item in SearchPipeline._flatten(group))
+        return (value,)
+
+    @staticmethod
+    def _query_text(query: NativeQuery | None) -> str:
+        if query is None:
+            return ""
+        for key in ("query.bibliographic", "q", "query", "search", "term", "search_query"):
+            if key in query.parameters:
+                return str(query.parameters[key])
+        return query.variant_id
+
+    @staticmethod
+    def _identity(entry: SourceEntry) -> tuple[str, ...]:
+        if entry.doi:
+            return ("doi", normalize_doi(entry.doi) or entry.doi)
+        if entry.arxiv_id:
+            return ("arxiv", entry.arxiv_id)
+        return (entry.provider, entry.external_id)
+
+    def _arxiv_context(self) -> VenueContext:
+        return VenueContext(
+            "arxiv_candidates", "arxiv", "arXiv candidates", "arxiv", "arxiv", {"kind": "candidate"}
+        )
+
+    def _link_versions(self, observed_at: str) -> None:
+        rows = self.database.connection.execute(
+            """SELECT p.paper_id, p.title, p.authors_json, p.year, s.publication_version
+               FROM papers p JOIN paper_sources s ON s.paper_id = p.paper_id
+               WHERE s.publication_version IN ('preprint', 'published') ORDER BY p.paper_id"""
+        ).fetchall()
+        published: dict[tuple[str, str, int | None], str] = {}
+        preprints: list[tuple[str, tuple[str, str, int | None]]] = []
+        for row in rows:
+            authors = tuple(json.loads(row["authors_json"]))
+            key = (normalize_title(row["title"]), normalize_author(authors[0]) if authors else "", row["year"])
+            if row["publication_version"] == PublicationVersion.PUBLISHED:
+                published.setdefault(key, row["paper_id"])
+            else:
+                preprints.append((row["paper_id"], key))
+        for preprint_id, key in preprints:
+            published_id = published.get(key)
+            if published_id and published_id != preprint_id:
+                self.citations.save(version_edge(preprint_id, published_id, provider="metadata", observed_at=observed_at, raw_evidence={"match": "title-author-year"}))
+
+    def _run_citations(
+        self, crawl_run_id: str, observed_at: str, seed_paper_ids: Sequence[str]
+    ) -> list[str]:
+        config = self.plan["citation_snowball"]
+        if not config["enabled"] or not self.citation_clients:
+            return []
+        providers = tuple(sorted(self.citation_clients))
+        roots = tuple(sorted({paper_id for paper_id in seed_paper_ids if self.repository.get_paper(paper_id)}))
+        if not roots:
+            return []
+        max_requests = int(self.plan["budgets"]["max_requests"])
+        max_depth = int(config["max_depth"])
+        max_rounds = int(config["max_rounds"])
+        max_per_request = int(config["max_per_seed_per_source"])
+        directions = tuple(CitationEdgeType(value) for value in config["directions"])
+        candidates = {
+            paper_id: SeedCandidate(
+                paper_id, None, FilterStatus.RELEVANT,
+                1.0, self.repository.get_paper(paper_id).verification_status, 0, 0,
+            )
+            for paper_id in roots
+        }
+        seen = set(roots)
+        expanded: set[str] = set()
+        used_requests = 0
+        low_yield_rounds = 0
+        round_ids: list[str] = []
+        for round_index in range(max_rounds):
+            seeds = select_seeds(
+                tuple(candidates.values()),
+                user_seed_ids=frozenset(roots),
+                expanded_paper_ids=frozenset(expanded),
+                max_depth=max_depth,
+                per_subquestion=20,
+                selector_version=str(self.plan["filter"]["seed_selector_version"]),
+                selector_config_hash=str(self.plan["filter"]["seed_selector_config_hash"]),
+            )
+            if not seeds:
+                break
+            requests = schedule_requests(
+                seeds,
+                providers=providers,
+                directions=directions,
+                max_requests=max(0, max_requests - used_requests),
+                max_candidates_per_request=max_per_request,
+            )
+            round_id = self.rounds.freeze(crawl_run_id=crawl_run_id, round_index=round_index, seeds=seeds, requests=requests)
+            round_ids.append(round_id)
+            batches = self._execute_citation_requests(round_id, requests, observed_at)
+            used_requests += len(requests)
+            decisions, audit = process_citation_batches(
+                batches,
+                already_seen=frozenset(seen),
+                already_relevant=frozenset(
+                    paper_id for paper_id, candidate in candidates.items() if candidate.status is FilterStatus.RELEVANT
+                ),
+                screener=self.screener,
+            )
+            self._save_round_papers(round_id, decisions, requests)
+            candidate_depth = self._candidate_depths(batches, requests)
+            for paper_id, decision in decisions.items():
+                seen.add(paper_id)
+                paper = self.repository.get_paper(paper_id)
+                if paper:
+                    candidates[paper_id] = SeedCandidate(
+                        paper_id, None, decision, 1.0, paper.verification_status,
+                        candidate_depth[paper_id], round_index + 1,
+                    )
+            expanded.update(seed.paper_id for seed in seeds)
+            exhausted = not any(batch.entries for batch in batches)
+            budget_exhausted = used_requests >= max_requests
+            saturation = self.plan["budgets"]["saturation"]
+            from .citations import decide_stop
+
+            decision = decide_stop(
+                audit,
+                previous_low_yield_rounds=low_yield_rounds,
+                min_unique_included_yield=float(saturation["min_unique_included_yield"]),
+                required_low_yield_rounds=int(saturation["consecutive_low_yield_rounds"]),
+                screening_complete=True,
+                sources_exhausted=exhausted,
+                budget_exhausted=budget_exhausted,
+            )
+            low_yield_rounds = decision.consecutive_low_yield_rounds
+            if round_index + 1 == max_rounds and not decision.stop:
+                decision = StopDecision(True, "max_rounds", False, low_yield_rounds)
+            self._audit_round(round_id, audit, decision, observed_at)
+            if decision.stop:
+                break
+        return round_ids
+
+    def _execute_citation_requests(
+        self, round_id: str, requests: Sequence[CitationRequest], observed_at: str
+    ) -> tuple[CitationBatch, ...]:
+        batches: list[CitationBatch] = []
+        for request in requests:
+            client = self.citation_clients[request.provider]
+            paper = self.repository.get_paper(request.seed_paper_id)
+            try:
+                operation = client.references if request.direction is CitationEdgeType.REFERENCES else client.citations
+                batch = operation(paper, None)
+            except Exception as error:
+                batch = CitationBatch(
+                    f"{round_id}:{request.schedule_order}", str(request.schedule_order), (), None,
+                    EnvelopeStatus.FAILED, str(error),
+                )
+            batch = replace(
+                batch,
+                source_run_id=f"{round_id}:{request.schedule_order}",
+                entries=tuple(batch.entries[:request.max_candidates]),
+            )
+            batches.append(batch)
+            self.database.connection.execute(
+                "UPDATE citation_requests SET status = ?, error_json = ? WHERE search_round_id = ? AND schedule_order = ?",
+                (
+                    "failed" if batch.status is EnvelopeStatus.FAILED else "complete",
+                    json.dumps({"message": batch.error}) if batch.error else None,
+                    round_id,
+                    request.schedule_order,
+                ),
+            )
+            for edge in batch.entries:
+                if self.repository.get_paper(edge.source_paper_id) and self.repository.get_paper(edge.target_paper_id):
+                    self.citations.save(edge)
+        self.database.connection.commit()
+        return tuple(batches)
+
+    def _candidate_depths(
+        self, batches: Sequence[CitationBatch], requests: Sequence[CitationRequest]
+    ) -> dict[str, int]:
+        request_by_run = {f"{batch.source_run_id}": request for batch, request in zip(batches, requests)}
+        depths: dict[str, int] = {}
+        for batch in batches:
+            request = request_by_run[batch.source_run_id]
+            for edge in batch.entries:
+                paper_id = edge.target_paper_id if edge.edge_type is CitationEdgeType.REFERENCES else edge.source_paper_id
+                depths[paper_id] = min(depths.get(paper_id, request.depth), request.depth)
+        return depths
+
+    def _save_round_papers(
+        self, round_id: str, decisions: Mapping[str, FilterStatus], requests: Sequence[CitationRequest]
+    ) -> None:
+        depth = min((request.depth for request in requests), default=0)
+        for paper_id, status in decisions.items():
+            if self.repository.get_paper(paper_id):
+                self.database.connection.execute(
+                    """INSERT INTO search_round_papers(search_round_id, paper_id, depth, first_seen, screening_status)
+                       VALUES (?, ?, ?, 1, ?) ON CONFLICT(search_round_id, paper_id) DO UPDATE SET screening_status = excluded.screening_status""",
+                    (round_id, paper_id, depth, status),
+                )
+        self.database.connection.commit()
+
+    def _audit_round(self, round_id: str, audit: RoundAudit, decision: StopDecision, observed_at: str) -> None:
+        existing = self.database.connection.execute(
+            "SELECT search_round_id FROM search_round_audits WHERE search_round_id = ?", (round_id,)
+        ).fetchone()
+        if not existing:
+            self.rounds.audit(round_id, audit, decision, audited_at=observed_at)
+
+
+Phase2SearchPipeline = SearchPipeline
