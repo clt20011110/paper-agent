@@ -34,7 +34,8 @@ def scope(**changes: object) -> dict[str, object]:
 def grants(tmp_path) -> GrantStore:
     database = Database(tmp_path / "papers.sqlite3")
     database.migrate()
-    return GrantStore(database)
+    yield GrantStore(database)
+    database.close()
 
 
 def approved(grants: GrantStore, **changes: object) -> dict[str, object]:
