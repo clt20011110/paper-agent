@@ -1,0 +1,22 @@
+{
+  "constraints": [
+    "one request",
+    "page_size=1",
+    "no credentials",
+    "no PDF",
+    "no volatile totals"
+  ],
+  "evidence": {
+    "api_url": "https://api.crossref.org/works?query=machine+learning&rows=1",
+    "mapped_entries": 1,
+    "provider": "crossref",
+    "response_sha256": "de38476f4cb7fa581330ec838e492d516dce9e6f49373209d478d39b6936b4d4",
+    "schema_minimum": [
+      "DOI",
+      "title"
+    ],
+    "timestamp": "2026-08-09T15:18:13+00:00"
+  },
+  "phase": 2,
+  "purpose": "controlled public metadata smoke"
+}
