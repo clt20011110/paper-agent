@@ -499,14 +499,15 @@ class SearchPipeline:
             )
             round_id = self.rounds.freeze(crawl_run_id=crawl_run_id, round_index=round_index, seeds=seeds, requests=requests)
             round_ids.append(round_id)
-            batches, time_exhausted = self._execute_citation_requests(
+            batches, time_exhausted, requests_made = self._execute_citation_requests(
                 round_id,
                 requests,
                 observed_at,
+                request_budget=max(0, max_requests - used_requests),
                 candidate_budget=max(0, max_candidates - used_candidates),
                 deadline=deadline,
             )
-            used_requests += len(requests)
+            used_requests += requests_made
             used_candidates += sum(len(batch.entries) for batch in batches)
             batches = self._canonicalize_citation_batches(batches, requests, observed_at)
             decisions, audit = process_citation_batches(
@@ -567,14 +568,16 @@ class SearchPipeline:
         requests: Sequence[CitationRequest],
         observed_at: str,
         *,
+        request_budget: int,
         candidate_budget: int,
         deadline: float,
-    ) -> tuple[tuple[CitationBatch, ...], bool]:
+    ) -> tuple[tuple[CitationBatch, ...], bool, int]:
         batches: list[CitationBatch] = []
         time_exhausted = False
         remaining = candidate_budget
+        requests_made = 0
         for request in requests:
-            if remaining <= 0 or time.monotonic() >= deadline:
+            if remaining <= 0 or requests_made >= request_budget or time.monotonic() >= deadline:
                 time_exhausted = True
                 self.database.connection.execute(
                     "UPDATE citation_requests SET status = 'skipped_budget', error_json = ? WHERE search_round_id = ? AND schedule_order = ?",
@@ -583,32 +586,85 @@ class SearchPipeline:
                 continue
             client = self.citation_clients[request.provider]
             paper = self.repository.get_paper(request.seed_paper_id)
-            try:
-                operation = client.references if request.direction is CitationEdgeType.REFERENCES else client.citations
-                batch = operation(paper, None)
-            except Exception as error:
-                batch = CitationBatch(
-                    f"{round_id}:{request.schedule_order}", str(request.schedule_order), (), None,
-                    EnvelopeStatus.FAILED, str(error),
+            operation = client.references if request.direction is CitationEdgeType.REFERENCES else client.citations
+            entries = []
+            cursor = None
+            seen_cursors: set[str] = set()
+            status = EnvelopeStatus.SUCCESS
+            error_message = None
+            budget_cutoff = False
+            query_hash = str(request.schedule_order)
+            raw_response_artifact_hash = None
+            while len(entries) < min(request.max_candidates, remaining):
+                if requests_made >= request_budget or time.monotonic() >= deadline:
+                    time_exhausted = True
+                    budget_cutoff = True
+                    break
+                try:
+                    page = operation(paper, cursor)
+                except Exception as error:
+                    page = CitationBatch(
+                        f"{round_id}:{request.schedule_order}",
+                        query_hash,
+                        (),
+                        None,
+                        EnvelopeStatus.FAILED,
+                        str(error),
+                    )
+                requests_made += 1
+                query_hash = page.query_hash
+                raw_response_artifact_hash = page.raw_response_artifact_hash
+                capacity = min(request.max_candidates, remaining) - len(entries)
+                entries.extend(
+                    replace(
+                        edge,
+                        raw_evidence={
+                            **edge.raw_evidence,
+                            "raw_response_artifact_hash": page.raw_response_artifact_hash,
+                        },
+                    )
+                    for edge in page.entries[:capacity]
                 )
-            batch = replace(
-                batch,
+                if page.status is EnvelopeStatus.FAILED or page.error:
+                    status = EnvelopeStatus.PARTIAL if entries else EnvelopeStatus.FAILED
+                    error_message = page.error or "citation page failed"
+                    break
+                cursor = page.next_cursor
+                if not cursor or len(entries) >= min(request.max_candidates, remaining):
+                    break
+                if cursor in seen_cursors:
+                    status = EnvelopeStatus.PARTIAL if entries else EnvelopeStatus.FAILED
+                    error_message = f"provider {request.provider} repeated cursor {cursor}"
+                    break
+                seen_cursors.add(cursor)
+            batch = CitationBatch(
                 source_run_id=f"{round_id}:{request.schedule_order}",
-                entries=tuple(batch.entries[: min(request.max_candidates, remaining)]),
+                query_hash=query_hash,
+                entries=tuple(entries),
+                next_cursor=cursor,
+                status=status,
+                error=error_message,
+                raw_response_artifact_hash=raw_response_artifact_hash,
             )
             remaining -= len(batch.entries)
             batches.append(batch)
             self.database.connection.execute(
                 "UPDATE citation_requests SET status = ?, error_json = ? WHERE search_round_id = ? AND schedule_order = ?",
                 (
-                    "failed" if batch.status is EnvelopeStatus.FAILED else "complete",
-                    json.dumps({"message": batch.error}) if batch.error else None,
+                    "skipped_budget"
+                    if budget_cutoff
+                    else "failed"
+                    if batch.status is EnvelopeStatus.FAILED
+                    else "complete",
+                    json.dumps({"message": batch.error or "request budget exhausted"})
+                    if batch.error or budget_cutoff
+                    else None,
                     round_id,
                     request.schedule_order,
                 ),
             )
         self.database.connection.commit()
-        return tuple(batches), time_exhausted
+        return tuple(batches), time_exhausted, requests_made
 
     def _canonicalize_citation_batches(
         self,
@@ -652,6 +708,9 @@ class SearchPipeline:
                     edge_type=request.direction,
                     observed_at=edge.observed_at or observed_at,
                     raw_evidence={
+                        **edge.raw_evidence,
+                        "provider_native_source_id": edge.source_paper_id,
+                        "provider_native_target_id": edge.target_paper_id,
                         "citation_source_run_id": batch.source_run_id,
                         "raw_response_artifact_hash": batch.raw_response_artifact_hash,
                     },

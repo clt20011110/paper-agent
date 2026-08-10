@@ -223,6 +223,8 @@ def test_semantic_scholar_native_citation_wrappers_preserve_direction() -> None:
     )
     assert citing.next_cursor == "100"
     assert citing.entries[0].raw_evidence["contexts"] == ["Prior context"]
+    assert cited.entries[0].candidate.external_id == "s2-cited-paper"
+    assert citing.entries[0].candidate.external_id == "s2-citing-paper"
 
 
 def test_openalex_native_work_mapping_and_cursor() -> None:

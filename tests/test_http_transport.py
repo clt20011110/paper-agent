@@ -27,6 +27,12 @@ class Response:
         return None
 
 
+@pytest.fixture(autouse=True)
+def required_metadata_credentials(monkeypatch) -> None:
+    monkeypatch.setenv("OPENALEX_API_KEY", "openalex-test-key")
+    monkeypatch.setenv("UNPAYWALL_EMAIL", "operator@example.test")
+
+
 def test_crossref_request_sets_contact_timeout_and_response_artifact() -> None:
     calls = []
 
@@ -132,6 +138,29 @@ def test_openalex_citations_resolve_external_id_before_filtering() -> None:
     assert "filter=cites%3AW42" in urls[1]
 
 
+def test_openalex_references_batch_resolve_candidate_metadata() -> None:
+    urls: list[str] = []
+
+    def opener(request, timeout):
+        urls.append(request.full_url)
+        if "/works/doi:" in request.full_url:
+            return Response(
+                b'{"id":"https://openalex.org/W1","referenced_works":["https://openalex.org/W2"]}',
+                {"Content-Type": "application/json"},
+            )
+        return Response(
+            b'{"meta":{},"results":[{"id":"https://openalex.org/W2","title":"Cited","ids":{"openalex":"https://openalex.org/W2"},"authorships":[]}]}',
+            {"Content-Type": "application/json"},
+        )
+
+    payload = ControlledHTTPTransport("operator@example.test", opener=opener)(
+        "openalex", "references", {"doi": "10.1/example"}
+    )
+
+    assert "filter=openalex%3AW2" in urls[1]
+    assert payload["results"][0]["title"] == "Cited"
+
+
 def test_pubmed_search_uses_esearch_then_esummary_without_full_text() -> None:
     urls: list[str] = []
 
@@ -190,20 +219,18 @@ def test_transport_uses_injected_runtime_for_retries() -> None:
 
 def test_declared_environment_credentials_are_routed_without_scanning_environment() -> None:
     calls = []
-    environment = {"S2_KEY": "s2-secret", "OA_KEY": "oa-secret", "UNPAYWALL_EMAIL": "oa@example.test", "UNDECLARED": "never"}
+    environment = {
+        "SEMANTIC_SCHOLAR_API_KEY": "s2-secret",
+        "OPENALEX_API_KEY": "oa-secret",
+        "UNPAYWALL_EMAIL": "oa@example.test",
+        "UNDECLARED": "never",
+    }
 
     def opener(request, timeout):
         calls.append(request)
         return Response(b"{}", {"Content-Type": "application/json"})
 
     transport = ControlledHTTPTransport("operator@example.test", opener=opener, environment=environment)
-    transport._credential_envs.update(
-        {
-            "semantic_scholar": {"api_key": "S2_KEY"},
-            "openalex": {"api_key": "OA_KEY"},
-            "unpaywall": {"email": "UNPAYWALL_EMAIL"},
-        }
-    )
 
     transport("semantic_scholar", "search", {"query": "x"})
     transport("openalex", "search", {"search": "x"})

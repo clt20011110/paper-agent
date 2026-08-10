@@ -3,13 +3,15 @@ provider: pubmed
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.providers.builtin:PubMedProvider
-artifact_sha256: 4fcd8239800d3f382c81815aef2da062e4c927a304437e26c5b1559046798ff4
+artifact_sha256: aceab59f342b9ec92362981fc419be027290b2ef2c1cb451339679437fed0917
 enabled: true
 builtin: true
 authority: domain_authority
 roles: [search, metadata_enricher, metadata_verifier]
 capabilities: [stable_id, metadata, abstract, date_filter]
-authentication: {required: false}
+authentication:
+  required: false
+  credential_envs: {api_key: NCBI_API_KEY, tool: NCBI_TOOL, email: NCBI_EMAIL}
 rate_limit: {global_qps: 3, max_concurrency: 3, cache_ttl_seconds: 3600}
 terms: {data_use: permitted, url: https://www.ncbi.nlm.nih.gov/home/about/policies/}
 independence_group: pubmed

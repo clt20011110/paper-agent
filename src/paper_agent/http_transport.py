@@ -242,7 +242,7 @@ class ControlledHTTPTransport:
 
         if provider == "unpaywall" and operation == "resolve":
             doi = _required(parameters, "doi", "Unpaywall resolve")
-            email = self.contact.removeprefix("mailto:")
+            email = self._credentials("unpaywall").get("email") or self.contact.removeprefix("mailto:")
             if "@" not in email:
                 raise ValueError("Unpaywall requires an operator email contact")
             return _url(f"https://api.unpaywall.org/v2/{quote(str(doi), safe='')}", {"email": email})
@@ -282,11 +282,27 @@ class ControlledHTTPTransport:
         return summary, (search_response.body, summary_response.body)
 
     def _openalex_references(self, parameters: Mapping[str, Any]) -> tuple[Mapping[str, Any], tuple[bytes, ...]]:
-        response = self._fetch("openalex", self._url("openalex", "enrich", parameters))
-        payload = self._decode(response.body, response.content_type)
-        if not isinstance(payload, dict):
+        work_response = self._fetch("openalex", self._url("openalex", "enrich", parameters))
+        work = self._decode(work_response.body, work_response.content_type)
+        if not isinstance(work, dict):
             raise ProviderRequestError("openalex: work response must be an object")
-        return {"referenced_works": payload.get("referenced_works", ())}, (response.body,)
+        references = tuple(str(value) for value in work.get("referenced_works", ()))
+        start = int(parameters.get("cursor") or 0)
+        identifiers = tuple(value.rsplit("/", 1)[-1] for value in references[start : start + 100])
+        if not identifiers:
+            return {"results": []}, (work_response.body,)
+        references_response = self._fetch(
+            "openalex",
+            _url(
+                "https://api.openalex.org/works",
+                {"filter": f"openalex:{'|'.join(identifiers)}", "per-page": len(identifiers)},
+            ),
+        )
+        payload = self._decode(references_response.body, references_response.content_type)
+        if not isinstance(payload, dict):
+            raise ProviderRequestError("openalex: referenced works response must be an object")
+        next_cursor = str(start + len(identifiers)) if start + len(identifiers) < len(references) else None
+        return {**payload, "next_cursor": next_cursor}, (work_response.body, references_response.body)
 
     def _openalex_citations(self, parameters: Mapping[str, Any]) -> tuple[Mapping[str, Any], tuple[bytes, ...]]:
         work_response = self._fetch("openalex", self._url("openalex", "enrich", parameters))

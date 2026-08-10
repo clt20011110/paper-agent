@@ -72,6 +72,10 @@ def manifest_from_document(document: Mapping[str, Any]) -> ProviderManifest:
     rate_limit = document["rate_limit"]
     from paper_agent.providers.api import CredentialPolicy, RateLimitPolicy
 
+    credential_names = authentication.get("credential_envs", {}).values()
+    if "credential_env" in authentication:
+        credential_names = (*credential_names, authentication["credential_env"])
+
     return ProviderManifest(
         provider=str(document["provider"]),
         version=str(document["version"]),
@@ -86,7 +90,7 @@ def manifest_from_document(document: Mapping[str, Any]) -> ProviderManifest:
         authority=str(document["authority"]),
         credential_policy=CredentialPolicy(
             required=bool(authentication["required"]),
-            environment_variables=(authentication["credential_env"],) if "credential_env" in authentication else (),
+            environment_variables=tuple(sorted(str(name) for name in credential_names)),
         ),
         rate_limit_policy=RateLimitPolicy(
             queries_per_second=float(rate_limit["global_qps"]),
@@ -546,7 +550,15 @@ class BuiltinProvider:
         capability = ProviderCapability.REFERENCES if direction is CitationEdgeType.REFERENCES else ProviderCapability.CITATIONS
         self._require(ProviderRole.CITATION, capability)
         operation = "references" if direction is CitationEdgeType.REFERENCES else "citations"
-        payload = self._request(operation, {"paper_id": seed.paper_id, "doi": seed.doi, "cursor": cursor})
+        payload = self._request(
+            operation,
+            {
+                "paper_id": seed.paper_id,
+                "doi": seed.doi,
+                "arxiv_id": seed.arxiv_id,
+                "cursor": cursor,
+            },
+        )
         edges = []
         records = _records(payload)
         if (
@@ -569,6 +581,8 @@ class BuiltinProvider:
                 if direction is CitationEdgeType.REFERENCES
                 else (str(result_id), seed.paper_id)
             )
+            title = _text(paper_record.get("title") or paper_record.get("display_name"))
+            candidate = _source_entry(self.provider, paper_record) if title else None
             edges.append(
                 CitationEdge(
                     source_paper_id=source_id,
@@ -577,6 +591,7 @@ class BuiltinProvider:
                     provider=self.provider,
                     observed_at=str(record.get("observed_at") or payload.get("observed_at") or ""),
                     raw_evidence=dict(record),
+                    candidate=candidate,
                 )
             )
         batch = CitationBatch(

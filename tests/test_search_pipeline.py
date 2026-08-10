@@ -380,8 +380,77 @@ def test_citation_candidate_is_canonicalized_ingested_screened_and_persisted(tmp
 
     assert pipeline.screener.screened == [discovered]
     assert tuple(edge[:2]) == (root.paper_id, discovered)
-    assert "W-native-only" not in edge[2]
+    assert "W-native-only" in edge[2]
     assert tuple(round_paper) == (1, "q", "irrelevant")
+
+
+def test_citation_pages_consume_the_global_request_budget(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex", ["search", "citation"])],
+        required=["openalex"],
+        max_requests=3,
+        max_candidates=10,
+        citation_cap=5,
+    )
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class PaginatedCitationFixture:
+        reference_cursors: list[str | None] = []
+
+        def citations(self, seed, cursor):
+            return CitationBatch("fixture", "cites", (), None, EnvelopeStatus.SUCCESS)
+
+        def references(self, seed, cursor):
+            self.reference_cursors.append(cursor)
+            number = 1 if cursor is None else 2
+            return CitationBatch(
+                "fixture",
+                f"refs-{number}",
+                (
+                    CitationEdge(
+                        seed.paper_id,
+                        f"native-{number}",
+                        CitationEdgeType.REFERENCES,
+                        "openalex",
+                        NOW,
+                        candidate=SourceEntry(
+                            "openalex",
+                            f"native-{number}",
+                            f"Candidate {number}",
+                            ("Ada",),
+                            doi=f"10.1000/page-{number}",
+                            year=2024,
+                        ),
+                    ),
+                ),
+                "next" if cursor is None else None,
+                EnvelopeStatus.SUCCESS,
+            )
+
+    client = PaginatedCitationFixture()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database,
+            plan,
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
+            trusts={"openalex": _trust("openalex")},
+            citation_clients={"openalex": client},
+            screener=DeterministicFakeScreener(frozenset()),
+        )
+        root = pipeline.repository.ingest(
+            SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)
+        )
+        pipeline.run(
+            run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id]
+        )
+
+        assert database.connection.execute("SELECT COUNT(*) FROM citation_edges").fetchone()[0] == 2
+        assert database.connection.execute(
+            "SELECT stop_reason FROM search_rounds"
+        ).fetchone()[0] == "budget_exhausted"
+
+    assert client.reference_cursors == [None, "next"]
 
 
 def test_citation_depth_propagates_to_a_second_round_and_global_candidate_cap_stops(tmp_path) -> None:
