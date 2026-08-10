@@ -171,7 +171,9 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
         StageKind.SEARCH: SearchStageAdapter(search_runner),
         StageKind.FILTER: FilterStageAdapter(filter_runner),
         StageKind.DOWNLOAD: DownloadStageAdapter(lambda *_args: FakeDownloadService()),
-        StageKind.ANALYZE: AnalyzeStageAdapter(lambda *_args: FakeAnalysisService()),
+        StageKind.ANALYZE: AnalyzeStageAdapter(
+            lambda *_args, **_options: FakeAnalysisService()
+        ),
         StageKind.REPORT: ReportStageAdapter(lambda *_args: FakeReportService()),
     }
     assert isinstance(adapters[StageKind.SEARCH], SearchStageAdapter)

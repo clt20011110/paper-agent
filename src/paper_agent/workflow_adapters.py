@@ -18,6 +18,7 @@ import sysconfig
 from typing import Any, TypeVar, cast
 from uuid import NAMESPACE_URL, uuid5
 
+from .analysis import load_analysis_output_schema
 from .analysis_cli_service import AnalysisCliService, load_analysis_input_manifest
 from .artifacts import ArtifactStore
 from .canonical import content_hash
@@ -274,7 +275,14 @@ class DownloadStageAdapter(_WorkflowAdapter):
         })
 
 
-AnalysisServiceFactory = Callable[[Database, ArtifactStore, ArtifactProcessingPolicy], Any]
+AnalysisServiceFactory = Callable[..., Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _AnalysisRuntime:
+    workers: int
+    allow_abstract_only: bool
+    output_schema_path: Path
 
 
 class AnalyzeStageAdapter(_WorkflowAdapter):
@@ -287,6 +295,8 @@ class AnalyzeStageAdapter(_WorkflowAdapter):
     def _validate_dry_inputs(self, context: StepContext, spec: AnalyzeStep) -> None:
         config = load_config(context.config_path)
         load_analysis_input_manifest(spec.selection.resolved_path)
+        runtime = _analysis_runtime(config, context.config_path)
+        load_analysis_output_schema(runtime.output_schema_path)
         ArtifactProcessingPolicy.load(_policy_path(
             spec.policy.resolved_path if spec.policy else None,
             config,
@@ -306,11 +316,19 @@ class AnalyzeStageAdapter(_WorkflowAdapter):
         del identity
         manifest = load_analysis_input_manifest(spec.selection.resolved_path)
         config = load_config(context.config_path)
+        runtime = _analysis_runtime(config, context.config_path)
         policy = ArtifactProcessingPolicy.load(_policy_path(
             spec.policy.resolved_path if spec.policy else None, config, context.config_path, "analysis",
         ))
         with _database(context) as database:
-            service = self.service_factory(database, ArtifactStore(_artifact_root(context)), policy)
+            service = self.service_factory(
+                database,
+                ArtifactStore(_artifact_root(context)),
+                policy,
+                workers=runtime.workers,
+                allow_abstract_only=runtime.allow_abstract_only,
+                output_schema_path=runtime.output_schema_path,
+            )
             result = service.run(
                 context.child_run_id,
                 manifest,
@@ -463,8 +481,30 @@ def _download_service(
 
 def _analysis_service(
     database: Database, artifact_store: ArtifactStore, policy: ArtifactProcessingPolicy,
+    *, workers: int, allow_abstract_only: bool, output_schema_path: Path,
 ) -> AnalysisCliService:
-    return AnalysisCliService(database, artifact_store, policy, grants=GrantStore(database))
+    return AnalysisCliService(
+        database,
+        artifact_store,
+        policy,
+        grants=GrantStore(database),
+        workers=workers,
+        allow_abstract_only=allow_abstract_only,
+        output_schema_path=output_schema_path,
+    )
+
+
+def _analysis_runtime(
+    config: Mapping[str, Any], config_path: Path,
+) -> _AnalysisRuntime:
+    analysis = cast(Mapping[str, Any], config["analysis"])
+    return _AnalysisRuntime(
+        workers=cast(int, analysis["workers"]),
+        allow_abstract_only=cast(bool, analysis["allow_abstract_only"]),
+        output_schema_path=_resource_path(
+            config_path, Path(str(analysis["output_schema"]))
+        ),
+    )
 
 
 def _report_service(
@@ -590,7 +630,10 @@ def _policy_path(
         configured = config[section]["remote_model_processing"]["policy_matrix"]
     except (KeyError, TypeError) as error:
         raise ValueError(f"workflow {section} stage requires an explicit processing policy") from error
-    path = Path(str(configured))
+    return _resource_path(config_path, Path(str(configured)))
+
+
+def _resource_path(config_path: Path, path: Path) -> Path:
     if path.is_absolute():
         return path
     configured_path = config_path.parent / path

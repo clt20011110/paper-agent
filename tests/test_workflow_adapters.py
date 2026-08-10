@@ -74,6 +74,7 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
     corpus = _write(tmp_path, "corpus.json", {"corpus": "frozen"})
     audit = _write(tmp_path, "audit.json", {"audit": "frozen"})
     calls: list[tuple[str, Any]] = []
+    analysis_factory_options: list[Mapping[str, Any]] = []
     report_factory_args: list[tuple[Any, ...]] = []
     report_runtime_checks: list[tuple[Mapping[str, Any], str]] = []
 
@@ -107,7 +108,8 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
                 result=SimpleNamespace(papers=(SimpleNamespace(status="complete"),)),
             )
 
-    def analysis_factory(*_args):
+    def analysis_factory(*_args, **options):
+        analysis_factory_options.append(options)
         return AnalysisService()
 
     @dataclass
@@ -132,7 +134,14 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
     )
     monkeypatch.setattr(
         "paper_agent.workflow_adapters.load_config",
-        lambda _path: {"project": {"output_dir": str(report_root)}},
+        lambda _path: {
+            "project": {"output_dir": str(report_root)},
+            "analysis": {
+                "workers": 7,
+                "allow_abstract_only": False,
+                "output_schema": "./schemas/paper-analysis.schema.json",
+            },
+        },
     )
     monkeypatch.setattr(
         "paper_agent.workflow_adapters._report_runtime_config",
@@ -168,6 +177,11 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
     assert calls[1][1]["campaign_id"] == "workflow-7:step"
     assert calls[2][1]["run_id"] == "workflow-7:step"
     assert calls[3][1][0] == "workflow-7:step"
+    assert analysis_factory_options == [{
+        "workers": 7,
+        "allow_abstract_only": False,
+        "output_schema_path": ROOT / "schemas" / "paper-analysis.schema.json",
+    }]
     assert calls[4][1][:2] == ("workflow-7:step", "workflow-7:step")
     assert calls[4][1][3]["processing_grants"] == {"a" * 64: "grant-7"}
     assert report_factory_args[0][1].root == report_root
@@ -292,7 +306,16 @@ def test_analyze_adapter_propagates_terminal_pipeline_failure(tmp_path: Path, mo
         "schema_version": "1", "paper_ids": ["paper-1"], "stage3_artifact_ids": [],
     })
     spec = AnalyzeStep("step", selection, None, policy)
-    monkeypatch.setattr("paper_agent.workflow_adapters.load_config", lambda _path: {})
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {
+            "analysis": {
+                "workers": 3,
+                "allow_abstract_only": True,
+                "output_schema": "./schemas/paper-analysis.schema.json",
+            },
+        },
+    )
 
     class FailedAnalysisService:
         def run(self, run_id: str, manifest: Any, **kwargs: Any) -> SimpleNamespace:
@@ -316,7 +339,9 @@ def test_analyze_adapter_propagates_terminal_pipeline_failure(tmp_path: Path, mo
     )
     database.connection.commit()
     try:
-        adapter = AnalyzeStageAdapter(lambda *_args: FailedAnalysisService())
+        adapter = AnalyzeStageAdapter(
+            lambda *_args, **_options: FailedAnalysisService()
+        )
         outcome = adapter.execute(context, spec, adapter.validate(context, spec))
         assert outcome.status == "uncertain_terminal"
         assert outcome.payload["pipeline_status"] == "failed"
