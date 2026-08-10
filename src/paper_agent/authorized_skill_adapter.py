@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import urlsplit
 
 from .authorized_skill_runtime import AuthorizedSkillDoctorResult
 from .domain import AccessLocationCandidate, DownloadResult, FetchDecision, FetchDecisionStatus, FetchRequest
@@ -27,6 +28,11 @@ from .downloads import DownloadService, HTTPResponse
 
 
 FINAL_SKILL_STATUSES = frozenset({"complete", "complete_no_si"})
+AUTHORIZED_PUBLISHER_HOSTS = {
+    "wiley": frozenset({"onlinelibrary.wiley.com"}),
+    "nature": frozenset({"nature.com", "www.nature.com"}),
+    "acs": frozenset({"pubs.acs.org"}),
+}
 
 
 class AuthorizedSkillAdapterError(ValueError):
@@ -61,9 +67,13 @@ class AuthorizedSkillQueue:
         self.csv_path = Path(csv_path)
         self.output_dir = Path(output_dir)
         self.runner = runner
+        self._frozen_sha256: str | None = None
 
     def prepare(self, items: Sequence[SkillQueueItem]) -> None:
-        ordered = tuple(sorted(items, key=lambda item: item.paper_id))
+        ordered = tuple(sorted(
+            (_validated_queue_item(item) for item in items),
+            key=lambda item: item.paper_id,
+        ))
         if not ordered or len({item.paper_id for item in ordered}) != len(ordered):
             raise AuthorizedSkillAdapterError("authorized queue requires unique papers")
         if len({item.url for item in ordered}) != len(ordered):
@@ -73,18 +83,37 @@ class AuthorizedSkillQueue:
         writer.writeheader()
         for item in ordered:
             writer.writerow({
-                "doi": _canonical_doi(item.doi), "url": item.url,
+                "doi": item.doi, "url": item.url,
                 "title": item.title, "paper_id": item.paper_id,
             })
         payload = buffer.getvalue()
+        payload_hash = sha256(payload.encode("utf-8")).hexdigest()
         if self.csv_path.is_file():
             if self.csv_path.read_text(encoding="utf-8") != payload:
                 raise AuthorizedSkillAdapterError("authorized queue is immutable after creation")
+            self._frozen_sha256 = payload_hash
+            os.chmod(self.csv_path, 0o444)
             return
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         part = self.csv_path.with_suffix(self.csv_path.suffix + ".part")
         part.write_text(payload, encoding="utf-8")
         os.replace(part, self.csv_path)
+        self._frozen_sha256 = payload_hash
+        os.chmod(self.csv_path, 0o444)
+
+    def frozen_items(self) -> tuple[SkillQueueItem, ...]:
+        """Return the validated immutable queue in its canonical order."""
+
+        items = tuple(_validated_queue_item(SkillQueueItem(
+            row["paper_id"], row["doi"], row["url"], row.get("title", "")
+        )) for row in self._rows())
+        if len({item.paper_id for item in items}) != len(items):
+            raise AuthorizedSkillAdapterError("authorized queue requires unique papers")
+        if len({item.url for item in items}) != len(items):
+            raise AuthorizedSkillAdapterError(
+                "authorized queue requires unique candidate URLs"
+            )
+        return tuple(sorted(items, key=lambda item: item.paper_id))
 
     def plan(self) -> Mapping[str, Any]:
         return self._command("plan")
@@ -98,6 +127,7 @@ class AuthorizedSkillQueue:
         return tuple(value)
 
     def state_for_url(self, url: str) -> tuple[str, str]:
+        self._require_frozen_payload()
         row = self._row_for_url(url)
         if _platform(row["doi"]) == "unsupported":
             return "manual", "authorized_skill_publisher_unsupported"
@@ -110,6 +140,7 @@ class AuthorizedSkillQueue:
         return "ready", "authorized_skill_article_staged"
 
     def fetch_response(self, url: str) -> HTTPResponse:
+        self._require_frozen_payload()
         row = self._row_for_url(url)
         event = self._latest_ledger().get(row["doi"].lower())
         if event is None or event.get("status") not in FINAL_SKILL_STATUSES:
@@ -118,6 +149,7 @@ class AuthorizedSkillQueue:
         return HTTPResponse(200, {"Content-Type": "application/pdf"}, article.read_bytes(), final_url=url)
 
     def _command(self, command: str, *arguments: str) -> Any:
+        self._require_frozen_payload()
         completed = self.runner(
             [
                 sys.executable, str(self.script), command,
@@ -135,10 +167,23 @@ class AuthorizedSkillQueue:
 
     def _rows(self) -> tuple[dict[str, str], ...]:
         with self.csv_path.open("r", encoding="utf-8", newline="") as handle:
-            rows = tuple(dict(row) for row in csv.DictReader(handle))
-        if not rows or any(not row.get("doi") or not row.get("url") for row in rows):
+            reader = csv.DictReader(handle)
+            if tuple(reader.fieldnames or ()) != ("doi", "url", "title", "paper_id"):
+                raise AuthorizedSkillAdapterError("authorized queue CSV is invalid")
+            rows = tuple(dict(row) for row in reader)
+        if not rows or any(
+            not row.get("doi") or not row.get("url") or not row.get("paper_id")
+            for row in rows
+        ):
             raise AuthorizedSkillAdapterError("authorized queue CSV is invalid")
         return rows
+
+    def _require_frozen_payload(self) -> None:
+        if self._frozen_sha256 is None or not self.csv_path.is_file():
+            raise AuthorizedSkillAdapterError("authorized queue was not prepared")
+        if sha256(self.csv_path.read_bytes()).hexdigest() != self._frozen_sha256:
+            raise AuthorizedSkillAdapterError("authorized queue changed after approval")
+        self.frozen_items()
 
     def _row_for_url(self, url: str) -> dict[str, str]:
         matches = [row for row in self._rows() if row["url"] == url]
@@ -240,6 +285,33 @@ def _platform(doi: str) -> str:
     if value.startswith("10.1021/"):
         return "acs"
     return "unsupported"
+
+
+def authorized_publisher_host_matches(doi: str, host: str | None) -> bool:
+    """Bind the optional queue URL to the skill's audited DOI publisher."""
+
+    if host is None:
+        return False
+    return host.lower().rstrip(".") in AUTHORIZED_PUBLISHER_HOSTS.get(
+        _platform(doi), frozenset()
+    )
+
+
+def _validated_queue_item(item: SkillQueueItem) -> SkillQueueItem:
+    doi = _canonical_doi(item.doi)
+    parsed = urlsplit(item.url)
+    if (
+        not item.paper_id
+        or parsed.scheme != "https"
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or not authorized_publisher_host_matches(doi, parsed.hostname)
+    ):
+        raise AuthorizedSkillAdapterError(
+            "authorized queue URL does not match the DOI publisher"
+        )
+    return SkillQueueItem(item.paper_id, doi, item.url, item.title)
 
 
 def _safe_dir_name(index: int, doi: str) -> str:

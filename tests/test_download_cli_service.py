@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+import csv
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from paper_agent.download_cli_service import (
 )
 from paper_agent.download_providers import DEFAULT_PROVIDER_ORDER, DEFAULT_RESOLVER_ORDER
 from paper_agent.downloads import HTTPResponse, ProviderTerms
+from paper_agent.grants import GrantError
 from paper_agent.repository import PaperRepository
 from paper_agent.storage import Database
 
@@ -110,6 +112,7 @@ def _paper(
     doi: str | None = None,
     paper_id: str = "paper-1",
     abstract: str | None = None,
+    url: str = "https://publisher.example/paper.pdf",
 ) -> str:
     repository = PaperRepository(database)
     paper = repository.save_paper(
@@ -117,8 +120,8 @@ def _paper(
     )
     repository.upsert_source(PaperSource(
         f"source-{paper_id}", paper.paper_id, "publisher", paper_id,
-        landing_url="https://publisher.example/paper",
-        pdf_url="https://publisher.example/paper.pdf",
+        landing_url=url.removesuffix(".pdf"),
+        pdf_url=url,
         publication_version=PublicationVersion.PUBLISHED,
         license=license,
         access_basis=access_basis,
@@ -222,6 +225,30 @@ def test_no_grant_never_fetches_restricted_candidate(
     ).fetchone()[0] == 1
 
 
+def test_public_download_grant_runs_only_after_the_oa_pass(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+    )
+    _approved_authorized_grant(
+        database, paper_id, provider="public_direct",
+    )
+    fetcher = Fetcher()
+
+    result = _service(tmp_path, database, fetcher, terms=_terms()).run(
+        paper_ids=[paper_id], authorization_grant_id="download-grant",
+    )
+
+    assert result.status == "complete"
+    assert fetcher.calls == ["https://publisher.example/paper.pdf"]
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM manual_queue WHERE queue_type = 'download'"
+    ).fetchone()[0] == 0
+
+
 def test_dry_run_probes_and_validates_without_persisting_or_fetching(
     tmp_path: Path, database: Database,
 ) -> None:
@@ -237,6 +264,31 @@ def test_dry_run_probes_and_validates_without_persisting_or_fetching(
     assert fetcher.calls == []
     assert database.connection.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 0
     assert database.connection.execute("SELECT COUNT(*) FROM download_candidates").fetchone()[0] == 0
+
+
+def test_dry_run_rejects_a_supplied_unknown_authorized_grant(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/example",
+        url="https://www.nature.com/articles/example.pdf",
+    )
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(tmp_path / "missing-skill",),
+    )
+
+    with pytest.raises(GrantError, match="not found"):
+        _service(tmp_path, database, Fetcher(), authorized=True).run(
+            paper_ids=[paper_id],
+            authorization_grant_id="missing-grant",
+            authorized_skill=options,
+            dry_run=True,
+        )
     assert database.connection.execute("SELECT COUNT(*) FROM fetch_requests").fetchone()[0] == 0
     assert not (tmp_path / "output" / "artifacts").exists()
 
@@ -352,7 +404,7 @@ def test_terminal_no_pdf_result_completes_and_resumes_without_refetch(
     assert database.connection.execute(
         "SELECT implementation_version FROM pipeline_runs WHERE run_id = ?",
         (first.run_id,),
-    ).fetchone()[0] == "stage3-cli-v2"
+    ).fetchone()[0] == "stage3-cli-v3"
     assert database.connection.execute(
         "SELECT COUNT(*) FROM download_attempts WHERE run_id = ?",
         (first.run_id,),
@@ -402,8 +454,9 @@ def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
         access_basis=AccessBasis.PUBLIC_READ_ONLY,
         license=None,
         doi="10.1038/example",
+        url="https://www.nature.com/articles/example.pdf",
     )
-    _approved_authorized_grant(database, paper_id)
+    _approved_authorized_grant(database, paper_id, domain="www.nature.com")
     installed = tmp_path / "installed-skill"
     (installed / "scripts").mkdir(parents=True)
     (installed / "scripts" / "paper_queue.py").write_text("# fixture\n", encoding="utf-8")
@@ -422,9 +475,12 @@ def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
             return ready
 
     monkeypatch.setattr("paper_agent.download_cli_service.AuthorizedSkillRuntime", Runtime)
-    terms = {"public_direct": _terms(), "authorized_skill": ProviderTerms(
+    terms = {"public_direct": ProviderTerms(
+        "public_direct", "test-v1", "https://www.nature.com/info/tandc.html",
+        True, True, True, domain_allowlist=("www.nature.com",),
+    ), "authorized_skill": ProviderTerms(
         "authorized_skill", "test-v1", "https://publisher.example/terms", True, True, True,
-        domain_allowlist=("publisher.example",),
+        domain_allowlist=("www.nature.com",),
     )}
     planner = FakeAuthorizedLunaPlanner(calls=[])
     service = _service(
@@ -478,8 +534,9 @@ def test_authorized_luna_manual_decision_is_durable(tmp_path: Path, database: Da
         access_basis=AccessBasis.PUBLIC_READ_ONLY,
         license=None,
         doi="10.1038/example",
+        url="https://www.nature.com/articles/example.pdf",
     )
-    _approved_authorized_grant(database, paper_id)
+    _approved_authorized_grant(database, paper_id, domain="www.nature.com")
     installed = tmp_path / "installed-skill"
     (installed / "scripts").mkdir(parents=True)
     (installed / "scripts" / "paper_queue.py").write_text("# fixture\n", encoding="utf-8")
@@ -502,7 +559,7 @@ def test_authorized_luna_manual_decision_is_durable(tmp_path: Path, database: Da
     service = _service(tmp_path, database, Fetcher(), terms=None, authorized=True, planner=planner)
     service.provider_terms["authorized_skill"] = ProviderTerms(
         "authorized_skill", "test-v1", "https://publisher.example/terms", True, True, True,
-        domain_allowlist=("publisher.example",),
+        domain_allowlist=("www.nature.com",),
     )
     options = AuthorizedSkillHandoffOptions(
         queue_path=tmp_path / "handoff" / "papers.csv",
@@ -525,19 +582,462 @@ def test_authorized_luna_manual_decision_is_durable(tmp_path: Path, database: Da
     assert tuple(decision) == ("complete", 0, "authorized_handoff_deferred")
 
 
-def test_download_service_uses_injected_clock_for_grant_expiry(
-    tmp_path: Path, database: Database,
+def test_authorized_queue_is_created_after_public_pass_excludes_public_success_and_resumes(
+    tmp_path: Path, database: Database, monkeypatch
+) -> None:
+    queue_path = tmp_path / "handoff" / "papers.csv"
+    open_paper = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+        doi="10.1038/open",
+        paper_id="paper-open",
+        url="https://www.nature.com/articles/open.pdf",
+    )
+    restricted_paper = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/restricted",
+        paper_id="paper-restricted",
+        url="https://www.nature.com/articles/restricted.pdf",
+    )
+    _approved_authorized_grant(
+        database,
+        (open_paper, restricted_paper),
+        domain="www.nature.com",
+        max_papers=2,
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+
+    class QueueObservingFetcher(Fetcher):
+        def __call__(self, url: str) -> HTTPResponse:
+            assert not queue_path.exists()
+            return super().__call__(url)
+
+    fetcher = QueueObservingFetcher()
+    planner = FakeAuthorizedLunaPlanner(calls=[])
+    service = _service(
+        tmp_path, database, fetcher, authorized=True, planner=planner,
+    )
+    service.provider_terms.update(_nature_terms())
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=queue_path,
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+
+    waiting = service.run(
+        paper_ids=[open_paper, restricted_paper],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert waiting.status == "manual_required"
+    with queue_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["paper_id"] for row in rows] == [restricted_paper]
+    assert fetcher.calls == ["https://www.nature.com/articles/open.pdf"]
+    database.connection.execute(
+        """INSERT INTO download_candidates(
+               candidate_id, paper_id, resolver, url, landing_url,
+               publication_version, host, license, access_basis, retrieved_at,
+               raw_evidence_hash, provenance_json
+           ) SELECT 'candidate-duplicate', paper_id, 'unpaywall', url, landing_url,
+                    publication_version, host, license, access_basis, retrieved_at,
+                    raw_evidence_hash, provenance_json
+             FROM download_candidates
+             WHERE candidate_id = (
+                 SELECT candidate_id FROM authorized_download_queue_reservations
+                 WHERE paper_id = ?
+             )""",
+        (restricted_paper,),
+    )
+    database.connection.commit()
+    _stage_authorized_article(options.output_dir, doi="10.1038/restricted")
+
+    resumed = service.run(
+        paper_ids=[open_paper, restricted_paper],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert resumed.status == "complete"
+    assert resumed.run is not None
+    assert resumed.run.for_paper(open_paper).resumed is True
+    assert resumed.run.for_paper(restricted_paper).status.value == "downloaded"
+    assert fetcher.calls == ["https://www.nature.com/articles/open.pdf"]
+    manual = database.connection.execute(
+        "SELECT status, resolution_json FROM manual_queue WHERE paper_id = ?",
+        (restricted_paper,),
+    ).fetchone()
+    assert manual["status"] == "resolved"
+    assert json.loads(manual["resolution_json"])["status"] == "downloaded"
+
+
+def test_authorized_queue_resume_keeps_completed_rows_in_the_immutable_csv(
+    tmp_path: Path, database: Database, monkeypatch
+) -> None:
+    paper_a = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/a",
+        paper_id="paper-a",
+        url="https://www.nature.com/articles/a.pdf",
+    )
+    paper_b = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/b",
+        paper_id="paper-b",
+        url="https://www.nature.com/articles/b.pdf",
+    )
+    _approved_authorized_grant(
+        database, (paper_a, paper_b), domain="www.nature.com", max_papers=2,
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    planner = FakeAuthorizedLunaPlanner(calls=[])
+    service = _service(
+        tmp_path, database, Fetcher(), authorized=True, planner=planner,
+    )
+    service.provider_terms.update(_nature_terms())
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+
+    waiting = service.run(
+        paper_ids=[paper_a, paper_b],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+    frozen_csv = options.queue_path.read_text(encoding="utf-8")
+    _stage_authorized_article(options.output_dir, doi="10.1038/a", index=1)
+
+    partial = service.run(
+        paper_ids=[paper_a, paper_b],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+    _stage_authorized_article(
+        options.output_dir, doi="10.1038/b", index=2, append=True,
+    )
+    completed = service.run(
+        paper_ids=[paper_a, paper_b],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert waiting.status == partial.status == "manual_required"
+    assert completed.status == "complete"
+    assert completed.run is not None
+    assert completed.run.for_paper(paper_a).resumed is True
+    assert completed.run.for_paper(paper_b).status.value == "downloaded"
+    assert options.queue_path.read_text(encoding="utf-8") == frozen_csv
+    assert {
+        row["paper_id"]: row["status"]
+        for row in database.connection.execute(
+            "SELECT paper_id, status FROM manual_queue"
+        )
+    } == {paper_a: "resolved", paper_b: "resolved"}
+
+
+@pytest.mark.parametrize(
+    ("grant_paper", "grant_domain", "url", "grant_provider"),
+    (
+        (
+            "paper-outside",
+            "www.nature.com",
+            "https://www.nature.com/articles/example.pdf",
+            "authorized_skill",
+        ),
+        (
+            "paper-1",
+            "pubs.acs.org",
+            "https://www.nature.com/articles/example.pdf",
+            "authorized_skill",
+        ),
+        (
+            "paper-1",
+            "onlinelibrary.wiley.com",
+            "https://onlinelibrary.wiley.com/doi/pdf/10.1038/example",
+            "authorized_skill",
+        ),
+        (
+            "paper-1",
+            "www.nature.com",
+            "https://www.nature.com/articles/example.pdf",
+            "unpaywall_location",
+        ),
+    ),
+)
+def test_authorized_queue_rejects_scope_domain_provider_and_doi_publisher_mismatches(
+    tmp_path: Path,
+    database: Database,
+    monkeypatch,
+    grant_paper: str,
+    grant_domain: str,
+    url: str,
+    grant_provider: str,
 ) -> None:
     paper_id = _paper(
-        database, access_basis=AccessBasis.PUBLIC_READ_ONLY, license=None, doi="10.1038/example",
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/example",
+        url=url,
     )
-    _approved_authorized_grant(database, paper_id)
+    _approved_authorized_grant(
+        database,
+        grant_paper,
+        domain=grant_domain,
+        provider=grant_provider,
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    planner = FakeAuthorizedLunaPlanner(calls=[])
     service = _service(
-        tmp_path, database, Fetcher(), terms=_terms(),
+        tmp_path, database, Fetcher(), authorized=True, planner=planner,
+    )
+    host = "onlinelibrary.wiley.com" if "wiley.com" in url else "www.nature.com"
+    service.provider_terms.update(_nature_terms(host=host))
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+
+    result = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert result.status == "manual_required"
+    assert not options.queue_path.exists()
+    assert planner.calls == []
+
+
+def test_authorized_queue_enforces_grant_max_papers_before_planning(
+    tmp_path: Path, database: Database, monkeypatch
+) -> None:
+    paper_a = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/a",
+        paper_id="paper-a",
+        url="https://www.nature.com/articles/a.pdf",
+    )
+    paper_b = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/b",
+        paper_id="paper-b",
+        url="https://www.nature.com/articles/b.pdf",
+    )
+    _approved_authorized_grant(
+        database, (paper_a, paper_b), domain="www.nature.com", max_papers=1,
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    planner = FakeAuthorizedLunaPlanner(selected=False, calls=[])
+    service = _service(
+        tmp_path, database, Fetcher(), authorized=True, planner=planner,
+    )
+    service.provider_terms.update(_nature_terms())
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+
+    result = service.run(
+        paper_ids=[paper_b, paper_a],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert result.status == "manual_required"
+    with options.queue_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["paper_id"] for row in rows] == [paper_a]
+    assert len(planner.calls) == 1
+
+
+def test_authorized_queue_reserves_grant_capacity_across_runs(
+    tmp_path: Path, database: Database, monkeypatch
+) -> None:
+    paper_a = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/a",
+        paper_id="paper-a",
+        url="https://www.nature.com/articles/a.pdf",
+    )
+    paper_b = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/b",
+        paper_id="paper-b",
+        url="https://www.nature.com/articles/b.pdf",
+    )
+    _approved_authorized_grant(
+        database, (paper_a, paper_b), domain="www.nature.com", max_papers=1,
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    service = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        authorized=True,
+        planner=FakeAuthorizedLunaPlanner(calls=[]),
+    )
+    service.provider_terms.update(_nature_terms())
+    first_options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff-a" / "papers.csv",
+        output_dir=tmp_path / "results-a",
+        skill_roots=(installed,),
+    )
+    second_options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff-b" / "papers.csv",
+        output_dir=tmp_path / "results-b",
+        skill_roots=(installed,),
+    )
+
+    first = service.run(
+        paper_ids=[paper_a],
+        authorization_grant_id="download-grant",
+        authorized_skill=first_options,
+    )
+    second = service.run(
+        paper_ids=[paper_b],
+        authorization_grant_id="download-grant",
+        authorized_skill=second_options,
+    )
+
+    assert first.status == second.status == "manual_required"
+    assert first_options.queue_path.is_file()
+    assert not second_options.queue_path.exists()
+    reservations = database.connection.execute(
+        """SELECT paper_id FROM authorized_download_queue_reservations
+           WHERE authorization_grant_id = 'download-grant'"""
+    ).fetchall()
+    assert [row["paper_id"] for row in reservations] == [paper_a]
+
+
+def test_authorized_queue_requires_terms_permission_before_browser_handoff(
+    tmp_path: Path, database: Database, monkeypatch
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/example",
+        url="https://www.nature.com/articles/example.pdf",
+    )
+    _approved_authorized_grant(
+        database, paper_id, domain="www.nature.com",
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    service = _service(tmp_path, database, Fetcher(), authorized=True)
+    service.provider_terms["authorized_skill"] = ProviderTerms(
+        "authorized_skill",
+        "test-v1",
+        "https://www.nature.com/info/tandc.html",
+        True,
+        False,
+        False,
+        domain_allowlist=("www.nature.com",),
+    )
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+
+    result = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert result.status == "manual_required"
+    assert not options.queue_path.exists()
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM authorized_download_queue_reservations"
+    ).fetchone()[0] == 0
+
+
+def test_authorized_queue_rejects_unproven_selection_snapshot_membership(
+    tmp_path: Path, database: Database, monkeypatch
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/example",
+        url="https://www.nature.com/articles/example.pdf",
+    )
+    _approved_authorized_grant(
+        database,
+        None,
+        domain="www.nature.com",
+        selection_snapshot_hash="c" * 64,
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    service = _service(tmp_path, database, Fetcher(), authorized=True)
+    service.provider_terms.update(_nature_terms())
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+
+    result = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert result.status == "manual_required"
+    assert not options.queue_path.exists()
+
+
+def test_download_service_uses_injected_clock_for_grant_expiry(
+    tmp_path: Path, database: Database, monkeypatch,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/example",
+        url="https://www.nature.com/articles/example.pdf",
+    )
+    _approved_authorized_grant(database, paper_id, domain="www.nature.com")
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    service = _service(
+        tmp_path, database, Fetcher(), authorized=True,
         clock=lambda: datetime.fromisoformat("2026-08-12T00:00:00+00:00"),
     )
-    with pytest.raises(ValueError, match="expired"):
-        service.run(paper_ids=[paper_id], authorization_grant_id="download-grant")
+    service.provider_terms.update(_nature_terms())
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+    result = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert result.status == "manual_required"
+    assert not options.queue_path.exists()
 
 
 @pytest.mark.parametrize("field, value", [
@@ -589,7 +1089,58 @@ def test_provider_terms_requires_explicit_nullable_permission_fields(tmp_path: P
         load_provider_terms(path)
 
 
-def _approved_authorized_grant(database: Database, paper_id: str) -> None:
+def _ready_authorized_runtime(tmp_path: Path, monkeypatch) -> Path:
+    installed = tmp_path / "installed-skill"
+    (installed / "scripts").mkdir(parents=True)
+    (installed / "scripts" / "paper_queue.py").write_text(
+        "# fixture\n", encoding="utf-8"
+    )
+    ready = SimpleNamespace(
+        ready=True,
+        installed_path=installed,
+        installed_content_sha256="a" * 64,
+        dependency_lock_sha256="b" * 64,
+    )
+
+    class Runtime:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def require_ready(self):
+            return ready
+
+    monkeypatch.setattr(
+        "paper_agent.download_cli_service.AuthorizedSkillRuntime", Runtime
+    )
+    return installed
+
+
+def _nature_terms(
+    *, host: str = "www.nature.com",
+) -> dict[str, ProviderTerms]:
+    return {
+        provider: ProviderTerms(
+            provider,
+            "test-v1",
+            f"https://{host}/terms",
+            True,
+            True,
+            True,
+            domain_allowlist=(host,),
+        )
+        for provider in ("public_direct", "authorized_skill")
+    }
+
+
+def _approved_authorized_grant(
+    database: Database,
+    paper_id: str | tuple[str, ...] | None,
+    *,
+    domain: str = "publisher.example",
+    max_papers: int = 1,
+    selection_snapshot_hash: str | None = None,
+    provider: str = "authorized_skill",
+) -> None:
     from paper_agent.grants import GrantStore
 
     store = GrantStore(database)
@@ -600,33 +1151,54 @@ def _approved_authorized_grant(database: Database, paper_id: str) -> None:
         purpose="personal_research",
         mode="attended",
         scope={
-            "paper_ids": [paper_id], "artifact_hashes": [], "collection_ids": [],
-            "collection_snapshot_hash": None, "selection_snapshot_hash": None,
-            "domains": ["publisher.example"], "provider": "authorized_skill",
+            "paper_ids": (
+                [paper_id]
+                if isinstance(paper_id, str)
+                else list(paper_id or ())
+            ),
+            "artifact_hashes": [], "collection_ids": [],
+            "collection_snapshot_hash": None,
+            "selection_snapshot_hash": selection_snapshot_hash,
+            "domains": [domain], "provider": provider,
             "model": None, "data_categories": ["full_text"],
         },
-        max_papers=1,
+        max_papers=max_papers,
         expires_at="2026-08-11T00:00:00Z",
-        skill_digest="a" * 64,
-        dependency_digest="b" * 64,
+        skill_digest="a" * 64 if provider == "authorized_skill" else None,
+        dependency_digest="b" * 64 if provider == "authorized_skill" else None,
     )
     store.approve(
         draft, draft["content_hash"], approved_by="owner", approved_at=NOW
     )
 
 
-def _stage_authorized_article(output_dir: Path) -> None:
-    payload = _pdf()
-    article = output_dir / "nature" / "0001_10.1038_example" / "article.pdf"
+def _stage_authorized_article(
+    output_dir: Path,
+    *,
+    doi: str = "10.1038/example",
+    index: int = 1,
+    append: bool = False,
+) -> None:
+    payload = _pdf() + f"\n% staged {doi}\n".encode()
+    article = (
+        output_dir
+        / "nature"
+        / f"{index:04d}_{doi.replace('/', '_')}"
+        / "article.pdf"
+    )
     article.parent.mkdir(parents=True)
     article.write_bytes(payload)
     ledger = output_dir / "_state" / "ledger.jsonl"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
-        '{"doi":"10.1038/example","status":"complete_no_si","files":['
-        '{"name":"article.pdf","sha256":"' + sha256(payload).hexdigest() + '"}]}\n',
-        encoding="utf-8",
-    )
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open("a" if append else "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "doi": doi,
+            "status": "complete_no_si",
+            "files": [{
+                "name": "article.pdf",
+                "sha256": sha256(payload).hexdigest(),
+            }],
+        }) + "\n")
 
 
 def _pdf() -> bytes:

@@ -109,6 +109,7 @@ class AuthorizedSkillOptions:
     collection_snapshot_hash: str | None = None
     selection_snapshot_hash: str | None = None
     planner: LunaPlanner | None = None
+    candidate_ids: frozenset[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +132,7 @@ class Stage3PaperResult:
     attempts: tuple[Stage3Attempt, ...]
     download: DownloadResult | None = None
     resumed: bool = False
+    authorized_candidate_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,7 +216,16 @@ class Stage3Pipeline:
                 fetch_attempt = _download_attempt(candidate, public.provider, result)
                 attempts.append(fetch_attempt)
                 if result.status is DownloadStatus.DOWNLOADED:
-                    return Stage3PaperResult(item.paper.paper_id, result.status, "downloaded", tuple(attempts), result)
+                    return Stage3PaperResult(
+                        item.paper.paper_id,
+                        result.status,
+                        "downloaded",
+                        tuple(attempts),
+                        result,
+                        authorized_candidate_ids=_authorized_candidate_ids(
+                            authorized_candidates
+                        ),
+                    )
                 if result.status is DownloadStatus.AUTH_REQUIRED:
                     authorized_candidates.append((candidate, fetch_attempt))
                 elif result.status is DownloadStatus.MANUAL_REQUIRED:
@@ -243,7 +254,16 @@ class Stage3Pipeline:
                     fetch_results.append(skill_result)
                     attempts.append(_download_attempt(candidate, "authorized_skill", skill_result))
                     if skill_result.status is DownloadStatus.DOWNLOADED:
-                        return Stage3PaperResult(item.paper.paper_id, skill_result.status, "downloaded", tuple(attempts), skill_result)
+                        return Stage3PaperResult(
+                            item.paper.paper_id,
+                            skill_result.status,
+                            "downloaded",
+                            tuple(attempts),
+                            skill_result,
+                            authorized_candidate_ids=_authorized_candidate_ids(
+                                authorized_candidates
+                            ),
+                        )
                     if skill_result.status in {
                         DownloadStatus.AUTH_REQUIRED,
                         DownloadStatus.MANUAL_REQUIRED,
@@ -260,6 +280,9 @@ class Stage3Pipeline:
                 DownloadStatus.FAILED_TERMINAL,
                 "all_access_locations_denied",
                 tuple(attempts),
+                authorized_candidate_ids=_authorized_candidate_ids(
+                    authorized_candidates
+                ),
             )
         if not manual_required and fetch_results:
             result = _final_fetch_result(fetch_results)
@@ -272,6 +295,9 @@ class Stage3Pipeline:
                     DownloadStatus.FAILED_TERMINAL,
                     "access_location_denied",
                     tuple(attempts),
+                    authorized_candidate_ids=_authorized_candidate_ids(
+                        authorized_candidates
+                    ),
                 )
             return Stage3PaperResult(
                 item.paper.paper_id,
@@ -279,6 +305,9 @@ class Stage3Pipeline:
                 result.error_code or result.status.value,
                 tuple(attempts),
                 result,
+                authorized_candidate_ids=_authorized_candidate_ids(
+                    authorized_candidates
+                ),
             )
         reason = "no_access_location_candidates" if not candidates else "manual_queue_required"
         attempts.append(Stage3Attempt(None, "manual", FetchDecisionStatus.MANUAL.value, reason))
@@ -301,7 +330,13 @@ class Stage3Pipeline:
             },
         )
         return Stage3PaperResult(
-            item.paper.paper_id, DownloadStatus.MANUAL_REQUIRED, reason, tuple(attempts)
+            item.paper.paper_id,
+            DownloadStatus.MANUAL_REQUIRED,
+            reason,
+            tuple(attempts),
+            authorized_candidate_ids=_authorized_candidate_ids(
+                authorized_candidates
+            ),
         )
 
     def _resolve(self, item: Stage3Paper) -> tuple[AccessLocationCandidate, ...]:
@@ -375,6 +410,16 @@ class Stage3Pipeline:
     def _authorized_attempt(
         self, candidate: AccessLocationCandidate, public: Stage3Attempt, state: _SkillState
     ) -> Stage3Attempt:
+        if (
+            self.authorized.candidate_ids is not None
+            and candidate.candidate_id not in self.authorized.candidate_ids
+        ):
+            return Stage3Attempt(
+                candidate.candidate_id,
+                "authorized_skill",
+                FetchDecisionStatus.MANUAL.value,
+                "authorized_candidate_outside_handoff",
+            )
         if state.reason:
             return Stage3Attempt(candidate.candidate_id, "authorized_skill", FetchDecisionStatus.MANUAL.value, state.reason)
         assert state.ready is not None
@@ -467,6 +512,12 @@ class _SkillState:
 
 def _download_attempt(candidate: AccessLocationCandidate, provider: str, result: DownloadResult) -> Stage3Attempt:
     return Stage3Attempt(candidate.candidate_id, provider, "fetch", result.error_code or result.status.value, result.status)
+
+
+def _authorized_candidate_ids(
+    candidates: Sequence[tuple[AccessLocationCandidate, Stage3Attempt]],
+) -> tuple[str, ...]:
+    return tuple(candidate.candidate_id for candidate, _attempt in candidates)
 
 
 def _final_fetch_result(results: Sequence[DownloadResult]) -> DownloadResult:

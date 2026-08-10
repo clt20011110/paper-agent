@@ -249,6 +249,22 @@ class PaperRepository:
                 (manual_queue_id(queue_type, dedup_key), queue_type, dedup_key, paper_id, _json(reason)),
             )
 
+    def resolve_manual(
+        self,
+        queue_type: str,
+        dedup_key: str,
+        resolution: Mapping[str, Any],
+        *,
+        resolved_at: str,
+    ) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """UPDATE manual_queue
+                   SET status = 'resolved', resolution_json = ?, resolved_at = ?
+                   WHERE queue_type = ? AND dedup_key = ? AND status = 'pending'""",
+                (_json(resolution), resolved_at, queue_type, dedup_key),
+            )
+
     def ingest(self, entry: SourceEntry) -> Paper:
         """Save a source entry under a stable identity, preserving fuzzy duplicates for review."""
         existing = self.find_paper(

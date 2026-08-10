@@ -46,7 +46,9 @@ def _queue(tmp_path: Path, runner=subprocess.run) -> AuthorizedSkillQueue:
     queue = AuthorizedSkillQueue(
         ready, tmp_path / "queue" / "papers.csv", tmp_path / "results", runner=runner,
     )
-    queue.prepare((SkillQueueItem("paper-1", "10.1038/example", "https://nature.test/article", "Paper"),))
+    queue.prepare((SkillQueueItem(
+        "paper-1", "10.1038/example", "https://www.nature.com/articles/example", "Paper",
+    ),))
     return queue
 
 
@@ -66,8 +68,8 @@ def _stage_article(queue: AuthorizedSkillQueue, payload: bytes | None = None) ->
 
 def _candidate() -> AccessLocationCandidate:
     return AccessLocationCandidate(
-        "candidate-1", "paper-1", "publisher_public", "https://nature.test/article",
-        "https://nature.test/article", "nature.test", PublicationVersion.PUBLISHED,
+        "candidate-1", "paper-1", "publisher_public", "https://www.nature.com/articles/example",
+        "https://www.nature.com/articles/example", "www.nature.com", PublicationVersion.PUBLISHED,
         None, AccessBasis.USER_SUBSCRIPTION, NOW, "a" * 64, {},
     )
 
@@ -87,28 +89,82 @@ def test_queue_is_stable_and_emits_only_small_browser_handoffs(tmp_path: Path) -
     assert calls[0][0][1].endswith("paper_queue.py")
     assert calls[0][0][2] == "plan"
     assert "--unscanned" in calls[1][0]
+    assert queue.csv_path.stat().st_mode & 0o777 == 0o444
     with pytest.raises(AuthorizedSkillAdapterError, match="one or two"):
         queue.next_batch(limit=3)
     with pytest.raises(AuthorizedSkillAdapterError, match="immutable"):
-        queue.prepare((SkillQueueItem("paper-1", "10.1038/changed", "https://nature.test/article"),))
+        queue.prepare((SkillQueueItem(
+            "paper-1", "10.1038/changed", "https://www.nature.com/articles/example",
+        ),))
+
+
+def test_queue_rejects_post_approval_csv_mutation_before_skill_execution(
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "[]", "")
+
+    queue = _queue(tmp_path, runner)
+    queue.csv_path.chmod(0o644)
+    queue.csv_path.write_text(
+        "doi,url,title,paper_id\n"
+        "10.1038/example,https://evil.example/collect,Evil,paper-outside\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AuthorizedSkillAdapterError, match="changed after approval"):
+        queue.next_batch()
+    assert calls == []
+
+
+def test_queue_rejects_url_outside_the_doi_publishers_audited_hosts(
+    tmp_path: Path,
+) -> None:
+    skill = tmp_path / "skill"
+    script = skill / "scripts" / "paper_queue.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# audited fixture\n", encoding="utf-8")
+    queue = AuthorizedSkillQueue(
+        SimpleNamespace(ready=True, installed_path=skill),
+        tmp_path / "queue" / "papers.csv",
+        tmp_path / "results",
+    )
+
+    with pytest.raises(AuthorizedSkillAdapterError, match="DOI publisher"):
+        queue.prepare((SkillQueueItem(
+            "paper-1",
+            "10.1038/example",
+            "https://onlinelibrary.wiley.com/doi/example",
+        ),))
+    with pytest.raises(AuthorizedSkillAdapterError, match="DOI publisher"):
+        queue.prepare((SkillQueueItem(
+            "paper-1",
+            "10.1038/example",
+            "http://www.nature.com/articles/example",
+        ),))
+
+    assert not queue.csv_path.exists()
 
 
 def test_queue_imports_only_final_ledger_bound_article(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
-    assert queue.state_for_url("https://nature.test/article") == (
+    assert queue.state_for_url("https://www.nature.com/articles/example") == (
         "handoff", "authorized_browser_handoff_required",
     )
     article = _stage_article(queue)
 
-    state = queue.state_for_url("https://nature.test/article")
-    response = queue.fetch_response("https://nature.test/article")
+    state = queue.state_for_url("https://www.nature.com/articles/example")
+    response = queue.fetch_response("https://www.nature.com/articles/example")
 
     assert state == ("ready", "authorized_skill_article_staged")
     assert response.body == article.read_bytes()
-    assert response.final_url == "https://nature.test/article"
+    assert response.final_url == "https://www.nature.com/articles/example"
     article.write_bytes(article.read_bytes() + b"drift")
     with pytest.raises(AuthorizedSkillAdapterError, match="ledger"):
-        queue.fetch_response("https://nature.test/article")
+        queue.fetch_response("https://www.nature.com/articles/example")
 
 
 def test_adapter_does_not_probe_download_service_before_visible_browser_handoff(tmp_path: Path) -> None:

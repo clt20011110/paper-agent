@@ -9,7 +9,7 @@ call and writes validated PDFs to the content-addressed artifact store.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.message import Message
@@ -299,6 +299,171 @@ class DownloadService:
                 _candidate_row_values(normalized),
             )
         return normalized
+
+    def require_authorized_handoff(
+        self,
+        grant_id: str,
+        candidate: AccessLocationCandidate,
+        *,
+        purpose: str,
+        provider: str,
+        mode: str,
+        now: datetime | str,
+        skill_digest: str,
+        dependency_digest: str,
+        reserved_paper_ids: Iterable[str] = (),
+        collection_id: str | None = None,
+        collection_snapshot_hash: str | None = None,
+        selection_snapshot_hash: str | None = None,
+    ) -> ActiveGrant:
+        """Reprove an exact grant before exposing a candidate to a browser queue.
+
+        This is deliberately read-only.  It reuses the same selection, domain,
+        purpose, provider, digest, and cumulative-capacity checks used when an
+        immutable fetch request is issued later.
+        """
+
+        at = _as_datetime(now)
+        terms = self.provider_terms.get(provider)
+        policy = self.policy.decide(candidate, purpose, terms, has_grant=True)
+        if policy.status is not FetchDecisionStatus.ALLOW:
+            raise FetchRejected(
+                f"authorized handoff is not allowed by provider policy: {policy.reason_code}"
+            )
+        requested_papers = (
+            self._grant_issued_papers(self.database.connection, grant_id)
+            | self._grant_reserved_papers(self.database.connection, grant_id)
+            | set(reserved_paper_ids)
+            | {candidate.paper_id}
+        )
+        active = self._require_grant(
+            grant_id,
+            candidate,
+            purpose=purpose,
+            provider=provider,
+            mode=mode,
+            now=at,
+            skill_digest=skill_digest,
+            dependency_digest=dependency_digest,
+            collection_id=collection_id,
+            collection_snapshot_hash=collection_snapshot_hash,
+            selection_snapshot_hash=selection_snapshot_hash,
+            paper_count=len(requested_papers),
+        )
+        if active.document["scope"]["provider"] != provider:
+            raise GrantError("authorized handoff grant must bind its exact provider")
+        return active
+
+    def reserve_authorized_handoff(
+        self,
+        grant_id: str,
+        candidate: AccessLocationCandidate,
+        *,
+        run_id: str,
+        queue_path: str,
+        queue_item_hash: str,
+        purpose: str,
+        provider: str,
+        mode: str,
+        now: datetime | str,
+        skill_digest: str,
+        dependency_digest: str,
+        reserved_paper_ids: Iterable[str] = (),
+    ) -> ActiveGrant:
+        """Persist one exact browser-queue capacity claim before exposing its CSV."""
+
+        at = _as_datetime(now)
+        with self.database.transaction() as connection:
+            active = self.require_authorized_handoff(
+                grant_id,
+                candidate,
+                purpose=purpose,
+                provider=provider,
+                mode=mode,
+                now=at,
+                skill_digest=skill_digest,
+                dependency_digest=dependency_digest,
+                reserved_paper_ids=reserved_paper_ids,
+            )
+            expected = (
+                candidate.candidate_id,
+                run_id,
+                queue_path,
+                queue_item_hash,
+            )
+            existing = connection.execute(
+                """SELECT candidate_id, run_id, queue_path, queue_item_hash
+                   FROM authorized_download_queue_reservations
+                   WHERE authorization_grant_id = ? AND paper_id = ?""",
+                (grant_id, candidate.paper_id),
+            ).fetchone()
+            if existing is not None:
+                if tuple(existing) != expected:
+                    raise GrantError(
+                        "authorized handoff reservation has different immutable inputs"
+                    )
+                return active
+            connection.execute(
+                """INSERT INTO authorized_download_queue_reservations(
+                       authorization_grant_id, paper_id, candidate_id, run_id,
+                       queue_path, queue_item_hash, reserved_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    grant_id,
+                    candidate.paper_id,
+                    candidate.candidate_id,
+                    run_id,
+                    queue_path,
+                    queue_item_hash,
+                    _iso(at),
+                ),
+            )
+            return active
+
+    def load_candidate(self, candidate_id: str) -> AccessLocationCandidate:
+        """Load the immutable candidate persisted by the public probe pass."""
+
+        return self._load_candidate(candidate_id)
+
+    def load_candidate_for_handoff(
+        self, paper_id: str, url: str
+    ) -> AccessLocationCandidate:
+        """Resolve one frozen queue row back to exactly one persisted candidate."""
+
+        rows = self.database.connection.execute(
+            """SELECT candidate_id FROM download_candidates
+               WHERE paper_id = ? AND url = ? ORDER BY candidate_id""",
+            (paper_id, url),
+        ).fetchall()
+        if len(rows) != 1:
+            raise FetchRejected(
+                "authorized queue row does not bind exactly one persisted candidate"
+            )
+        return self._load_candidate(str(rows[0]["candidate_id"]))
+
+    def load_reserved_handoff_candidate(
+        self,
+        grant_id: str,
+        *,
+        run_id: str,
+        paper_id: str,
+        queue_path: str,
+        queue_item_hash: str,
+    ) -> AccessLocationCandidate:
+        row = self.database.connection.execute(
+            """SELECT candidate_id, run_id, queue_path, queue_item_hash
+               FROM authorized_download_queue_reservations
+               WHERE authorization_grant_id = ? AND paper_id = ?""",
+            (grant_id, paper_id),
+        ).fetchone()
+        expected = (run_id, queue_path, queue_item_hash)
+        if row is None or tuple(row[key] for key in (
+            "run_id", "queue_path", "queue_item_hash"
+        )) != expected:
+            raise FetchRejected(
+                "authorized queue row has no matching durable reservation"
+            )
+        return self._load_candidate(str(row["candidate_id"]))
 
     def probe(
         self,
@@ -906,17 +1071,44 @@ class DownloadService:
         return request
 
     @staticmethod
-    def _require_grant_capacity(connection: Any, grant: ActiveGrant, paper_id: str) -> None:
+    def _require_grant_capacity(
+        connection: Any,
+        grant: ActiveGrant,
+        paper_id: str,
+        *,
+        reserved_paper_ids: Iterable[str] = (),
+    ) -> None:
+        issued_papers = DownloadService._grant_issued_papers(
+            connection, grant.grant_id
+        )
+        reserved_papers = DownloadService._grant_reserved_papers(
+            connection, grant.grant_id
+        )
+        requested_papers = (
+            issued_papers | reserved_papers | set(reserved_paper_ids) | {paper_id}
+        )
+        if len(requested_papers) > grant.document["max_papers"]:
+            raise GrantError("download grant max_papers has been exhausted")
+
+    @staticmethod
+    def _grant_issued_papers(connection: Any, grant_id: str) -> set[str]:
         rows = connection.execute(
             """SELECT DISTINCT dc.paper_id
                FROM fetch_requests fr
                JOIN download_candidates dc ON dc.candidate_id = fr.candidate_id
                WHERE fr.authorization_grant_id = ?""",
-            (grant.grant_id,),
+            (grant_id,),
         ).fetchall()
-        issued_papers = {row["paper_id"] for row in rows}
-        if paper_id not in issued_papers and len(issued_papers) >= grant.document["max_papers"]:
-            raise GrantError("download grant max_papers has been exhausted")
+        return {str(row["paper_id"]) for row in rows}
+
+    @staticmethod
+    def _grant_reserved_papers(connection: Any, grant_id: str) -> set[str]:
+        rows = connection.execute(
+            """SELECT paper_id FROM authorized_download_queue_reservations
+               WHERE authorization_grant_id = ?""",
+            (grant_id,),
+        ).fetchall()
+        return {str(row["paper_id"]) for row in rows}
 
     def _binding(
         self,
@@ -970,6 +1162,7 @@ class DownloadService:
         collection_id: str | None,
         collection_snapshot_hash: str | None,
         selection_snapshot_hash: str | None,
+        paper_count: int = 1,
     ) -> ActiveGrant:
         store = GrantStore(self.database)
         grant = store.load(grant_id, kind="download", now=now)
@@ -1036,6 +1229,7 @@ class DownloadService:
             skill_digest=skill_digest if document["skill_digest"] is not None else None,
             dependency_digest=dependency_digest if document["dependency_digest"] is not None else None,
             lineage_hash=document["lineage_hash"],
+            paper_count=paper_count,
         )
         self._require_grant_capacity(self.database.connection, active, candidate.paper_id)
         return active

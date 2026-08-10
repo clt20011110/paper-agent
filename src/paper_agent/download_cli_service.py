@@ -8,7 +8,7 @@ queue path; public fetches remain governed by ``DownloadService``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -18,13 +18,21 @@ from typing import Any
 from .artifacts import ArtifactStore
 from .authorized_skill_adapter import (
     AuditedAuthorizedSkillAdapter,
+    AuthorizedSkillAdapterError,
     AuthorizedSkillQueue,
     SkillQueueItem,
+    authorized_publisher_host_matches,
 )
-from .authorized_skill_runtime import AuthorizedSkillRuntime
+from .authorized_skill_runtime import AuthorizedSkillRuntime, AuthorizedSkillRuntimeError
 from .authorized_luna import AuthorizedLunaPlanner
 from .canonical import content_hash
-from .domain import DownloadResult, DownloadStatus, FilterStatus, PaperSource
+from .domain import (
+    DownloadResult,
+    DownloadStatus,
+    FetchDecisionStatus,
+    FilterStatus,
+    PaperSource,
+)
 from .download_providers import (
     DEFAULT_PROVIDER_ORDER,
     DEFAULT_RESOLVER_ORDER,
@@ -37,11 +45,12 @@ from .download_providers import (
 from .downloads import (
     DownloadAccessPolicy,
     DownloadService,
+    FetchRejected,
     HTTPResponse,
     ProviderTerms,
     urllib_fetch,
 )
-from .grants import GrantStore
+from .grants import GrantError, GrantStore
 from .http_transport import ControlledHTTPTransport
 from .repository import PaperRepository
 from .runs import RunStatus, RunStore
@@ -62,7 +71,7 @@ from .stage3_metadata_lookup import (
 from .storage import Database
 
 
-IMPLEMENTATION_VERSION = "stage3-cli-v2"
+IMPLEMENTATION_VERSION = "stage3-cli-v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,23 +199,12 @@ class Stage3DownloadService:
             "include_needs_review": include_needs_review,
             "authorization_grant_id": authorization_grant_id,
             "download_config": self.download_config,
+            "authorized_handoff": _authorized_handoff_identity(authorized_skill),
         }
         input_hash = content_hash(identity)
         config_hash = content_hash(self.download_config)
         resolved_run_id = run_id or f"stage3-{input_hash[:16]}"
-        if authorization_grant_id is not None:
-            GrantStore(self.database).load(
-                authorization_grant_id, kind="download", now=timestamp
-            )
         resolvers = default_resolver_registry()
-        handoff = self._authorized_handoff(
-            papers,
-            resolvers=resolvers,
-            now=timestamp,
-            authorization_grant_id=authorization_grant_id,
-            options=authorized_skill,
-            prepare_queue=not dry_run,
-        )
         service = DownloadService(
             self.database,
             ArtifactStore(self.artifact_root),
@@ -214,26 +212,27 @@ class Stage3DownloadService:
             self.provider_terms,
             self.fetcher,
             clock=self.clock,
-            provider_fetchers=(
-                {"authorized_skill": handoff.queue.fetch_response}
-                if handoff is not None else None
-            ),
         )
-        adapter = AuditedAuthorizedSkillAdapter(service, handoff.queue) if handoff else None
-        providers = default_download_provider_registry(service, authorized_skill=adapter)
+        providers = default_download_provider_registry(service)
         if dry_run:
+            if authorization_grant_id is not None:
+                GrantStore(self.database).load(
+                    authorization_grant_id, kind="download", now=timestamp
+                )
             decisions = self._validate_without_writes(
                 papers,
                 resolvers=resolvers,
                 providers=providers,
+                service=service,
                 purpose=str(self.download_config["purpose"]),
                 now=timestamp,
+                run_id=resolved_run_id,
                 authorization_grant_id=authorization_grant_id,
+                authorized_skill=authorized_skill,
             )
             return Stage3DownloadResult(
                 resolved_run_id, selected_ids, "validated", True,
                 planned_decisions=decisions,
-                authorized_queue_path=(handoff.queue.csv_path if handoff else None),
             )
 
         runs = RunStore(self.database)
@@ -250,33 +249,18 @@ class Stage3DownloadService:
         elif run.status in {RunStatus.INCOMPLETE, RunStatus.FAILED}:
             run = runs.transition(resolved_run_id, RunStatus.RUNNING, at=timestamp)
 
-        pipeline = Stage3Pipeline(
+        manual_queue = _DeferredManualQueue(resolved_run_id, timestamp)
+        # Phase one is intentionally public-only.  The authorized CSV does not
+        # exist while public/OA candidates are being tried.
+        public_pipeline = Stage3Pipeline(
             resolvers=resolvers,
             providers=providers,
             purpose=str(self.download_config["purpose"]),
             now=timestamp,
             run_id=resolved_run_id,
-            manual_queue=PaperRepository(self.database),
-            authorized=AuthorizedSkillOptions(
-                enabled=handoff is not None,
-                runtime=handoff.runtime if handoff else None,
-                grant_store=GrantStore(self.database) if handoff else None,
-                authorization_grant_id=authorization_grant_id if handoff else None,
-                planner=(
-                    _DurableAuthorizedLunaPlanner(
-                        Stage3LunaDecisionStore(
-                            self.database, resolved_run_id, authorization_grant_id,
-                        ),
-                        self.authorized_luna_planner or AuthorizedLunaPlanner(),
-                        timestamp,
-                    )
-                    if handoff is not None and authorization_grant_id is not None
-                    else None
-                ),
-            ),
-            public_authorization_grant_id=authorization_grant_id,
+            manual_queue=manual_queue,
         )
-        result = pipeline.run(
+        result = public_pipeline.run(
             papers,
             completed=_resume_checkpoints(self.database, resolved_run_id),
             checkpoint=lambda item: _save_checkpoint(
@@ -285,6 +269,83 @@ class Stage3DownloadService:
         )
         for item in result.papers:
             _save_checkpoint(self.database, resolved_run_id, item, timestamp)
+
+        # Preserve non-browser download grants as a separate post-OA probe.
+        # An authorized-skill-bound grant cannot authorize these providers and
+        # therefore remains unresolved for the audited browser handoff below.
+        if authorization_grant_id is not None:
+            granted_public_pipeline = Stage3Pipeline(
+                resolvers=resolvers,
+                providers=providers,
+                purpose=str(self.download_config["purpose"]),
+                now=timestamp,
+                run_id=resolved_run_id,
+                manual_queue=manual_queue,
+                public_authorization_grant_id=authorization_grant_id,
+            )
+            result = granted_public_pipeline.run(
+                papers,
+                completed=_resume_checkpoints(self.database, resolved_run_id),
+                checkpoint=lambda item: _save_checkpoint(
+                    self.database, resolved_run_id, item, timestamp
+                ),
+            )
+            for item in result.papers:
+                _save_checkpoint(self.database, resolved_run_id, item, timestamp)
+
+        handoff = self._authorized_handoff(
+            papers,
+            public_result=result,
+            service=service,
+            run_id=resolved_run_id,
+            now=timestamp,
+            authorization_grant_id=authorization_grant_id,
+            options=authorized_skill,
+        )
+        if handoff is not None:
+            service.provider_fetchers["authorized_skill"] = handoff.queue.fetch_response
+            adapter = AuditedAuthorizedSkillAdapter(service, handoff.queue)
+            authorized_providers = default_download_provider_registry(
+                service, authorized_skill=adapter
+            )
+            pipeline = Stage3Pipeline(
+                resolvers=resolvers,
+                providers=authorized_providers,
+                purpose=str(self.download_config["purpose"]),
+                now=timestamp,
+                run_id=resolved_run_id,
+                manual_queue=manual_queue,
+                authorized=AuthorizedSkillOptions(
+                    enabled=True,
+                    runtime=handoff.runtime,
+                    grant_store=GrantStore(self.database),
+                    authorization_grant_id=authorization_grant_id,
+                    planner=(
+                        _DurableAuthorizedLunaPlanner(
+                            Stage3LunaDecisionStore(
+                                self.database,
+                                resolved_run_id,
+                                authorization_grant_id,
+                            ),
+                            self.authorized_luna_planner or AuthorizedLunaPlanner(),
+                            timestamp,
+                        )
+                        if authorization_grant_id is not None
+                        else None
+                    ),
+                    candidate_ids=handoff.candidate_ids,
+                ),
+            )
+            result = pipeline.run(
+                papers,
+                completed=_resume_checkpoints(self.database, resolved_run_id),
+                checkpoint=lambda item: _save_checkpoint(
+                    self.database, resolved_run_id, item, timestamp
+                ),
+            )
+            for item in result.papers:
+                _save_checkpoint(self.database, resolved_run_id, item, timestamp)
+        manual_queue.flush(PaperRepository(self.database), result)
         complete = all(
             item.status in _TERMINAL_DOWNLOAD_STATUSES for item in result.papers
         )
@@ -305,32 +366,113 @@ class Stage3DownloadService:
         self,
         papers: Sequence[Stage3Paper],
         *,
-        resolvers,
+        public_result: Stage3RunResult,
+        service: DownloadService,
+        run_id: str,
         now: str,
         authorization_grant_id: str | None,
         options: AuthorizedSkillHandoffOptions | None,
-        prepare_queue: bool,
     ) -> _AuthorizedHandoff | None:
         configured = self.download_config.get("authorized_skill", {})
         if not isinstance(configured, Mapping) or not configured.get("enabled"):
             return None
         if authorization_grant_id is None or options is None:
             return None
-        runtime = AuthorizedSkillRuntime(
-            enabled=True,
-            skill_roots=options.skill_roots,
-            original_zip=options.original_zip,
-            audit_manifest=options.audit_manifest,
-        )
-        ready = runtime.require_ready()
+        try:
+            runtime = AuthorizedSkillRuntime(
+                enabled=True,
+                skill_roots=options.skill_roots,
+                original_zip=options.original_zip,
+                audit_manifest=options.audit_manifest,
+            )
+            ready = runtime.require_ready()
+        except AuthorizedSkillRuntimeError:
+            return None
+        if (
+            ready.installed_content_sha256 is None
+            or ready.dependency_lock_sha256 is None
+        ):
+            return None
         queue = AuthorizedSkillQueue(ready, options.queue_path, options.output_dir)
-        if prepare_queue:
-            items = _queue_items(papers, resolvers, now)
-            if items:
-                queue.prepare(items)
-            else:
-                return None
-        return _AuthorizedHandoff(runtime, queue)
+        plan = _queue_items(
+            papers,
+            public_result,
+            service=service,
+            authorization_grant_id=authorization_grant_id,
+            purpose=str(self.download_config["purpose"]),
+            now=now,
+            skill_digest=ready.installed_content_sha256,
+            dependency_digest=ready.dependency_lock_sha256,
+        )
+        if not plan.items:
+            return None
+        if queue.csv_path.is_file():
+            frozen_items = queue.frozen_items()
+            frozen_plan = _validate_frozen_queue(
+                papers,
+                frozen_items,
+                service=service,
+                run_id=run_id,
+                queue_path=queue.csv_path,
+                authorization_grant_id=authorization_grant_id,
+                purpose=str(self.download_config["purpose"]),
+                now=now,
+                skill_digest=ready.installed_content_sha256,
+                dependency_digest=ready.dependency_lock_sha256,
+            )
+            _reserve_queue_plan(
+                service,
+                frozen_plan,
+                run_id=run_id,
+                queue_path=queue.csv_path,
+                authorization_grant_id=authorization_grant_id,
+                purpose=str(self.download_config["purpose"]),
+                now=now,
+                skill_digest=ready.installed_content_sha256,
+                dependency_digest=ready.dependency_lock_sha256,
+            )
+            queue.prepare(frozen_plan.items)
+            frozen_keys = {
+                (item.paper_id, item.doi.lower(), item.url)
+                for item in frozen_items
+            }
+            planned_keys = {
+                (item.paper_id, item.doi.lower(), item.url)
+                for item in plan.items
+            }
+            if not planned_keys <= frozen_keys:
+                raise AuthorizedSkillAdapterError(
+                    "authorized queue is immutable after creation"
+                )
+            planned_papers = {item.paper_id for item in plan.items}
+            if any(
+                item.paper_id not in planned_papers
+                and not _has_authorized_attempt(
+                    self.database,
+                    run_id=run_id,
+                    authorization_grant_id=authorization_grant_id,
+                    paper_id=item.paper_id,
+                    url=item.url,
+                )
+                for item in frozen_items
+            ):
+                raise AuthorizedSkillAdapterError(
+                    "authorized queue contains a paper outside the public fallback set"
+                )
+        else:
+            _reserve_queue_plan(
+                service,
+                plan,
+                run_id=run_id,
+                queue_path=queue.csv_path,
+                authorization_grant_id=authorization_grant_id,
+                purpose=str(self.download_config["purpose"]),
+                now=now,
+                skill_digest=ready.installed_content_sha256,
+                dependency_digest=ready.dependency_lock_sha256,
+            )
+            queue.prepare(plan.items)
+        return _AuthorizedHandoff(runtime, queue, frozenset(plan.candidate_ids))
 
     def _validate_without_writes(
         self,
@@ -338,12 +480,16 @@ class Stage3DownloadService:
         *,
         resolvers,
         providers,
+        service: DownloadService,
         purpose: str,
         now: str,
+        run_id: str,
         authorization_grant_id: str | None,
+        authorized_skill: AuthorizedSkillHandoffOptions | None,
     ) -> tuple[tuple[str, str, str], ...]:
         """Exercise exact probe/grant validation and roll back every database change."""
         decisions: list[tuple[str, str, str]] = []
+        authorized_candidates: dict[str, list[str]] = {}
         try:
             with self.database.transaction():
                 for item in papers:
@@ -362,9 +508,113 @@ class Stage3DownloadService:
                             purpose, now, authorization_grant_id=authorization_grant_id,
                         ))
                         decisions.append((item.paper.paper_id, attempt.provider, attempt.decision.status.value))
+                        if attempt.decision.status in {
+                            FetchDecisionStatus.NEEDS_GRANT,
+                            FetchDecisionStatus.MANUAL,
+                        }:
+                            authorized_candidates.setdefault(
+                                item.paper.paper_id, []
+                            ).append(candidate.candidate_id)
+                self._validate_dry_handoff(
+                    papers,
+                    authorized_candidates,
+                    service=service,
+                    purpose=purpose,
+                    now=now,
+                    run_id=run_id,
+                    authorization_grant_id=authorization_grant_id,
+                    options=authorized_skill,
+                    decisions=decisions,
+                )
                 raise _RollbackDryRun
         except _RollbackDryRun:
             return tuple(decisions)
+
+    def _validate_dry_handoff(
+        self,
+        papers: Sequence[Stage3Paper],
+        authorized_candidates: Mapping[str, Sequence[str]],
+        *,
+        service: DownloadService,
+        purpose: str,
+        now: str,
+        run_id: str,
+        authorization_grant_id: str | None,
+        options: AuthorizedSkillHandoffOptions | None,
+        decisions: list[tuple[str, str, str]],
+    ) -> None:
+        configured = self.download_config.get("authorized_skill", {})
+        if (
+            not isinstance(configured, Mapping)
+            or not configured.get("enabled")
+            or authorization_grant_id is None
+            or options is None
+        ):
+            return
+        grant = GrantStore(self.database).load(
+            authorization_grant_id, kind="download", now=now
+        )
+        if grant.document["scope"]["provider"] != "authorized_skill":
+            return
+        runtime = AuthorizedSkillRuntime(
+            enabled=True,
+            skill_roots=options.skill_roots,
+            original_zip=options.original_zip,
+            audit_manifest=options.audit_manifest,
+        )
+        ready = runtime.require_ready()
+        if (
+            ready.installed_content_sha256 is None
+            or ready.dependency_lock_sha256 is None
+        ):
+            raise AuthorizedSkillRuntimeError(
+                "authorized skill audit has no frozen content or dependency digest"
+            )
+        dry_result = Stage3RunResult(tuple(
+            Stage3PaperResult(
+                item.paper.paper_id,
+                DownloadStatus.MANUAL_REQUIRED,
+                "dry_run_authorized_candidate",
+                (),
+                authorized_candidate_ids=tuple(
+                    authorized_candidates.get(item.paper.paper_id, ())
+                ),
+            )
+            for item in papers
+        ))
+        plan = _queue_items(
+            papers,
+            dry_result,
+            service=service,
+            authorization_grant_id=authorization_grant_id,
+            purpose=purpose,
+            now=now,
+            skill_digest=ready.installed_content_sha256,
+            dependency_digest=ready.dependency_lock_sha256,
+        )
+        planned = {item.paper_id for item in plan.items}
+        decisions.extend(
+            (
+                paper_id,
+                "authorized_skill",
+                "allow" if paper_id in planned else "manual",
+            )
+            for paper_id in sorted(authorized_candidates)
+        )
+        queue = AuthorizedSkillQueue(ready, options.queue_path, options.output_dir)
+        if queue.csv_path.is_file():
+            _validate_frozen_queue(
+                papers,
+                queue.frozen_items(),
+                service=service,
+                run_id=run_id,
+                queue_path=queue.csv_path,
+                authorization_grant_id=authorization_grant_id,
+                purpose=purpose,
+                now=now,
+                skill_digest=ready.installed_content_sha256,
+                dependency_digest=ready.dependency_lock_sha256,
+            )
 
 
 class _RollbackDryRun(Exception):
@@ -375,6 +625,73 @@ class _RollbackDryRun(Exception):
 class _AuthorizedHandoff:
     runtime: AuthorizedSkillRuntime
     queue: AuthorizedSkillQueue
+    candidate_ids: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthorizedQueuePlan:
+    items: tuple[SkillQueueItem, ...]
+    candidate_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredManualItem:
+    queue_type: str
+    dedup_key: str
+    paper_id: str | None
+    reason: Mapping[str, object]
+
+
+@dataclass(slots=True)
+class _DeferredManualQueue:
+    run_id: str
+    resolved_at: str
+    items: dict[str, _DeferredManualItem] = field(default_factory=dict)
+
+    def enqueue_manual(
+        self,
+        queue_type: str,
+        dedup_key: str,
+        paper_id: str | None,
+        reason: Mapping[str, object],
+    ) -> None:
+        if paper_id is not None:
+            self.items[paper_id] = _DeferredManualItem(
+                queue_type, dedup_key, paper_id, reason
+            )
+
+    def flush(
+        self, repository: PaperRepository, result: Stage3RunResult
+    ) -> None:
+        manual_ids = {
+            item.paper_id
+            for item in result.papers
+            if item.status in {
+                DownloadStatus.AUTH_REQUIRED,
+                DownloadStatus.MANUAL_REQUIRED,
+            }
+        }
+        for paper_id in sorted(manual_ids):
+            item = self.items.get(paper_id)
+            if item is not None:
+                repository.enqueue_manual(
+                    item.queue_type,
+                    item.dedup_key,
+                    item.paper_id,
+                    item.reason,
+                )
+        for item in result.papers:
+            if item.paper_id not in manual_ids:
+                repository.resolve_manual(
+                    "download",
+                    f"{self.run_id}:{item.paper_id}",
+                    {
+                        "run_id": self.run_id,
+                        "status": item.status.value,
+                        "reason_code": item.reason_code,
+                    },
+                    resolved_at=self.resolved_at,
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,6 +771,24 @@ def _download_config(config: Mapping[str, Any]) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("configuration requires a download section")
     return value
+
+
+def _authorized_handoff_identity(
+    options: AuthorizedSkillHandoffOptions | None,
+) -> Mapping[str, object] | None:
+    if options is None:
+        return None
+    return {
+        "queue_path": str(options.queue_path.resolve()),
+        "output_dir": str(options.output_dir.resolve()),
+        "skill_roots": [str(path.resolve()) for path in options.skill_roots],
+        "original_zip": (
+            str(options.original_zip.resolve()) if options.original_zip else None
+        ),
+        "audit_manifest": (
+            str(options.audit_manifest.resolve()) if options.audit_manifest else None
+        ),
+    }
 
 
 def _require_frozen_routing(config: Mapping[str, Any]) -> None:
@@ -586,29 +921,202 @@ def _sources_for(database: Database, paper_id: str) -> tuple[PaperSource, ...]:
 
 
 def _queue_items(
-    papers: Sequence[Stage3Paper], resolvers, now: str
-) -> tuple[SkillQueueItem, ...]:
-    """Freeze at most one attended browser URL per DOI-backed paper."""
+    papers: Sequence[Stage3Paper],
+    public_result: Stage3RunResult,
+    *,
+    service: DownloadService,
+    authorization_grant_id: str,
+    purpose: str,
+    now: str,
+    skill_digest: str,
+    dependency_digest: str,
+) -> _AuthorizedQueuePlan:
+    """Freeze only unresolved, publisher-bound, exactly authorized candidates."""
+
     items: list[SkillQueueItem] = []
+    candidate_ids: list[str] = []
     urls: set[str] = set()
+    reserved_paper_ids: set[str] = set()
+    results = {item.paper_id: item for item in public_result.papers}
     for item in papers:
+        result = results.get(item.paper.paper_id)
+        if (
+            result is None
+            or result.status is DownloadStatus.DOWNLOADED
+            or not result.authorized_candidate_ids
+        ):
+            continue
         doi = item.paper.doi
         if doi is None or not doi.startswith("10.") or "/" not in doi:
             continue
-        candidates = resolvers.resolve(ResolverContext(
-            paper=item.paper,
-            official_sources=item.official_sources,
-            lookup=item.lookup,
-            matched_arxiv=item.matched_arxiv,
-            include_arxiv_candidates=item.include_arxiv_candidates,
-            retrieved_at=now,
-        ))
-        candidate = next((value for value in candidates if value.url not in urls), None)
-        if candidate is None:
-            continue
-        items.append(SkillQueueItem(item.paper.paper_id, doi, candidate.url, item.paper.title))
-        urls.add(candidate.url)
-    return tuple(items)
+        for candidate_id in result.authorized_candidate_ids:
+            try:
+                candidate = service.load_candidate(candidate_id)
+            except FetchRejected:
+                continue
+            if (
+                candidate.url in urls
+                or not authorized_publisher_host_matches(doi, candidate.host)
+            ):
+                continue
+            try:
+                service.require_authorized_handoff(
+                    authorization_grant_id,
+                    candidate,
+                    purpose=purpose,
+                    provider="authorized_skill",
+                    mode="attended",
+                    now=now,
+                    skill_digest=skill_digest,
+                    dependency_digest=dependency_digest,
+                    reserved_paper_ids=reserved_paper_ids,
+                )
+            except (FetchRejected, GrantError):
+                continue
+            items.append(
+                SkillQueueItem(
+                    item.paper.paper_id,
+                    doi,
+                    candidate.url,
+                    item.paper.title,
+                )
+            )
+            urls.add(candidate.url)
+            reserved_paper_ids.add(item.paper.paper_id)
+            candidate_ids.append(candidate.candidate_id)
+            break
+    return _AuthorizedQueuePlan(tuple(items), tuple(candidate_ids))
+
+
+def _validate_frozen_queue(
+    papers: Sequence[Stage3Paper],
+    items: Sequence[SkillQueueItem],
+    *,
+    service: DownloadService,
+    run_id: str,
+    queue_path: Path,
+    authorization_grant_id: str,
+    purpose: str,
+    now: str,
+    skill_digest: str,
+    dependency_digest: str,
+) -> _AuthorizedQueuePlan:
+    """Reprove every immutable row before a resumed browser handoff is exposed."""
+
+    selected = {item.paper.paper_id: item.paper for item in papers}
+    reserved_paper_ids: set[str] = set()
+    expected: list[SkillQueueItem] = []
+    candidate_ids: list[str] = []
+    resolved_queue_path = str(queue_path.resolve())
+    for item in items:
+        paper = selected.get(item.paper_id)
+        if (
+            paper is None
+            or paper.doi is None
+            or paper.doi.strip().lower() != item.doi.lower()
+        ):
+            raise AuthorizedSkillAdapterError(
+                "authorized queue does not match the selected papers"
+            )
+        item_hash = _queue_item_hash(item)
+        candidate = service.load_reserved_handoff_candidate(
+            authorization_grant_id,
+            run_id=run_id,
+            paper_id=item.paper_id,
+            queue_path=resolved_queue_path,
+            queue_item_hash=item_hash,
+        )
+        if candidate.url != item.url:
+            raise AuthorizedSkillAdapterError(
+                "authorized queue URL differs from its durable reservation"
+            )
+        service.require_authorized_handoff(
+            authorization_grant_id,
+            candidate,
+            purpose=purpose,
+            provider="authorized_skill",
+            mode="attended",
+            now=now,
+            skill_digest=skill_digest,
+            dependency_digest=dependency_digest,
+            reserved_paper_ids=reserved_paper_ids,
+        )
+        reserved_paper_ids.add(item.paper_id)
+        expected.append(
+            SkillQueueItem(item.paper_id, item.doi, item.url, paper.title)
+        )
+        candidate_ids.append(candidate.candidate_id)
+    return _AuthorizedQueuePlan(tuple(expected), tuple(candidate_ids))
+
+
+def _reserve_queue_plan(
+    service: DownloadService,
+    plan: _AuthorizedQueuePlan,
+    *,
+    run_id: str,
+    queue_path: Path,
+    authorization_grant_id: str,
+    purpose: str,
+    now: str,
+    skill_digest: str,
+    dependency_digest: str,
+) -> None:
+    resolved_queue_path = str(queue_path.resolve())
+    reserved_paper_ids: set[str] = set()
+    with service.database.transaction():
+        for item, candidate_id in zip(plan.items, plan.candidate_ids, strict=True):
+            candidate = service.load_candidate(candidate_id)
+            if candidate.paper_id != item.paper_id or candidate.url != item.url:
+                raise AuthorizedSkillAdapterError(
+                    "authorized queue item differs from its persisted candidate"
+                )
+            service.reserve_authorized_handoff(
+                authorization_grant_id,
+                candidate,
+                run_id=run_id,
+                queue_path=resolved_queue_path,
+                queue_item_hash=_queue_item_hash(item),
+                purpose=purpose,
+                provider="authorized_skill",
+                mode="attended",
+                now=now,
+                skill_digest=skill_digest,
+                dependency_digest=dependency_digest,
+                reserved_paper_ids=reserved_paper_ids,
+            )
+            reserved_paper_ids.add(item.paper_id)
+
+
+def _queue_item_hash(item: SkillQueueItem) -> str:
+    return content_hash({
+        "paper_id": item.paper_id,
+        "doi": item.doi,
+        "url": item.url,
+        "title": item.title,
+    })
+
+
+def _has_authorized_attempt(
+    database: Database,
+    *,
+    run_id: str,
+    authorization_grant_id: str,
+    paper_id: str,
+    url: str,
+) -> bool:
+    row = database.connection.execute(
+        """SELECT 1 FROM download_attempts AS attempt
+           JOIN download_candidates AS candidate
+             ON candidate.candidate_id = attempt.candidate_id
+           WHERE attempt.run_id = ?
+             AND attempt.authorization_grant_id = ?
+             AND attempt.provider = 'authorized_skill'
+             AND candidate.paper_id = ?
+             AND candidate.url = ?
+           LIMIT 1""",
+        (run_id, authorization_grant_id, paper_id, url),
+    ).fetchone()
+    return row is not None
 
 
 def _resume_checkpoints(
