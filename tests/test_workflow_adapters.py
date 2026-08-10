@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -57,6 +58,75 @@ def _context(tmp_path: Path, *, dry_run: bool = False) -> StepContext:
         child_run_id="workflow-7:step",
         dry_run=dry_run,
     )
+
+
+def _insert_running_stage4(database: Database, run_id: str) -> None:
+    database.connection.execute(
+        """INSERT INTO pipeline_runs(
+               run_id, stage, status, input_hash, config_hash, implementation_version
+           ) VALUES (?, 'stage4', 'running', 'input', 'config', 'test')""",
+        (run_id,),
+    )
+
+
+def _insert_running_analysis_dispatch(
+    database: Database, run_id: str, lease_expires_at: str
+) -> None:
+    database.connection.execute(
+        "INSERT INTO papers(paper_id, title) VALUES ('paper-1', 'Paper')"
+    )
+    database.connection.execute(
+        """INSERT INTO analysis_dispatches(
+               dispatch_id, run_id, paper_id, artifact_hash, input_scope,
+               config_hash, implementation_version, profile, model_id,
+               prompt_hash, schema_hash, policy_version, policy_hash,
+               stable_created_at, prompt_input_hash, status, dispatch_count,
+               lease_owner, lease_token, lease_expires_at
+           ) VALUES (?, ?, 'paper-1', ?, 'abstract_only', ?, 'test',
+                     'stage4_analysis_luna', 'gpt-5.6-luna', ?, ?, 'policy-v1', ?,
+                     ?, ?, 'running', 1, 'worker-1', 1, ?)""",
+        (
+            "analysis-dispatch-1",
+            run_id,
+            "a" * 64,
+            "config",
+            "b" * 64,
+            "c" * 64,
+            "d" * 64,
+            "2026-08-11T00:00:00.000000Z",
+            "e" * 64,
+            lease_expires_at,
+        ),
+    )
+
+
+def _observe_running_stage4(
+    tmp_path: Path, lease_expires_at: str | None
+) -> StepObservation:
+    context = _context(tmp_path)
+    selection = _write(tmp_path, "analysis.json", {
+        "schema_version": "1", "paper_ids": ["paper-1"], "stage3_artifact_ids": [],
+    })
+    policy = _ref(ROOT / "policies" / "artifact-processing-v1.yaml")
+    spec = AnalyzeStep("step", selection, None, policy)
+    adapter = AnalyzeStageAdapter(
+        clock=lambda: datetime(2026, 8, 11, tzinfo=UTC)
+    )
+    database = Database(context.database_path)
+    database.migrate()
+    _insert_running_stage4(database, context.child_run_id)
+    if lease_expires_at is not None:
+        _insert_running_analysis_dispatch(
+            database, context.child_run_id, lease_expires_at
+        )
+    database.connection.commit()
+    database.close()
+    before = context.database_path.read_bytes()
+
+    observation = adapter.observe(context, spec, adapter.validate(context, spec))
+
+    assert context.database_path.read_bytes() == before
+    return observation
 
 
 def test_adapters_call_typed_services_with_fixed_child_run_id(
@@ -387,6 +457,24 @@ def test_workflow_adapters_do_not_reenter_command_or_lease_layers() -> None:
     assert "from .cli import" not in source
     assert "LeaseQueue" not in source
     assert "argv" not in source
+
+
+def test_running_stage4_with_live_dispatch_is_observed_as_running(tmp_path: Path) -> None:
+    assert (
+        _observe_running_stage4(tmp_path, "2026-08-11T00:05:00.000000Z")
+        is StepObservation.RUNNING
+    )
+
+
+def test_running_stage4_with_expired_dispatch_is_safe_to_resume(tmp_path: Path) -> None:
+    assert (
+        _observe_running_stage4(tmp_path, "2026-08-11T00:00:00.000000Z")
+        is StepObservation.SAFE_TO_RESUME
+    )
+
+
+def test_running_stage4_without_dispatch_is_safe_to_resume(tmp_path: Path) -> None:
+    assert _observe_running_stage4(tmp_path, None) is StepObservation.SAFE_TO_RESUME
 
 
 def test_incomplete_child_run_is_safe_to_resume_and_complete_run_is_not_replayed(

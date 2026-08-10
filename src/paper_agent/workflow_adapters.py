@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -107,16 +108,27 @@ class _WorkflowAdapter:
 
     @staticmethod
     def _observe_pipeline(
-        context: StepContext, expected_stage: str, run_id: str | None = None,
+        context: StepContext,
+        expected_stage: str,
+        run_id: str | None = None,
+        running_is_live: Callable[[sqlite3.Connection], bool] | None = None,
     ) -> StepObservation:
         if not context.database_path.is_file():
             return StepObservation.PENDING
+        running_live: bool | None = None
         try:
             with Database(context.database_path, read_only=True) as database:
                 row = database.connection.execute(
                     "SELECT stage, status FROM pipeline_runs WHERE run_id = ?",
                     (run_id or context.child_run_id,),
                 ).fetchone()
+                if (
+                    row is not None
+                    and row["stage"] == expected_stage
+                    and row["status"] == "running"
+                    and running_is_live is not None
+                ):
+                    running_live = running_is_live(database.connection)
         except (OSError, sqlite3.Error) as error:
             if context.dry_run:
                 raise ValueError(
@@ -127,6 +139,12 @@ class _WorkflowAdapter:
             return StepObservation.PENDING
         if row["stage"] != expected_stage:
             return StepObservation.UNCERTAIN_TERMINAL
+        if row["status"] == "running" and running_is_live is not None:
+            return (
+                StepObservation.RUNNING
+                if running_live
+                else StepObservation.SAFE_TO_RESUME
+            )
         return _run_observation(str(row["status"]))
 
 
@@ -289,8 +307,14 @@ class AnalyzeStageAdapter(_WorkflowAdapter):
     expected_type = AnalyzeStep
     stage = StageKind.ANALYZE
 
-    def __init__(self, service_factory: AnalysisServiceFactory | None = None) -> None:
+    def __init__(
+        self,
+        service_factory: AnalysisServiceFactory | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.service_factory = service_factory or _analysis_service
+        self.clock = _trusted_clock(clock)
 
     def _validate_dry_inputs(self, context: StepContext, spec: AnalyzeStep) -> None:
         config = load_config(context.config_path)
@@ -308,7 +332,19 @@ class AnalyzeStageAdapter(_WorkflowAdapter):
         self, context: StepContext, spec: AnalyzeStep, identity: StageIdentity
     ) -> StepObservation:
         del spec, identity
-        return self._observe_pipeline(context, "stage4")
+
+        def running_dispatch_is_live(connection: sqlite3.Connection) -> bool:
+            row = connection.execute(
+                """SELECT 1 FROM analysis_dispatches
+                   WHERE run_id = ? AND status = 'running' AND lease_expires_at > ?
+                   LIMIT 1""",
+                (context.child_run_id, _ordered_timestamp(self.clock())),
+            ).fetchone()
+            return row is not None
+
+        return self._observe_pipeline(
+            context, "stage4", running_is_live=running_dispatch_is_live
+        )
 
     def execute(
         self, context: StepContext, spec: AnalyzeStep, identity: StageIdentity
@@ -648,6 +684,22 @@ def _resource_path(config_path: Path, path: Path) -> Path:
 def _filter_run_id(context: StepContext, spec: FilterStep) -> str:
     del spec
     return f"stage2-{uuid5(NAMESPACE_URL, f'{context.child_run_id}:0').hex}"
+
+
+def _trusted_clock(clock: Callable[[], datetime] | None) -> Callable[[], datetime]:
+    source = clock or (lambda: datetime.now(UTC))
+
+    def current() -> datetime:
+        value = source()
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise ValueError("workflow adapter clock must return a timezone-aware datetime")
+        return value.astimezone(UTC)
+
+    return current
+
+
+def _ordered_timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _run_observation(status: str) -> StepObservation:
