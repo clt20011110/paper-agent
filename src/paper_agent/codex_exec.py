@@ -113,7 +113,7 @@ CALL_KIND_PROMPTS: Mapping[CallKind, str] = MappingProxyType({
     "planning_assist": "report-plan.md",
     "section_reduce": "section-synthesis.md",
     "cross_section_reduce": "cross-section-synthesis.md",
-    "final_reduce": "report-final.md",
+    "final_reduce": "final-report.md",
     "quality_audit": "report-audit.md",
     "repair": "report-repair.md",
 })
