@@ -24,12 +24,17 @@ ROOT = Path(__file__).resolve().parents[1]
 def _runner(argv):
     command = tuple(argv)
     if command[-1] == "--version":
-        return subprocess.CompletedProcess(command, 0, "0.5.7\n" if command[0] == "omlx" else "codex 1.2.3\n", "")
+        version = "0.5.7\n" if Path(command[0]).name == "omlx" else "codex 1.2.3\n"
+        return subprocess.CompletedProcess(command, 0, version, "")
     if command[-2:] == ("login", "status"):
         return subprocess.CompletedProcess(command, 0, "logged in\n", "")
     if command[-2:] == ("debug", "models"):
         return subprocess.CompletedProcess(command, 0, '{"models":[{"slug":"gpt-5.6-luna"},{"slug":"gpt-5.6-sol"}]}', "")
     raise AssertionError(command)
+
+
+def _executable(name: str) -> str:
+    return f"/fake/bin/{name}"
 
 
 def _paths(tmp_path: Path, **changes) -> DoctorPaths:
@@ -49,7 +54,7 @@ def _doctor(tmp_path: Path, **changes) -> SystemDoctor:
     return SystemDoctor(
         _paths(tmp_path, **changes),
         command_runner=_runner,
-        executable_finder=lambda name: name,
+        executable_finder=_executable,
         environment={},
         disk_usage=lambda _: type("Disk", (), {"free": 2_000_000_000})(),
     )
@@ -204,7 +209,7 @@ summary:
 def test_omlx_endpoint_is_not_invented_without_a_validated_release(tmp_path: Path) -> None:
     calls: list[str] = []
     doctor = SystemDoctor(
-        _paths(tmp_path), command_runner=_runner, executable_finder=lambda name: name,
+        _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
         http_probe=lambda endpoint: (calls.append(endpoint) or (200, "ok")),
         disk_usage=lambda _: type("Disk", (), {"free": 2_000_000_000})(),
     )
@@ -219,7 +224,7 @@ def test_omlx_old_or_unparseable_version_is_a_blocker(tmp_path: Path, version: s
     doctor = SystemDoctor(
         _paths(tmp_path),
         command_runner=lambda argv: subprocess.CompletedProcess(argv, 0, version, ""),
-        executable_finder=lambda name: name,
+        executable_finder=_executable,
     )
 
     check = doctor._omlx(None)
@@ -237,19 +242,19 @@ def test_omlx_requires_2xx_and_a_matching_model_inventory(tmp_path: Path) -> Non
         ),
     )
     denied = SystemDoctor(
-        _paths(tmp_path), command_runner=_runner, executable_finder=lambda name: name,
+        _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
         http_probe=lambda _: (401, "unauthorized"),
     )
     assert denied._omlx(released).status == "blocker"  # type: ignore[arg-type]
 
     incomplete = SystemDoctor(
-        _paths(tmp_path), command_runner=_runner, executable_finder=lambda name: name,
+        _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
         http_probe=lambda _: (200, json.dumps({"data": [{"id": "bge-reranker-v2-m3"}]})),
     )
     assert incomplete._omlx(released).status == "blocker"  # type: ignore[arg-type]
 
     available = SystemDoctor(
-        _paths(tmp_path), command_runner=_runner, executable_finder=lambda name: name,
+        _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
         http_probe=lambda _: (
             200,
             json.dumps({"data": [
@@ -438,7 +443,7 @@ def test_codex_catalog_listing_is_not_production_availability(tmp_path: Path) ->
         return subprocess.CompletedProcess(command, 0, json.dumps({"model": command[3]}) + "\n", "")
 
     proved = SystemDoctor(
-        _paths(tmp_path), command_runner=proving_runner, executable_finder=lambda name: name,
+        _paths(tmp_path), command_runner=proving_runner, executable_finder=_executable,
         prove_codex_models=True,
     )._codex()
     assert proved.status == "pass"
@@ -455,7 +460,7 @@ def test_codex_catalog_listing_is_not_production_availability(tmp_path: Path) ->
         )
 
     auth = SystemDoctor(
-        _paths(tmp_path), command_runner=misleading_auth, executable_finder=lambda name: name,
+        _paths(tmp_path), command_runner=misleading_auth, executable_finder=_executable,
     )._codex()
     assert auth.status == "blocker"
 
