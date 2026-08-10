@@ -10,6 +10,7 @@ import pytest
 
 from paper_agent.approval import ApprovalError
 from paper_agent.approved_snapshot import frozen_parameters_hash
+from paper_agent.citations import DeterministicFakeScreener
 from paper_agent.cli import build_parser, main
 from paper_agent.query_plan import QueryPlanDriftError
 from paper_agent.query_compilers import compile_queries
@@ -95,7 +96,18 @@ def _plan(tmp_path, capsys) -> tuple[dict[str, object], str]:
     return output, output["draft_path"]
 
 
-def test_search_run_cli_replays_an_approved_snapshot_without_contact(tmp_path, capsys) -> None:
+def _inject_test_screener(monkeypatch) -> None:
+    from paper_agent.search_execution import execute_search_plan as execute
+
+    def execute_with_fake(*args, **kwargs):
+        kwargs["stage2_screener"] = DeterministicFakeScreener(frozenset())
+        return execute(*args, **kwargs)
+
+    monkeypatch.setattr("paper_agent.cli.execute_search_plan", execute_with_fake)
+
+
+def test_search_run_cli_replays_an_approved_snapshot_without_contact(tmp_path, capsys, monkeypatch) -> None:
+    _inject_test_screener(monkeypatch)
     document = _draft()
     query = compile_queries("crossref", document["query_variants"], document["scope"])[0]
     parameters = {**query.parameters, "cursor": None}
@@ -195,6 +207,12 @@ def test_search_plan_approval_run_and_history_are_frozen(tmp_path, capsys, monke
     approved = json.loads(capsys.readouterr().out)
     assert (tmp_path / "output" / "search" / "latest-approved.json").exists()
 
+    monkeypatch.setenv("PAPER_AGENT_STAGE2_RELEASE", str(tmp_path / "released-stage2.json"))
+    monkeypatch.setattr(
+        "paper_agent.cli.load_stage2_release",
+        lambda path, plan: SimpleNamespace(release_hash="f" * 64),
+    )
+
     assert main(["--dry-run", "search", "run", "--plan", approved["approved_path"]]) == 0
     assert json.loads(capsys.readouterr().out)["provider_invocation"] == "skipped_dry_run"
 
@@ -214,7 +232,8 @@ def test_search_plan_approval_run_and_history_are_frozen(tmp_path, capsys, monke
     assert (tmp_path / "output" / "search" / second["plan_id"] / "QUERY_PLAN.draft.json").exists()
 
 
-def test_search_run_executes_library_provider_and_is_idempotent(tmp_path, capsys) -> None:
+def test_search_run_executes_library_provider_and_is_idempotent(tmp_path, capsys, monkeypatch) -> None:
+    _inject_test_screener(monkeypatch)
     document = _draft()
     document["providers"] = ["user_library"]
     document["scope"]["user_seeds"] = ["doi:10.1000/library-seed"]  # type: ignore[index]

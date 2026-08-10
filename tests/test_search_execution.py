@@ -9,11 +9,13 @@ import sqlite3
 import pytest
 
 from paper_agent.cli import _provider_specs
+from paper_agent.citations import DeterministicFakeScreener
 from paper_agent.approved_snapshot import frozen_parameters_hash
 from paper_agent.query_plan import QueryPlanDriftError, approve_query_plan, compile_query_plan
 from paper_agent.providers.builtin import FixtureTransport
 from paper_agent.query_compilers import compile_queries
 from paper_agent.search_execution import execute_search_plan, resolve_runtime_providers, seed_input
+from paper_agent.stage2_search import Stage2ReleaseError
 
 from test_query_plan import draft
 
@@ -46,6 +48,20 @@ def test_runtime_reresolves_declared_credential_presence(monkeypatch) -> None:
     monkeypatch.delenv("OPENALEX_API_KEY")
     with pytest.raises(QueryPlanDriftError, match="credential|unavailable"):
         resolve_runtime_providers(plan)
+
+
+def test_search_startup_requires_a_released_local_stage2_before_provider_contact(tmp_path, monkeypatch) -> None:
+    plan = _approved("openalex", monkeypatch)
+    provider_calls = []
+
+    def transport(*args):
+        provider_calls.append(args)
+        return {"results": []}
+
+    with pytest.raises(Stage2ReleaseError, match="requires --stage2-release"):
+        execute_search_plan(plan, tmp_path / "papers.sqlite3", transport=transport)
+
+    assert provider_calls == []
 
 
 def test_snapshot_runtime_requires_the_exact_approved_file(tmp_path, monkeypatch) -> None:
@@ -101,7 +117,12 @@ def test_search_execution_replays_paginated_snapshot_into_sqlite_without_contact
     plan = _approved("crossref", monkeypatch, mode="snapshot", snapshot_hash=digest)
     database = tmp_path / "papers.sqlite3"
 
-    result, _, _ = execute_search_plan(plan, database, snapshot_paths={"crossref": bundle})
+    result, _, _ = execute_search_plan(
+        plan,
+        database,
+        snapshot_paths={"crossref": bundle},
+        stage2_screener=DeterministicFakeScreener(frozenset()),
+    )
 
     assert (result.fanout.incomplete, len(result.paper_ids)) == (False, 2)
     with sqlite3.connect(database) as connection:
@@ -126,13 +147,19 @@ def test_snapshot_bundle_drift_and_missing_page_are_rejected_without_transport_f
         tmp_path / "missing-page.sqlite3",
         snapshot_paths={"crossref": bundle},
         transport=fallback,
+        stage2_screener=DeterministicFakeScreener(frozenset()),
     )
     assert result.status == "incomplete"
     assert fallback_calls == []
 
     bundle.write_bytes(bundle.read_bytes() + b"\n")
     with pytest.raises(QueryPlanDriftError, match="snapshot_hash"):
-        execute_search_plan(plan, tmp_path / "drift.sqlite3", snapshot_paths={"crossref": bundle})
+        execute_search_plan(
+            plan,
+            tmp_path / "drift.sqlite3",
+            snapshot_paths={"crossref": bundle},
+            stage2_screener=DeterministicFakeScreener(frozenset()),
+        )
 
 
 def test_snapshot_and_api_providers_use_their_respective_transports(tmp_path, monkeypatch) -> None:
@@ -170,6 +197,7 @@ def test_snapshot_and_api_providers_use_their_respective_transports(tmp_path, mo
         tmp_path / "mixed.sqlite3",
         snapshot_paths={"crossref": bundle},
         transport=api_transport,
+        stage2_screener=DeterministicFakeScreener(frozenset()),
     )
     assert (result.fanout.incomplete, len(result.paper_ids)) == (False, 2)
     assert fallback_calls[0][:2] == ("openalex", "search")
@@ -213,6 +241,7 @@ def test_venue_only_execution_runs_descriptors_without_topic_search(tmp_path) ->
         approved,
         database,
         transport=FixtureTransport(responses),
+        stage2_screener=DeterministicFakeScreener(frozenset()),
         venue_only=True,
     )
 

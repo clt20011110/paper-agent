@@ -87,6 +87,7 @@ def test_compiled_plan_replays_and_approval_is_detached() -> None:
 
     assert first["plan_hash"] == second["plan_hash"]
     assert first["plan_id"] == second["plan_id"]
+    assert first["scope"]["include_arxiv_candidates"] is False
     approved = approve_query_plan(
         first,
         first["plan_hash"],
@@ -95,6 +96,29 @@ def test_compiled_plan_replays_and_approval_is_detached() -> None:
     )
     assert approved["plan_hash"] == first["plan_hash"]
     validate(approved, "query-plan.schema.json")
+
+
+def test_arxiv_candidate_policy_is_frozen_and_runtime_drift_is_rejected() -> None:
+    default_plan = compile_query_plan(draft(), providers=[provider()])
+    included_draft = draft()
+    included_draft["scope"]["include_arxiv_candidates"] = True
+    included_plan = compile_query_plan(included_draft, providers=[provider()])
+
+    assert default_plan["scope"]["include_arxiv_candidates"] is False
+    assert included_plan["scope"]["include_arxiv_candidates"] is True
+    assert default_plan["plan_hash"] != included_plan["plan_hash"]
+    approved = approve_query_plan(
+        included_plan,
+        included_plan["plan_hash"],
+        approved_by="owner",
+        approved_at="2026-08-09T01:00:00Z",
+    )
+    with pytest.raises(QueryPlanDriftError, match="include_arxiv_candidates"):
+        assert_runtime_matches(
+            approved,
+            approved["providers"],
+            include_arxiv_candidates=False,
+        )
 
 
 def test_approved_plan_is_immutable_and_latest_is_atomic(tmp_path) -> None:

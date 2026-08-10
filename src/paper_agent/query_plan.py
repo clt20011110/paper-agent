@@ -74,7 +74,8 @@ def compile_query_plan(
         | {str(spec["provider"]) for spec in provider_specs if spec.get("exact_required") is True}
     )
     variants = list(source["query_variants"])
-    scope = source["scope"]
+    scope = dict(source["scope"])
+    scope.setdefault("include_arxiv_candidates", False)
     compiled_providers = [
         _compile_provider(spec, variants, scope, page_size=_page_size(source), requirements=requirements)
         for spec in provider_specs
@@ -151,12 +152,18 @@ def assert_runtime_matches(
     *,
     budgets: Mapping[str, Any] | None = None,
     policies: Mapping[str, Any] | None = None,
+    include_arxiv_candidates: bool | None = None,
 ) -> None:
     """Reject every environment change that would alter replayed searches."""
     try:
         require_valid_approval(plan, "plan_hash")
     except ApprovalError as error:
         raise QueryPlanDriftError(str(error)) from error
+    frozen_arxiv_setting = plan.get("scope", {}).get("include_arxiv_candidates")
+    if not isinstance(frozen_arxiv_setting, bool):
+        raise QueryPlanDriftError("include_arxiv_candidates is not frozen in the QueryPlan")
+    if include_arxiv_candidates is not None and include_arxiv_candidates != frozen_arxiv_setting:
+        raise QueryPlanDriftError("include_arxiv_candidates has drifted")
     recorded = {str(provider["provider"]): provider for provider in plan["providers"]}
     observed = {str(provider["provider"]): provider for provider in runtime_providers}
     if set(recorded) != set(observed):

@@ -20,6 +20,7 @@ from .manifests import load_catalog
 from .query_plan import QueryPlanStore, assert_runtime_matches, compile_query_plan
 from .schema import schema_directory
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
+from .stage2_search import Stage2ReleaseError, load_stage2_release
 from .search_audit import search_audit
 from .seed_import import import_seeds, inputs_from_files
 
@@ -48,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--database", type=Path)
     run.add_argument("--contact")
     run.add_argument("--snapshot", action="append", default=[], metavar="PROVIDER=PATH")
+    run.add_argument("--stage2-release", type=Path, help="passed local Stage 2 release manifest")
     run.add_argument("--historical-replay", action="store_true")
     audit = search_commands.add_parser("audit", help="read a persisted search audit")
     audit.add_argument("--database", required=True, type=Path)
@@ -63,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument("--database", type=Path)
     crawl.add_argument("--contact")
     crawl.add_argument("--snapshot", action="append", default=[], metavar="PROVIDER=PATH")
+    crawl.add_argument("--stage2-release", type=Path, help="passed local Stage 2 release manifest")
     crawl.add_argument("--historical-replay", action="store_true")
     import_command = subcommands.add_parser("import-seeds", help="import authorized library seeds")
     import_command.add_argument("--database", required=True, type=Path)
@@ -101,6 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 database_path=args.database,
                 contact=args.contact,
                 snapshot_values=args.snapshot,
+                stage2_release_path=args.stage2_release,
                 config_path=args.config,
                 run_id=args.run_id,
                 dry_run=args.dry_run,
@@ -122,6 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 database_path=args.database,
                 contact=args.contact,
                 snapshot_values=args.snapshot,
+                stage2_release_path=args.stage2_release,
                 config_path=args.config,
                 run_id=args.run_id,
                 dry_run=args.dry_run,
@@ -180,6 +185,7 @@ def _search_run(
     database_path: Path | None,
     contact: str | None,
     snapshot_values: Sequence[str],
+    stage2_release_path: Path | None,
     config_path: Path | None,
     run_id: str | None,
     dry_run: bool,
@@ -199,6 +205,12 @@ def _search_run(
     )
     if dry_run:
         runtime = resolve_runtime_providers(plan, snapshot_paths=snapshots)
+        release_path = stage2_release_path or _configured_stage2_release()
+        if release_path is None:
+            raise Stage2ReleaseError(
+                "search startup requires --stage2-release or PAPER_AGENT_STAGE2_RELEASE"
+            )
+        released_stage2 = load_stage2_release(release_path, plan)
         return {
             "command": "search.run",
             "database_path": str(database),
@@ -208,6 +220,7 @@ def _search_run(
             "resolved_providers": sorted(
                 provider["provider"] for provider in runtime if provider["resolved"]
             ),
+            "stage2_release_hash": released_stage2.release_hash,
             "status": "runtime_validated",
         }
     result, resolved_run_id, crawl_run_id = execute_search_plan(
@@ -216,6 +229,7 @@ def _search_run(
         run_id=run_id,
         contact=operator_contact,
         snapshot_paths=snapshots,
+        stage2_release_path=stage2_release_path,
         venue_only=venue_only,
         historical_replay=historical_replay,
     )
@@ -239,7 +253,13 @@ def _search_run(
 def _expand_citations(plan_path: Path, seeds_path: Path, round_index: int) -> dict[str, Any]:
     plan = _load_json(plan_path)
     runtime = {"providers": plan["providers"], "budgets": plan["budgets"], "execution": plan["execution"]}
-    assert_runtime_matches(plan, runtime["providers"], budgets=runtime["budgets"], policies=runtime["execution"])
+    assert_runtime_matches(
+        plan,
+        runtime["providers"],
+        budgets=runtime["budgets"],
+        policies=runtime["execution"],
+        include_arxiv_candidates=plan["scope"]["include_arxiv_candidates"],
+    )
     seeds = _selected_seeds(_load_json(seeds_path))
     snowball = plan["citation_snowball"]
     requests = schedule_requests(
@@ -264,6 +284,7 @@ def _crawl(
     database_path: Path | None = None,
     contact: str | None = None,
     snapshot_values: Sequence[str] = (),
+    stage2_release_path: Path | None = None,
     config_path: Path | None = None,
     run_id: str | None = None,
     dry_run: bool = False,
@@ -280,6 +301,7 @@ def _crawl(
             database_path=database_path,
             contact=contact,
             snapshot_values=snapshot_values,
+            stage2_release_path=stage2_release_path,
             config_path=config_path,
             run_id=run_id,
             dry_run=dry_run,
@@ -427,6 +449,11 @@ def _configured_database(config: Mapping[str, Any] | None, config_path: Path | N
         return None
     path = Path(str(config["storage"]["sqlite_path"]))
     return path if path.is_absolute() else config_path.parent / path
+
+
+def _configured_stage2_release() -> Path | None:
+    value = os.environ.get("PAPER_AGENT_STAGE2_RELEASE")
+    return Path(value) if value else None
 
 
 def _assert_config_plan(

@@ -139,7 +139,11 @@ class SearchPipeline:
         self._active_venue_runs = self.venue_runs
         self.seed_inputs = tuple(seed_inputs)
         self.citation_clients = citation_clients or {}
-        self.screener = screener or DeterministicFakeScreener(frozenset())
+        if screener is None:
+            if self.plan["filter"]["profile"] != "fake":
+                raise ValueError("SearchPipeline requires an explicit released Stage 2 screener")
+            screener = DeterministicFakeScreener(frozenset())
+        self.screener = screener
         self.venue_only = venue_only
         self.repository = PaperRepository(database)
         self.metadata = MetadataCoordinator(self.repository, trusts)
@@ -156,7 +160,12 @@ class SearchPipeline:
         seed_paper_ids: Sequence[str] = (),
     ) -> PipelineResult:
         """Execute the frozen plan and persist a replayable audit trail."""
-        assert_runtime_matches(self.plan, self.runtime_providers, budgets=self.plan["budgets"])
+        assert_runtime_matches(
+            self.plan,
+            self.runtime_providers,
+            budgets=self.plan["budgets"],
+            include_arxiv_candidates=self.plan["scope"]["include_arxiv_candidates"],
+        )
         self._ensure_run(run_id, observed_at)
         self.runs.start_crawl(
             crawl_run_id=crawl_run_id,
@@ -173,7 +182,9 @@ class SearchPipeline:
         library_seed_ids: set[str] = set()
         metrics: dict[str, SourceMetrics] = {}
         source_entries: dict[str, list[SourceEntry]] = {}
+        source_paper_ids: dict[str, set[str]] = {}
         paper_sources: dict[str, set[tuple[str, str]]] = {}
+        paper_subquestions: dict[str, set[str]] = {}
         scope_states: dict[tuple[str, str], IncrementalScope] = {}
         for outcome in fanout.outcomes:
             provider = self._provider(outcome.provider)
@@ -235,6 +246,7 @@ class SearchPipeline:
                 )
                 papers = self.metadata.merge_batch(batch, venue)
                 ids = {paper.paper_id for paper in papers}
+                source_paper_ids.setdefault(batch.source_run_id, set()).update(ids)
                 self._record_scope(
                     scope_states,
                     outcome.provider,
@@ -244,25 +256,14 @@ class SearchPipeline:
                 )
                 for paper_id in ids:
                     paper_sources.setdefault(paper_id, set()).add((outcome.provider, descriptor_key))
+                    subquestion_id = self._subquestion_id(query)
+                    if subquestion_id:
+                        paper_subquestions.setdefault(paper_id, set()).add(subquestion_id)
                 all_paper_ids.update(ids)
                 if outcome.provider != "arxiv":
                     non_arxiv_ids.update(ids)
                 if page.role == "library":
                     library_seed_ids.update(ids)
-
-        for source_run_id, source_metrics in metrics.items():
-            entries = source_entries[source_run_id]
-            identities = {self._identity(entry) for entry in entries}
-            raw = source_metrics.raw_discovered
-            self.runs.record_metrics(
-                source_run_id,
-                replace(
-                    source_metrics,
-                    unique_after_dedup=len(identities),
-                    overlap=raw - len(identities),
-                ),
-                updated_at=observed_at,
-            )
 
         enrichment_requests, enrichment_candidates, metadata_failed, metadata_budget_exhausted = self._run_metadata(
             run_id,
@@ -278,29 +279,49 @@ class SearchPipeline:
             deadline=campaign_deadline,
         )
         self._link_versions(observed_at)
+        eligible_discoveries = (
+            all_paper_ids
+            if self.plan["scope"]["include_arxiv_candidates"]
+            else non_arxiv_ids
+        )
+        root_paper_ids = tuple(sorted(
+            eligible_discoveries
+            | library_seed_ids
+            | {paper_id for paper_id in seed_paper_ids if self.repository.get_paper(paper_id)}
+        ))
+        root_decisions = dict(self.screener.screen(root_paper_ids))
+        if set(root_decisions) != set(root_paper_ids):
+            raise ValueError("Stage 2 must return one decision for every root discovery")
+
+        for source_run_id, source_metrics in metrics.items():
+            entries = source_entries[source_run_id]
+            identities = {self._identity(entry) for entry in entries}
+            raw = source_metrics.raw_discovered
+            screened_ids = source_paper_ids.get(source_run_id, set()) & set(root_decisions)
+            self.runs.record_metrics(
+                source_run_id,
+                replace(
+                    source_metrics,
+                    unique_after_dedup=len(identities),
+                    overlap=raw - len(identities),
+                    screened=len(screened_ids),
+                    excluded=sum(root_decisions[paper_id] is FilterStatus.IRRELEVANT for paper_id in screened_ids),
+                    included=sum(root_decisions[paper_id] is FilterStatus.RELEVANT for paper_id in screened_ids),
+                ),
+                updated_at=observed_at,
+            )
         self.runs.finalize_incremental_crawl(
             crawl_run_id,
             paper_sources=paper_sources,
             scopes=tuple(scope_states.values()),
             recorded_at=observed_at,
         )
-        status = self.runs.finish_crawl(crawl_run_id, plan=self.plan, fanout=fanout, finished_at=observed_at)
-        if fanout.budget_exhausted:
-            status = "incomplete"
-            self.database.connection.execute(
-                "UPDATE crawl_runs SET status = ? WHERE crawl_run_id = ?",
-                (status, crawl_run_id),
-            )
-        if metadata_failed:
-            status = "incomplete"
-            self.database.connection.execute(
-                "UPDATE crawl_runs SET status = 'incomplete' WHERE crawl_run_id = ?",
-                (crawl_run_id,),
-            )
         round_ids, citation_requests_made, citation_candidates_returned = self._run_citations(
             crawl_run_id,
             observed_at,
-            (*seed_paper_ids, *sorted(library_seed_ids)),
+            tuple(sorted(set(seed_paper_ids) | library_seed_ids)),
+            root_decisions,
+            paper_subquestions,
             request_budget=max(
                 0,
                 int(self.plan["budgets"]["max_requests"])
@@ -315,6 +336,17 @@ class SearchPipeline:
             ),
             deadline=campaign_deadline,
         )
+        status = self.runs.finish_crawl(crawl_run_id, plan=self.plan, fanout=fanout, finished_at=observed_at)
+        if (
+            fanout.budget_exhausted
+            or metadata_failed
+            or any(decision is FilterStatus.NEEDS_REVIEW for decision in root_decisions.values())
+        ):
+            status = "incomplete"
+            self.database.connection.execute(
+                "UPDATE crawl_runs SET status = ? WHERE crawl_run_id = ?",
+                (status, crawl_run_id),
+            )
         citation_limited = self.database.connection.execute(
             "SELECT 1 FROM search_rounds WHERE crawl_run_id = ? AND limited_scope = 1 LIMIT 1",
             (crawl_run_id,),
@@ -788,6 +820,14 @@ class SearchPipeline:
                 return str(query.parameters[key])
         return query.variant_id
 
+    def _subquestion_id(self, query: NativeQuery | None) -> str | None:
+        if query is None:
+            return None
+        variant = next(
+            item for item in self.plan["query_variants"] if item["id"] == query.variant_id
+        )
+        return variant.get("subquestion_id")
+
     @staticmethod
     def _identity(entry: SourceEntry) -> tuple[str, ...]:
         if entry.doi:
@@ -825,7 +865,9 @@ class SearchPipeline:
         self,
         crawl_run_id: str,
         observed_at: str,
-        seed_paper_ids: Sequence[str],
+        user_seed_ids: Sequence[str],
+        root_decisions: Mapping[str, FilterStatus],
+        paper_subquestions: Mapping[str, set[str]],
         *,
         request_budget: int,
         candidate_budget: int,
@@ -835,8 +877,10 @@ class SearchPipeline:
         if not config["enabled"] or not self.citation_clients:
             return [], 0, 0
         providers = tuple(sorted(self.citation_clients))
-        roots = tuple(sorted({paper_id for paper_id in seed_paper_ids if self.repository.get_paper(paper_id)}))
-        if not roots:
+        users = frozenset(
+            paper_id for paper_id in user_seed_ids if paper_id in root_decisions
+        )
+        if not root_decisions:
             return [], 0, 0
         max_requests = request_budget
         max_depth = int(config["max_depth"])
@@ -850,12 +894,17 @@ class SearchPipeline:
         )
         candidates = {
             paper_id: SeedCandidate(
-                paper_id, default_subquestion, FilterStatus.RELEVANT,
-                1.0, self.repository.get_paper(paper_id).verification_status, 0, 0,
+                paper_id,
+                next(iter(sorted(paper_subquestions.get(paper_id, ()))), default_subquestion),
+                status,
+                self.screener.reranker_score(paper_id),
+                self.repository.get_paper(paper_id).verification_status,
+                0,
+                0,
             )
-            for paper_id in roots
+            for paper_id, status in root_decisions.items()
         }
-        seen = set(roots)
+        seen = set(root_decisions)
         expanded: set[str] = set()
         used_requests = 0
         used_candidates = 0
@@ -864,7 +913,7 @@ class SearchPipeline:
         for round_index in range(max_rounds):
             seeds = select_seeds(
                 tuple(candidates.values()),
-                user_seed_ids=frozenset(roots),
+                user_seed_ids=users,
                 expanded_paper_ids=frozenset(expanded),
                 max_depth=max_depth,
                 per_subquestion=20,
@@ -911,13 +960,13 @@ class SearchPipeline:
                 if paper:
                     depth, subquestion_id = candidate_context[paper_id]
                     candidates[paper_id] = SeedCandidate(
-                        paper_id, subquestion_id, decision, 1.0, paper.verification_status,
+                        paper_id, subquestion_id, decision, self.screener.reranker_score(paper_id), paper.verification_status,
                         depth, round_index,
                     )
             expanded.update(seed.paper_id for seed in seeds)
             next_seeds = select_seeds(
                 tuple(candidates.values()),
-                user_seed_ids=frozenset(roots),
+                user_seed_ids=users,
                 expanded_paper_ids=frozenset(expanded),
                 max_depth=max_depth,
                 per_subquestion=20,

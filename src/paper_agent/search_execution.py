@@ -30,6 +30,7 @@ from .query_plan import (
     compile_runtime_providers,
 )
 from .search_pipeline import PipelineResult, SearchPipeline, VenueRun
+from .stage2_search import Stage2ReleaseError, load_stage2_release
 from .storage import Database
 from .verification import ProviderTrust, VenueContext
 
@@ -95,7 +96,13 @@ def resolve_runtime_providers(
         runtime = compile_runtime_providers(plan, specifications)
     except QueryPlanError as error:
         raise QueryPlanDriftError(str(error)) from error
-    assert_runtime_matches(plan, runtime, budgets=plan["budgets"], policies=plan["execution"])
+    assert_runtime_matches(
+        plan,
+        runtime,
+        budgets=plan["budgets"],
+        policies=plan["execution"],
+        include_arxiv_candidates=plan["scope"]["include_arxiv_candidates"],
+    )
     return runtime
 
 
@@ -109,10 +116,21 @@ def execute_search_plan(
     environment: Mapping[str, str] | None = None,
     snapshot_paths: Mapping[str, Path] | None = None,
     transport: Any | None = None,
+    stage2_release_path: Path | None = None,
+    stage2_screener: Any | None = None,
+    stage2_transport: Any | None = None,
     venue_only: bool = False,
     historical_replay: bool = False,
 ) -> tuple[PipelineResult, str, str]:
     """Execute one approved plan through the same single-writer pipeline as tests."""
+    released_stage2 = None
+    if stage2_screener is None:
+        release_path = stage2_release_path or _stage2_release_from_environment(environment)
+        if release_path is None:
+            raise Stage2ReleaseError(
+                "search startup requires --stage2-release or PAPER_AGENT_STAGE2_RELEASE"
+            )
+        released_stage2 = load_stage2_release(release_path, plan)
     installed = catalog or load_catalog()
     runtime = resolve_runtime_providers(
         plan,
@@ -220,6 +238,12 @@ def execute_search_plan(
             "SELECT started_at FROM pipeline_runs WHERE run_id = ?", (resolved_run_id,)
         ).fetchone()
         observed_at = row["started_at"] if row else datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        screener = stage2_screener or released_stage2.screener(
+            database,
+            crawl_run_id,
+            transport=stage2_transport,
+            environment=environment,
+        )
         pipeline = SearchPipeline(
             database,
             plan,
@@ -229,6 +253,7 @@ def execute_search_plan(
             venue_runs=venues,
             seed_inputs=seeds,
             citation_clients=citation_clients,
+            screener=screener,
             venue_only=venue_only,
         )
         result = pipeline.run(
@@ -302,6 +327,12 @@ def _snapshot_hash(provider: str, mode: str, paths: Mapping[str, Path]) -> str |
         return None
     path = paths.get(provider)
     return sha256(path.read_bytes()).hexdigest() if path else None
+
+
+def _stage2_release_from_environment(environment: Mapping[str, str] | None) -> Path | None:
+    values = environment if environment is not None else os.environ
+    value = values.get("PAPER_AGENT_STAGE2_RELEASE")
+    return Path(value) if value else None
 
 
 def _no_network_transport(provider: str, operation: str, parameters: Mapping[str, Any]) -> Mapping[str, Any]:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+import pytest
+
 from paper_agent.citations import DeterministicFakeScreener, citation_edge, reference_edge
 from paper_agent.domain import CitationBatch, CitationEdge, CitationEdgeType, EnvelopeStatus, FilterStatus, MembershipStatus, ProviderRole, SourceBatch, SourceEntry, VerificationStatus
 from paper_agent.query_plan import approve_query_plan, compile_query_plan
@@ -36,12 +38,24 @@ def _plan(
     max_depth: int = 1, max_rounds: int = 2, max_requests: int = 4, max_candidates: int = 10,
     max_seconds: int = 10, required_roles: tuple[str, ...] = ("search",),
     citation_directions: tuple[str, ...] = ("references", "citations"),
+    include_arxiv_candidates: bool | None = None,
 ) -> dict[str, object]:
+    scope = {
+        "date_from": "2024-01-01",
+        "date_to": "2024-12-31",
+        "venues": [],
+        "fields": ["computer science"],
+        "languages": ["en"],
+        "document_types": ["article"],
+        "user_seeds": [],
+    }
+    if include_arxiv_candidates is not None:
+        scope["include_arxiv_candidates"] = include_arxiv_candidates
     plan = compile_query_plan(
         {
             "created_at": NOW,
             "research": {"objective": "test", "audience": "test", "primary_question": "test", "subquestions": []},
-            "scope": {"date_from": "2024-01-01", "date_to": "2024-12-31", "venues": [], "fields": ["computer science"], "languages": ["en"], "document_types": ["article"], "user_seeds": []},
+            "scope": scope,
             "inclusion": {"criteria": [], "exclusion_criteria": []},
             "query_variants": [{"id": "q", "subquestion_id": "q", "alias_group": "q", "raw_query": "paper agents", "synonyms": []}],
             "filter": {"profile": "fake", "config_hash": "c" * 64, "thresholds_hash": "d" * 64, "seed_selector_version": "v1", "seed_selector_config_hash": "e" * 64, "round_state_machine_version": "v1"},
@@ -131,6 +145,68 @@ def test_official_primary_promotes_membership_and_arxiv_stays_candidate(tmp_path
         assert statuses == {"arxiv_candidates": MembershipStatus.VENUE_CANDIDATE, "venue-test": MembershipStatus.OFFICIAL_CONFIRMED}
         assert len(result.paper_ids) == 1
         assert len(result.arxiv_candidate_ids) == 1
+
+
+@pytest.mark.parametrize(
+    ("include_arxiv_candidates", "explicit_seed", "expected_screened"),
+    ((False, False, 0), (True, False, 1), (False, True, 1)),
+)
+def test_round_zero_arxiv_screening_uses_only_the_frozen_plan_policy(
+    tmp_path,
+    include_arxiv_candidates: bool,
+    explicit_seed: bool,
+    expected_screened: int,
+) -> None:
+    plan = _plan(
+        [_provider("arxiv")],
+        required=["arxiv"],
+        include_arxiv_candidates=include_arxiv_candidates,
+    )
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+    entry = SourceEntry(
+        "arxiv",
+        "2401.00001",
+        "Preprint Only",
+        ("Grace Hopper",),
+        arxiv_id="2401.00001",
+        year=2024,
+        metadata={"publication_version": "preprint"},
+    )
+
+    class RecordingScreener:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def screen(self, paper_ids):
+            self.calls.append(tuple(paper_ids))
+            return {paper_id: FilterStatus.IRRELEVANT for paper_id in paper_ids}
+
+        def reranker_score(self, paper_id):
+            return 0.1
+
+    screener = RecordingScreener()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={"arxiv": SearchFixture((_batch("arxiv", query_hash, (entry,)),))},
+            trusts={"arxiv": _trust("arxiv")},
+            screener=screener,
+        )
+        seed_ids: list[str] = []
+        if explicit_seed:
+            seed_ids.append(pipeline.repository.ingest(entry).paper_id)
+        pipeline.run(
+            run_id="run",
+            crawl_run_id="crawl",
+            observed_at=NOW,
+            seed_paper_ids=seed_ids,
+        )
+
+    assert len(screener.calls) == 1
+    assert len(screener.calls[0]) == expected_screened
 
 
 def test_replay_has_the_same_canonical_ids_and_source_audit(tmp_path) -> None:
@@ -408,6 +484,61 @@ class SourceCitationBatch:
         return CitationBatch("fixture", "cites", (citation_edge(seed, citing, provider="openalex", observed_at=NOW, raw_evidence={}),), None, EnvelopeStatus.SUCCESS)
 
 
+def test_relevant_round_zero_discovery_becomes_a_citation_root_with_screening_audit(tmp_path) -> None:
+    plan = _plan([_provider("openalex", ["search", "citation"])], required=["openalex"])
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class RelevantScreener:
+        def screen(self, paper_ids):
+            return {paper_id: FilterStatus.RELEVANT for paper_id in paper_ids}
+
+        def reranker_score(self, paper_id):
+            return 0.91
+
+    class RecordingCitations:
+        def __init__(self):
+            self.seeds = []
+
+        def references(self, seed, cursor):
+            self.seeds.append(seed.paper_id)
+            return CitationBatch("fixture", "refs", (), None, EnvelopeStatus.SUCCESS)
+
+        def citations(self, seed, cursor):
+            self.seeds.append(seed.paper_id)
+            return CitationBatch("fixture", "cites", (), None, EnvelopeStatus.SUCCESS)
+
+    citation_client = RecordingCitations()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        result = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={
+                "openalex": SearchFixture((
+                    _batch(
+                        "openalex",
+                        query_hash,
+                        (SourceEntry("openalex", "root", "Relevant root", doi="10.1000/root"),),
+                    ),
+                ))
+            },
+            trusts={"openalex": _trust("openalex")},
+            citation_clients={"openalex": citation_client},
+            screener=RelevantScreener(),
+        ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+        root_id = database.connection.execute(
+            "SELECT paper_id FROM papers WHERE doi = '10.1000/root'"
+        ).fetchone()[0]
+        audit = database.connection.execute(
+            "SELECT screened, included, excluded FROM source_run_audits"
+        ).fetchone()
+
+    assert len(result.citation_round_ids) == 1
+    assert citation_client.seeds == [root_id, root_id]
+    assert tuple(audit) == (1, 1, 0)
+
+
 def test_citation_round_screens_every_candidate_and_respects_depth_and_cap(tmp_path) -> None:
     plan = _plan([_provider("openalex", ["search", "citation"])], required=["openalex"], citation_cap=1)
     query_hash = plan["providers"][0]["native_query_hashes"][0]
@@ -428,11 +559,12 @@ def test_citation_round_screens_every_candidate_and_respects_depth_and_cap(tmp_p
         )
         first = pipeline.run(run_id="run-search", crawl_run_id="crawl-search", observed_at=NOW)
         papers = {row["doi"]: row["paper_id"] for row in database.connection.execute("SELECT paper_id, doi FROM papers")}
+        screener.screened.clear()
         pipeline.citation_clients = {"openalex": CitationFixture(papers["10.1000/seed"], papers["10.1000/cited"], papers["10.1000/skipped"], papers["10.1000/citing"])}
         second = pipeline.run(run_id="run-cite", crawl_run_id="crawl-cite", observed_at=NOW, seed_paper_ids=[papers["10.1000/seed"]])
         assert first.citation_round_ids == ()
         assert len(second.citation_round_ids) == 1
-        assert screener.screened == sorted([papers["10.1000/cited"], papers["10.1000/citing"]])
+        assert screener.screened == sorted(papers.values())
         assert database.connection.execute("SELECT COUNT(*) FROM citation_requests").fetchone()[0] == 2
         assert database.connection.execute("SELECT COUNT(*) FROM citation_edges").fetchone()[0] == 2
 
@@ -486,7 +618,7 @@ def test_citation_candidate_is_canonicalized_ingested_screened_and_persisted(tmp
             (discovered,),
         ).fetchone()
 
-    assert pipeline.screener.screened == [discovered]
+    assert pipeline.screener.screened == [root.paper_id, discovered]
     assert tuple(edge[:2]) == (root.paper_id, discovered)
     assert "W-native-only" in edge[2]
     assert tuple(round_paper) == (1, "q", "irrelevant")
@@ -725,6 +857,9 @@ def test_citation_depth_propagates_to_a_second_round_and_exact_candidate_cap_exh
                 self.screened.extend(paper_ids)
                 return {paper_id: FilterStatus.RELEVANT for paper_id in paper_ids}
 
+            def reranker_score(self, paper_id):
+                return 1.0
+
         pipeline.screener = RelevantScreener()
         pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
 
@@ -827,6 +962,19 @@ def test_library_seed_is_used_as_a_citation_root_without_a_canonical_id(tmp_path
             return CitationBatch("fixture", "cites", (), None, EnvelopeStatus.SUCCESS)
 
     citation_client = RootRecordingCitationFixture()
+
+    class RecordingScreener:
+        def __init__(self):
+            self.paper_ids: list[str] = []
+
+        def screen(self, paper_ids):
+            self.paper_ids.extend(paper_ids)
+            return {paper_id: FilterStatus.IRRELEVANT for paper_id in paper_ids}
+
+        def reranker_score(self, paper_id):
+            return 0.1
+
+    screener = RecordingScreener()
     with Database(tmp_path / "papers.sqlite3") as database:
         database.migrate()
         SearchPipeline(
@@ -841,9 +989,11 @@ def test_library_seed_is_used_as_a_citation_root_without_a_canonical_id(tmp_path
             },
             trusts={"user_library": _trust("user_library"), "openalex": _trust("openalex")},
             citation_clients={"openalex": citation_client},
+            screener=screener,
         ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
 
     assert citation_client.seed_dois == ["10.1000/library", "10.1000/library"]
+    assert len(screener.paper_ids) == 1
 
 
 def test_initial_fanout_budget_marks_crawl_incomplete_with_audit(tmp_path) -> None:

@@ -305,6 +305,8 @@ def decide_stop(
 class Screener(Protocol):
     def screen(self, paper_ids: Sequence[str]) -> Mapping[str, FilterStatus]: ...
 
+    def reranker_score(self, paper_id: str) -> float: ...
+
 
 class DeterministicFakeScreener:
     def __init__(self, relevant: frozenset[str], needs_review: frozenset[str] = frozenset()) -> None:
@@ -324,6 +326,9 @@ class DeterministicFakeScreener:
             )
             for paper_id in paper_ids
         }
+
+    def reranker_score(self, paper_id: str) -> float:
+        return 1.0 if paper_id in self.relevant else 0.0
 
 
 def process_citation_batches(
