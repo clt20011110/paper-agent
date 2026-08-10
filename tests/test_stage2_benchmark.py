@@ -9,7 +9,11 @@ from typing import Any, Mapping
 import pytest
 
 from paper_agent.stage2_backends import OmlxResponse, ThresholdArtifact
-from paper_agent.stage2_benchmark import BenchmarkRunSpec, Stage2BenchmarkRunner
+from paper_agent.stage2_benchmark import (
+    BenchmarkRunSpec,
+    MacOSMemoryObserver,
+    Stage2BenchmarkRunner,
+)
 from paper_agent.stage2_evaluation import BenchmarkEnvironment, PerformanceCase
 from paper_agent.stage2_pipeline import Stage2Paper, Stage2Profile
 from paper_agent.storage import Database
@@ -148,6 +152,7 @@ def test_performance_runner_executes_omlx_pipeline_and_writes_canonical_measurem
 
     assert {path for path, _ in transport.requests} == {"/v1/rerank", "/v1/chat/completions"}
     assert document["case_count"] == 4
+    assert document["record_version"] == 2
     assert document["fixture_scale"] is True
     assert document["duration_seconds"] > 0
     assert document["p50_seconds"] <= document["p95_seconds"]
@@ -176,6 +181,9 @@ def test_performance_runner_executes_omlx_pipeline_and_writes_canonical_measurem
     record.write(artifact)
     assert artifact.read_bytes() == record.canonical_bytes()
     assert json.loads(artifact.read_bytes())["input_hash"] == document["input_hash"]
+    with pytest.raises(FileExistsError):
+        record.write(artifact)
+    assert artifact.read_bytes() == record.canonical_bytes()
     assert database.connection.execute(
         "SELECT COUNT(*) FROM filter_decisions WHERE run_id = 'performance-fixture'"
     ).fetchone()[0] == 4
@@ -184,6 +192,57 @@ def test_performance_runner_executes_omlx_pipeline_and_writes_canonical_measurem
     ).fetchone()[0])
     assert gray_reason["reason_code"].startswith("performance_manifest_forced_qwen:")
     database.close()
+
+
+def test_macos_memory_observer_sums_current_runner_and_omlx_rss() -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def command(arguments) -> str:
+        commands.append(tuple(arguments))
+        if arguments[0] == "/bin/ps":
+            return "10 1024\n20 2048\n21 4096\n"
+        return "1\n"
+
+    observer = MacOSMemoryObserver(
+        runner_pid=10,
+        omlx_pids=(20, 21),
+        command_runner=command,
+        platform_name="darwin",
+    )
+
+    observer.preflight()
+
+    assert observer.current_rss_bytes() == 7 * 1024**2
+    assert observer.memory_pressure_critical() is False
+    assert observer.rss_scope == "macos_ps_current_rss:runner_pid=10;omlx_pids=20,21"
+    assert any(command[0] == "/bin/ps" for command in commands)
+    assert any(command[0] == "/usr/sbin/sysctl" for command in commands)
+
+
+def test_macos_memory_observer_fails_when_a_required_process_disappears() -> None:
+    observer = MacOSMemoryObserver(
+        runner_pid=10,
+        omlx_pids=(20,),
+        command_runner=lambda arguments: "10 1024\n",
+        platform_name="darwin",
+    )
+
+    with pytest.raises(RuntimeError, match="lost required process IDs"):
+        observer.current_rss_bytes()
+
+
+def test_macos_memory_observer_rejects_critical_pressure_before_run() -> None:
+    observer = MacOSMemoryObserver(
+        runner_pid=10,
+        omlx_pids=(20,),
+        command_runner=lambda arguments: (
+            "10 1024\n20 2048\n" if arguments[0] == "/bin/ps" else "4\n"
+        ),
+        platform_name="darwin",
+    )
+
+    with pytest.raises(RuntimeError, match="critical before"):
+        observer.preflight()
 
 
 def test_runner_measures_terminal_schema_failure_and_fail_closed_resume(tmp_path) -> None:

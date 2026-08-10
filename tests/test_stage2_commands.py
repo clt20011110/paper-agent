@@ -4,11 +4,21 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from paper_agent import cli
 from paper_agent.domain import FilterStatus, SourceEntry
 from paper_agent.repository import PaperRepository
-from paper_agent.stage2_commands import evaluate_benchmark_artifacts, filter_database
+from paper_agent.stage2_backends import ThresholdArtifact
+from paper_agent.stage2_benchmark import MacOSMemoryObserver
+from paper_agent.stage2_commands import (
+    benchmark_corpus_hash,
+    evaluate_benchmark_artifacts,
+    filter_database,
+    measure_stage2_benchmark,
+)
 from paper_agent.stage2_evaluation import PerformanceCase, PerformanceRoutingManifest
+from paper_agent.stage2_pipeline import Stage2Paper, Stage2Profile
 from paper_agent.storage import Database
 
 
@@ -33,6 +43,18 @@ class _FakeRelease:
     def screener(self, database, campaign_id):
         assert campaign_id == "campaign-1"
         return _FakeScreener()
+
+
+def test_benchmark_corpus_hash_binds_normalized_paper_content() -> None:
+    first = Stage2Paper("paper-1", "First", "Abstract", ("keyword",))
+    second = Stage2Paper("paper-2", "Second", None)
+
+    assert benchmark_corpus_hash((first, second)) == benchmark_corpus_hash(
+        (second, first)
+    )
+    assert benchmark_corpus_hash((first, second)) != benchmark_corpus_hash(
+        (Stage2Paper("paper-1", "First", "Changed", ("keyword",)), second)
+    )
 
 
 def test_filter_database_selects_canonical_papers_and_dry_run_is_read_only(
@@ -107,6 +129,7 @@ def _benchmark_files(tmp_path: Path) -> tuple[Path, Path]:
     for scenario in ("normal", "stress"):
         for index in range(3):
             records.append({
+                "record_version": 2,
                 "scenario": scenario,
                 "run_id": f"{scenario}-{index}",
                 "manifest_hash": manifest.hash(),
@@ -118,6 +141,11 @@ def _benchmark_files(tmp_path: Path) -> tuple[Path, Path]:
                 "peak_memory_gb": 24,
                 "request_count": 1000,
                 "failed_request_count": 0,
+                "service_request_count": 1000,
+                "service_failed_request_count": 0,
+                "resume_verified": True,
+                "resume_model_call_count": 0,
+                "resumed_pair_count": 1000,
                 "completed_pair_ids": ids,
                 "needs_review_pair_ids": [],
                 "failed_request_pair_ids": [],
@@ -161,6 +189,185 @@ def test_benchmark_stage2_cli_applies_frozen_performance_gate(
     assert payload["status"] == "passed"
 
 
+def test_benchmark_stage2_rejects_legacy_records_without_service_metrics(
+    tmp_path: Path,
+) -> None:
+    manifest, records = _benchmark_files(tmp_path)
+    documents = json.loads(records.read_text(encoding="utf-8"))
+    for document in documents:
+        document.pop("record_version")
+        document.pop("service_request_count")
+        document.pop("service_failed_request_count")
+        document.pop("resume_verified")
+        document.pop("resume_model_call_count")
+        document.pop("resumed_pair_count")
+    records.write_text(json.dumps(documents), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Legacy records.*must be rerun"):
+        evaluate_benchmark_artifacts(
+            manifest_path=manifest, record_paths=(records,)
+        )
+
+
+def test_benchmark_stage2_measure_cli_dispatches_explicit_production_inputs(
+    monkeypatch, capsys
+) -> None:
+    captured = {}
+
+    def measure(**kwargs):
+        captured.update(kwargs)
+        return {"command": "benchmark-stage2.measure", "status": "validated"}
+
+    monkeypatch.setattr(cli, "measure_stage2_benchmark", measure)
+
+    exit_code = cli.main([
+        "benchmark-stage2",
+        "measure",
+        "--manifest", "manifest.json",
+        "--papers", "papers.json",
+        "--stage2-candidate", "candidate.json",
+        "--environment", "environment.json",
+        "--database", "benchmark.sqlite3",
+        "--output", "record.json",
+        "--scenario", "stress",
+        "--omlx-pid", "101",
+        "--omlx-pid", "102",
+        "--run-id", "stress-1",
+        "--dry-run",
+    ])
+
+    assert exit_code == 0
+    assert captured["run_id"] == "stress-1"
+    assert captured["omlx_pids"] == [101, 102]
+    assert captured["scenario"] == "stress"
+    assert captured["dry_run"] is True
+    assert json.loads(capsys.readouterr().out)["status"] == "validated"
+
+
+def test_measure_stage2_dry_run_validates_release_workload_and_macos_observation(
+    tmp_path: Path,
+) -> None:
+    profile = Stage2Profile(
+        query="frozen benchmark topic",
+        query_version="benchmark-v1",
+        thresholds=ThresholdArtifact(
+            "threshold-v1", "reranker-lock", "raw_reranker_score", -1, 1
+        ),
+        reranker_model_id="reranker",
+        reranker_revision="reranker-revision",
+        adjudicator_model_id="qwen",
+        adjudicator_revision="qwen-revision",
+        reranker_lock_hash="reranker-lock",
+        adjudicator_lock_hash="qwen-lock",
+        document_batch_size=32,
+        reranker_max_in_flight=2,
+        adjudicator_concurrency=4,
+    )
+    cases = tuple(
+        PerformanceCase(f"paper-{index}", 100, index < 100)
+        for index in range(1_000)
+    )
+    papers = tuple(
+        Stage2Paper(
+            case.pair_id,
+            f"Paper {index}",
+            None if case.abstract_missing else "Frozen abstract",
+        )
+        for index, case in enumerate(cases)
+    )
+    manifest = PerformanceRoutingManifest(
+        1,
+        benchmark_corpus_hash(papers),
+        profile.base_runtime_config_hash,
+        ("reranker-lock", "qwen-lock"),
+        (profile.threshold_hash,),
+        256,
+        cases,
+        frozenset(case.pair_id for case in cases[:150]),
+        frozenset(case.pair_id for case in cases[:300]),
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest.document()), encoding="utf-8")
+    papers_path = tmp_path / "papers.json"
+    papers_path.write_text(json.dumps([
+        {
+            "paper_id": paper.paper_id,
+            "title": paper.title,
+            "abstract": paper.abstract,
+            "keywords": [],
+        }
+        for paper in papers
+    ]), encoding="utf-8")
+    environment_path = tmp_path / "environment.json"
+    environment_path.write_text(json.dumps({
+        "machine_model": "Apple Silicon M4 Max",
+        "memory_gb": 36,
+        "macos_version": "15.6",
+        "omlx_version": "0.5.7",
+        "mlx_version": "0.32.0",
+        "power_mode": "AC",
+        "background_load": "idle",
+        "batch_config": {
+            "document_batch_size": 32,
+            "reranker_max_in_flight": 2,
+            "adjudicator_concurrency": 4,
+        },
+        "resident_model_instances": {"reranker-lock": 1, "qwen-lock": 1},
+    }), encoding="utf-8")
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text("{}", encoding="utf-8")
+    database_path = tmp_path / "benchmark.sqlite3"
+    with Database(database_path) as database:
+        database.migrate()
+
+    def memory_command(arguments) -> str:
+        if arguments[0] == "/bin/ps":
+            return "10 1024\n20 2048\n"
+        if arguments[0] == "/usr/sbin/sysctl":
+            return "1\n"
+        if arguments[0] == "/usr/sbin/system_profiler":
+            return json.dumps({
+                "SPHardwareDataType": [{
+                    "chip_type": "Apple M4 Max",
+                    "physical_memory": "36 GB",
+                }]
+            })
+        return "15.6\n"
+
+    observer = MacOSMemoryObserver(
+        runner_pid=10,
+        omlx_pids=(20,),
+        command_runner=memory_command,
+        platform_name="darwin",
+    )
+    release = SimpleNamespace(
+        profile=profile,
+        release_hash="release-hash",
+        omlx_base_url="http://127.0.0.1:8000",
+        api_key_env=None,
+    )
+
+    result = measure_stage2_benchmark(
+        manifest_path=manifest_path,
+        papers_path=papers_path,
+        candidate_path=candidate_path,
+        environment_path=environment_path,
+        database_path=database_path,
+        output_path=tmp_path / "normal-1.json",
+        scenario="normal",
+        run_id="normal-1",
+        omlx_pids=(20,),
+        dry_run=True,
+        candidate_loader=lambda path: release,
+        memory_observer=observer,
+    )
+
+    assert result["status"] == "validated"
+    assert result["case_count"] == 1_000
+    assert result["rss_scope"].endswith("omlx_pids=20")
+    assert not (tmp_path / "normal-1.json").exists()
+
+
 def test_stage2_parser_surface() -> None:
     parser = cli.build_parser()
     filtered = parser.parse_args([
@@ -179,4 +386,17 @@ def test_stage2_parser_surface() -> None:
         "--record",
         "record.json",
     ])
+    measured = parser.parse_args([
+        "--run-id", "normal-1",
+        "benchmark-stage2", "measure",
+        "--manifest", "manifest.json",
+        "--papers", "papers.json",
+        "--stage2-config", "candidate.json",
+        "--environment", "environment.json",
+        "--database", "benchmark.sqlite3",
+        "--output", "normal-1.json",
+        "--scenario", "normal",
+        "--omlx-pid", "101",
+    ])
     assert (filtered.command, benchmark.command) == ("filter", "benchmark-stage2")
+    assert measured.benchmark_command == "measure"

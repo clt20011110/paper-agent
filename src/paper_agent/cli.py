@@ -60,7 +60,11 @@ from .report_plan import ReportPlanBundle
 from .repository import PaperRepository
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import Stage2ReleaseError, load_stage2_release
-from .stage2_commands import evaluate_benchmark_artifacts, filter_database
+from .stage2_commands import (
+    evaluate_benchmark_artifacts,
+    filter_database,
+    measure_stage2_benchmark,
+)
 from .search_audit import search_audit
 from .seed_import import import_seeds, inputs_from_files, validate_seed_inputs
 from .storage import Database
@@ -192,12 +196,45 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     filter_command.add_argument("--paper-id", action="append", default=[])
 
     benchmark = subcommands.add_parser(
-        "benchmark-stage2", help="evaluate frozen Stage 2 benchmark and soak records"
+        "benchmark-stage2", help="measure or evaluate frozen Stage 2 benchmark records"
     )
-    benchmark.add_argument("--manifest", required=True, type=Path)
-    benchmark.add_argument("--record", required=True, action="append", type=Path)
+    benchmark.add_argument("--manifest", type=Path)
+    benchmark.add_argument("--record", action="append", type=Path)
     benchmark.add_argument("--soak-manifest", type=Path)
     benchmark.add_argument("--soak-record", type=Path)
+    benchmark_modes = benchmark.add_subparsers(dest="benchmark_command")
+    measure = benchmark_modes.add_parser(
+        "measure", help="execute one production-scale workload against local oMLX"
+    )
+    measure.add_argument("--manifest", required=True, type=Path)
+    measure.add_argument("--papers", required=True, type=Path)
+    measure.add_argument(
+        "--stage2-candidate",
+        "--stage2-config",
+        dest="stage2_candidate",
+        required=True,
+        type=Path,
+        help="frozen pre-throughput Stage 2 models, calibrations, thresholds, and runtime",
+    )
+    measure.add_argument(
+        "--environment",
+        required=True,
+        type=Path,
+        help="frozen environment metadata; hardware and macOS are verified locally",
+    )
+    measure.add_argument("--database", required=True, type=Path)
+    measure.add_argument("--output", required=True, type=Path)
+    measure.add_argument(
+        "--scenario", required=True, choices=("normal", "stress", "soak")
+    )
+    measure.add_argument(
+        "--omlx-pid",
+        required=True,
+        action="append",
+        type=int,
+        help="oMLX server or worker PID to include in current RSS; repeat for every process",
+    )
+    measure.add_argument("--sample-interval-seconds", type=float, default=0.25)
 
     report = subcommands.add_parser(
         "report", help="plan, approve, run, or compare Stage 4b reports"
@@ -373,6 +410,25 @@ def main(
     if args.command == "filter":
         return _finish(args, _filter(args))
     if args.command == "benchmark-stage2":
+        if args.benchmark_command == "measure":
+            result = measure_stage2_benchmark(
+                manifest_path=args.manifest,
+                papers_path=args.papers,
+                candidate_path=args.stage2_candidate,
+                environment_path=args.environment,
+                database_path=args.database,
+                output_path=args.output,
+                scenario=args.scenario,
+                run_id=args.run_id or "",
+                omlx_pids=args.omlx_pid,
+                sample_interval_seconds=args.sample_interval_seconds,
+                dry_run=args.dry_run,
+            )
+            return _finish(args, result)
+        if args.manifest is None or not args.record:
+            raise CliUsageError(
+                "benchmark-stage2 evaluation requires --manifest and at least one --record"
+            )
         result = evaluate_benchmark_artifacts(
             manifest_path=args.manifest,
             record_paths=args.record,

@@ -449,9 +449,12 @@ def _performance_record(manifest: PerformanceRoutingManifest, scenario: str, run
     ids = tuple(case.pair_id for case in manifest.cases)
     qwen = manifest.normal_qwen_ids if scenario == "normal" else manifest.stress_qwen_ids
     return PerformanceRunRecord(
+        record_version=2,
         scenario=scenario, run_id=run_id, manifest_hash=manifest.hash(), stage2_config_hash=manifest.stage2_config_hash,
         model_lock_hashes=manifest.model_lock_hashes, duration_seconds=800 if scenario == "normal" else 1_200,
         p50_seconds=0.5, p95_seconds=1.5, peak_memory_gb=24, request_count=1_000, failed_request_count=0,
+        service_request_count=1_000, service_failed_request_count=0,
+        resume_verified=True, resume_model_call_count=0, resumed_pair_count=1_000,
         completed_pair_ids=ids, needs_review_pair_ids=(), failed_request_pair_ids=(), qwen_pair_ids=tuple(sorted(qwen)),
         environment=_environment(), executed_components=manifest.pipeline_components, sqlite_commit_count=1_000, warmed=True,
     )
@@ -465,6 +468,7 @@ def test_benchmark_is_exact_1000_ten_percent_missing_and_failure_rate_is_derived
     )
     assert performance_gate(manifest, records).passed
     assert records[0].request_failure_rate == 0
+    assert records[0].service_request_failure_rate == 0
     with pytest.raises(ValueError, match="failed request count"):
         replace(records[0], failed_request_count=1)
     with pytest.raises(ValueError, match="mutually exclusive"):
@@ -472,6 +476,20 @@ def test_benchmark_is_exact_1000_ten_percent_missing_and_failure_rate_is_derived
     with pytest.raises(ValueError, match="finite"):
         replace(records[0], peak_memory_gb=nan)
     assert not performance_gate(manifest, (replace(records[0], warmed=False), *records[1:])).passed
+    service_failure = replace(
+        records[0], service_failed_request_count=5
+    )
+    service_gate = performance_gate(manifest, (service_failure, *records[1:]))
+    assert any("service request failure rate" in failure for failure in service_gate.failures)
+    below_service_gate = replace(records[0], service_failed_request_count=4)
+    assert performance_gate(manifest, (below_service_gate, *records[1:])).passed
+    resume_failure = replace(
+        records[0], resume_verified=False, resume_model_call_count=1
+    )
+    resume_gate = performance_gate(manifest, (resume_failure, *records[1:]))
+    assert any("zero-call SQLite resume" in failure for failure in resume_gate.failures)
+    with pytest.raises(ValueError, match="record_version 2"):
+        replace(records[0], record_version=1)
 
     bad_cases = tuple(replace(case, abstract_missing=False) if index == 99 else case for index, case in enumerate(manifest.cases))
     with pytest.raises(ValueError, match="10%"):
@@ -486,11 +504,32 @@ def test_soak_is_a_separate_10000_case_contract_and_all_failures_fail_open() -> 
     )
     review = (cases[0].pair_id,)
     record = SoakRunRecord(
-        "soak-run", manifest.hash(), manifest.stage2_config_hash, manifest.model_lock_hashes,
-        3_000, 25, 10_000, 1, tuple(case.pair_id for case in cases[1:]), review, review, _environment(),
-        ("rules", "reranker", "qwen", "schema_validation", "sqlite_commit"), 10_000, True,
+        record_version=2,
+        run_id="soak-run",
+        manifest_hash=manifest.hash(),
+        stage2_config_hash=manifest.stage2_config_hash,
+        model_lock_hashes=manifest.model_lock_hashes,
+        duration_seconds=3_000,
+        peak_memory_gb=25,
+        request_count=10_000,
+        failed_request_count=1,
+        service_request_count=10_000,
+        service_failed_request_count=1,
+        resume_verified=True,
+        resume_model_call_count=0,
+        resumed_pair_count=10_000,
+        completed_pair_ids=tuple(case.pair_id for case in cases[1:]),
+        needs_review_pair_ids=review,
+        failed_request_pair_ids=review,
+        environment=_environment(),
+        executed_components=("rules", "reranker", "qwen", "schema_validation", "sqlite_commit"),
+        sqlite_commit_count=10_000,
+        warmed=True,
     )
     assert soak_gate(manifest, record).passed
+    assert not soak_gate(
+        manifest, replace(record, service_failed_request_count=50)
+    ).passed
     bad = replace(record, failed_request_pair_ids=(cases[1].pair_id,))
     assert any("needs_review" in failure for failure in soak_gate(manifest, bad).failures)
 

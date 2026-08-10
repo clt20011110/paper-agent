@@ -49,6 +49,7 @@ _RELEASE_FIELDS = frozenset({
     "schema_version", "profile", "reranker_lock", "adjudicator_lock",
     "calibration", "release_gate", "runtime",
 })
+_BENCHMARK_CANDIDATE_FIELDS = _RELEASE_FIELDS - {"release_gate"}
 _RUNTIME_FIELDS = frozenset({
     "query", "query_version", "include_document_types", "exclude_document_types",
     "token_bucket_width", "document_batch_size", "max_in_flight",
@@ -175,25 +176,43 @@ class Stage2SearchScreener:
 
 def load_stage2_release(path: Path, plan: Mapping[str, Any]) -> ReleasedStage2:
     """Load and bind a passed local release bundle to an approved QueryPlan."""
-    try:
-        validate(plan, "query-plan.schema.json")
-        require_valid_approval(plan, "plan_hash")
-    except (ApprovalError, SchemaValidationError) as error:
-        raise Stage2ReleaseError(f"Stage 2 requires an exact approved QueryPlan: {error}") from error
+
+    return _load_stage2_bundle(path, plan)
+
+
+def load_stage2_benchmark_candidate(path: Path) -> ReleasedStage2:
+    """Load frozen models, calibrations, thresholds, and runtime before throughput gates."""
+
+    return _load_stage2_bundle(path, None)
+
+
+def _load_stage2_bundle(
+    path: Path,
+    plan: Mapping[str, Any] | None,
+) -> ReleasedStage2:
+    released = plan is not None
+    if plan is not None:
+        try:
+            validate(plan, "query-plan.schema.json")
+            require_valid_approval(plan, "plan_hash")
+        except (ApprovalError, SchemaValidationError) as error:
+            raise Stage2ReleaseError(f"Stage 2 requires an exact approved QueryPlan: {error}") from error
     if not path.is_file():
-        raise Stage2ReleaseError(f"Stage 2 release artifact is required: {path}")
-    release_bytes = _read_bytes(path, "Stage 2 release")
-    document = _json_object_bytes(release_bytes, "Stage 2 release")
+        label = "release" if released else "benchmark candidate"
+        raise Stage2ReleaseError(f"Stage 2 {label} artifact is required: {path}")
+    release_bytes = _read_bytes(path, "Stage 2 bundle")
+    document = _json_object_bytes(release_bytes, "Stage 2 bundle")
     if "thresholds" in document:
         raise Stage2ReleaseError("legacy raw-score thresholds are forbidden in production releases")
-    _exact_fields(document, _RELEASE_FIELDS, "Stage 2 release")
+    expected_fields = _RELEASE_FIELDS if released else _BENCHMARK_CANDIDATE_FIELDS
+    _exact_fields(document, expected_fields, "Stage 2 bundle")
     if document.get("schema_version") != "1":
-        raise Stage2ReleaseError("Stage 2 release must use schema_version 1")
+        raise Stage2ReleaseError("Stage 2 bundle must use schema_version 1")
 
     profile_name = _text(document, "profile")
-    if profile_name != plan["filter"]["profile"]:
+    if plan is not None and profile_name != plan["filter"]["profile"]:
         raise Stage2ReleaseError("Stage 2 release profile does not match QueryPlan")
-    gate_document = _object(document, "release_gate")
+    gate_document = _object(document, "release_gate") if released else None
 
     _, reranker_hash, reranker_bytes = _artifact(path, _object(document, "reranker_lock"))
     _, adjudicator_hash, adjudicator_bytes = _artifact(path, _object(document, "adjudicator_lock"))
@@ -226,7 +245,9 @@ def load_stage2_release(path: Path, plan: Mapping[str, Any]) -> ReleasedStage2:
             adjudicator_revision=_runtime_revision(adjudicator_lock),
             reranker_lock_hash=reranker_hash,
             adjudicator_lock_hash=adjudicator_hash,
-            release_gate_hash=content_hash(gate_document),
+            release_gate_hash=(
+                content_hash(gate_document) if gate_document is not None else None
+            ),
             include_document_types=frozenset(_string_list(runtime, "include_document_types")),
             exclude_document_types=frozenset(_string_list(runtime, "exclude_document_types")),
             token_bucket_width=_integer(runtime, "token_bucket_width"),
@@ -274,11 +295,13 @@ def load_stage2_release(path: Path, plan: Mapping[str, Any]) -> ReleasedStage2:
         for binding in (reranker_calibration, adjudicator_calibration)
     ):
         raise Stage2ReleaseError("Stage 2 thresholds do not match the base runtime config")
-    _release_gate(path, gate_document, profile_name, profile)
-    if profile.threshold_hash != plan["filter"]["thresholds_hash"]:
-        raise Stage2ReleaseError("Stage 2 probability threshold bundle does not match QueryPlan")
-    if profile.config_hash != plan["filter"]["config_hash"]:
-        raise Stage2ReleaseError("Stage 2 release configuration does not match QueryPlan")
+    if gate_document is not None:
+        _release_gate(path, gate_document, profile_name, profile)
+    if plan is not None:
+        if profile.threshold_hash != plan["filter"]["thresholds_hash"]:
+            raise Stage2ReleaseError("Stage 2 probability threshold bundle does not match QueryPlan")
+        if profile.config_hash != plan["filter"]["config_hash"]:
+            raise Stage2ReleaseError("Stage 2 release configuration does not match QueryPlan")
 
     return ReleasedStage2(
         profile_name,

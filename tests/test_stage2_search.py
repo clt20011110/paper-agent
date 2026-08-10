@@ -22,7 +22,11 @@ from paper_agent.stage2_evaluation import (
     write_path_calibrator,
 )
 from paper_agent.stage2_pipeline import PathCalibration, Stage2Profile
-from paper_agent.stage2_search import Stage2ReleaseError, load_stage2_release
+from paper_agent.stage2_search import (
+    Stage2ReleaseError,
+    load_stage2_benchmark_candidate,
+    load_stage2_release,
+)
 from paper_agent.storage import Database
 
 
@@ -318,6 +322,22 @@ class AdjudicatingOmlxFixture:
         }
         body = {"choices": [{"message": {"content": json.dumps(decision)}}]}
         return OmlxResponse(200, json.dumps(body).encode())
+
+
+def test_benchmark_candidate_loads_before_throughput_release_gate_exists(
+    tmp_path: Path,
+) -> None:
+    release_path, _ = _release_bundle(tmp_path)
+    document = json.loads(release_path.read_text(encoding="utf-8"))
+    document.pop("release_gate")
+    candidate_path = tmp_path / "stage2-candidate.json"
+    candidate_path.write_text(json.dumps(document), encoding="utf-8")
+
+    candidate = load_stage2_benchmark_candidate(candidate_path)
+
+    assert candidate.profile.release_gate_hash is None
+    assert candidate.profile.reranker_calibration is not None
+    assert candidate.profile.adjudicator_calibration is not None
 
 
 def test_released_stage2_screens_database_papers_and_persists_decisions(tmp_path) -> None:

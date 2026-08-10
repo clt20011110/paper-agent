@@ -11,10 +11,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from math import ceil, isfinite
+import os
 from pathlib import Path
 import json
 import resource
+import subprocess
 import sys
+from tempfile import mkstemp
 from threading import Event, Lock, Thread
 from time import monotonic
 from types import MappingProxyType
@@ -52,6 +55,7 @@ BenchmarkKind = Literal["performance", "soak"]
 Clock = Callable[[], float]
 RssSampler = Callable[[], int]
 PressureSampler = Callable[[], bool]
+CommandRunner = Callable[[Sequence[str]], str]
 _COMPONENTS = ("rules", "reranker", "qwen", "schema_validation", "sqlite_commit")
 
 
@@ -60,6 +64,116 @@ def _process_rss_bytes() -> int:
 
     value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     return value if sys.platform == "darwin" else value * 1024
+
+
+def _command_output(arguments: Sequence[str]) -> str:
+    try:
+        completed = subprocess.run(
+            tuple(arguments),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+    except OSError as error:
+        raise RuntimeError(f"memory observation command is unavailable: {arguments[0]}") from error
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"memory observation command failed: {detail}")
+    return completed.stdout
+
+
+@dataclass(frozen=True, slots=True)
+class MacOSMemoryObserver:
+    """Sample current RSS for this runner plus explicit oMLX service processes."""
+
+    runner_pid: int
+    omlx_pids: tuple[int, ...]
+    command_runner: CommandRunner = field(default=_command_output, repr=False, compare=False)
+    platform_name: str = field(default_factory=lambda: sys.platform, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "omlx_pids", tuple(self.omlx_pids))
+        if self.platform_name != "darwin":
+            raise RuntimeError("production Stage 2 memory observation requires macOS")
+        if self.runner_pid < 1 or not self.omlx_pids or any(pid < 1 for pid in self.omlx_pids):
+            raise ValueError("runner and oMLX process IDs must be positive")
+        process_ids = (self.runner_pid, *self.omlx_pids)
+        if len(process_ids) != len(set(process_ids)):
+            raise ValueError("runner and oMLX process IDs must be unique")
+
+    @classmethod
+    def current(cls, omlx_pids: Sequence[int]) -> MacOSMemoryObserver:
+        return cls(os.getpid(), tuple(omlx_pids))
+
+    @property
+    def rss_scope(self) -> str:
+        omlx = ",".join(str(pid) for pid in self.omlx_pids)
+        return f"macos_ps_current_rss:runner_pid={self.runner_pid};omlx_pids={omlx}"
+
+    def current_rss_bytes(self) -> int:
+        process_ids = (self.runner_pid, *self.omlx_pids)
+        output = self.command_runner((
+            "/bin/ps",
+            "-o",
+            "pid=,rss=",
+            "-p",
+            ",".join(str(pid) for pid in process_ids),
+        ))
+        rss_by_pid: dict[int, int] = {}
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                raise RuntimeError("macOS ps returned an invalid current-RSS sample")
+            try:
+                pid, rss_kib = (int(field) for field in fields)
+            except ValueError as error:
+                raise RuntimeError("macOS ps returned a non-numeric current-RSS sample") from error
+            rss_by_pid[pid] = rss_kib
+        missing = sorted(set(process_ids) - set(rss_by_pid))
+        if missing:
+            raise RuntimeError(f"memory observation lost required process IDs: {missing}")
+        return sum(rss_by_pid[pid] for pid in process_ids) * 1024
+
+    def memory_pressure_critical(self) -> bool:
+        output = self.command_runner((
+            "/usr/sbin/sysctl",
+            "-n",
+            "kern.memorystatus_vm_pressure_level",
+        )).strip()
+        try:
+            level = int(output)
+        except ValueError as error:
+            raise RuntimeError("macOS returned an invalid memory-pressure level") from error
+        if level not in {1, 2, 4}:
+            raise RuntimeError(f"macOS returned an unsupported memory-pressure level: {level}")
+        return level == 4
+
+    def validate_environment(self, environment: BenchmarkEnvironment) -> None:
+        hardware = json.loads(self.command_runner((
+            "/usr/sbin/system_profiler",
+            "SPHardwareDataType",
+            "-json",
+        )))
+        rows = hardware.get("SPHardwareDataType") if isinstance(hardware, dict) else None
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+            raise RuntimeError("system_profiler returned invalid hardware provenance")
+        row = rows[0]
+        if row.get("chip_type") != "Apple M4 Max" or row.get("physical_memory") != "36 GB":
+            raise RuntimeError("benchmark host is not the frozen Apple M4 Max / 36 GB target")
+        macos_version = self.command_runner(("/usr/bin/sw_vers", "-productVersion")).strip()
+        if macos_version != environment.macos_version:
+            raise RuntimeError(
+                "benchmark environment macOS version does not match the measured host"
+            )
+
+    def preflight(self, environment: BenchmarkEnvironment | None = None) -> None:
+        if self.current_rss_bytes() > 28 * 1024**3:
+            raise RuntimeError("benchmark processes already exceed the 28 GB memory gate")
+        if self.memory_pressure_critical():
+            raise RuntimeError("macOS memory pressure is critical before the benchmark")
+        if environment is not None:
+            self.validate_environment(environment)
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +337,20 @@ class BenchmarkExecutionRecord:
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(self.canonical_bytes())
+        descriptor, temporary_name = mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(self.canonical_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary_path, path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     def as_performance_record(self) -> PerformanceRunRecord:
         if self.payload["kind"] != "performance":
@@ -299,7 +426,6 @@ class _PeriodicRssMonitor:
 class _MeasuredReranker:
     backend: RerankerBackend
     clock: Clock
-    rss: _PeakRss
     call_durations: list[float] = field(default_factory=list)
     batch_sizes: list[int] = field(default_factory=list)
     pair_attempt_count: int = 0
@@ -313,7 +439,6 @@ class _MeasuredReranker:
 
     def rerank(self, query: str, documents: Sequence[RerankInput]) -> tuple[RerankScore, ...]:
         started = self.clock()
-        self.rss.observe()
         failed = False
         try:
             return self.backend.rerank(query, documents)
@@ -322,7 +447,6 @@ class _MeasuredReranker:
             raise
         finally:
             duration = max(0.0, self.clock() - started)
-            self.rss.observe()
             with self._lock:
                 self.call_count += 1
                 self.pair_attempt_count += len(documents)
@@ -341,7 +465,6 @@ class _MeasuredReranker:
 class _MeasuredAdjudicator:
     backend: AdjudicatorBackend
     clock: Clock
-    rss: _PeakRss
     call_durations: list[float] = field(default_factory=list)
     pair_ids: list[str] = field(default_factory=list)
     call_count: int = 0
@@ -354,7 +477,6 @@ class _MeasuredAdjudicator:
 
     def adjudicate(self, request: AdjudicationInput) -> AdjudicationDecision:
         started = self.clock()
-        self.rss.observe()
         failed = False
         try:
             return self.backend.adjudicate(request)
@@ -363,7 +485,6 @@ class _MeasuredAdjudicator:
             raise
         finally:
             duration = max(0.0, self.clock() - started)
-            self.rss.observe()
             with self._lock:
                 self.call_count += 1
                 self.failed_call_count += int(failed)
@@ -525,27 +646,12 @@ class Stage2BenchmarkRunner:
     ) -> BenchmarkExecutionRecord:
         if not run_id:
             raise ValueError("benchmark run_id is required")
-        if not spec.fixture_scale and not verify_resume:
-            raise ValueError("production benchmark must verify its SQLite resume path")
-        ordered_papers = tuple(sorted(papers, key=lambda item: item.paper_id))
-        self._validate_inputs(spec, ordered_papers)
-        if not spec.fixture_scale and (
-            not isinstance(self.reranker, OmlxRerankBackend)
-            or not isinstance(self.adjudicator, OmlxChatBackend)
-            or self._transport_probe is None
-        ):
-            raise ValueError("production benchmark must execute the instrumented oMLX backends")
-        if not spec.fixture_scale and self.memory_pressure_sampler is None:
-            raise ValueError("production benchmark requires an observed macOS memory-pressure sampler")
-        if not spec.fixture_scale and self.rss_scope == "runner_process_high_water_rss":
-            raise ValueError("production benchmark RSS sampler must cover the runner and resident model service")
-        if not spec.fixture_scale and self.rss_sampler is _process_rss_bytes:
-            raise ValueError("production benchmark requires an explicit current-RSS sampler")
+        ordered_papers = self.validate(spec, papers, verify_resume=verify_resume)
         self._ensure_papers((*ordered_papers, *((warmup_paper,) if warmup_paper else ())))
 
         rss = _PeakRss(self.rss_sampler, self.memory_pressure_sampler)
-        reranker = _MeasuredReranker(self.reranker, self.clock, rss)
-        adjudicator = _MeasuredAdjudicator(self.adjudicator, self.clock, rss)
+        reranker = _MeasuredReranker(self.reranker, self.clock)
+        adjudicator = _MeasuredAdjudicator(self.adjudicator, self.clock)
         pipeline = _BenchmarkPipeline(
             self.database,
             reranker,
@@ -648,7 +754,7 @@ class Stage2BenchmarkRunner:
         if committed_decision_count:
             observed_components.append("sqlite_commit")
         payload: dict[str, Any] = {
-            "record_version": 1,
+            "record_version": 2,
             "kind": spec.kind,
             "scenario": spec.scenario,
             "run_id": run_id,
@@ -753,6 +859,33 @@ class Stage2BenchmarkRunner:
             "unbounded_memory_growth": _unbounded_growth(samples),
         }
         return BenchmarkExecutionRecord(payload)
+
+    def validate(
+        self,
+        spec: BenchmarkRunSpec,
+        papers: Sequence[Stage2Paper],
+        *,
+        verify_resume: bool = True,
+    ) -> tuple[Stage2Paper, ...]:
+        """Validate a measured run contract without issuing model requests."""
+
+        if not spec.fixture_scale and not verify_resume:
+            raise ValueError("production benchmark must verify its SQLite resume path")
+        ordered_papers = tuple(sorted(papers, key=lambda item: item.paper_id))
+        self._validate_inputs(spec, ordered_papers)
+        if not spec.fixture_scale and (
+            not isinstance(self.reranker, OmlxRerankBackend)
+            or not isinstance(self.adjudicator, OmlxChatBackend)
+            or self._transport_probe is None
+        ):
+            raise ValueError("production benchmark must execute the instrumented oMLX backends")
+        if not spec.fixture_scale and self.memory_pressure_sampler is None:
+            raise ValueError("production benchmark requires an observed macOS memory-pressure sampler")
+        if not spec.fixture_scale and self.rss_scope == "runner_process_high_water_rss":
+            raise ValueError("production benchmark RSS sampler must cover the runner and resident model service")
+        if not spec.fixture_scale and self.rss_sampler is _process_rss_bytes:
+            raise ValueError("production benchmark requires an explicit current-RSS sampler")
+        return ordered_papers
 
     def _validate_inputs(self, spec: BenchmarkRunSpec, papers: Sequence[Stage2Paper]) -> None:
         expected = {item.pair_id for item in spec.cases}
@@ -918,6 +1051,7 @@ def _environment_document(environment: BenchmarkEnvironment) -> dict[str, Any]:
 
 def _evaluation_fields(payload: Mapping[str, Any], *, performance: bool) -> dict[str, Any]:
     fields: dict[str, Any] = {
+        "record_version": payload["record_version"],
         "run_id": payload["run_id"],
         "manifest_hash": payload["manifest_hash"],
         "stage2_config_hash": payload["stage2_config_hash"],
@@ -926,6 +1060,11 @@ def _evaluation_fields(payload: Mapping[str, Any], *, performance: bool) -> dict
         "peak_memory_gb": payload["peak_memory_gb"],
         "request_count": payload["request_count"],
         "failed_request_count": payload["failed_request_count"],
+        "service_request_count": payload["service_request_count"],
+        "service_failed_request_count": payload["service_failed_request_count"],
+        "resume_verified": payload["resume_verified"],
+        "resume_model_call_count": payload["resume_model_call_count"],
+        "resumed_pair_count": payload["resumed_pair_count"],
         "completed_pair_ids": tuple(payload["completed_pair_ids"]),
         "needs_review_pair_ids": tuple(payload["needs_review_pair_ids"]),
         "failed_request_pair_ids": tuple(payload["failed_request_pair_ids"]),

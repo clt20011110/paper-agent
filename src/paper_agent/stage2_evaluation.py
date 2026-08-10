@@ -1401,6 +1401,7 @@ def _validate_result_partition(completed: Sequence[str], needs_review: Sequence[
 
 @dataclass(frozen=True, slots=True)
 class PerformanceRunRecord:
+    record_version: int
     scenario: str
     run_id: str
     manifest_hash: str
@@ -1412,6 +1413,11 @@ class PerformanceRunRecord:
     peak_memory_gb: float
     request_count: int
     failed_request_count: int
+    service_request_count: int
+    service_failed_request_count: int
+    resume_verified: bool
+    resume_model_call_count: int
+    resumed_pair_count: int
     completed_pair_ids: tuple[str, ...]
     needs_review_pair_ids: tuple[str, ...]
     failed_request_pair_ids: tuple[str, ...]
@@ -1426,6 +1432,10 @@ class PerformanceRunRecord:
     unbounded_memory_growth: bool = False
 
     def __post_init__(self) -> None:
+        if self.record_version != 2:
+            raise ValueError(
+                "benchmark record_version 2 is required for audited service-request metrics"
+            )
         if self.scenario not in {"normal", "stress"} or not self.run_id or not self.manifest_hash or not self.stage2_config_hash:
             raise ValueError("benchmark record has invalid identity/provenance")
         values = (self.duration_seconds, self.p50_seconds, self.p95_seconds, self.peak_memory_gb)
@@ -1433,6 +1443,17 @@ class PerformanceRunRecord:
             raise ValueError("benchmark measurements must be finite and non-negative")
         if self.request_count < 1 or not 0 <= self.failed_request_count <= self.request_count:
             raise ValueError("benchmark request counts are invalid")
+        if (
+            self.service_request_count < 1
+            or not 0 <= self.service_failed_request_count <= self.service_request_count
+        ):
+            raise ValueError("benchmark service request counts are invalid")
+        if (
+            type(self.resume_verified) is not bool
+            or self.resume_model_call_count < 0
+            or not 0 <= self.resumed_pair_count <= self.request_count
+        ):
+            raise ValueError("benchmark resume measurements are invalid")
         if self.p50_seconds > self.p95_seconds:
             raise ValueError("p50 cannot exceed p95")
         if not self.model_lock_hashes or not all(self.model_lock_hashes) or len(set(self.model_lock_hashes)) != len(self.model_lock_hashes):
@@ -1448,6 +1469,10 @@ class PerformanceRunRecord:
     @property
     def request_failure_rate(self) -> float:
         return self.failed_request_count / self.request_count
+
+    @property
+    def service_request_failure_rate(self) -> float:
+        return self.service_failed_request_count / self.service_request_count
 
 
 def _record_matches_manifest(record: PerformanceRunRecord, manifest: PerformanceRoutingManifest) -> bool:
@@ -1480,8 +1505,16 @@ def performance_gate(manifest: PerformanceRoutingManifest, records: Sequence[Per
                 failures.append(f"{prefix} did not execute/commit the complete Stage 2 pipeline")
             if not record.warmed:
                 failures.append(f"{prefix} is not a warmed benchmark run")
+            if (
+                not record.resume_verified
+                or record.resume_model_call_count != 0
+                or record.resumed_pair_count != len(expected)
+            ):
+                failures.append(f"{prefix} did not verify zero-call SQLite resume")
             if set(record.completed_pair_ids) | set(record.needs_review_pair_ids) != expected:
                 failures.append(f"{prefix} has missing or unknown results")
+            if record.request_count != len(expected):
+                failures.append(f"{prefix} request count does not match the frozen case set")
             if not set(record.failed_request_pair_ids) <= set(record.needs_review_pair_ids):
                 failures.append(f"{prefix} failed request did not route to needs_review")
             qwen = manifest.normal_qwen_ids if scenario == "normal" else manifest.stress_qwen_ids
@@ -1493,6 +1526,8 @@ def performance_gate(manifest: PerformanceRoutingManifest, records: Sequence[Per
                 failures.append(f"{prefix} exceeded memory limit")
             if record.request_failure_rate >= 0.005:
                 failures.append(f"{prefix} request failure rate >= 0.5%")
+            if record.service_request_failure_rate >= 0.005:
+                failures.append(f"{prefix} service request failure rate >= 0.5%")
             if record.oom or record.process_crash or record.unbounded_memory_growth:
                 failures.append(f"{prefix} failed stability gate")
     return GateResult(not failures, tuple(failures))
@@ -1506,11 +1541,15 @@ def performance_summary(records: Sequence[PerformanceRunRecord], scenario: str) 
         "median_seconds": median(record.duration_seconds for record in runs),
         "p50_seconds": median(record.p50_seconds for record in runs),
         "p95_seconds": median(record.p95_seconds for record in runs),
+        "service_request_failure_rate": median(
+            record.service_request_failure_rate for record in runs
+        ),
     }
 
 
 @dataclass(frozen=True, slots=True)
 class SoakRunRecord:
+    record_version: int
     run_id: str
     manifest_hash: str
     stage2_config_hash: str
@@ -1519,6 +1558,11 @@ class SoakRunRecord:
     peak_memory_gb: float
     request_count: int
     failed_request_count: int
+    service_request_count: int
+    service_failed_request_count: int
+    resume_verified: bool
+    resume_model_call_count: int
+    resumed_pair_count: int
     completed_pair_ids: tuple[str, ...]
     needs_review_pair_ids: tuple[str, ...]
     failed_request_pair_ids: tuple[str, ...]
@@ -1532,6 +1576,10 @@ class SoakRunRecord:
     unbounded_memory_growth: bool = False
 
     def __post_init__(self) -> None:
+        if self.record_version != 2:
+            raise ValueError(
+                "soak record_version 2 is required for audited service-request metrics"
+            )
         if not self.run_id or not self.manifest_hash or not self.stage2_config_hash:
             raise ValueError("soak record has invalid identity/provenance")
         values = (self.duration_seconds, self.peak_memory_gb)
@@ -1539,6 +1587,17 @@ class SoakRunRecord:
             raise ValueError("soak measurements must be finite and non-negative")
         if self.request_count < 1 or not 0 <= self.failed_request_count <= self.request_count:
             raise ValueError("soak request counts are invalid")
+        if (
+            self.service_request_count < 1
+            or not 0 <= self.service_failed_request_count <= self.service_request_count
+        ):
+            raise ValueError("soak service request counts are invalid")
+        if (
+            type(self.resume_verified) is not bool
+            or self.resume_model_call_count < 0
+            or not 0 <= self.resumed_pair_count <= self.request_count
+        ):
+            raise ValueError("soak resume measurements are invalid")
         if not self.model_lock_hashes or not all(self.model_lock_hashes) or len(set(self.model_lock_hashes)) != len(self.model_lock_hashes):
             raise ValueError("soak model locks must be non-empty and unique")
         _validate_result_partition(self.completed_pair_ids, self.needs_review_pair_ids)
@@ -1550,6 +1609,10 @@ class SoakRunRecord:
     @property
     def request_failure_rate(self) -> float:
         return self.failed_request_count / self.request_count
+
+    @property
+    def service_request_failure_rate(self) -> float:
+        return self.service_failed_request_count / self.service_request_count
 
 
 def soak_gate(manifest: SoakManifest, record: SoakRunRecord) -> GateResult:
@@ -1563,18 +1626,28 @@ def soak_gate(manifest: SoakManifest, record: SoakRunRecord) -> GateResult:
         failures.append("soak manifest/config/model provenance mismatch")
     if set(record.completed_pair_ids) | set(record.needs_review_pair_ids) != expected:
         failures.append("soak has missing or unknown results")
+    if record.request_count != len(expected):
+        failures.append("soak request count does not match the frozen case set")
     if set(record.environment.resident_model_instances) != set(manifest.model_lock_hashes):
         failures.append("soak resident models do not match model locks")
     if record.executed_components != ("rules", "reranker", "qwen", "schema_validation", "sqlite_commit") or record.sqlite_commit_count != len(expected):
         failures.append("soak did not execute/commit the complete Stage 2 pipeline")
     if not record.warmed:
         failures.append("soak is not warmed")
+    if (
+        not record.resume_verified
+        or record.resume_model_call_count != 0
+        or record.resumed_pair_count != len(expected)
+    ):
+        failures.append("soak did not verify zero-call SQLite resume")
     if not set(record.failed_request_pair_ids) <= set(record.needs_review_pair_ids):
         failures.append("every failed request must route to needs_review")
     if record.peak_memory_gb > 28 or record.memory_pressure_critical:
         failures.append("soak exceeded memory limit")
     if record.request_failure_rate >= 0.005:
         failures.append("soak request failure rate >= 0.5%")
+    if record.service_request_failure_rate >= 0.005:
+        failures.append("soak service request failure rate >= 0.5%")
     if record.oom or record.process_crash or record.unbounded_memory_growth:
         failures.append("soak failed stability gate")
     return GateResult(not failures, tuple(failures))
