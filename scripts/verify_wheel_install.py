@@ -43,7 +43,7 @@ def main() -> None:
     batch = provider.search(QuerySpec(1, "wheel-check", "fixture", page_size=1))
 
     assert diagnosis["python_supported"] is True
-    assert diagnosis["schema_count"] == 18
+    assert diagnosis["schema_count"] == 19
     assert len(catalog.providers) == 25
     assert len(catalog.venues) == 20
     assert batch.entries[0].external_id == "10.1000/wheel-check"
