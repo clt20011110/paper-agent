@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from paper_agent.citations import DeterministicFakeScreener, citation_edge, reference_edge
-from paper_agent.domain import EnvelopeStatus, MembershipStatus, ProviderRole, SourceBatch, SourceEntry
+from paper_agent.domain import CitationBatch, CitationEdge, CitationEdgeType, EnvelopeStatus, FilterStatus, MembershipStatus, ProviderRole, SourceBatch, SourceEntry
 from paper_agent.query_plan import approve_query_plan, compile_query_plan
 from paper_agent.providers.api import CrawlWindow, SeedInput, VenueDescriptor
 from paper_agent.providers.builtin import FixtureTransport, create_builtin
@@ -31,7 +31,9 @@ def _provider(name: str, roles: list[str] | None = None) -> dict[str, object]:
 
 
 def _plan(
-    providers: list[dict[str, object]], *, required: list[str], citation_cap: int = 10
+    providers: list[dict[str, object]], *, required: list[str], citation_cap: int = 10,
+    max_depth: int = 1, max_rounds: int = 2, max_requests: int = 2, max_candidates: int = 10,
+    max_seconds: int = 10,
 ) -> dict[str, object]:
     plan = compile_query_plan(
         {
@@ -41,8 +43,8 @@ def _plan(
             "inclusion": {"criteria": [], "exclusion_criteria": []},
             "query_variants": [{"id": "q", "subquestion_id": "q", "alias_group": "q", "raw_query": "paper agents", "synonyms": []}],
             "filter": {"profile": "fake", "config_hash": "c" * 64, "thresholds_hash": "d" * 64, "seed_selector_version": "v1", "seed_selector_config_hash": "e" * 64, "round_state_machine_version": "v1"},
-            "citation_snowball": {"enabled": True, "directions": ["references", "citations"], "max_depth": 1, "max_rounds": 2, "max_per_seed_per_source": citation_cap},
-            "budgets": {"max_requests": 2, "max_candidates": 10, "max_seconds": 10, "saturation": {"min_unique_included_yield": 0.01, "consecutive_low_yield_rounds": 2}},
+            "citation_snowball": {"enabled": True, "directions": ["references", "citations"], "max_depth": max_depth, "max_rounds": max_rounds, "max_per_seed_per_source": citation_cap},
+            "budgets": {"max_requests": max_requests, "max_candidates": max_candidates, "max_seconds": max_seconds, "saturation": {"min_unique_included_yield": 0.01, "consecutive_low_yield_rounds": 2}},
             "provider_policy": "all_resolved",
             "required_roles": ["search"],
             "required_providers": required,
@@ -325,3 +327,218 @@ def test_citation_round_screens_every_candidate_and_respects_depth_and_cap(tmp_p
         assert screener.screened == sorted([papers["10.1000/cited"], papers["10.1000/citing"]])
         assert database.connection.execute("SELECT COUNT(*) FROM citation_requests").fetchone()[0] == 2
         assert database.connection.execute("SELECT COUNT(*) FROM citation_edges").fetchone()[0] == 2
+
+
+def test_citation_candidate_is_canonicalized_ingested_screened_and_persisted(tmp_path) -> None:
+    plan = _plan([_provider("openalex", ["search", "citation"])], required=["openalex"])
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class CandidateCitationFixture:
+        def references(self, seed, cursor):
+            return CitationBatch(
+                "fixture", "refs", (
+                    CitationEdge(
+                        source_paper_id=seed.paper_id,
+                        target_paper_id="https://openalex.org/W-native-only",
+                        edge_type=CitationEdgeType.REFERENCES,
+                        provider="openalex",
+                        observed_at=NOW,
+                        raw_evidence={"native_id": "https://openalex.org/W-native-only"},
+                        candidate=SourceEntry(
+                            "openalex", "https://openalex.org/W-native-only", "Discovered only by citation",
+                            ("Ada",), doi="10.1000/discovered", year=2024,
+                        ),
+                    ),
+                ), None, EnvelopeStatus.SUCCESS,
+            )
+
+        def citations(self, seed, cursor):
+            return CitationBatch("fixture", "cites", (), None, EnvelopeStatus.SUCCESS)
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database, plan, runtime_providers=plan["providers"],
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
+            trusts={"openalex": _trust("openalex")},
+            citation_clients={"openalex": CandidateCitationFixture()},
+            screener=DeterministicFakeScreener(frozenset()),
+        )
+        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
+        pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
+
+        discovered = database.connection.execute(
+            "SELECT paper_id FROM papers WHERE doi = '10.1000/discovered'"
+        ).fetchone()["paper_id"]
+        edge = database.connection.execute(
+            "SELECT source_paper_id, target_paper_id, raw_evidence_json FROM citation_edges"
+        ).fetchone()
+        round_paper = database.connection.execute(
+            "SELECT depth, subquestion_id, screening_status FROM search_round_papers WHERE paper_id = ?",
+            (discovered,),
+        ).fetchone()
+
+    assert pipeline.screener.screened == [discovered]
+    assert tuple(edge[:2]) == (root.paper_id, discovered)
+    assert "W-native-only" not in edge[2]
+    assert tuple(round_paper) == (1, "q", "irrelevant")
+
+
+def test_citation_depth_propagates_to_a_second_round_and_global_candidate_cap_stops(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex", ["search", "citation"])], required=["openalex"],
+        max_depth=2, max_rounds=2, max_requests=4, max_candidates=2,
+    )
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class TwoDepthFixture:
+        def references(self, seed, cursor):
+            number = "one" if seed.doi == "10.1000/root" else "two"
+            return CitationBatch(
+                "fixture", number, (
+                    CitationEdge(
+                        seed.paper_id, f"native-{number}", CitationEdgeType.REFERENCES, "openalex", NOW,
+                        candidate=SourceEntry("openalex", f"native-{number}", number, ("Ada",), doi=f"10.1000/{number}", year=2024),
+                    ),
+                ), None, EnvelopeStatus.SUCCESS,
+            )
+
+        def citations(self, seed, cursor):
+            return CitationBatch("fixture", "cites", (), None, EnvelopeStatus.SUCCESS)
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database, plan, runtime_providers=plan["providers"],
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
+            trusts={"openalex": _trust("openalex")}, citation_clients={"openalex": TwoDepthFixture()},
+            screener=DeterministicFakeScreener(frozenset()),
+        )
+        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
+
+        class RelevantScreener:
+            screened: list[str] = []
+
+            def screen(self, paper_ids):
+                self.screened.extend(paper_ids)
+                return {paper_id: FilterStatus.RELEVANT for paper_id in paper_ids}
+
+        pipeline.screener = RelevantScreener()
+        pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
+
+        rows = database.connection.execute(
+            "SELECT p.doi, srp.depth, srp.subquestion_id FROM search_round_papers srp JOIN papers p ON p.paper_id = srp.paper_id ORDER BY srp.depth"
+        ).fetchall()
+        round_state = database.connection.execute(
+            "SELECT stop_reason, limited_scope FROM search_rounds ORDER BY round_index DESC LIMIT 1"
+        ).fetchone()
+        second_round_seed = database.connection.execute(
+            "SELECT parent_round, depth, subquestion_id FROM search_round_seeds WHERE paper_id != ?",
+            (root.paper_id,),
+        ).fetchone()
+
+    assert [tuple(row) for row in rows] == [("10.1000/one", 1, "q"), ("10.1000/two", 2, "q")]
+    assert tuple(round_state) == ("budget_exhausted", 1)
+    assert tuple(second_round_seed) == (0, 1, "q")
+
+
+def test_failed_citation_round_is_incomplete_and_never_sources_exhausted(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex", ["search", "citation"])], required=["openalex"], max_requests=4,
+    )
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class FailedCitationFixture:
+        def references(self, seed, cursor):
+            raise RuntimeError("citation service unavailable")
+
+        def citations(self, seed, cursor):
+            return CitationBatch("fixture", "cites", (), None, EnvelopeStatus.SUCCESS)
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database, plan, runtime_providers=plan["providers"],
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
+            trusts={"openalex": _trust("openalex")}, citation_clients={"openalex": FailedCitationFixture()},
+        )
+        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
+        result = pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
+        round_state = database.connection.execute(
+            "SELECT stop_reason, limited_scope FROM search_rounds"
+        ).fetchone()
+        audit = database.connection.execute(
+            "SELECT screening_complete, source_failed FROM search_round_audits"
+        ).fetchone()
+
+    assert result.status == "incomplete"
+    assert tuple(round_state) == ("saturated_with_unresolved", 1)
+    assert tuple(audit) == (1, 1)
+
+
+def test_time_budget_marks_the_citation_round_limited(tmp_path, monkeypatch) -> None:
+    plan = _plan(
+        [_provider("openalex", ["search", "citation"])], required=["openalex"], max_seconds=1,
+    )
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+    clock = iter((0.0, 2.0, 2.0))
+    monkeypatch.setattr("paper_agent.search_pipeline.time.monotonic", lambda: next(clock))
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database, plan, runtime_providers=plan["providers"],
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
+            trusts={"openalex": _trust("openalex")}, citation_clients={"openalex": object()},
+        )
+        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
+        result = pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
+        row = database.connection.execute(
+            "SELECT stop_reason, limited_scope FROM search_rounds"
+        ).fetchone()
+
+    assert result.status == "incomplete"
+    assert tuple(row) == ("budget_exhausted", 1)
+
+
+def test_library_seed_is_used_as_a_citation_root_without_a_canonical_id(tmp_path) -> None:
+    plan = _plan(
+        [_provider("user_library", ["library"]), _provider("openalex", ["search", "citation"])],
+        required=["openalex"],
+    )
+    openalex_hash = next(
+        provider["native_query_hashes"][0]
+        for provider in plan["providers"]
+        if provider["provider"] == "openalex"
+    )
+
+    class RootRecordingCitationFixture:
+        def __init__(self):
+            self.seed_dois: list[str | None] = []
+
+        def references(self, seed, cursor):
+            self.seed_dois.append(seed.doi)
+            return CitationBatch("fixture", "refs", (), None, EnvelopeStatus.SUCCESS)
+
+        def citations(self, seed, cursor):
+            self.seed_dois.append(seed.doi)
+            return CitationBatch("fixture", "cites", (), None, EnvelopeStatus.SUCCESS)
+
+    citation_client = RootRecordingCitationFixture()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        SearchPipeline(
+            database, plan, runtime_providers=plan["providers"],
+            clients={
+                "user_library": SearchFixture((
+                    _batch("user_library", "library", (
+                        SourceEntry("user_library", "doi:10.1000/library", "Library root", ("Ada",), doi="10.1000/library", year=2024),
+                    )),
+                )),
+                "openalex": SearchFixture((_batch("openalex", openalex_hash, ()),)),
+            },
+            trusts={"user_library": _trust("user_library"), "openalex": _trust("openalex")},
+            citation_clients={"openalex": citation_client},
+        ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+
+    assert citation_client.seed_dois == ["10.1000/library", "10.1000/library"]

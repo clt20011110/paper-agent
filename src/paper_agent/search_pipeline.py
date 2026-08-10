@@ -7,6 +7,7 @@ records those envelopes, normalizes their entries, and expands citations.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, uuid5
@@ -124,6 +125,7 @@ class SearchPipeline:
         fanout = fan_out(self.plan, self._execution_clients())
         all_paper_ids: set[str] = set()
         non_arxiv_ids: set[str] = set()
+        library_seed_ids: set[str] = set()
         metrics: dict[str, SourceMetrics] = {}
         source_entries: dict[str, list[SourceEntry]] = {}
         for outcome in fanout.outcomes:
@@ -181,6 +183,8 @@ class SearchPipeline:
                 all_paper_ids.update(ids)
                 if outcome.provider != "arxiv":
                     non_arxiv_ids.update(ids)
+                if page.role == "library":
+                    library_seed_ids.update(ids)
 
         for source_run_id, source_metrics in metrics.items():
             entries = source_entries[source_run_id]
@@ -198,7 +202,21 @@ class SearchPipeline:
 
         self._link_versions(observed_at)
         status = self.runs.finish_crawl(crawl_run_id, plan=self.plan, fanout=fanout, finished_at=observed_at)
-        round_ids = self._run_citations(crawl_run_id, observed_at, seed_paper_ids)
+        round_ids = self._run_citations(
+            crawl_run_id,
+            observed_at,
+            (*seed_paper_ids, *sorted(library_seed_ids)),
+        )
+        citation_limited = self.database.connection.execute(
+            "SELECT 1 FROM search_rounds WHERE crawl_run_id = ? AND limited_scope = 1 LIMIT 1",
+            (crawl_run_id,),
+        ).fetchone()
+        if citation_limited:
+            status = "incomplete"
+            self.database.connection.execute(
+                "UPDATE crawl_runs SET status = 'incomplete' WHERE crawl_run_id = ?",
+                (crawl_run_id,),
+            )
         self.database.connection.execute(
             "UPDATE pipeline_runs SET status = ?, completed_at = ? WHERE run_id = ?",
             (status, observed_at, run_id),
@@ -440,10 +458,16 @@ class SearchPipeline:
         max_depth = int(config["max_depth"])
         max_rounds = int(config["max_rounds"])
         max_per_request = int(config["max_per_seed_per_source"])
+        max_candidates = int(self.plan["budgets"]["max_candidates"])
+        deadline = time.monotonic() + int(self.plan["budgets"]["max_seconds"])
         directions = tuple(CitationEdgeType(value) for value in config["directions"])
+        default_subquestion = next(
+            (item.get("subquestion_id") for item in self.plan["query_variants"] if item.get("subquestion_id")),
+            None,
+        )
         candidates = {
             paper_id: SeedCandidate(
-                paper_id, None, FilterStatus.RELEVANT,
+                paper_id, default_subquestion, FilterStatus.RELEVANT,
                 1.0, self.repository.get_paper(paper_id).verification_status, 0, 0,
             )
             for paper_id in roots
@@ -451,6 +475,7 @@ class SearchPipeline:
         seen = set(roots)
         expanded: set[str] = set()
         used_requests = 0
+        used_candidates = 0
         low_yield_rounds = 0
         round_ids: list[str] = []
         for round_index in range(max_rounds):
@@ -474,8 +499,16 @@ class SearchPipeline:
             )
             round_id = self.rounds.freeze(crawl_run_id=crawl_run_id, round_index=round_index, seeds=seeds, requests=requests)
             round_ids.append(round_id)
-            batches = self._execute_citation_requests(round_id, requests, observed_at)
+            batches, time_exhausted = self._execute_citation_requests(
+                round_id,
+                requests,
+                observed_at,
+                candidate_budget=max(0, max_candidates - used_candidates),
+                deadline=deadline,
+            )
             used_requests += len(requests)
+            used_candidates += sum(len(batch.entries) for batch in batches)
+            batches = self._canonicalize_citation_batches(batches, requests, observed_at)
             decisions, audit = process_citation_batches(
                 batches,
                 already_seen=frozenset(seen),
@@ -484,19 +517,24 @@ class SearchPipeline:
                 ),
                 screener=self.screener,
             )
-            self._save_round_papers(round_id, decisions, requests)
-            candidate_depth = self._candidate_depths(batches, requests)
+            candidate_context = self._candidate_contexts(batches, requests, candidates)
+            self._save_round_papers(round_id, decisions, candidate_context)
             for paper_id, decision in decisions.items():
                 seen.add(paper_id)
                 paper = self.repository.get_paper(paper_id)
                 if paper:
+                    depth, subquestion_id = candidate_context[paper_id]
                     candidates[paper_id] = SeedCandidate(
-                        paper_id, None, decision, 1.0, paper.verification_status,
-                        candidate_depth[paper_id], round_index + 1,
+                        paper_id, subquestion_id, decision, 1.0, paper.verification_status,
+                        depth, round_index,
                     )
             expanded.update(seed.paper_id for seed in seeds)
-            exhausted = not any(batch.entries for batch in batches)
-            budget_exhausted = used_requests >= max_requests
+            exhausted = bool(batches) and not any(batch.entries for batch in batches) and not audit.source_failed
+            budget_exhausted = (
+                used_requests >= max_requests
+                or used_candidates >= max_candidates
+                or time_exhausted
+            )
             saturation = self.plan["budgets"]["saturation"]
             from .citations import decide_stop
 
@@ -505,23 +543,44 @@ class SearchPipeline:
                 previous_low_yield_rounds=low_yield_rounds,
                 min_unique_included_yield=float(saturation["min_unique_included_yield"]),
                 required_low_yield_rounds=int(saturation["consecutive_low_yield_rounds"]),
-                screening_complete=True,
+                screening_complete=audit.screening_complete,
                 sources_exhausted=exhausted,
                 budget_exhausted=budget_exhausted,
+                source_failed=audit.source_failed,
             )
             low_yield_rounds = decision.consecutive_low_yield_rounds
             if round_index + 1 == max_rounds and not decision.stop:
-                decision = StopDecision(True, "max_rounds", False, low_yield_rounds)
+                decision = StopDecision(
+                    True,
+                    "max_rounds",
+                    not audit.screening_complete or bool(audit.needs_review),
+                    low_yield_rounds,
+                )
             self._audit_round(round_id, audit, decision, observed_at)
             if decision.stop:
                 break
         return round_ids
 
     def _execute_citation_requests(
-        self, round_id: str, requests: Sequence[CitationRequest], observed_at: str
-    ) -> tuple[CitationBatch, ...]:
+        self,
+        round_id: str,
+        requests: Sequence[CitationRequest],
+        observed_at: str,
+        *,
+        candidate_budget: int,
+        deadline: float,
+    ) -> tuple[tuple[CitationBatch, ...], bool]:
         batches: list[CitationBatch] = []
+        time_exhausted = False
+        remaining = candidate_budget
         for request in requests:
+            if remaining <= 0 or time.monotonic() >= deadline:
+                time_exhausted = True
+                self.database.connection.execute(
+                    "UPDATE citation_requests SET status = 'skipped_budget', error_json = ? WHERE search_round_id = ? AND schedule_order = ?",
+                    (json.dumps({"message": "candidate or time budget exhausted"}), round_id, request.schedule_order),
+                )
+                continue
             client = self.citation_clients[request.provider]
             paper = self.repository.get_paper(request.seed_paper_id)
             try:
@@ -535,8 +594,9 @@ class SearchPipeline:
             batch = replace(
                 batch,
                 source_run_id=f"{round_id}:{request.schedule_order}",
-                entries=tuple(batch.entries[:request.max_candidates]),
+                entries=tuple(batch.entries[: min(request.max_candidates, remaining)]),
             )
+            remaining -= len(batch.entries)
             batches.append(batch)
             self.database.connection.execute(
                 "UPDATE citation_requests SET status = ?, error_json = ? WHERE search_round_id = ? AND schedule_order = ?",
@@ -547,34 +607,96 @@ class SearchPipeline:
                     request.schedule_order,
                 ),
             )
-            for edge in batch.entries:
-                if self.repository.get_paper(edge.source_paper_id) and self.repository.get_paper(edge.target_paper_id):
-                    self.citations.save(edge)
         self.database.connection.commit()
-        return tuple(batches)
+        return tuple(batches), time_exhausted
 
-    def _candidate_depths(
-        self, batches: Sequence[CitationBatch], requests: Sequence[CitationRequest]
-    ) -> dict[str, int]:
-        request_by_run = {f"{batch.source_run_id}": request for batch, request in zip(batches, requests)}
-        depths: dict[str, int] = {}
+    def _canonicalize_citation_batches(
+        self,
+        batches: Sequence[CitationBatch],
+        requests: Sequence[CitationRequest],
+        observed_at: str,
+    ) -> tuple[CitationBatch, ...]:
+        request_by_order = {request.schedule_order: request for request in requests}
+        canonical_batches: list[CitationBatch] = []
         for batch in batches:
-            request = request_by_run[batch.source_run_id]
+            request = request_by_order[int(batch.source_run_id.rsplit(":", 1)[1])]
+            canonical_edges = []
+            invalid = 0
+            for edge in batch.entries:
+                candidate_paper = None
+                if edge.candidate is not None:
+                    candidate_paper = self.metadata.merge_batch(
+                        SourceBatch(
+                            batch.source_run_id,
+                            batch.query_hash,
+                            (edge.candidate,),
+                            None,
+                            EnvelopeStatus.SUCCESS,
+                            raw_response_artifact_hash=batch.raw_response_artifact_hash,
+                        )
+                    )[0]
+                else:
+                    endpoint = edge.target_paper_id if request.direction is CitationEdgeType.REFERENCES else edge.source_paper_id
+                    candidate_paper = self.repository.get_paper(endpoint)
+                if candidate_paper is None:
+                    invalid += 1
+                    continue
+                if request.direction is CitationEdgeType.REFERENCES:
+                    source_id, target_id = request.seed_paper_id, candidate_paper.paper_id
+                else:
+                    source_id, target_id = candidate_paper.paper_id, request.seed_paper_id
+                canonical = replace(
+                    edge,
+                    source_paper_id=source_id,
+                    target_paper_id=target_id,
+                    edge_type=request.direction,
+                    observed_at=edge.observed_at or observed_at,
+                    raw_evidence={
+                        "citation_source_run_id": batch.source_run_id,
+                        "raw_response_artifact_hash": batch.raw_response_artifact_hash,
+                    },
+                    candidate=None,
+                )
+                self.citations.save(canonical)
+                canonical_edges.append(canonical)
+            error = batch.error
+            if invalid:
+                error = "; ".join(item for item in (error, f"{invalid} citation candidates lacked canonical metadata") if item)
+            canonical_batches.append(replace(batch, entries=tuple(canonical_edges), error=error))
+        return tuple(canonical_batches)
+
+    def _candidate_contexts(
+        self,
+        batches: Sequence[CitationBatch],
+        requests: Sequence[CitationRequest],
+        candidates: Mapping[str, SeedCandidate],
+    ) -> dict[str, tuple[int, str | None]]:
+        request_by_order = {request.schedule_order: request for request in requests}
+        contexts: dict[str, tuple[int, str | None]] = {}
+        for batch in batches:
+            request = request_by_order[int(batch.source_run_id.rsplit(":", 1)[1])]
             for edge in batch.entries:
                 paper_id = edge.target_paper_id if edge.edge_type is CitationEdgeType.REFERENCES else edge.source_paper_id
-                depths[paper_id] = min(depths.get(paper_id, request.depth), request.depth)
-        return depths
+                inherited_subquestion = candidates[request.seed_paper_id].subquestion_id
+                current = contexts.get(paper_id)
+                value = (request.depth, inherited_subquestion)
+                if current is None or value < current:
+                    contexts[paper_id] = value
+        return contexts
 
     def _save_round_papers(
-        self, round_id: str, decisions: Mapping[str, FilterStatus], requests: Sequence[CitationRequest]
+        self,
+        round_id: str,
+        decisions: Mapping[str, FilterStatus],
+        candidate_context: Mapping[str, tuple[int, str | None]],
     ) -> None:
-        depth = min((request.depth for request in requests), default=0)
         for paper_id, status in decisions.items():
             if self.repository.get_paper(paper_id):
+                depth, subquestion_id = candidate_context[paper_id]
                 self.database.connection.execute(
-                    """INSERT INTO search_round_papers(search_round_id, paper_id, depth, first_seen, screening_status)
-                       VALUES (?, ?, ?, 1, ?) ON CONFLICT(search_round_id, paper_id) DO UPDATE SET screening_status = excluded.screening_status""",
-                    (round_id, paper_id, depth, status),
+                    """INSERT INTO search_round_papers(search_round_id, paper_id, depth, first_seen, screening_status, subquestion_id)
+                       VALUES (?, ?, ?, 1, ?, ?) ON CONFLICT(search_round_id, paper_id) DO UPDATE SET screening_status = excluded.screening_status""",
+                    (round_id, paper_id, depth, status, subquestion_id),
                 )
         self.database.connection.commit()
 

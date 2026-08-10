@@ -254,6 +254,8 @@ class RoundAudit:
     error_count: int
     edge_counts: Mapping[str, int] = field(default_factory=dict)
     source_stats: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
+    screening_complete: bool = True
+    source_failed: bool = False
 
     @property
     def included_yield(self) -> float:
@@ -277,6 +279,7 @@ def decide_stop(
     screening_complete: bool,
     sources_exhausted: bool,
     budget_exhausted: bool,
+    source_failed: bool = False,
 ) -> StopDecision:
     low_yield_rounds = (
         previous_low_yield_rounds + 1
@@ -285,6 +288,10 @@ def decide_stop(
     )
     if budget_exhausted:
         return StopDecision(True, "budget_exhausted", True, low_yield_rounds)
+    if source_failed:
+        # A failed graph source is neither an empty source nor evidence of
+        # saturation.  Stop this replayable round as limited scope.
+        return StopDecision(True, "saturated_with_unresolved", True, low_yield_rounds)
     saturated = sources_exhausted or low_yield_rounds >= required_low_yield_rounds
     if saturated and (not screening_complete or audit.needs_review):
         return StopDecision(True, "saturated_with_unresolved", True, low_yield_rounds)
@@ -330,7 +337,7 @@ def process_citation_batches(
     edge_counts: dict[str, int] = defaultdict(int)
     source_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"returned": 0, "errors": 0})
     for batch in batches:
-        if batch.error:
+        if batch.status.value == "failed" or batch.error:
             source_stats[batch.source_run_id]["errors"] += 1
         for edge in batch.entries:
             edge_counts[edge.edge_type.value] += 1
@@ -345,6 +352,7 @@ def process_citation_batches(
     unique = tuple(sorted(set(candidates)))
     new_candidates = tuple(paper_id for paper_id in unique if paper_id not in already_seen)
     decisions = screener.screen(new_candidates)
+    screening_complete = set(decisions) == set(new_candidates)
     newly_relevant = sum(
         status is FilterStatus.RELEVANT and paper_id not in already_relevant
         for paper_id, status in decisions.items()
@@ -359,6 +367,10 @@ def process_citation_batches(
         error_count=sum(stats["errors"] for stats in source_stats.values()),
         edge_counts=dict(edge_counts),
         source_stats={provider: dict(stats) for provider, stats in source_stats.items()},
+        screening_complete=screening_complete and not any(
+            status is FilterStatus.NEEDS_REVIEW for status in decisions.values()
+        ),
+        source_failed=any(batch.status.value == "failed" or batch.error for batch in batches),
     )
     return decisions, audit
 
@@ -452,8 +464,8 @@ class SearchRoundStore:
                 """INSERT INTO search_round_audits(
                     search_round_id, raw_discovered, unique_after_dedup, overlap, screened_unique,
                     new_included_unique, needs_review, error_count, edge_counts_json,
-                    source_stats_json, audited_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    source_stats_json, screening_complete, source_failed, audited_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     round_id,
                     audit.raw_discovered,
@@ -465,6 +477,8 @@ class SearchRoundStore:
                     audit.error_count,
                     json.dumps(audit.edge_counts, sort_keys=True, separators=(",", ":")),
                     json.dumps(audit.source_stats, sort_keys=True, separators=(",", ":")),
+                    int(audit.screening_complete),
+                    int(audit.source_failed),
                     audited_at,
                 ),
             )

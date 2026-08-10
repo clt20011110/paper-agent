@@ -185,6 +185,50 @@ def test_stop_gate_distinguishes_saturation_unresolved_and_budget() -> None:
     assert (budget.reason, budget.limited_scope) == ("budget_exhausted", True)
 
 
+def test_failed_or_incomplete_screening_never_claims_sources_exhausted() -> None:
+    unresolved = RoundAudit(2, 2, 0, 2, 0, 0, 0, screening_complete=False)
+    incomplete = decide_stop(
+        unresolved,
+        previous_low_yield_rounds=0,
+        min_unique_included_yield=0.05,
+        required_low_yield_rounds=2,
+        screening_complete=unresolved.screening_complete,
+        sources_exhausted=True,
+        budget_exhausted=False,
+    )
+    assert (incomplete.reason, incomplete.limited_scope) == ("saturated_with_unresolved", True)
+
+    failed = decide_stop(
+        RoundAudit(0, 0, 0, 0, 0, 0, 1, source_failed=True),
+        previous_low_yield_rounds=0,
+        min_unique_included_yield=0.05,
+        required_low_yield_rounds=2,
+        screening_complete=True,
+        sources_exhausted=False,
+        budget_exhausted=False,
+        source_failed=True,
+    )
+    assert (failed.reason, failed.limited_scope) == ("saturated_with_unresolved", True)
+
+
+def test_completion_columns_default_when_an_existing_database_is_upgraded(tmp_path) -> None:
+    with Database(tmp_path / "papers.sqlite3") as database:
+        for migration in (item for item in database.migrations() if item.version < 5):
+            database.connection.executescript(migration.sql)
+            database.connection.execute(
+                "INSERT INTO schema_migrations(version, name, applied_by) VALUES (?, ?, 'test')",
+                (migration.version, migration.name),
+            )
+        database.connection.commit()
+        database.migrate()
+        columns = {
+            row["name"]: row["dflt_value"]
+            for row in database.connection.execute("PRAGMA table_info(search_round_audits)")
+        }
+    assert columns["screening_complete"] == "1"
+    assert columns["source_failed"] == "0"
+
+
 def test_round_manifest_is_frozen_and_auditable(tmp_path) -> None:
     with Database(tmp_path / "papers.sqlite3") as database:
         database.migrate()

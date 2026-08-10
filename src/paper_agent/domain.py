@@ -403,12 +403,16 @@ class SourceBatch(Model):
 
 @dataclass(frozen=True, slots=True)
 class CitationEdge(Model):
+    # Provider responses identify the discovered endpoint with provider-native
+    # metadata.  The coordinator replaces endpoint IDs with canonical paper IDs
+    # before an edge is persisted.
     source_paper_id: str
     target_paper_id: str
     edge_type: CitationEdgeType
     provider: str
     observed_at: str
     raw_evidence: Mapping[str, Any] = field(default_factory=dict)
+    candidate: SourceEntry | None = None
 
 
 @dataclass(frozen=True, slots=True)

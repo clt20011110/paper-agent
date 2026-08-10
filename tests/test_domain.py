@@ -57,6 +57,7 @@ def test_source_and_citation_envelopes_keep_required_audit_fields() -> None:
                 edge_type=CitationEdgeType.REFERENCES,
                 provider="openalex",
                 observed_at="2026-08-09T00:00:00Z",
+                candidate=entry,
             ),
         ),
         next_cursor=None,
