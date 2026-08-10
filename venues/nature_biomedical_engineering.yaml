@@ -3,5 +3,5 @@ venue_id: nature_biomedical_engineering
 name: Nature Biomedical Engineering
 venue_type: journal
 primary_provider: springer_nature
-provider_params: {journal_slug: natbiomedeng, issns: [2157-846X]}
+provider_params: {journal_slug: natbiomedeng, issns: [2157-846X], article_types: [article, review, analysis]}
 official_url: https://www.nature.com/natbiomedeng/

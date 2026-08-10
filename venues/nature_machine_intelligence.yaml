@@ -3,5 +3,5 @@ venue_id: nature_machine_intelligence
 name: Nature Machine Intelligence
 venue_type: journal
 primary_provider: springer_nature
-provider_params: {journal_slug: natmachintell, issns: [2522-5839]}
+provider_params: {journal_slug: natmachintell, issns: [2522-5839], article_types: [article, review, analysis]}
 official_url: https://www.nature.com/natmachintell/

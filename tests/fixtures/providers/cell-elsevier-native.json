@@ -1,0 +1,17 @@
+{
+  "search-results": {
+    "opensearch:totalResults": "52",
+    "entry": [{
+      "dc:identifier": "S0092867424000080",
+      "dc:title": "Cell native metadata",
+      "prism:doi": "10.1016/j.cell.2024.00008",
+      "dc:creator": "Ada Lovelace; Grace Hopper",
+      "dc:description": "Elsevier metadata abstract.",
+      "prism:coverDate": "2024-09-09",
+      "prism:publicationName": "Cell",
+      "prism:volume": "187",
+      "prism:issueIdentifier": "18",
+      "link": [{"@ref": "scidir", "@href": "https://www.sciencedirect.com/science/article/pii/S0092867424000080"}]
+    }]
+  }
+}

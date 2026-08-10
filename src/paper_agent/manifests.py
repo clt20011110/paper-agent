@@ -75,18 +75,12 @@ class ManifestCatalog:
         from paper_agent.providers.api import VenueDescriptor
 
         venue = self.venue(venue_id)
-        acceptance = self.acceptance(venue_id)
-        parameters = dict(venue["provider_params"])
-        if journal := acceptance.get("journal"):
-            parameters.setdefault("journal_slug", journal["slug"])
-            parameters.setdefault("issns", journal["issns"])
-            parameters.setdefault("article_types", journal["article_types"])
         return VenueDescriptor(
             schema_version=int(venue["schema_version"]),
             venue_id=venue_id,
             provider=venue["primary_provider"],
             adapter=venue["primary_provider"],
-            parameters=parameters,
+            parameters=dict(venue["provider_params"]),
         )
 
 

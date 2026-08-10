@@ -3,5 +3,5 @@ venue_id: nature_chemistry
 name: Nature Chemistry
 venue_type: journal
 primary_provider: springer_nature
-provider_params: {journal_slug: nchem, issns: [1755-4330, 1755-4349]}
+provider_params: {journal_slug: nchem, issns: [1755-4330, 1755-4349], article_types: [article, review, analysis]}
 official_url: https://www.nature.com/nchem/

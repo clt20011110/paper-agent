@@ -8,8 +8,8 @@ enabled: true
 builtin: true
 authority: official
 roles: [venue_primary, metadata_enricher]
-capabilities: [stable_id, metadata, abstract, date_filter, full_text, supplement]
-authentication: {required: false}
+capabilities: [stable_id, metadata, abstract, date_filter]
+authentication: {required: true, credential_env: ELSEVIER_API_KEY}
 rate_limit: {global_qps: 1, max_concurrency: 1, cache_ttl_seconds: 3600}
 terms: {data_use: restricted, url: https://www.cell.com/terms-and-conditions}
 independence_group: cell_press

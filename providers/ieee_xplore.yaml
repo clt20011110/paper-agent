@@ -8,8 +8,8 @@ enabled: true
 builtin: true
 authority: official
 roles: [venue_primary, metadata_enricher]
-capabilities: [stable_id, metadata, abstract, date_filter, full_text]
-authentication: {required: false}
+capabilities: [stable_id, metadata, abstract, date_filter]
+authentication: {required: true, credential_env: IEEE_XPLORE_API_KEY}
 rate_limit: {global_qps: 1, max_concurrency: 1, cache_ttl_seconds: 3600}
 terms: {data_use: restricted, url: https://www.ieee.org/site-terms-conditions.html}
 independence_group: ieee_xplore
