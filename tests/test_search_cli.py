@@ -2,6 +2,7 @@ import json
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -264,6 +265,71 @@ def test_crawl_and_citation_planning_emit_stable_audit_intent(tmp_path, capsys) 
     crawl = json.loads(capsys.readouterr().out)
     assert crawl["mode"] == "venue_descriptor_compatibility"
     assert crawl["search_audit_intent"]["venue_ids"] == ["neurips"]
+
+
+def test_crawl_with_approved_plan_executes_the_venue_only_alias(tmp_path, capsys, monkeypatch) -> None:
+    document = _draft()
+    document["scope"]["venues"] = ["neurips"]  # type: ignore[index]
+    document["providers"] = ["neurips_proceedings"]
+    document["citation_snowball"]["enabled"] = False  # type: ignore[index]
+    document["required_roles"] = ["venue_primary"]
+    document["required_providers"] = []
+    input_path = tmp_path / "crawl.yaml"
+    input_path.write_text(json.dumps(document), encoding="utf-8")
+    assert main(
+        ["search", "plan", "--input", str(input_path), "--output-root", str(tmp_path / "output")]
+    ) == 0
+    draft_result = json.loads(capsys.readouterr().out)
+    assert main(
+        [
+            "search",
+            "approve",
+            "--plan",
+            draft_result["draft_path"],
+            "--hash",
+            draft_result["plan_hash"],
+            "--approved-by",
+            "owner",
+            "--approved-at",
+            "2026-08-09T01:00:00Z",
+        ]
+    ) == 0
+    approved = json.loads(capsys.readouterr().out)
+
+    calls = []
+
+    def execute(*args, **kwargs):
+        calls.append(kwargs)
+        return (
+            SimpleNamespace(
+                fanout=SimpleNamespace(outcomes=()),
+                paper_ids=("p1",),
+                arxiv_candidate_ids=(),
+                status="complete",
+            ),
+            "crawl-run",
+            "crawl-id",
+        )
+
+    monkeypatch.setattr("paper_agent.cli.execute_search_plan", execute)
+    assert main(
+        [
+            "crawl",
+            "--venue",
+            "neurips",
+            "--plan",
+            approved["approved_path"],
+            "--database",
+            str(tmp_path / "crawl.sqlite3"),
+        ]
+    ) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert (result["command"], result["mode"], result["paper_count"]) == (
+        "crawl",
+        "venue_descriptor_compatibility",
+        1,
+    )
+    assert calls[0]["venue_only"] is True
 
 
 def test_venue_scope_automatically_freezes_exact_primary_provider(tmp_path, capsys) -> None:

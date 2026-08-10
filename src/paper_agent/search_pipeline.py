@@ -114,6 +114,7 @@ class SearchPipeline:
         seed_inputs: Sequence[SeedInput] = (),
         citation_clients: Mapping[str, Any] | None = None,
         screener: Any | None = None,
+        venue_only: bool = False,
     ) -> None:
         self.database = database
         self.plan = dict(plan)
@@ -125,6 +126,7 @@ class SearchPipeline:
         self.seed_inputs = tuple(seed_inputs)
         self.citation_clients = citation_clients or {}
         self.screener = screener or DeterministicFakeScreener(frozenset())
+        self.venue_only = venue_only
         self.repository = PaperRepository(database)
         self.metadata = MetadataCoordinator(self.repository, trusts)
         self.runs = SearchRunCoordinator(database)
@@ -334,7 +336,7 @@ class SearchPipeline:
         )
 
     def _queries(self, provider: Mapping[str, Any]) -> tuple[NativeQuery, ...]:
-        if "search" not in provider["roles"]:
+        if self.venue_only or "search" not in provider["roles"]:
             return ()
         return compile_queries(
             str(provider["provider"]),

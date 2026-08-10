@@ -58,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     crawl = subcommands.add_parser("crawl", help="compatibility alias for venue descriptor discovery")
     crawl.add_argument("--venue", action="append", required=True)
+    crawl.add_argument("--plan", type=Path)
+    crawl.add_argument("--database", type=Path)
+    crawl.add_argument("--contact")
+    crawl.add_argument("--snapshot", action="append", default=[], metavar="PROVIDER=PATH")
     import_command = subcommands.add_parser("import-seeds", help="import authorized library seeds")
     import_command.add_argument("--database", required=True, type=Path)
     import_command.add_argument("--seed", action="append", default=[])
@@ -108,7 +112,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit(_expand_citations(args.plan, args.seeds, args.round_index))
         return 0
     if args.command == "crawl":
-        _emit(_crawl(args.venue))
+        _emit(
+            _crawl(
+                args.venue,
+                plan_path=args.plan,
+                database_path=args.database,
+                contact=args.contact,
+                snapshot_values=args.snapshot,
+                config_path=args.config,
+                run_id=args.run_id,
+                dry_run=args.dry_run,
+            )
+        )
         return 0
     if args.command == "import-seeds":
         _emit(_import_seeds(args.database, args.seed, args.input, args.run_id, args.dry_run))
@@ -164,6 +179,7 @@ def _search_run(
     config_path: Path | None,
     run_id: str | None,
     dry_run: bool,
+    venue_only: bool = False,
 ) -> dict[str, Any]:
     plan = _load_json(plan_path)
     config = load_config(config_path) if config_path else None
@@ -195,6 +211,7 @@ def _search_run(
         run_id=run_id,
         contact=operator_contact,
         snapshot_paths=snapshots,
+        venue_only=venue_only,
     )
     return {
         "command": "search.run",
@@ -234,9 +251,39 @@ def _expand_citations(plan_path: Path, seeds_path: Path, round_index: int) -> di
     return {"command": "search.expand-citations", **manifest}
 
 
-def _crawl(venue_ids: Sequence[str]) -> dict[str, Any]:
+def _crawl(
+    venue_ids: Sequence[str],
+    *,
+    plan_path: Path | None = None,
+    database_path: Path | None = None,
+    contact: str | None = None,
+    snapshot_values: Sequence[str] = (),
+    config_path: Path | None = None,
+    run_id: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     catalog = load_catalog()
-    venues = [catalog.venue(venue_id) for venue_id in sorted(set(venue_ids))]
+    normalized_ids = sorted(set(venue_ids))
+    venues = [catalog.venue(venue_id) for venue_id in normalized_ids]
+    if plan_path is not None:
+        plan = _load_json(plan_path)
+        _assert_venue_only_plan(plan, normalized_ids, venues)
+        result = _search_run(
+            plan_path,
+            database_path=database_path,
+            contact=contact,
+            snapshot_values=snapshot_values,
+            config_path=config_path,
+            run_id=run_id,
+            dry_run=dry_run,
+            venue_only=True,
+        )
+        return {
+            **result,
+            "command": "crawl",
+            "mode": "venue_descriptor_compatibility",
+            "venue_ids": normalized_ids,
+        }
     return {
         "command": "crawl",
         "mode": "venue_descriptor_compatibility",
@@ -246,6 +293,29 @@ def _crawl(venue_ids: Sequence[str]) -> dict[str, Any]:
             "venue_ids": [venue["venue_id"] for venue in venues],
         },
     }
+
+
+def _assert_venue_only_plan(
+    plan: Mapping[str, Any],
+    venue_ids: Sequence[str],
+    venues: Sequence[Mapping[str, Any]],
+) -> None:
+    if sorted(set(plan["scope"]["venues"])) != list(venue_ids):
+        raise ValueError("crawl venues must exactly match the approved QueryPlan scope")
+    primary_providers = {str(venue["primary_provider"]) for venue in venues}
+    resolved_providers = {
+        str(provider["provider"]) for provider in plan["providers"] if provider["resolved"]
+    }
+    if resolved_providers != primary_providers:
+        raise ValueError("crawl QueryPlan may resolve only the requested venue primary providers")
+    if plan["scope"].get("user_seeds"):
+        raise ValueError("crawl QueryPlan cannot contain user seeds")
+    if plan["citation_snowball"]["enabled"]:
+        raise ValueError("crawl QueryPlan must disable citation expansion")
+    if set(plan["execution"]["required_roles"]) != {"venue_primary"}:
+        raise ValueError("crawl QueryPlan must require only venue_primary")
+    if set(plan["execution"]["required_providers"]) != primary_providers:
+        raise ValueError("crawl QueryPlan must require every venue primary provider")
 
 
 def _import_seeds(

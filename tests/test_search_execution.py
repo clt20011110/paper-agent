@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
 from paper_agent.cli import _provider_specs
 from paper_agent.query_plan import QueryPlanDriftError, approve_query_plan, compile_query_plan
-from paper_agent.search_execution import resolve_runtime_providers, seed_input
+from paper_agent.providers.builtin import FixtureTransport
+from paper_agent.search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 
 from test_query_plan import draft
 
@@ -70,3 +73,34 @@ def test_snapshot_runtime_requires_the_exact_approved_file(tmp_path, monkeypatch
 )
 def test_seed_input_infers_supported_formats(value: str, kind: str) -> None:
     assert seed_input(value).kind == kind
+
+
+def test_venue_only_execution_runs_descriptors_without_topic_search(tmp_path) -> None:
+    document = draft()
+    document["scope"]["venues"] = ["neurips"]
+    document["citation_snowball"]["enabled"] = False
+    document["required_roles"] = ["venue_primary"]
+    document["required_providers"] = []
+    specs = _provider_specs(["neurips_proceedings"], ROOT, venue_ids=("neurips",))
+    plan = compile_query_plan(document, providers=specs)
+    approved = approve_query_plan(plan, plan["plan_hash"], approved_by="owner", approved_at=NOW)
+    responses = {
+        "neurips_proceedings:discover:first": json.loads(
+            (ROOT / "tests/fixtures/providers/venue-neurips.json").read_text(encoding="utf-8")
+        ),
+        "neurips_proceedings:discover:neurips:page-2": {"entries": []},
+    }
+    database = tmp_path / "crawl.sqlite3"
+
+    result, _, crawl_run_id = execute_search_plan(
+        approved,
+        database,
+        transport=FixtureTransport(responses),
+        venue_only=True,
+    )
+
+    assert (result.status, len(result.paper_ids)) == ("complete", 1)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT DISTINCT role FROM source_runs WHERE crawl_run_id = ?", (crawl_run_id,)
+        ).fetchall() == [("venue_primary",)]

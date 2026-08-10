@@ -102,6 +102,7 @@ def execute_search_plan(
     environment: Mapping[str, str] | None = None,
     snapshot_paths: Mapping[str, Path] | None = None,
     transport: Any | None = None,
+    venue_only: bool = False,
 ) -> tuple[PipelineResult, str, str]:
     """Execute one approved plan through the same single-writer pipeline as tests."""
     installed = catalog or load_catalog()
@@ -146,14 +147,16 @@ def execute_search_plan(
         for name in clients
     }
     venues = _venue_runs(plan, installed)
-    seeds = tuple(seed_input(value) for value in plan["scope"].get("user_seeds", ()))
+    seeds = () if venue_only else tuple(seed_input(value) for value in plan["scope"].get("user_seeds", ()))
     citation_clients = {
         name: client
         for name, client in clients.items()
-        if "citation" in next(provider["roles"] for provider in active if provider["provider"] == name)
+        if not venue_only
+        and "citation" in next(provider["roles"] for provider in active if provider["provider"] == name)
     }
-    resolved_run_id = run_id or f"search-run-{plan['plan_id']}"
-    crawl_identity = f"{resolved_run_id}:{plan['plan_hash']}"
+    stage_name = "crawl" if venue_only else "search"
+    resolved_run_id = run_id or f"{stage_name}-run-{plan['plan_id']}"
+    crawl_identity = f"{resolved_run_id}:{plan['plan_hash']}:{stage_name}"
     crawl_run_id = f"crawl-{uuid5(NAMESPACE_URL, crawl_identity).hex}"
 
     with Database(database_path) as database:
@@ -171,6 +174,7 @@ def execute_search_plan(
             venue_runs=venues,
             seed_inputs=seeds,
             citation_clients=citation_clients,
+            venue_only=venue_only,
         )
         result = pipeline.run(
             run_id=resolved_run_id,
