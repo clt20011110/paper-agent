@@ -110,6 +110,51 @@ def test_stage3_artifact_without_processing_grant_never_constructs_codex(tmp_pat
         database.close()
 
 
+def test_disabled_abstract_only_is_manual_before_codex_construction(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "papers.sqlite3")
+    database.migrate()
+    database.connection.execute(
+        """INSERT INTO papers(paper_id, title, abstract)
+           VALUES ('paper-1', 'One', 'A public abstract')"""
+    )
+    database.connection.commit()
+    store = ArtifactStore(tmp_path / "store")
+    factory_calls = 0
+
+    def forbidden_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("disabled abstract-only input must not construct Codex")
+
+    try:
+        service = AnalysisCliService(
+            database,
+            store,
+            ArtifactProcessingPolicy.load(
+                ROOT / "policies" / "artifact-processing-v1.yaml"
+            ),
+            invoker_factory=forbidden_factory,
+            allow_abstract_only=False,
+        )
+        result = service.run(
+            "analysis-no-abstract", AnalysisInputManifest(paper_ids=("paper-1",))
+        )
+
+        assert result.result is not None
+        paper = result.result.for_paper("paper-1")
+        assert paper.status == "incomplete"
+        assert paper.decision is not None
+        assert paper.decision.reason_code == "abstract_only_disabled_by_analysis_config"
+        assert factory_calls == 0
+        assert database.connection.execute(
+            "SELECT dispatch_count FROM analysis_dispatches"
+        ).fetchone()[0] == 0
+    finally:
+        database.close()
+
+
 def test_dry_run_previews_extraction_without_writes_or_codex(tmp_path, monkeypatch) -> None:
     database, store = _prepared(tmp_path, license=None, access_basis="user_subscription")
     try:

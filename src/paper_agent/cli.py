@@ -17,11 +17,13 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from . import __version__
 from .authorized_skill_runtime import AuthorizedSkillRuntime, load_audit_record
+from .analysis import ANALYSIS_PROFILE
 from .analysis_cli_service import AnalysisCliService, load_analysis_input_manifest
 from .artifacts import ArtifactStore
 from .canonical import canonical_json, content_hash
 from .citations import CitationRequest, SelectedSeed, schedule_requests
 from .config import ConfigError, load_config, load_yaml
+from .codex_exec import CodexExec
 from .doctor import DoctorPaths, SystemDoctor
 from .download_cli_service import (
     AuthorizedSkillHandoffOptions,
@@ -719,6 +721,21 @@ def _analyze(args: argparse.Namespace) -> dict[str, Any]:
         "stage3_artifact_ids": manifest.stage3_artifact_ids,
     })
     resolved_run_id = args.run_id or f"analysis-{manifest_hash[:16]}"
+    analysis_config = config["analysis"] if config is not None else None
+    workers = int(analysis_config["workers"]) if analysis_config is not None else 1
+    allow_abstract_only = (
+        bool(analysis_config["allow_abstract_only"])
+        if analysis_config is not None
+        else True
+    )
+    output_schema_path = (
+        _config_resource_path(
+            args.config,
+            Path(str(analysis_config["output_schema"])),
+        )
+        if analysis_config is not None and args.config is not None
+        else None
+    )
     with Database(database_path, read_only=args.dry_run) as database:
         if not args.dry_run:
             database.migrate()
@@ -727,7 +744,12 @@ def _analyze(args: argparse.Namespace) -> dict[str, Any]:
             ArtifactStore(args.artifact_root or database_path.parent),
             ArtifactProcessingPolicy.load(policy_path),
             grants=GrantStore(database),
+            workers=workers,
+            allow_abstract_only=allow_abstract_only,
+            output_schema_path=output_schema_path,
         )
+        if not args.dry_run:
+            _analysis_codex_preflight()
         result = service.run(
             resolved_run_id,
             manifest,
@@ -760,6 +782,13 @@ def _analyze(args: argparse.Namespace) -> dict[str, Any]:
         "run_id": result.run_id,
         "status": status,
     }
+
+
+def _analysis_codex_preflight() -> None:
+    """Check the Stage 4 Codex runtime without making a paid model call."""
+    report = CodexExec().doctor(prove_model_availability=False)
+    if report.model_availability[ANALYSIS_PROFILE] == "unavailable":
+        raise ConfigError("Stage 4 Luna model is unavailable in the Codex catalog")
 
 
 def _analysis_policy_path(

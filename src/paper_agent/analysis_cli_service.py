@@ -15,7 +15,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .analysis import AnalysisInput, AnalysisRunResult, AnalysisInvoker, PaperAnalysisCoordinator
+from .analysis import (
+    AnalysisInput,
+    AnalysisInvoker,
+    AnalysisRunResult,
+    PaperAnalysisCoordinator,
+    analysis_configuration_denial,
+    load_analysis_output_schema,
+)
 from .artifacts import ArtifactStore
 from .extraction import ExtractionStatus, PdfTextExtractor
 from .grants import GrantStore
@@ -80,13 +87,23 @@ class AnalysisCliService:
         invoker_factory: Callable[[], AnalysisInvoker] | None = None,
         extractor: PdfTextExtractor | None = None,
         clock: Callable[[], datetime] | None = None,
+        workers: int = 1,
+        allow_abstract_only: bool = True,
+        output_schema_path: str | Path | None = None,
     ) -> None:
+        if isinstance(workers, bool) or not isinstance(workers, int) or workers <= 0:
+            raise ValueError("analysis workers must be a positive integer")
+        if not isinstance(allow_abstract_only, bool):
+            raise ValueError("allow_abstract_only must be a boolean")
         self.database = database
         self.artifact_store = artifact_store
         self.gate = ProcessingGate(policy, grants)
         self.invoker_factory = invoker_factory
         self.extractor = extractor or PdfTextExtractor(database, artifact_store)
         self.clock = _trusted_clock(clock)
+        self.workers = workers
+        self.allow_abstract_only = allow_abstract_only
+        self.output_schema_path = load_analysis_output_schema(output_schema_path)[0]
 
     def run(
         self,
@@ -110,11 +127,17 @@ class AnalysisCliService:
             # The preview runs the same local extraction selection as execution
             # without persisting its derived artifact or constructing Codex.
             for item in inputs:
-                self.gate.decide(
-                    item.processing_request(),
-                    processing_grant_id=processing_grant_id,
-                    now=now,
-                )
+                request = item.processing_request()
+                if analysis_configuration_denial(
+                    self.gate,
+                    request,
+                    allow_abstract_only=self.allow_abstract_only,
+                ) is None:
+                    self.gate.decide(
+                        request,
+                        processing_grant_id=processing_grant_id,
+                        now=now,
+                    )
             return AnalysisServiceResult(
                 run_id, True, tuple(item.paper_id for item in inputs),
                 tuple(item.processing_request().input_scope for item in inputs),
@@ -123,7 +146,14 @@ class AnalysisCliService:
         if self.invoker_factory is not None:
             options["invoker_factory"] = self.invoker_factory
         coordinator = PaperAnalysisCoordinator(
-            self.database, self.artifact_store, self.gate, clock=self.clock, **options,
+            self.database,
+            self.artifact_store,
+            self.gate,
+            clock=self.clock,
+            workers=self.workers,
+            allow_abstract_only=self.allow_abstract_only,
+            output_schema_path=self.output_schema_path,
+            **options,
         )
         result = coordinator.run(
             run_id, inputs, now=now, processing_grant_id=processing_grant_id,

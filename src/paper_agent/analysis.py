@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from base64 import b64encode
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -34,6 +36,7 @@ from .codex_exec import (
     InvocationMetadata,
     prompt_directory,
 )
+from .grants import GrantStore
 from .processing import (
     ModelInvocation,
     ProcessingDecision,
@@ -62,6 +65,61 @@ class _DispatchClaimLost(RuntimeError):
 
 class AnalysisInvoker(Protocol):
     def invoke(self, request: CodexExecRequest) -> CodexExecResult: ...
+
+
+def load_analysis_output_schema(
+    output_schema_path: str | Path | None = None,
+) -> tuple[Path, dict[str, Any], str]:
+    """Load the configured Stage 4 schema and prove it is the frozen schema.
+
+    The configured path is part of the Stage 4 run identity.  Its content must
+    still match the schema shipped with Paper Agent, otherwise the run fails
+    before an executor can be constructed.
+    """
+    frozen_path = (schema_directory() / ANALYSIS_SCHEMA).resolve()
+    configured_path = Path(output_schema_path) if output_schema_path is not None else frozen_path
+    configured_path = configured_path.resolve()
+    if not configured_path.is_file():
+        raise AnalysisValidationError(
+            f"configured analysis output schema is missing: {configured_path}"
+        )
+    try:
+        configured = json.loads(configured_path.read_text(encoding="utf-8"))
+        frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise AnalysisValidationError("configured analysis output schema is unreadable") from error
+    if not isinstance(configured, dict) or not isinstance(frozen, dict):
+        raise AnalysisValidationError("analysis output schema must be a JSON object")
+    schema_hash = _digest_json(configured)
+    if schema_hash != _digest_json(frozen):
+        raise AnalysisValidationError(
+            "configured analysis output schema does not match the frozen schema"
+        )
+    return configured_path, configured, schema_hash
+
+
+def analysis_configuration_denial(
+    gate: ProcessingGate,
+    request: ProcessingRequest,
+    *,
+    allow_abstract_only: bool,
+) -> ProcessingDecision | None:
+    """Return the configuration-level denial that precedes policy dispatch."""
+    if allow_abstract_only or request.input_scope != "abstract_only":
+        return None
+    return ProcessingDecision(
+        policy_version=gate.policy.version,
+        policy_hash=gate.policy.hash,
+        outcome=ProcessingOutcome.MANUAL,
+        reason_code="abstract_only_disabled_by_analysis_config",
+        input_artifact_hash=request.artifact_hash,
+        provider=request.provider,
+        model=request.model,
+        purpose=request.purpose,
+        data_category=request.data_category,
+        processing_grant_id=None,
+        authorized_by=None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,9 +228,18 @@ class PaperAnalysisCoordinator:
         dispatch_store: AnalysisDispatchStore | None = None,
         clock: Callable[[], datetime] | None = None,
         dispatch_lease_seconds: int = ANALYSIS_DISPATCH_LEASE_SECONDS,
+        workers: int = 1,
+        allow_abstract_only: bool = True,
+        output_schema_path: str | Path | None = None,
     ) -> None:
         if dispatch_lease_seconds <= 0:
             raise ValueError("dispatch_lease_seconds must be positive")
+        if isinstance(workers, bool) or not isinstance(workers, int) or workers <= 0:
+            raise ValueError("analysis workers must be a positive integer")
+        if not isinstance(allow_abstract_only, bool):
+            raise ValueError("allow_abstract_only must be a boolean")
+        if workers > 1 and dispatch_store is not None:
+            raise ValueError("custom analysis dispatch stores require workers=1")
         self.database = database
         self.artifact_store = artifact_store
         self.gate = gate
@@ -182,9 +249,11 @@ class PaperAnalysisCoordinator:
         self.dispatch_store = dispatch_store or AnalysisDispatchStore(database)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.dispatch_lease_seconds = dispatch_lease_seconds
-        root = schema_directory()
-        self.schema = json.loads((root / ANALYSIS_SCHEMA).read_text(encoding="utf-8"))
-        self.schema_hash = _digest_json(self.schema)
+        self.workers = workers
+        self.allow_abstract_only = allow_abstract_only
+        self.schema_path, self.schema, self.schema_hash = load_analysis_output_schema(
+            output_schema_path
+        )
         self.prompt_hash = sha256(
             (prompt_directory() / ANALYSIS_PROMPT).read_bytes()
         ).hexdigest()
@@ -197,10 +266,16 @@ class PaperAnalysisCoordinator:
         # compatibility checks.  Every newly created/resumed dispatch freezes
         # the policy as part of both the pipeline and paid-call identities.
         self.legacy_config_hash = content_hash(legacy_config)
-        self.config_hash = content_hash({
+        policy_config = {
             **legacy_config,
             "processing_policy_version": self.gate.policy.version,
             "processing_policy_hash": self.gate.policy.hash,
+        }
+        self.pre_analysis_config_hash = content_hash(policy_config)
+        self.config_hash = content_hash({
+            **policy_config,
+            "allow_abstract_only": self.allow_abstract_only,
+            "output_schema_path": str(self.schema_path),
         })
 
     def run(
@@ -217,12 +292,50 @@ class PaperAnalysisCoordinator:
             raise ValueError("a Stage 4 run cannot contain duplicate paper_ids")
         requests = tuple(paper.processing_request() for paper in papers)
         self._ensure_run(run_id, requests)
-        results: list[AnalysisPaperResult] = []
-        for paper, request in zip(papers, requests, strict=True):
-            try:
-                results.append(self._run_one(run_id, paper, request, now, processing_grant_id))
-            except Exception as error:  # One malformed/model-failed paper cannot stop the batch.
-                results.append(self._record_unexpected_failure(run_id, paper, request, error))
+        grant_paper_count = 1
+        if processing_grant_id is not None:
+            grant_paper_count = max(1, sum(
+                analysis_configuration_denial(
+                    self.gate,
+                    request,
+                    allow_abstract_only=self.allow_abstract_only,
+                ) is None
+                and not self.gate.decide(request).is_authorized
+                for request in requests
+            ))
+        work = tuple(zip(papers, requests, strict=True))
+        if self.workers == 1 or len(work) < 2:
+            results = [
+                self._run_one_isolated(
+                    run_id,
+                    paper,
+                    request,
+                    now,
+                    processing_grant_id,
+                    grant_paper_count,
+                )
+                for paper, request in work
+            ]
+        else:
+            # Futures are consumed in submission order so completion timing
+            # cannot reorder the frozen paper list.
+            with ThreadPoolExecutor(
+                max_workers=min(self.workers, len(work)),
+                thread_name_prefix="paper-agent-stage4",
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        self._run_one_in_worker,
+                        run_id,
+                        paper,
+                        request,
+                        now,
+                        processing_grant_id,
+                        grant_paper_count,
+                    )
+                    for paper, request in work
+                ]
+                results = [future.result() for future in futures]
         status = "complete" if all(result.status == "complete" for result in results) else "incomplete"
         with self.database.transaction() as connection:
             terminal = connection.execute(
@@ -245,6 +358,63 @@ class PaperAnalysisCoordinator:
             )
         return AnalysisRunResult(tuple(results))
 
+    def _run_one_isolated(
+        self,
+        run_id: str,
+        paper: AnalysisInput,
+        request: ProcessingRequest,
+        now: datetime | str | None,
+        processing_grant_id: str | None,
+        grant_paper_count: int,
+    ) -> AnalysisPaperResult:
+        try:
+            return self._run_one(
+                run_id,
+                paper,
+                request,
+                now,
+                processing_grant_id,
+                grant_paper_count,
+            )
+        except Exception as error:  # One malformed/model-failed paper cannot stop the batch.
+            return self._record_unexpected_failure(run_id, paper, request, error)
+
+    def _run_one_in_worker(
+        self,
+        run_id: str,
+        paper: AnalysisInput,
+        request: ProcessingRequest,
+        now: datetime | str | None,
+        processing_grant_id: str | None,
+        grant_paper_count: int,
+    ) -> AnalysisPaperResult:
+        """Run one paper with a thread-local SQLite connection."""
+        with Database(self.database.path) as database:
+            grants = GrantStore(database) if self.gate.grants is not None else None
+            worker = PaperAnalysisCoordinator(
+                database,
+                self.artifact_store,
+                ProcessingGate(self.gate.policy, grants),
+                invoker_factory=self.invoker_factory,
+                normalization_registry=self.normalization_registry,
+                implementation_version=self.implementation_version,
+                clock=self.clock,
+                dispatch_lease_seconds=self.dispatch_lease_seconds,
+                workers=self.workers,
+                allow_abstract_only=self.allow_abstract_only,
+                output_schema_path=self.schema_path,
+            )
+            if worker.config_hash != self.config_hash:
+                raise AnalysisValidationError("Stage 4 worker configuration drifted")
+            return worker._run_one_isolated(
+                run_id,
+                paper,
+                request,
+                now,
+                processing_grant_id,
+                grant_paper_count,
+            )
+
     def _ensure_run(self, run_id: str, requests: Sequence[ProcessingRequest]) -> None:
         input_hash = content_hash([{
             "paper_id": request.paper_id, "artifact_hash": request.artifact_hash,
@@ -260,6 +430,21 @@ class PaperAnalysisCoordinator:
             if row is not None:
                 actual = tuple(row[key] for key in ("stage", "input_hash", "config_hash", "implementation_version"))
                 if actual == expected:
+                    return
+                previous = (
+                    "stage4", input_hash, self.pre_analysis_config_hash,
+                    self.implementation_version,
+                )
+                frozen_schema_path = (schema_directory() / ANALYSIS_SCHEMA).resolve()
+                if (
+                    actual == previous
+                    and self.allow_abstract_only
+                    and self.schema_path == frozen_schema_path
+                ):
+                    connection.execute(
+                        "UPDATE pipeline_runs SET config_hash = ? WHERE run_id = ?",
+                        (self.config_hash, run_id),
+                    )
                     return
                 legacy = ("stage4", input_hash, self.legacy_config_hash, self.implementation_version)
                 if actual != legacy or not self._legacy_policy_compatible(
@@ -355,6 +540,7 @@ class PaperAnalysisCoordinator:
     def _run_one(
         self, run_id: str, paper: AnalysisInput, request: ProcessingRequest,
         now: datetime | str | None, processing_grant_id: str | None,
+        grant_paper_count: int,
     ) -> AnalysisPaperResult:
         existing = self._existing(run_id, paper.paper_id, request.artifact_hash)
         if existing is not None:
@@ -415,6 +601,16 @@ class PaperAnalysisCoordinator:
         if dispatch.status is AnalysisDispatchStatus.RUNNING:
             return self._result_from_dispatch(dispatch, paper, request)
 
+        configuration_denial = analysis_configuration_denial(
+            self.gate,
+            request,
+            allow_abstract_only=self.allow_abstract_only,
+        )
+        if configuration_denial is not None:
+            return self._persist_not_authorized(
+                run_id, paper, request, configuration_denial, dispatch
+            )
+
         captured: ModelInvocation | None = None
         sent_hash: str | None = None
         metadata: InvocationMetadata | None = None
@@ -466,7 +662,11 @@ class PaperAnalysisCoordinator:
 
         try:
             dispatched = self.gate.dispatch(
-                request, invoke, processing_grant_id=processing_grant_id, now=now,
+                request,
+                invoke,
+                processing_grant_id=processing_grant_id,
+                now=now,
+                paper_count=grant_paper_count,
             )
             decision = dispatched.decision
             if not decision.is_authorized:
@@ -840,6 +1040,12 @@ class PaperAnalysisCoordinator:
         metadata_document["normalization_registry"] = {
             "version": self.normalization_registry.version,
             "registry_hash": self.normalization_registry.registry_hash,
+        }
+        metadata_document["analysis_configuration"] = {
+            "workers": self.workers,
+            "allow_abstract_only": self.allow_abstract_only,
+            "output_schema_path": str(self.schema_path),
+            "output_schema_hash": self.schema_hash,
         }
         if error is not None:
             metadata_document["failure"] = dict(error)

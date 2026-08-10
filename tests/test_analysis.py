@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
+from threading import Barrier, Lock
+from time import sleep
 
 import pytest
 import yaml
@@ -160,6 +162,236 @@ def test_authorized_output_is_bound_persisted_and_resume_skips_model(tmp_path: P
         ).fetchone()[0]
         assert "# 论文分析：one" in coordinator.artifact_store.read_bytes(markdown_sha).decode("utf-8")
         assert database.connection.execute("SELECT status FROM pipeline_runs").fetchone()[0] == "complete"
+    finally:
+        database.close()
+
+
+def test_parallel_workers_bound_peak_preserve_order_isolate_failure_and_resume(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    database.connection.execute(
+        "INSERT INTO papers(paper_id, title) VALUES ('three', 'Three')"
+    )
+    database.connection.commit()
+    gate = ProcessingGate(
+        ArtifactProcessingPolicy.load(ROOT / "policies" / "artifact-processing-v1.yaml")
+    )
+    holder: dict[str, PaperAnalysisCoordinator] = {}
+    attempted: list[str] = []
+    successful_calls: list[object] = []
+    lock = Lock()
+    first_wave = Barrier(2)
+    active = 0
+    peak = 0
+
+    class ConcurrentInvoker:
+        def invoke(self, request):
+            nonlocal active, peak
+            paper_id = str(json.loads(request.prompt)["paper_id"])
+            with lock:
+                attempted.append(paper_id)
+                position = len(attempted)
+                active += 1
+                peak = max(peak, active)
+            try:
+                if position <= 2:
+                    first_wave.wait(timeout=2)
+                sleep(0.02 if paper_id == "three" else 0.01)
+                if paper_id == "two":
+                    raise RuntimeError("isolated fixture failure")
+                result = FakeInvoker(
+                    holder["coordinator"], calls=successful_calls
+                ).invoke(request)
+                return CodexExecResult(
+                    result.output,
+                    replace(result.metadata, invocation_id=f"fake-{paper_id}"),
+                )
+            finally:
+                with lock:
+                    active -= 1
+
+    coordinator = PaperAnalysisCoordinator(
+        database,
+        ArtifactStore(tmp_path / "store"),
+        gate,
+        invoker_factory=ConcurrentInvoker,
+        workers=2,
+    )
+    holder["coordinator"] = coordinator
+    papers = [
+        AnalysisInput("three", "CC-BY-4.0", "open_license", normalized_text="three"),
+        AnalysisInput("two", "CC-BY-4.0", "open_license", normalized_text="two"),
+        AnalysisInput("one", "CC-BY-4.0", "open_license", normalized_text="one"),
+    ]
+    try:
+        first = coordinator.run("parallel", papers)
+        assert [item.paper_id for item in first.papers] == ["three", "two", "one"]
+        assert [item.status for item in first.papers] == ["complete", "failed", "complete"]
+        assert peak == 2
+        assert sorted(attempted) == ["one", "three", "two"]
+
+        resumed = coordinator.run("parallel", papers)
+        assert [item.paper_id for item in resumed.papers] == ["three", "two", "one"]
+        assert all(item.resumed for item in resumed.papers)
+        assert sorted(attempted) == ["one", "three", "two"]
+        serial_resume = PaperAnalysisCoordinator(
+            database,
+            coordinator.artifact_store,
+            gate,
+            invoker_factory=ConcurrentInvoker,
+            workers=1,
+        )
+        assert serial_resume.config_hash == coordinator.config_hash
+        assert all(
+            item.resumed for item in serial_resume.run("parallel", papers).papers
+        )
+        assert sorted(attempted) == ["one", "three", "two"]
+        assert database.connection.execute(
+            "SELECT MAX(dispatch_count) FROM analysis_dispatches"
+        ).fetchone()[0] == 1
+    finally:
+        database.close()
+
+
+def test_analysis_schema_path_is_frozen_and_drift_precedes_invoker_construction(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    gate = ProcessingGate(
+        ArtifactProcessingPolicy.load(ROOT / "policies" / "artifact-processing-v1.yaml")
+    )
+    schema_one = tmp_path / "one" / "paper-analysis.schema.json"
+    schema_two = tmp_path / "two" / "paper-analysis.schema.json"
+    schema_one.parent.mkdir()
+    schema_two.parent.mkdir()
+    frozen = (ROOT / "schemas" / "paper-analysis.schema.json").read_text(
+        encoding="utf-8"
+    )
+    schema_one.write_text(frozen, encoding="utf-8")
+    schema_two.write_text(frozen, encoding="utf-8")
+    factory_calls = 0
+
+    def forbidden_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("configuration drift must precede Codex construction")
+
+    first = PaperAnalysisCoordinator(
+        database,
+        ArtifactStore(tmp_path / "store"),
+        gate,
+        invoker_factory=forbidden_factory,
+        allow_abstract_only=False,
+        output_schema_path=schema_one,
+    )
+    second = PaperAnalysisCoordinator(
+        database,
+        ArtifactStore(tmp_path / "store"),
+        gate,
+        invoker_factory=forbidden_factory,
+        allow_abstract_only=False,
+        output_schema_path=schema_two,
+    )
+    paper = AnalysisInput(
+        "one", None, "public_read_only", abstract="public abstract"
+    )
+    try:
+        denied = first.run("schema-frozen", [paper])
+        assert denied.for_paper("one").status == "incomplete"
+        assert denied.for_paper("one").decision is not None
+        assert denied.for_paper("one").decision.reason_code == (
+            "abstract_only_disabled_by_analysis_config"
+        )
+        assert first.config_hash != second.config_hash
+
+        with pytest.raises(ValueError, match="configuration is immutable"):
+            second.run("schema-frozen", [paper])
+        assert factory_calls == 0
+    finally:
+        database.close()
+
+
+def test_drifted_analysis_schema_fails_before_invoker_construction(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    schema = json.loads(
+        (ROOT / "schemas" / "paper-analysis.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    schema["title"] = "drifted"
+    path = tmp_path / "paper-analysis.schema.json"
+    path.write_text(json.dumps(schema), encoding="utf-8")
+    factory_calls = 0
+
+    def forbidden_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("schema drift must precede Codex construction")
+
+    try:
+        with pytest.raises(ValueError, match="does not match the frozen schema"):
+            PaperAnalysisCoordinator(
+                database,
+                ArtifactStore(tmp_path / "store"),
+                ProcessingGate(
+                    ArtifactProcessingPolicy.load(
+                        ROOT / "policies" / "artifact-processing-v1.yaml"
+                    )
+                ),
+                invoker_factory=forbidden_factory,
+                output_schema_path=path,
+            )
+        assert factory_calls == 0
+    finally:
+        database.close()
+
+
+def test_pre_analysis_config_run_upgrades_without_reinvocation(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    factory_calls = 0
+
+    def forbidden_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("a denied resume must not construct Codex")
+
+    coordinator = PaperAnalysisCoordinator(
+        database,
+        ArtifactStore(tmp_path / "store"),
+        ProcessingGate(
+            ArtifactProcessingPolicy.load(
+                ROOT / "policies" / "artifact-processing-v1.yaml"
+            )
+        ),
+        invoker_factory=forbidden_factory,
+    )
+    paper = AnalysisInput(
+        "one", None, "user_subscription", normalized_text="restricted"
+    )
+    try:
+        first = coordinator.run("pre-analysis-config", [paper])
+        assert first.for_paper("one").status == "incomplete"
+        database.connection.execute(
+            "UPDATE pipeline_runs SET config_hash = ? WHERE run_id = ?",
+            (coordinator.pre_analysis_config_hash, "pre-analysis-config"),
+        )
+        database.connection.commit()
+
+        resumed = coordinator.run("pre-analysis-config", [paper])
+
+        assert resumed.for_paper("one").status == "incomplete"
+        assert factory_calls == 0
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM analysis_runs WHERE run_id = ?",
+            ("pre-analysis-config",),
+        ).fetchone()[0] == 1
+        assert database.connection.execute(
+            "SELECT config_hash FROM pipeline_runs WHERE run_id = ?",
+            ("pre-analysis-config",),
+        ).fetchone()[0] == coordinator.config_hash
     finally:
         database.close()
 

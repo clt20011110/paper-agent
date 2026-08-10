@@ -179,6 +179,124 @@ def test_analyze_default_run_id_hashes_manifest_fields(
     assert str(first["run_id"]).startswith("analysis-")
 
 
+def test_analyze_wires_stage4_config_and_preflights_before_dispatch(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    database_path = tmp_path / "papers.sqlite3"
+    with Database(database_path) as database:
+        database.migrate()
+    config_document = yaml.safe_load(
+        (ROOT / "configs" / "abstract_focus.yaml").read_text(encoding="utf-8")
+    )
+    config_document["storage"]["sqlite_path"] = str(database_path)
+    config_document["analysis"]["workers"] = 3
+    config_document["analysis"]["allow_abstract_only"] = False
+    config_document["analysis"]["output_schema"] = str(
+        ROOT / "schemas" / "paper-analysis.schema.json"
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(config_document, sort_keys=False), encoding="utf-8"
+    )
+    selection = tmp_path / "analysis-input.json"
+    selection.write_text(
+        json.dumps({
+            "schema_version": "1",
+            "paper_ids": ["paper-1"],
+            "stage3_artifact_ids": [],
+        }),
+        encoding="utf-8",
+    )
+    events: list[str] = []
+    captured: dict[str, object] = {}
+
+    class FakeService:
+        def __init__(self, *_args, **options):
+            events.append("service")
+            captured.update(options)
+
+        def run(self, run_id, _manifest, **_options):
+            events.append("dispatch")
+            paper = SimpleNamespace(
+                error=None,
+                input_scope="metadata_only",
+                paper_id="paper-1",
+                resumed=False,
+                status="complete",
+            )
+            return SimpleNamespace(
+                run_id=run_id,
+                dry_run=False,
+                selected_paper_ids=("paper-1",),
+                input_scopes=("metadata_only",),
+                result=SimpleNamespace(papers=(paper,)),
+            )
+
+    def preflight() -> None:
+        events.append("preflight")
+
+    monkeypatch.setattr(cli, "AnalysisCliService", FakeService)
+    monkeypatch.setattr(cli, "_analysis_codex_preflight", preflight)
+
+    assert cli.main([
+        "--config", str(config_path), "analyze", "--input", str(selection)
+    ]) == 0
+    assert _payload(capsys)["status"] == "complete"
+    assert events == ["service", "preflight", "dispatch"]
+    assert captured["workers"] == 3
+    assert captured["allow_abstract_only"] is False
+    assert captured["output_schema_path"] == (
+        ROOT / "schemas" / "paper-analysis.schema.json"
+    )
+
+
+def test_analyze_schema_drift_fails_before_codex_preflight(
+    tmp_path: Path, monkeypatch
+) -> None:
+    database_path = tmp_path / "papers.sqlite3"
+    with Database(database_path) as database:
+        database.migrate()
+    drifted_schema = json.loads(
+        (ROOT / "schemas" / "paper-analysis.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    drifted_schema["title"] = "drifted"
+    schema_path = tmp_path / "paper-analysis.schema.json"
+    schema_path.write_text(json.dumps(drifted_schema), encoding="utf-8")
+    config_document = yaml.safe_load(
+        (ROOT / "configs" / "abstract_focus.yaml").read_text(encoding="utf-8")
+    )
+    config_document["storage"]["sqlite_path"] = str(database_path)
+    config_document["analysis"]["output_schema"] = str(schema_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(config_document, sort_keys=False), encoding="utf-8"
+    )
+    selection = tmp_path / "analysis-input.json"
+    selection.write_text(
+        json.dumps({
+            "schema_version": "1",
+            "paper_ids": ["paper-1"],
+            "stage3_artifact_ids": [],
+        }),
+        encoding="utf-8",
+    )
+    preflight_calls = 0
+
+    def forbidden_preflight() -> None:
+        nonlocal preflight_calls
+        preflight_calls += 1
+        raise AssertionError("schema drift must precede Codex preflight")
+
+    monkeypatch.setattr(cli, "_analysis_codex_preflight", forbidden_preflight)
+    with pytest.raises(ValueError, match="does not match the frozen schema"):
+        cli.main([
+            "--config", str(config_path), "analyze", "--input", str(selection)
+        ])
+    assert preflight_calls == 0
+
+
 def test_cli_rejects_user_controlled_authorization_time() -> None:
     parser = cli.build_parser()
     with pytest.raises(SystemExit):
