@@ -2,11 +2,101 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://paper-agent.dev/schemas/report-audit.schema.json",
   "title": "Report quality audit",
-  "type": "object", "additionalProperties": false,
-  "required": ["report_document_hash", "coverage_complete", "findings"],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "audit_pass",
+    "report_document_hash",
+    "report_artifact_hash",
+    "report_plan_hash",
+    "rubric_hash",
+    "search_limitations_hash",
+    "coverage_complete",
+    "coverage_ledger",
+    "findings"
+  ],
   "properties": {
+    "audit_pass": {"type": "string", "enum": ["A", "C"]},
     "report_document_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "report_artifact_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "report_plan_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "rubric_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "search_limitations_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "coverage_complete": {"type": "boolean"},
-    "findings": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["finding_id", "severity", "category", "description", "block_ids", "claim_ids", "recommendation"], "properties": {"finding_id": {"type": "string", "minLength": 1}, "severity": {"type": "string", "enum": ["blocker", "major", "minor", "note"]}, "category": {"type": "string", "enum": ["unsupported_claim", "miscited_claim", "coverage_gap", "conflict_erasure", "incomparable_value", "overgeneralization", "search_limitation", "plan_deviation", "other"]}, "description": {"type": "string", "minLength": 1}, "block_ids": {"type": "array", "items": {"type": "string"}}, "claim_ids": {"type": "array", "items": {"type": "string", "format": "uuid"}}, "recommendation": {"type": "string", "minLength": 1}}}}
+    "coverage_ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["block_ids", "claim_ids", "evidence_refs"],
+      "properties": {
+        "block_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "claim_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "format": "uuid"}
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["claim_id", "direction", "ordinal", "evidence_ref_hash"],
+            "properties": {
+              "claim_id": {"type": "string", "format": "uuid"},
+              "direction": {"type": "string", "enum": ["support", "contradict"]},
+              "ordinal": {"type": "integer", "minimum": 0},
+              "evidence_ref_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+            }
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "finding_id",
+          "severity",
+          "category",
+          "description",
+          "block_ids",
+          "claim_ids",
+          "paper_ids",
+          "recommendation"
+        ],
+        "properties": {
+          "finding_id": {"type": "string", "minLength": 1},
+          "severity": {"type": "string", "enum": ["blocker", "major", "minor", "note"]},
+          "category": {
+            "type": "string",
+            "enum": [
+              "unsupported_claim",
+              "miscited_claim",
+              "coverage_gap",
+              "conflict_erasure",
+              "incomparable_value",
+              "overgeneralization",
+              "search_limitation",
+              "plan_deviation",
+              "other"
+            ]
+          },
+          "description": {"type": "string", "minLength": 1},
+          "block_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "claim_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "format": "uuid"}
+          },
+          "paper_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "recommendation": {"type": "string", "minLength": 1}
+        }
+      }
+    }
   }
 }

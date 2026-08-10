@@ -27,6 +27,8 @@ PDF_BYTES = b"%PDF-restricted-content"
 HASH = sha256(PDF_BYTES).hexdigest()
 DERIVED_BYTES = b'{"paper_id":"paper-1","analysis":"restricted derivative"}'
 DERIVED_HASH = sha256(DERIVED_BYTES).hexdigest()
+MULTI_DERIVED_BYTES = b'{"paper_ids":["paper-1","paper-2"],"analysis":"restricted derivative"}'
+MULTI_DERIVED_HASH = sha256(MULTI_DERIVED_BYTES).hexdigest()
 LINEAGE_HASH = "e" * 64
 
 
@@ -150,6 +152,23 @@ def test_declared_hash_must_match_selected_payload() -> None:
         request(artifact_hash="b" * 64)
 
 
+def test_processing_request_normalizes_single_and_multi_paper_sources() -> None:
+    single = request(paper_id="paper-1")
+    multi = derived_request(
+        paper_id=None,
+        source_paper_ids=("paper-2", "paper-1", "paper-2"),
+    )
+
+    assert single.source_paper_ids == ("paper-1",)
+    assert multi.source_paper_ids == ("paper-1", "paper-2")
+    assert request(source_paper_ids="paper-3").source_paper_ids == ("paper-3",)  # type: ignore[arg-type]
+
+
+def test_processing_request_rejects_empty_source_paper_ids() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        request(source_paper_ids=("",))
+
+
 def _approved_grant(store: GrantStore, *, artifact_hash: str = HASH) -> None:
     scope = {
         "paper_ids": ["paper-1"], "artifact_hashes": [artifact_hash],
@@ -178,6 +197,32 @@ def _approved_sol_grant(store: GrantStore) -> None:
         grant_id="sol-processing-grant", kind="remote_model_processing",
         actions=["remote_model_processing"], purpose="research_synthesis", mode="attended",
         scope=scope, max_papers=1, expires_at=FUTURE, lineage_hash=LINEAGE_HASH,
+    )
+    store.approve(draft, draft["content_hash"], approved_by="owner", approved_at=NOW)
+
+
+def _approved_multi_paper_sol_grant(store: GrantStore) -> None:
+    scope = {
+        "paper_ids": ["paper-1", "paper-2"],
+        "artifact_hashes": [MULTI_DERIVED_HASH],
+        "collection_ids": [],
+        "collection_snapshot_hash": None,
+        "selection_snapshot_hash": None,
+        "domains": [],
+        "provider": PROCESSING_PROVIDER,
+        "model": SUMMARY_MODEL,
+        "data_categories": ["analysis"],
+    }
+    draft = store.create_draft(
+        grant_id="multi-paper-sol-grant",
+        kind="remote_model_processing",
+        actions=["remote_model_processing"],
+        purpose="research_synthesis",
+        mode="attended",
+        scope=scope,
+        max_papers=2,
+        expires_at=FUTURE,
+        lineage_hash=LINEAGE_HASH,
     )
     store.approve(draft, draft["content_hash"], approved_by="owner", approved_at=NOW)
 
@@ -237,6 +282,60 @@ def test_exact_sol_artifact_and_lineage_grant_authorizes_only_that_derivative(
 
     assert allowed.decision.is_authorized
     assert not rejected.decision.is_authorized
+    assert len(calls) == 1
+
+
+def test_exact_grant_authorizes_a_multi_paper_derived_artifact(
+    grant_gate: tuple[ProcessingGate, GrantStore],
+) -> None:
+    gate, store = grant_gate
+    _approved_multi_paper_sol_grant(store)
+    calls = []
+    multi_paper = derived_request(
+        artifact_hash=MULTI_DERIVED_HASH,
+        derived_bytes=MULTI_DERIVED_BYTES,
+        paper_id=None,
+        source_paper_ids=("paper-2", "paper-1"),
+        access_basis="user_subscription",
+        license=None,
+    )
+
+    allowed = gate.dispatch(
+        multi_paper,
+        calls.append,
+        processing_grant_id="multi-paper-sol-grant",
+        now=NOW,
+    )
+    missing_sources = gate.dispatch(
+        derived_request(
+            artifact_hash=MULTI_DERIVED_HASH,
+            derived_bytes=MULTI_DERIVED_BYTES,
+            paper_id=None,
+            source_paper_ids=(),
+            access_basis="user_subscription",
+            license=None,
+        ),
+        calls.append,
+        processing_grant_id="multi-paper-sol-grant",
+        now=NOW,
+    )
+    wrong_source = gate.dispatch(
+        derived_request(
+            artifact_hash=MULTI_DERIVED_HASH,
+            derived_bytes=MULTI_DERIVED_BYTES,
+            paper_id=None,
+            source_paper_ids=("paper-1", "paper-3"),
+            access_basis="user_subscription",
+            license=None,
+        ),
+        calls.append,
+        processing_grant_id="multi-paper-sol-grant",
+        now=NOW,
+    )
+
+    assert allowed.decision.is_authorized
+    assert not missing_sources.decision.is_authorized
+    assert not wrong_source.decision.is_authorized
     assert len(calls) == 1
 
 

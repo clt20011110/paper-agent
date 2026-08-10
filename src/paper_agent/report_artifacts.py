@@ -14,10 +14,21 @@ import json
 import os
 from pathlib import Path
 import re
+import sysconfig
 from typing import Any
 
+import yaml
+
 from .canonical import canonical_json, content_hash
-from .reporting import CoverageLedger, EvidenceValidationError, INPUT_SCOPE_LEVELS, comparison_assessment
+from .reporting import (
+    CoverageLedger,
+    EVIDENCE_LEVEL_RANK,
+    EvidenceValidationError,
+    INPUT_SCOPE_LEVELS,
+    comparison_assessment,
+    require_exact_comparison_groups,
+    stable_claim_id,
+)
 from .schema import SchemaValidationError, validate
 
 
@@ -129,6 +140,133 @@ def _disclosures(search_audit: Mapping[str, Any], corpus_snapshot: Mapping[str, 
     return tuple(dict.fromkeys(parts))
 
 
+def audit_coverage_ledger(
+    document: Mapping[str, Any], claims: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Return the exact substantive units an exhaustive Sol audit must enumerate."""
+    evidence_refs = []
+    for claim in sorted(claims, key=lambda item: str(item["claim_id"])):
+        claim_id = str(claim["claim_id"])
+        for field, direction in (
+            ("supporting_evidence", "support"),
+            ("contradicting_evidence", "contradict"),
+        ):
+            for ordinal, reference in enumerate(claim[field]):
+                evidence_refs.append({
+                    "claim_id": claim_id,
+                    "direction": direction,
+                    "ordinal": ordinal,
+                    "evidence_ref_hash": content_hash(reference),
+                })
+    return {
+        "block_ids": sorted(str(item["block_id"]) for item in document["blocks"]),
+        "claim_ids": sorted(str(item["claim_id"]) for item in claims),
+        "evidence_refs": evidence_refs,
+    }
+
+
+def report_artifact_hash(
+    *,
+    document: Mapping[str, Any],
+    claims: Sequence[Mapping[str, Any]],
+    coverage: CoverageLedger | Mapping[str, Any],
+    comparison_groups: Mapping[str, Mapping[str, Any]],
+    claim_relations: Sequence[Mapping[str, Any]],
+    bibliography: Mapping[str, Mapping[str, Any]],
+) -> str:
+    """Bind every mutable or generated structured input to one audit digest."""
+    return content_hash({
+        "document": document,
+        "claims": list(claims),
+        "coverage": _coverage_dict(coverage),
+        "comparison_groups": comparison_groups,
+        "claim_relations": list(claim_relations),
+        "bibliography": bibliography,
+    })
+
+
+def audit_search_limitations(
+    search_audit: Mapping[str, Any], corpus_snapshot: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Return the exact limitation units bound into audit prompts and outputs."""
+    return _disclosures(search_audit, corpus_snapshot)
+
+
+def audit_rubric_hash(path: str | Path | None = None) -> str:
+    if path is not None:
+        rubric_path = Path(path)
+    else:
+        repository = Path(__file__).resolve().parents[2] / "policies" / "report-audit-rubric-v1.yaml"
+        rubric_path = repository if repository.is_file() else (
+            Path(sysconfig.get_path("data"))
+            / "share" / "paper-agent" / "policies" / "report-audit-rubric-v1.yaml"
+        )
+    try:
+        document = yaml.safe_load(rubric_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise ReportVerificationError("frozen report audit rubric is unavailable") from error
+    if not isinstance(document, Mapping):
+        raise ReportVerificationError("frozen report audit rubric must be an object")
+    return content_hash(document)
+
+
+def _validate_audit_binding(
+    audit: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+    document: Mapping[str, Any],
+    claims: Sequence[Mapping[str, Any]],
+    coverage: CoverageLedger | Mapping[str, Any],
+    comparison_groups: Mapping[str, Mapping[str, Any]],
+    claim_relations: Sequence[Mapping[str, Any]],
+    bibliography: Mapping[str, Mapping[str, Any]],
+    search_audit: Mapping[str, Any],
+    corpus_snapshot: Mapping[str, Any],
+) -> None:
+    expected = (
+        content_hash(document),
+        report_artifact_hash(
+            document=document,
+            claims=claims,
+            coverage=coverage,
+            comparison_groups=comparison_groups,
+            claim_relations=claim_relations,
+            bibliography=bibliography,
+        ),
+        str(plan.get("plan_hash") or content_hash(plan)),
+        audit_rubric_hash(),
+        content_hash(list(_disclosures(search_audit, corpus_snapshot))),
+        canonical_json(audit_coverage_ledger(document, claims)),
+    )
+    actual = (
+        audit.get("report_document_hash"),
+        audit.get("report_artifact_hash"),
+        audit.get("report_plan_hash"),
+        audit.get("rubric_hash"),
+        audit.get("search_limitations_hash"),
+        canonical_json(audit.get("coverage_ledger", {})),
+    )
+    if actual != expected or not audit.get("coverage_complete"):
+        raise ReportVerificationError("audit does not exhaustively cover the verified report inputs")
+    block_ids = {str(item["block_id"]) for item in document["blocks"]}
+    claim_ids = {str(item["claim_id"]) for item in claims}
+    paper_ids = {
+        str(item["paper_id"]) for item in corpus_snapshot.get("papers", ())
+    }
+    finding_ids: set[str] = set()
+    for finding in audit.get("findings", ()):
+        finding_id = str(finding.get("finding_id") or "")
+        if not finding_id or finding_id in finding_ids:
+            raise ReportVerificationError("audit contains a missing or duplicate finding ID")
+        finding_ids.add(finding_id)
+        if (
+            not {str(value) for value in finding.get("block_ids", ())}.issubset(block_ids)
+            or not {str(value) for value in finding.get("claim_ids", ())}.issubset(claim_ids)
+            or not {str(value) for value in finding.get("paper_ids", ())}.issubset(paper_ids)
+        ):
+            raise ReportVerificationError("audit finding references an unknown report unit")
+
+
 def verify_report(
     *,
     plan: Mapping[str, Any],
@@ -139,6 +277,8 @@ def verify_report(
     comparison_groups: Mapping[str, Mapping[str, Any]] = {},
     search_audit: Mapping[str, Any] = {},
     corpus_snapshot: Mapping[str, Any] | None = None,
+    previous: Mapping[str, Any] | None = None,
+    claim_relations: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Validate all hard release gates and return the deterministic checklist."""
     try:
@@ -147,9 +287,27 @@ def verify_report(
             validate(claim, "claim-evidence.schema.json")
     except SchemaValidationError as error:
         raise ReportVerificationError(str(error)) from error
+    validate_claim_relations(previous, claims, claim_relations)
     sections = _sections(plan)
     section_ids = {section_id for section_id, _ in sections}
     claim_by_id = _claim_map(claims)
+    try:
+        require_exact_comparison_groups(claims, comparison_groups)
+    except EvidenceValidationError as error:
+        raise ReportVerificationError(str(error)) from error
+    for claim in claims:
+        if claim.get("comparison_group_id") != claim["claim_key"]["comparison_group_id"]:
+            raise ReportVerificationError("claim comparison group bindings disagree")
+        try:
+            expected_claim_id = stable_claim_id(
+                claim["claim_key"],
+                report_run_id=str(document["report_run_id"]),
+                mapping_status=str(claim["mapping_status"]),
+            )
+        except (EvidenceValidationError, TypeError, ValueError) as error:
+            raise ReportVerificationError(str(error)) from error
+        if claim["claim_id"] != expected_claim_id:
+            raise ReportVerificationError("claim_id does not match its stable claim key")
     if str(document["report_run_id"]) != str(plan.get("report_run_id", document["report_run_id"])):
         raise ReportVerificationError("ReportDocument report_run_id does not match the report plan")
 
@@ -214,14 +372,54 @@ def verify_report(
     }
     if corpus_snapshot is not None:
         covered_papers = {str(item["paper_id"]): item for item in coverage_value.get("papers", ())}
+        memberships = {
+            str(value["paper_id"]): value
+            for value in plan.get("paper_memberships", ())
+        }
+        if len(covered_papers) != len(coverage_value.get("papers", ())):
+            raise ReportVerificationError("coverage ledger contains duplicate paper IDs")
         if set(covered_papers) != set(corpus_papers):
             raise ReportVerificationError("coverage ledger does not exactly match the frozen corpus")
         for paper_id, item in covered_papers.items():
+            membership = memberships.get(paper_id)
+            if memberships and membership is None:
+                raise ReportVerificationError(
+                    f"coverage paper is absent from the approved plan: {paper_id}"
+                )
             if item.get("disposition") == "background_only" and not str(item.get("reason") or "").strip():
                 raise ReportVerificationError(f"background-only paper lacks a reason: {paper_id}")
+            claim_ids = sorted(
+                claim_id for claim_id, claim in claim_by_id.items()
+                if paper_id in _paper_ids(claim)
+            )
+            recorded = sorted(str(value) for value in item.get("evidence_claim_ids", ()))
+            if recorded != claim_ids:
+                raise ReportVerificationError(
+                    f"coverage evidence claims do not match the report claims for {paper_id}"
+                )
+            if item.get("disposition") == "evidence" and not claim_ids:
+                raise ReportVerificationError(f"evidence disposition has no evidence claim: {paper_id}")
+            if membership is not None and (
+                item.get("disposition") != membership["coverage_disposition"]
+                or item.get("reason") != membership["coverage_reason"]
+            ):
+                raise ReportVerificationError(
+                    f"coverage disposition differs from the approved plan: {paper_id}"
+                )
+            if membership is not None and membership["coverage_disposition"] != "evidence" and claim_ids:
+                raise ReportVerificationError(
+                    f"non-evidence coverage paper appears in report claims: {paper_id}"
+                )
+        if memberships and set(memberships) != set(covered_papers):
+            raise ReportVerificationError(
+                "approved paper memberships do not exactly match coverage"
+            )
     for claim in claims:
         support = tuple(claim["supporting_evidence"])
         contradict = tuple(claim["contradicting_evidence"])
+        signatures = [content_hash(ref) for ref in (*support, *contradict)]
+        if len(set(signatures)) != len(signatures):
+            raise ReportVerificationError("claim repeats the same evidence reference")
         if not support and not contradict:
             raise ReportVerificationError("every report claim requires evidence")
         if claim["status"] == "supported" and not support:
@@ -230,6 +428,40 @@ def verify_report(
             raise ReportVerificationError("contradicting evidence must remain a mixed claim")
         if claim["status"] == "mixed" and (not support or not contradict):
             raise ReportVerificationError("mixed claims require both sides of the conflict")
+        paper_levels = [
+            str(ref["evidence_level"])
+            for ref in (*support, *contradict)
+            if ref["kind"] == "paper_evidence"
+        ]
+        claim_level = str(claim["evidence_level"])
+        if paper_levels:
+            if (
+                claim_level not in EVIDENCE_LEVEL_RANK
+                or any(level not in EVIDENCE_LEVEL_RANK for level in paper_levels)
+                or EVIDENCE_LEVEL_RANK[claim_level]
+                > min(EVIDENCE_LEVEL_RANK[level] for level in paper_levels)
+            ):
+                raise ReportVerificationError(
+                    "claim evidence level overstates its weakest paper evidence"
+                )
+        elif claim_level != "corpus_stat":
+            raise ReportVerificationError("corpus-only claim must use corpus_stat evidence level")
+        for expected_direction, references in (
+            ("support", support),
+            ("contradict", contradict),
+        ):
+            for ref in references:
+                if ref["kind"] != "paper_evidence":
+                    continue
+                unit = ref.get("evidence_unit")
+                if (
+                    not str(ref.get("locator") or "").strip()
+                    or not isinstance(unit, Mapping)
+                    or unit.get("direction") != expected_direction
+                ):
+                    raise ReportVerificationError(
+                        "paper evidence locator or direction is invalid"
+                    )
         claim_text = "\n".join(
             str(block["text"]) for block in claims_to_blocks[str(claim["claim_id"])]
         )
@@ -369,21 +601,17 @@ def report_diff(
         paper_id for paper_id in set(before_papers) & set(after_papers)
         if canonical_json(before_papers[paper_id]) != canonical_json(after_papers[paper_id])
     )
-    relations = tuple(deepcopy(dict(item)) for item in claim_relations)
-    classified = {"split": [], "merged": [], "refined": [], "superseded": [], "same": []}
+    relations = validate_claim_relations(previous, tuple(after_claims.values()), claim_relations)
+    classified = {
+        "split": [],
+        "merged": [],
+        "refined": [],
+        "superseded": [],
+        "retired": [],
+        "same": [],
+    }
     for relation in relations:
-        relation_type = str(relation.get("relation_type", ""))
-        previous_id = str(relation.get("previous_claim_id") or "")
-        current_id = str(relation.get("current_claim_id") or "")
-        if (
-            relation_type not in classified
-            or previous_id not in before_claims
-            or current_id not in after_claims
-            or not str(relation.get("reason") or "").strip()
-            or not isinstance(relation.get("evidence_diff"), Mapping)
-        ):
-            raise ReportVerificationError("claim relation lacks its typed IDs, reason, or evidence diff")
-        classified[relation_type].append(relation)
+        classified[str(relation["relation_type"])].append(relation)
     mapped_previous = {str(item["previous_claim_id"]) for item in relations}
     mapped_current = {str(item["current_claim_id"]) for item in relations}
     unmapped = sorted((set(added) | set(retired)) - mapped_previous - mapped_current)
@@ -425,6 +653,124 @@ def report_diff(
         "affected_sections": affected_sections,
         "unchanged_sections": sorted(all_sections - set(affected_sections)),
     }
+
+
+def validate_claim_relations(
+    previous: Mapping[str, Any] | None,
+    current_claims: Sequence[Mapping[str, Any]],
+    relations: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Validate and canonicalize explicit cross-run claim lineage."""
+    if previous is None:
+        if len(relations) != 0:
+            raise ReportVerificationError(
+                "a non-incremental report must not contain claim relations"
+            )
+        return ()
+    before = _claim_map(previous.get("claims", ()))
+    after = _claim_map(current_claims)
+    if len(relations) > len(before) + len(after):
+        raise ReportVerificationError("claim relation cardinality exceeds its endpoints")
+    required = {
+        "previous_claim_id",
+        "current_claim_id",
+        "relation_type",
+        "reason",
+        "evidence_diff",
+    }
+    allowed_types = {"same", "refined", "split", "merged", "superseded", "retired"}
+    canonical: list[dict[str, Any]] = []
+    pairs: set[tuple[str, str]] = set()
+    previous_types: dict[str, str] = {}
+    current_types: dict[str, str] = {}
+    previous_degree: dict[tuple[str, str], set[str]] = defaultdict(set)
+    current_degree: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for relation in relations:
+        if (
+            not isinstance(relation, Mapping)
+            or len(relation) != len(required)
+            or any(field not in relation for field in required)
+        ):
+            raise ReportVerificationError("claim relation has unexpected or missing fields")
+        previous_id = relation["previous_claim_id"]
+        current_id = relation["current_claim_id"]
+        relation_type = relation["relation_type"]
+        reason = relation["reason"]
+        if (
+            not isinstance(previous_id, str)
+            or previous_id not in before
+            or not isinstance(current_id, str)
+            or current_id not in after
+            or not isinstance(relation_type, str)
+            or relation_type not in allowed_types
+            or not isinstance(reason, str)
+            or reason != reason.strip()
+            or not reason
+            or len(reason) > 2_048
+            or len(reason.encode("utf-8")) > 2_048
+            or after[current_id].get("mapping_status") == "unmapped_new"
+        ):
+            raise ReportVerificationError(
+                "claim relation lacks valid typed endpoints, type, or reason"
+            )
+        pair = (previous_id, current_id)
+        if pair in pairs:
+            raise ReportVerificationError("claim relation repeats one endpoint pair")
+        pairs.add(pair)
+        if relation_type == "same" and previous_id != current_id:
+            raise ReportVerificationError("same claim relation must preserve the stable claim ID")
+        if relation_type != "same" and previous_id == current_id:
+            raise ReportVerificationError(
+                "changed claim relation must not reuse the same stable claim ID"
+            )
+        if previous_id in previous_types and previous_types[previous_id] != relation_type:
+            raise ReportVerificationError("one previous claim belongs to conflicting relation types")
+        if current_id in current_types and current_types[current_id] != relation_type:
+            raise ReportVerificationError("one current claim belongs to conflicting relation types")
+        previous_types[previous_id] = str(relation_type)
+        current_types[current_id] = str(relation_type)
+        previous_degree[(str(relation_type), previous_id)].add(current_id)
+        current_degree[(str(relation_type), current_id)].add(previous_id)
+        expected_diff = _claim_evidence_diff(before[previous_id], after[current_id])
+        supplied_diff = relation["evidence_diff"]
+        if not isinstance(supplied_diff, Mapping) or len(supplied_diff) != len(expected_diff):
+            raise ReportVerificationError("claim relation evidence diff is not exact")
+        for field, expected_values in expected_diff.items():
+            actual_values = supplied_diff.get(field)
+            if (
+                not isinstance(actual_values, list)
+                or len(actual_values) != len(expected_values)
+                or any(
+                    left != right
+                    for left, right in zip(actual_values, expected_values, strict=True)
+                )
+            ):
+                raise ReportVerificationError("claim relation evidence diff is not exact")
+        canonical.append({
+            "previous_claim_id": previous_id,
+            "current_claim_id": current_id,
+            "relation_type": relation_type,
+            "reason": reason,
+            "evidence_diff": expected_diff,
+        })
+    for (relation_type, _), targets in previous_degree.items():
+        if relation_type == "split" and len(targets) < 2:
+            raise ReportVerificationError("split relation requires one-to-many cardinality")
+        if relation_type != "split" and len(targets) != 1:
+            raise ReportVerificationError("claim relation violates previous endpoint cardinality")
+    for (relation_type, _), sources in current_degree.items():
+        if relation_type == "merged" and len(sources) < 2:
+            raise ReportVerificationError("merged relation requires many-to-one cardinality")
+        if relation_type != "merged" and len(sources) != 1:
+            raise ReportVerificationError("claim relation violates current endpoint cardinality")
+    return tuple(sorted(
+        canonical,
+        key=lambda item: (
+            str(item["previous_claim_id"]),
+            str(item["current_claim_id"]),
+            str(item["relation_type"]),
+        ),
+    ))
 
 
 def _scope_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -499,7 +845,17 @@ class ReportArtifactStore:
         self.root = Path(root)
 
     def directory(self, report_run_id: str) -> Path:
-        return self.root / "reports" / report_run_id
+        component = str(report_run_id)
+        if (
+            not component
+            or component in {".", ".."}
+            or "/" in component
+            or "\\" in component
+            or "\x00" in component
+            or Path(component).name != component
+        ):
+            raise ReportArtifactError("report_run_id is not a safe path component")
+        return self.root / "reports" / component
 
     @property
     def latest_path(self) -> Path:
@@ -520,18 +876,140 @@ class ReportArtifactStore:
         audit: Mapping[str, Any],
         previous: Mapping[str, Any] | None = None,
     ) -> Path:
+        contents, markdown = self._bundle_contents(
+            plan=plan,
+            search_audit=search_audit,
+            corpus_snapshot=corpus_snapshot,
+            claims=claims,
+            comparison_groups=comparison_groups,
+            claim_relations=claim_relations,
+            document=document,
+            coverage=coverage,
+            bibliography=bibliography,
+            audit=audit,
+            previous=previous,
+        )
+        report_run_id = str(document["report_run_id"])
+        target = self.directory(report_run_id)
+        if target.exists():
+            raise ReportArtifactError(f"immutable report run already exists: {report_run_id}")
+        temporary = target.with_name(f".{report_run_id}.tmp")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if temporary.exists():
+                raise ReportArtifactError(f"unfinished report bundle exists: {temporary.name}")
+            temporary.mkdir()
+            for name, text in contents.items():
+                (temporary / name).write_text(text, encoding="utf-8")
+            os.replace(temporary, target)
+            self._atomic_write(self.latest_path, markdown)
+        except OSError as error:
+            raise ReportArtifactError("immutable report bundle could not be written atomically") from error
+        return target
+
+    def reconcile(
+        self,
+        *,
+        plan: Mapping[str, Any],
+        search_audit: Mapping[str, Any],
+        corpus_snapshot: Mapping[str, Any],
+        claims: Sequence[Mapping[str, Any]],
+        comparison_groups: Mapping[str, Mapping[str, Any]],
+        claim_relations: Sequence[Mapping[str, Any]],
+        document: Mapping[str, Any],
+        coverage: CoverageLedger | Mapping[str, Any],
+        bibliography: Mapping[str, Mapping[str, Any]],
+        audit: Mapping[str, Any],
+        previous: Mapping[str, Any] | None = None,
+    ) -> Path:
+        """Verify a crash-left bundle byte-for-byte, then restore ``latest.md``."""
+        contents, markdown = self._bundle_contents(
+            plan=plan,
+            search_audit=search_audit,
+            corpus_snapshot=corpus_snapshot,
+            claims=claims,
+            comparison_groups=comparison_groups,
+            claim_relations=claim_relations,
+            document=document,
+            coverage=coverage,
+            bibliography=bibliography,
+            audit=audit,
+            previous=previous,
+        )
+        target = self.directory(str(document["report_run_id"]))
+        try:
+            items = tuple(target.iterdir())
+        except OSError as error:
+            raise ReportArtifactError("existing immutable report bundle is unavailable") from error
+        if (
+            target.is_symlink()
+            or any(item.is_symlink() or not item.is_file() for item in items)
+            or {item.name for item in items} != set(contents)
+        ):
+            raise ReportArtifactError("existing immutable report bundle has an unexpected file set")
+        for name, expected in contents.items():
+            try:
+                actual = (target / name).read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as error:
+                raise ReportArtifactError(
+                    f"existing immutable report artifact is unreadable: {name}"
+                ) from error
+            if actual != expected:
+                raise ReportArtifactError(
+                    f"existing immutable report artifact conflicts with final state: {name}"
+                )
+        try:
+            self._atomic_write(self.latest_path, markdown)
+        except OSError as error:
+            raise ReportArtifactError("reports/latest.md could not be restored atomically") from error
+        return target
+
+    @staticmethod
+    def _bundle_contents(
+        *,
+        plan: Mapping[str, Any],
+        search_audit: Mapping[str, Any],
+        corpus_snapshot: Mapping[str, Any],
+        claims: Sequence[Mapping[str, Any]],
+        comparison_groups: Mapping[str, Mapping[str, Any]],
+        claim_relations: Sequence[Mapping[str, Any]],
+        document: Mapping[str, Any],
+        coverage: CoverageLedger | Mapping[str, Any],
+        bibliography: Mapping[str, Mapping[str, Any]],
+        audit: Mapping[str, Any],
+        previous: Mapping[str, Any] | None,
+    ) -> tuple[dict[str, str], str]:
+        try:
+            canonical_comparison_groups = require_exact_comparison_groups(
+                claims, comparison_groups
+            )
+        except EvidenceValidationError as error:
+            raise ReportVerificationError(str(error)) from error
+        canonical_claim_relations = validate_claim_relations(
+            previous, claims, claim_relations
+        )
         checklist = verify_report(
             plan=plan, document=document, claims=claims, coverage=coverage,
             bibliography=bibliography, comparison_groups=comparison_groups,
             search_audit=search_audit, corpus_snapshot=corpus_snapshot,
+            previous=previous, claim_relations=canonical_claim_relations,
         )
-        report_hash = content_hash(document)
         try:
             validate(audit, "report-audit.schema.json")
         except SchemaValidationError as error:
             raise ReportVerificationError(str(error)) from error
-        if audit.get("report_document_hash") != report_hash or not audit.get("coverage_complete"):
-            raise ReportVerificationError("audit does not cover the verified report document")
+        _validate_audit_binding(
+            audit,
+            plan=plan,
+            document=document,
+            claims=claims,
+            coverage=coverage,
+            comparison_groups=canonical_comparison_groups,
+            claim_relations=canonical_claim_relations,
+            bibliography=bibliography,
+            search_audit=search_audit,
+            corpus_snapshot=corpus_snapshot,
+        )
         severe = [item for item in audit.get("findings", ()) if item.get("severity") in {"blocker", "major"}]
         if severe:
             raise ReportVerificationError("report audit contains blocker or major findings")
@@ -545,54 +1023,45 @@ class ReportArtifactStore:
             diff = report_diff(
                 previous,
                 {"plan": plan, "claims": claims, "corpus_snapshot": corpus_snapshot},
-                claim_relations=claim_relations,
+                claim_relations=canonical_claim_relations,
             )
             rendered_diff = render_report_diff(diff)
         report_run_id = str(document["report_run_id"])
-        target = self.directory(report_run_id)
-        if target.exists():
-            raise ReportArtifactError(f"immutable report run already exists: {report_run_id}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{report_run_id}.tmp")
-        if temporary.exists():
-            raise ReportArtifactError(f"unfinished report bundle exists: {temporary.name}")
-        temporary.mkdir()
         ordered_claims = tuple(sorted(claims, key=lambda item: str(item["claim_id"])))
         files: dict[str, Any] = {
             "REPORT_PLAN.json": plan,
             "SEARCH_AUDIT.json": search_audit,
             "CORPUS_SNAPSHOT.json": corpus_snapshot,
-            "COMPARISON_GROUPS.json": comparison_groups,
-            "CLAIM_RELATIONS.json": list(claim_relations),
+            "COMPARISON_GROUPS.json": canonical_comparison_groups,
+            "CLAIM_RELATIONS.json": list(canonical_claim_relations),
             "REPORT_DOCUMENT.json": document,
             "COVERAGE.json": _coverage_dict(coverage),
+            "RESOURCE_TABLES.json": _resource_tables_document(plan, corpus_snapshot),
+            "BIBLIOGRAPHY.json": bibliography,
             "REPORT_SIDECAR.json": sidecar,
             "AUDIT.json": audit,
             "VERIFICATION.json": checklist,
         }
         if diff is not None:
             files["REPORT_DIFF.json"] = diff
-        for name, value in files.items():
-            (temporary / name).write_text(_json(value), encoding="utf-8")
-        (temporary / "CLAIMS_EVIDENCE.jsonl").write_text(
-            "".join(_json(claim) for claim in ordered_claims), encoding="utf-8"
-        )
-        (temporary / "REPORT.md").write_text(markdown, encoding="utf-8")
         text_artifacts = {"REPORT.md": markdown}
         if rendered_diff is not None:
             text_artifacts["REPORT_DIFF.md"] = rendered_diff
-            (temporary / "REPORT_DIFF.md").write_text(rendered_diff, encoding="utf-8")
         manifest = {name: content_hash(value) for name, value in files.items()}
         manifest.update({
             "CLAIMS_EVIDENCE.jsonl": content_hash(list(ordered_claims)),
             **{name: content_hash(value) for name, value in text_artifacts.items()},
         })
-        (temporary / "MANIFEST.json").write_text(
-            _json({"report_run_id": report_run_id, "artifacts": manifest}), encoding="utf-8"
+        contents = {name: _json(value) for name, value in files.items()}
+        contents["CLAIMS_EVIDENCE.jsonl"] = "".join(
+            _json(claim) for claim in ordered_claims
         )
-        os.replace(temporary, target)
-        self._atomic_write(self.latest_path, markdown)
-        return target
+        contents.update(text_artifacts)
+        contents["MANIFEST.json"] = _json({
+            "report_run_id": report_run_id,
+            "artifacts": manifest,
+        })
+        return contents, markdown
 
     @staticmethod
     def _atomic_write(path: Path, text: str) -> None:
@@ -600,3 +1069,50 @@ class ReportArtifactStore:
         temporary = path.with_name(f".{path.name}.tmp")
         temporary.write_text(text, encoding="utf-8")
         os.replace(temporary, path)
+
+
+def _resource_tables_document(
+    plan: Mapping[str, Any], corpus_snapshot: Mapping[str, Any]
+) -> dict[str, Any]:
+    table_ids = tuple(str(item) for item in plan.get("artifacts", {}).get("resource_tables", ()))
+    papers = {
+        str(item["paper_id"]): item for item in corpus_snapshot.get("papers", ())
+    }
+    assigned: dict[str, list[dict[str, Any]]] = {table_id: [] for table_id in table_ids}
+    fields = (
+        "paper_id",
+        "origin",
+        "publication_date",
+        "publication_year",
+        "venue_id",
+        "venue_name",
+        "publication_status",
+        "study_setting",
+        "input_scope",
+        "evidence_level",
+    )
+    for membership in plan.get("paper_memberships", ()):
+        if membership.get("coverage_disposition") != "resource_or_background_table":
+            continue
+        paper_id = str(membership["paper_id"])
+        paper = papers.get(paper_id)
+        if paper is None:
+            raise ReportVerificationError(
+                f"resource table paper is absent from the frozen corpus: {paper_id}"
+            )
+        row = {field: paper.get(field) for field in fields}
+        for table_id in membership["resource_table_ids"]:
+            if table_id not in assigned:
+                raise ReportVerificationError(
+                    f"coverage references an unknown resource table: {table_id}"
+                )
+            assigned[table_id].append(row)
+    return {
+        "tables": [
+            {
+                "table_id": table_id,
+                "rows": sorted(assigned[table_id], key=lambda item: str(item["paper_id"])),
+            }
+            for table_id in table_ids
+        ]
+    }

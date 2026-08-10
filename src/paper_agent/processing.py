@@ -75,6 +75,7 @@ class ProcessingRequest:
     provider: str = PROCESSING_PROVIDER
     model: str = PROCESSING_MODEL
     paper_id: str | None = None
+    source_paper_ids: tuple[str, ...] = ()
     domain: str | None = None
     mode: str = "attended"
     collection_id: str | None = None
@@ -96,6 +97,21 @@ class ProcessingRequest:
             raise ValueError("input_scope must be full_pdf, abstract_only, or metadata_only")
         if self.mode not in {"attended", "unattended"}:
             raise ValueError("mode must be attended or unattended")
+        if isinstance(self.source_paper_ids, str):
+            source_paper_ids = [self.source_paper_ids]
+        else:
+            try:
+                source_paper_ids = list(self.source_paper_ids)
+            except TypeError as error:
+                raise ValueError("source_paper_ids must be an iterable of strings") from error
+        if self.paper_id is not None:
+            source_paper_ids.append(self.paper_id)
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in source_paper_ids
+        ):
+            raise ValueError("source_paper_ids must contain non-empty strings")
+        object.__setattr__(self, "source_paper_ids", tuple(sorted(set(source_paper_ids))))
         payload_hash = _selected_payload_hash(self)
         if payload_hash != self.artifact_hash:
             raise ValueError("artifact_hash does not match the selected processing payload")
@@ -210,6 +226,7 @@ class ProcessingGate:
         *,
         processing_grant_id: str | None = None,
         now: datetime | str | None = None,
+        paper_count: int = 1,
     ) -> ProcessingDecision:
         if request.provider != PROCESSING_PROVIDER or request.model not in PROCESSING_MODELS:
             return self._decision(request, ProcessingOutcome.ANALYSIS_NOT_AUTHORIZED, "remote_target_not_permitted", None, None)
@@ -230,7 +247,7 @@ class ProcessingGate:
                 active = self.grants.require_active(
                     processing_grant_id, kind=PROCESSING_ACTION, action=PROCESSING_ACTION,
                     purpose=request.purpose, mode=request.mode, now=now,
-                    paper_id=request.paper_id if scope["paper_ids"] else None,
+                    paper_ids=request.source_paper_ids,
                     artifact_hash=request.artifact_hash,
                     collection_id=request.collection_id if scope["collection_ids"] else None,
                     collection_snapshot_hash=(
@@ -247,6 +264,7 @@ class ProcessingGate:
                         request.dependency_digest if loaded.document["dependency_digest"] else None
                     ),
                     lineage_hash=request.lineage_hash if loaded.document["lineage_hash"] else None,
+                    paper_count=paper_count,
                 )
                 scope = active.document["scope"]
                 if not scope["artifact_hashes"] or request.artifact_hash not in scope["artifact_hashes"]:
@@ -266,8 +284,14 @@ class ProcessingGate:
         *,
         processing_grant_id: str | None = None,
         now: datetime | str | None = None,
+        paper_count: int = 1,
     ) -> DispatchResult:
-        decision = self.decide(request, processing_grant_id=processing_grant_id, now=now)
+        decision = self.decide(
+            request,
+            processing_grant_id=processing_grant_id,
+            now=now,
+            paper_count=paper_count,
+        )
         if not decision.is_authorized:
             return DispatchResult(decision)
         return DispatchResult(decision, invoke(_invocation_for(request, decision)))

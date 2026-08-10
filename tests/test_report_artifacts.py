@@ -6,13 +6,23 @@ import pytest
 
 from paper_agent.canonical import content_hash
 from paper_agent.report_artifacts import (
+    ReportArtifactError,
     ReportArtifactStore,
     ReportVerificationError,
+    audit_coverage_ledger,
+    audit_rubric_hash,
     render_markdown,
+    report_artifact_hash,
     report_diff,
+    validate_claim_relations,
     verify_report,
+    _resource_tables_document,
 )
-from paper_agent.reporting import stable_claim_id
+from paper_agent.reporting import (
+    comparison_assessment,
+    derive_comparison_groups,
+    stable_claim_id,
+)
 
 
 def _unit() -> dict:
@@ -63,7 +73,11 @@ def _bundle() -> dict:
         "claims": [claim],
         "coverage": {
             "complete": True, "missing_paper_ids": [], "uncovered_claim_ids": [],
-            "papers": [{"paper_id": "p1", "disposition": "evidence"}],
+            "papers": [{
+                "paper_id": "p1", "evidence_claim_ids": [claim["claim_id"]],
+                "consumed_node_ids": ["section:evidence:1"],
+                "disposition": "evidence", "reason": None,
+            }],
         },
         "bibliography": {
             "p1": {"title": "A Paper", "authors": ["Ada Lovelace"], "year": 2026,
@@ -95,7 +109,21 @@ def test_verifier_renderer_and_immutable_publish(tmp_path) -> None:
     assert "# 测试领域综述" in markdown
     assert sidecar["blocks"][0]["claim_ids"] == [bundle["claims"][0]["claim_id"]]
 
-    audit = {"report_document_hash": content_hash(bundle["document"]), "coverage_complete": True, "findings": []}
+    audit = {
+        "audit_pass": "A",
+        "report_document_hash": content_hash(bundle["document"]),
+        "report_artifact_hash": report_artifact_hash(
+            document=bundle["document"], claims=bundle["claims"],
+            coverage=bundle["coverage"], comparison_groups={}, claim_relations=[],
+            bibliography=bundle["bibliography"],
+        ),
+        "report_plan_hash": content_hash(bundle["plan"]),
+        "rubric_hash": audit_rubric_hash(),
+        "search_limitations_hash": content_hash([sidecar["search_limitations"][0]]),
+        "coverage_complete": True,
+        "coverage_ledger": audit_coverage_ledger(bundle["document"], bundle["claims"]),
+        "findings": [],
+    }
     store = ReportArtifactStore(tmp_path)
     output = store.write(
         plan=bundle["plan"], search_audit=bundle["search_audit"], corpus_snapshot=bundle["corpus_snapshot"],
@@ -104,13 +132,166 @@ def test_verifier_renderer_and_immutable_publish(tmp_path) -> None:
     )
     assert (output / "REPORT.md").read_text(encoding="utf-8") == (tmp_path / "reports/latest.md").read_text(encoding="utf-8")
     assert (output / "REPORT_SIDECAR.json").is_file()
+    assert (output / "BIBLIOGRAPHY.json").is_file()
     assert not (tmp_path / "reports/.report-1.tmp").exists()
+    (tmp_path / "reports/latest.md").unlink()
+    reconciled = store.reconcile(
+        plan=bundle["plan"], search_audit=bundle["search_audit"],
+        corpus_snapshot=bundle["corpus_snapshot"], claims=bundle["claims"],
+        comparison_groups={}, claim_relations=[], document=bundle["document"],
+        coverage=bundle["coverage"], bibliography=bundle["bibliography"], audit=audit,
+    )
+    assert reconciled == output
+    assert (tmp_path / "reports/latest.md").read_text(encoding="utf-8") == (
+        output / "REPORT.md"
+    ).read_text(encoding="utf-8")
     with pytest.raises(Exception, match="immutable"):
         store.write(
             plan=bundle["plan"], search_audit=bundle["search_audit"], corpus_snapshot=bundle["corpus_snapshot"],
             claims=bundle["claims"], comparison_groups={}, claim_relations=[], document=bundle["document"],
             coverage=bundle["coverage"], bibliography=bundle["bibliography"], audit=audit,
         )
+    (output / "COVERAGE.json").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ReportArtifactError, match="conflicts"):
+        store.reconcile(
+            plan=bundle["plan"], search_audit=bundle["search_audit"],
+            corpus_snapshot=bundle["corpus_snapshot"], claims=bundle["claims"],
+            comparison_groups={}, claim_relations=[], document=bundle["document"],
+            coverage=bundle["coverage"], bibliography=bundle["bibliography"], audit=audit,
+        )
+
+
+def test_report_directory_rejects_path_traversal(tmp_path) -> None:
+    store = ReportArtifactStore(tmp_path)
+    for report_run_id in ("../escape", "nested/run", "nested\\run", ".", ".."):
+        with pytest.raises(ReportArtifactError, match="safe path"):
+            store.directory(report_run_id)
+
+
+def test_verifier_rejects_arbitrary_or_oversized_comparison_group_values() -> None:
+    bundle = _bundle()
+    claim = bundle["claims"][0]
+    first = deepcopy(claim["supporting_evidence"][0])
+    second = deepcopy(first)
+    second["evidence_unit"]["value"] = 89.0
+    second["evidence_unit"]["source_value"] = 89.0
+    group_id = comparison_assessment(first["evidence_unit"]).comparison_group_id
+    assert group_id is not None
+    claim["claim_type"] = "comparison"
+    claim["supporting_evidence"] = [first, second]
+    claim["comparison_group_id"] = group_id
+    claim["claim_key"]["comparison_group_id"] = group_id
+    claim["claim_id"] = stable_claim_id(claim["claim_key"], report_run_id="report-1")
+    for block in bundle["document"]["blocks"]:
+        block["claim_ids"] = [claim["claim_id"]]
+    bundle["coverage"]["papers"][0]["evidence_claim_ids"] = [claim["claim_id"]]
+    expected = derive_comparison_groups(bundle["claims"])
+
+    verify_report(
+        plan=bundle["plan"],
+        document=bundle["document"],
+        claims=bundle["claims"],
+        coverage=bundle["coverage"],
+        bibliography=bundle["bibliography"],
+        comparison_groups=expected,
+        search_audit=bundle["search_audit"],
+        corpus_snapshot=bundle["corpus_snapshot"],
+    )
+    with pytest.raises(ReportVerificationError, match="deterministic evidence-derived"):
+        verify_report(
+            plan=bundle["plan"],
+            document=bundle["document"],
+            claims=bundle["claims"],
+            coverage=bundle["coverage"],
+            bibliography=bundle["bibliography"],
+            comparison_groups={group_id: {"arbitrary": "x" * 2_000_000}},
+            search_audit=bundle["search_audit"],
+            corpus_snapshot=bundle["corpus_snapshot"],
+        )
+
+
+def test_non_incremental_report_rejects_untyped_claim_relations() -> None:
+    bundle = _bundle()
+    with pytest.raises(ReportVerificationError, match="non-incremental"):
+        verify_report(
+            plan=bundle["plan"],
+            document=bundle["document"],
+            claims=bundle["claims"],
+            coverage=bundle["coverage"],
+            bibliography=bundle["bibliography"],
+            search_audit=bundle["search_audit"],
+            corpus_snapshot=bundle["corpus_snapshot"],
+            claim_relations=[{"garbage": "x" * 1_000}],
+        )
+
+
+def test_incremental_claim_relations_require_exact_evidence_diff_and_cardinality() -> None:
+    before = _claim()
+    after = deepcopy(before)
+    after["claim_key"]["subject_id"] = "refined-method"
+    after["claim_id"] = stable_claim_id(after["claim_key"], report_run_id="report-1")
+    after["supporting_evidence"][0]["evidence_unit"]["value"] = 92.0
+    after["supporting_evidence"][0]["evidence_unit"]["source_value"] = 92.0
+    old_ref = content_hash(before["supporting_evidence"][0])
+    new_ref = content_hash(after["supporting_evidence"][0])
+    relation = {
+        "previous_claim_id": before["claim_id"],
+        "current_claim_id": after["claim_id"],
+        "relation_type": "refined",
+        "reason": "The evidence and claim scope were explicitly refined.",
+        "evidence_diff": {
+            "added_support": [new_ref],
+            "removed_support": [old_ref],
+            "added_contradiction": [],
+            "removed_contradiction": [],
+        },
+    }
+
+    assert validate_claim_relations(
+        {"claims": [before]}, [after], [relation]
+    ) == (relation,)
+    forged = deepcopy(relation)
+    forged["evidence_diff"]["removed_support"] = []
+    with pytest.raises(ReportVerificationError, match="evidence diff"):
+        validate_claim_relations({"claims": [before]}, [after], [forged])
+    split = deepcopy(relation)
+    split["relation_type"] = "split"
+    with pytest.raises(ReportVerificationError, match="one-to-many"):
+        validate_claim_relations({"claims": [before]}, [after], [split])
+
+
+def test_resource_table_sidecar_is_deterministic_from_frozen_plan_and_corpus() -> None:
+    plan = {
+        "artifacts": {"resource_tables": ["code-and-data"]},
+        "paper_memberships": [
+            {
+                "paper_id": "p2",
+                "coverage_disposition": "resource_or_background_table",
+                "resource_table_ids": ["code-and-data"],
+            }
+        ],
+    }
+    corpus = {
+        "papers": [
+            {
+                "paper_id": "p2",
+                "origin": "newly_discovered",
+                "publication_year": 2025,
+                "venue_name": "FixtureConf",
+                "publication_status": "peer_reviewed",
+                "study_setting": "real",
+                "input_scope": "abstract_only",
+                "evidence_level": "abstract_direct",
+            }
+        ]
+    }
+
+    first = _resource_tables_document(plan, corpus)
+    second = _resource_tables_document(deepcopy(plan), deepcopy(corpus))
+
+    assert first == second
+    assert first["tables"][0]["table_id"] == "code-and-data"
+    assert first["tables"][0]["rows"][0]["paper_id"] == "p2"
 
 
 def test_verifier_rejects_missing_claim_citation_limitation_and_ungrounded_number() -> None:

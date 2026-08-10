@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -63,15 +64,6 @@ class GrantStore:
         lineage_hash: str | None = None,
         grant_id: str | None = None,
     ) -> dict[str, Any]:
-        if kind not in _KINDS:
-            raise GrantError(f"unknown grant kind: {kind}")
-        if _KINDS[kind] not in actions:
-            raise GrantError(f"{kind} grants require the {kind} action")
-        if (mode == "unattended") != allow_unattended:
-            raise GrantError("unattended mode requires explicit allow_unattended=true")
-        if not _has_selection_scope(scope):
-            raise GrantError("grant scope requires a paper, collection, selection snapshot, or artifact")
-
         draft: dict[str, Any] = {
             "schema_version": "2",
             "grant_id": grant_id or str(uuid4()),
@@ -90,6 +82,7 @@ class GrantStore:
             "lineage_hash": lineage_hash,
             "approval": None,
         }
+        _validate_grant_semantics(draft)
         draft["content_hash"] = approved_content_hash(draft)
         validate(draft, "authorization-grant.schema.json")
         return draft
@@ -102,6 +95,7 @@ class GrantStore:
         approved_by: str,
         approved_at: str,
     ) -> dict[str, Any]:
+        _validate_grant_semantics(draft)
         approved = approve(
             draft,
             expected_hash,
@@ -109,12 +103,9 @@ class GrantStore:
             approved_at=approved_at,
             hash_field="content_hash",
         )
+        _validate_grant_semantics(approved)
         validate(approved, "authorization-grant.schema.json")
         grant_kind = approved["kind"]
-        if grant_kind not in _KINDS:
-            raise GrantError(f"unknown grant kind: {grant_kind}")
-        if _KINDS[grant_kind] not in approved["actions"]:
-            raise GrantError(f"{grant_kind} grants require the {grant_kind} action")
 
         scope = approved["scope"]
         assert isinstance(scope, dict)
@@ -212,6 +203,7 @@ class GrantStore:
             "lineage_hash": row["lineage_hash"],
             "approval": json.loads(row["approval_json"]),
         }
+        _validate_grant_semantics(document)
         validate(document, "authorization-grant.schema.json")
         try:
             require_valid_approval(document, "content_hash")
@@ -240,6 +232,7 @@ class GrantStore:
         mode: str,
         now: datetime | str,
         paper_id: str | None = None,
+        paper_ids: Iterable[str] | None = None,
         artifact_hash: str | None = None,
         collection_id: str | None = None,
         collection_snapshot_hash: str | None = None,
@@ -265,9 +258,17 @@ class GrantStore:
             raise GrantError("grant mode does not match")
         if mode == "unattended" and not document["allow_unattended"]:
             raise GrantError("grant does not allow unattended execution")
-        if paper_count < 1 or paper_count > document["max_papers"]:
+        if (
+            isinstance(paper_count, bool)
+            or not isinstance(paper_count, int)
+            or paper_count < 1
+            or paper_count > document["max_papers"]
+        ):
             raise GrantError("grant max_papers does not cover this request")
-        _require_scope_item(scope["paper_ids"], paper_id, "paper")
+        requested_paper_ids = _normalize_requested_paper_ids(paper_ids, paper_id)
+        if len(requested_paper_ids) > document["max_papers"]:
+            raise GrantError("grant max_papers does not cover this request")
+        _require_scope_items(scope["paper_ids"], requested_paper_ids, "paper")
         _require_scope_item(scope["artifact_hashes"], artifact_hash, "artifact")
         _require_scope_item(scope["collection_ids"], collection_id, "collection")
         _require_scope_value(scope["collection_snapshot_hash"], collection_snapshot_hash, "collection snapshot")
@@ -303,6 +304,58 @@ def _has_selection_scope(scope: Mapping[str, Any]) -> bool:
     )
 
 
+def _validate_grant_semantics(document: Mapping[str, Any]) -> None:
+    """Enforce grant invariants that JSON Schema cannot express.
+
+    This deliberately runs for drafts, approvals, and loaded rows so neither a
+    hand-written draft nor database drift can bypass the same authorization
+    semantics used by :meth:`require_active`.
+    """
+
+    kind = document.get("kind")
+    if not isinstance(kind, str) or kind not in _KINDS:
+        raise GrantError(f"unknown grant kind: {kind}")
+    actions = document.get("actions")
+    if not isinstance(actions, (list, tuple)) or _KINDS[kind] not in actions:
+        raise GrantError(f"{kind} grants require the {kind} action")
+
+    mode = document.get("mode")
+    allow_unattended = document.get("allow_unattended")
+    if mode not in {"attended", "unattended"}:
+        raise GrantError(f"unknown grant mode: {mode}")
+    if not isinstance(allow_unattended, bool) or (
+        (mode == "unattended") != allow_unattended
+    ):
+        raise GrantError("unattended mode requires explicit allow_unattended=true")
+
+    max_papers = document.get("max_papers")
+    if isinstance(max_papers, bool) or not isinstance(max_papers, int) or max_papers < 1:
+        raise GrantError("grant max_papers must be a positive integer")
+
+    scope = document.get("scope")
+    if not isinstance(scope, Mapping):
+        raise GrantError("grant scope must be an object")
+    if not _has_selection_scope(scope):
+        raise GrantError(
+            "grant scope requires a paper, collection, selection snapshot, or artifact"
+        )
+
+    raw_paper_ids = scope.get("paper_ids")
+    if not isinstance(raw_paper_ids, (list, tuple)) or any(
+        not isinstance(value, str) or not value.strip() for value in raw_paper_ids
+    ):
+        raise GrantError("grant scope paper_ids must contain non-empty strings")
+    paper_ids = tuple(raw_paper_ids)
+    if len(set(paper_ids)) != len(paper_ids):
+        raise GrantError("grant scope paper_ids must be unique")
+    if kind == "remote_model_processing" and len(paper_ids) > max_papers:
+        raise GrantError("grant max_papers is smaller than its explicit paper scope")
+
+    artifact_hashes = scope.get("artifact_hashes")
+    if kind == "remote_model_processing" and artifact_hashes and not paper_ids:
+        raise GrantError("remote model artifact scope must include its exact paper IDs")
+
+
 def _single_artifact_hash(scope: Mapping[str, Any]) -> str | None:
     artifacts = scope["artifact_hashes"]
     return artifacts[0] if len(artifacts) == 1 else None
@@ -311,6 +364,31 @@ def _single_artifact_hash(scope: Mapping[str, Any]) -> str | None:
 def _require_scope_item(allowed: list[str], requested: str | None, label: str) -> None:
     if (allowed and requested not in allowed) or (not allowed and requested is not None):
         raise GrantError(f"grant does not cover {label}: {requested}")
+
+
+def _normalize_requested_paper_ids(
+    paper_ids: Iterable[str] | None,
+    paper_id: str | None,
+) -> frozenset[str]:
+    if isinstance(paper_ids, str):
+        values = [paper_ids]
+    else:
+        values = [] if paper_ids is None else list(paper_ids)
+    if paper_id is not None:
+        values.append(paper_id)
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise GrantError("requested paper IDs must be non-empty strings")
+    return frozenset(values)
+
+
+def _require_scope_items(
+    allowed: list[str], requested: frozenset[str], label: str
+) -> None:
+    allowed_items = frozenset(allowed)
+    if requested - allowed_items or (allowed_items and not requested):
+        missing = sorted(requested - allowed_items)
+        detail: object = missing if missing else None
+        raise GrantError(f"grant does not cover {label}: {detail}")
 
 
 def _require_scope_value(allowed: str | None, requested: str | None, label: str) -> None:

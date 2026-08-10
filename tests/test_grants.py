@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from paper_agent.approval import approved_content_hash
 from paper_agent.grants import GrantError, GrantStore
 from paper_agent.storage import Database
 
@@ -198,4 +199,136 @@ def test_yaml_defaults_cannot_expand_approved_scope(grants: GrantStore) -> None:
             "grant-1", kind="remote_model_processing", action="remote_model_processing",
             purpose="internal_analysis", mode="attended", now=NOW,
             paper_id=yaml_defaults["paper_ids"][1], paper_count=yaml_defaults["max_papers"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("scope_changes", "max_papers", "message"),
+    [
+        ({"paper_ids": ["paper-1", "paper-1"]}, 2, "unique"),
+        ({"paper_ids": ["paper-1", "paper-2"]}, 1, "max_papers"),
+        ({"paper_ids": []}, 1, "exact paper IDs"),
+    ],
+)
+def test_create_draft_enforces_exact_remote_paper_scope(
+    grants: GrantStore,
+    scope_changes: dict[str, object],
+    max_papers: int,
+    message: str,
+) -> None:
+    with pytest.raises(GrantError, match=message):
+        grants.create_draft(
+            kind="remote_model_processing",
+            actions=["remote_model_processing"],
+            purpose="internal_analysis",
+            mode="attended",
+            scope=scope(**scope_changes),
+            max_papers=max_papers,
+            expires_at=FUTURE,
+        )
+
+
+@pytest.mark.parametrize("max_papers", [0, True])
+def test_create_draft_rejects_invalid_max_papers(
+    grants: GrantStore, max_papers: object
+) -> None:
+    with pytest.raises(GrantError, match="positive integer"):
+        grants.create_draft(
+            kind="download",
+            actions=["download"],
+            purpose="personal_research",
+            mode="attended",
+            scope=scope(provider=None, model=None, artifact_hashes=[]),
+            max_papers=max_papers,  # type: ignore[arg-type]
+            expires_at=FUTURE,
+        )
+
+
+def test_approve_rechecks_semantics_of_hand_written_draft(grants: GrantStore) -> None:
+    draft = grants.create_draft(
+        kind="remote_model_processing",
+        actions=["remote_model_processing"],
+        purpose="internal_analysis",
+        mode="attended",
+        scope=scope(),
+        max_papers=1,
+        expires_at=FUTURE,
+    )
+    draft["scope"]["paper_ids"] = ["paper-1", "paper-2"]
+    draft["content_hash"] = approved_content_hash(draft)
+
+    with pytest.raises(GrantError, match="max_papers"):
+        grants.approve(
+            draft,
+            draft["content_hash"],
+            approved_by="owner",
+            approved_at=NOW,
+        )
+
+
+def test_load_rechecks_semantics_before_a_drifted_grant_can_run(grants: GrantStore) -> None:
+    approved(grants)
+    drifted_scope = scope(paper_ids=["paper-1", "paper-1"])
+    grants.database.connection.execute(
+        "UPDATE authorization_grants SET scope_json = ? WHERE grant_id = 'grant-1'",
+        (json.dumps(drifted_scope),),
+    )
+
+    with pytest.raises(GrantError, match="unique"):
+        grants.load("grant-1")
+
+
+def test_active_grant_checks_the_actual_requested_paper_set(grants: GrantStore) -> None:
+    draft = grants.create_draft(
+        grant_id="multi-paper-grant",
+        kind="remote_model_processing",
+        actions=["remote_model_processing"],
+        purpose="research_synthesis",
+        mode="attended",
+        scope=scope(
+            paper_ids=["paper-1", "paper-2"],
+            artifact_hashes=[],
+            collection_ids=[],
+            collection_snapshot_hash=None,
+            selection_snapshot_hash=None,
+            domains=[],
+            provider=None,
+            model=None,
+            data_categories=[],
+        ),
+        max_papers=2,
+        expires_at=FUTURE,
+    )
+    grants.approve(draft, draft["content_hash"], approved_by="owner", approved_at=NOW)
+
+    active = grants.require_active(
+        "multi-paper-grant",
+        kind="remote_model_processing",
+        action="remote_model_processing",
+        purpose="research_synthesis",
+        mode="attended",
+        now=NOW,
+        paper_ids=("paper-2", "paper-1", "paper-1"),
+    )
+    assert active.grant_id == "multi-paper-grant"
+
+    with pytest.raises(GrantError, match="paper"):
+        grants.require_active(
+            "multi-paper-grant",
+            kind="remote_model_processing",
+            action="remote_model_processing",
+            purpose="research_synthesis",
+            mode="attended",
+            now=NOW,
+            paper_ids=("paper-1", "paper-3"),
+        )
+    with pytest.raises(GrantError, match="max_papers"):
+        grants.require_active(
+            "multi-paper-grant",
+            kind="remote_model_processing",
+            action="remote_model_processing",
+            purpose="research_synthesis",
+            mode="attended",
+            now=NOW,
+            paper_ids=("paper-1", "paper-2", "paper-3"),
         )

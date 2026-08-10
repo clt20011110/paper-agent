@@ -48,6 +48,7 @@ SOURCE_CATEGORIES = frozenset({"user_library", "newly_discovered", "citation_sno
 PUBLICATION_STATUSES = frozenset({"peer_reviewed", "workshop", "preprint", "unknown"})
 STUDY_SETTINGS = frozenset({"real", "simulation", "theory", "other"})
 INPUT_SCOPES = frozenset({"full_pdf", "abstract_only", "metadata_only", "missing"})
+ANALYSIS_TOKEN_ESTIMATOR = "frozen-stage4-input-estimate-v1"
 EVIDENCE_LEVELS = frozenset({
     "full_text_direct",
     "full_text_inferred",
@@ -78,6 +79,23 @@ class CorpusPaper:
     foundational: bool
     recent: bool
     incomplete_reason: str | None = None
+    analysis_input_tokens: int | None = None
+    analysis_pipeline_input_hash: str | None = None
+    analysis_config_hash: str | None = None
+    analysis_implementation_version: str | None = None
+    analysis_prompt_input_hash: str | None = None
+    analysis_rendered_prompt_hash: str | None = None
+    analysis_invocation_id: str | None = None
+    analysis_policy_facts_hash: str | None = None
+    publication_date: str | None = None
+    publication_year: int | None = None
+    venue_id: str | None = None
+    venue_name: str | None = None
+    title: str | None = None
+    authors: tuple[str, ...] = ()
+    doi: str | None = None
+    canonical_url: str | None = None
+    verification_status: str | None = None
 
     def __post_init__(self) -> None:
         if not self.paper_id:
@@ -92,6 +110,30 @@ class CorpusPaper:
             raise ReportPlanError("unknown corpus input scope or evidence level")
         if self.input_scope != "missing" and (not self.analysis_run_id or not self.analysis_artifact_hash):
             raise ReportPlanError("an analyzed corpus paper requires a bound analysis run and artifact")
+        analysis_runtime = (
+            self.analysis_input_tokens,
+            self.analysis_pipeline_input_hash,
+            self.analysis_config_hash,
+            self.analysis_implementation_version,
+            self.analysis_prompt_input_hash,
+            self.analysis_rendered_prompt_hash,
+            self.analysis_invocation_id,
+            self.analysis_policy_facts_hash,
+        )
+        if self.input_scope != "missing" and (
+            not isinstance(self.analysis_input_tokens, int)
+            or self.analysis_input_tokens < 1
+            or not _is_sha256(self.analysis_pipeline_input_hash)
+            or not _is_sha256(self.analysis_config_hash)
+            or not self.analysis_implementation_version
+            or not _is_sha256(self.analysis_prompt_input_hash)
+            or not _is_sha256(self.analysis_rendered_prompt_hash)
+            or not self.analysis_invocation_id
+            or not _is_sha256(self.analysis_policy_facts_hash)
+        ):
+            raise ReportPlanError("an analyzed corpus paper requires frozen Stage 4 runtime facts")
+        if self.input_scope == "missing" and any(value is not None for value in analysis_runtime):
+            raise ReportPlanError("a missing corpus paper cannot claim Stage 4 runtime facts")
         if self.input_scope == "missing" and not self.incomplete_reason:
             raise ReportPlanError("missing corpus papers require an incomplete reason")
         allowed_levels = {
@@ -117,6 +159,23 @@ class CorpusPaper:
             "foundational": self.foundational,
             "recent": self.recent,
             "incomplete_reason": self.incomplete_reason,
+            "analysis_input_tokens": self.analysis_input_tokens,
+            "analysis_pipeline_input_hash": self.analysis_pipeline_input_hash,
+            "analysis_config_hash": self.analysis_config_hash,
+            "analysis_implementation_version": self.analysis_implementation_version,
+            "analysis_prompt_input_hash": self.analysis_prompt_input_hash,
+            "analysis_rendered_prompt_hash": self.analysis_rendered_prompt_hash,
+            "analysis_invocation_id": self.analysis_invocation_id,
+            "analysis_policy_facts_hash": self.analysis_policy_facts_hash,
+            "publication_date": self.publication_date,
+            "publication_year": self.publication_year,
+            "venue_id": self.venue_id,
+            "venue_name": self.venue_name,
+            "title": self.title,
+            "authors": list(self.authors),
+            "doi": self.doi,
+            "canonical_url": self.canonical_url,
+            "verification_status": self.verification_status,
         }
 
 
@@ -142,7 +201,8 @@ def build_corpus_snapshot(
         raise ReportPlanError("search audit does not match the QueryPlan hash")
     source_audit_hash = content_hash(search_audit)
     core = {
-        "schema_version": "1",
+        "schema_version": "2",
+        "analysis_token_estimator": ANALYSIS_TOKEN_ESTIMATOR,
         "query_plan_hash": query_plan_hash,
         "search_audit_source_hash": source_audit_hash,
         "papers": [paper.to_dict() for paper in sorted(papers, key=lambda item: item.paper_id)],
@@ -284,6 +344,9 @@ def compile_report_plan(
         "subquestions",
         "synthesis_question",
         "scope",
+        "stage4b_config_hash",
+        "stage4b_audit_config_hash",
+        "aggregation",
         "sections",
         "classification_axes",
         "cohort_rules",
@@ -491,6 +554,8 @@ class ReportPlanStore:
         corpus = json.loads((directory / "CORPUS_SNAPSHOT.json").read_text(encoding="utf-8"))
         audit = json.loads((directory / "SEARCH_AUDIT.json").read_text(encoding="utf-8"))
         _validate_report_inputs(corpus, audit)
+        if plan["query_plan_hash"] != corpus["query_plan_hash"]:
+            raise ReportPlanError("stored corpus QueryPlan does not match the approved ReportPlan")
         if plan["corpus_snapshot_hash"] != corpus["snapshot_hash"]:
             raise ReportPlanError("stored corpus does not match the approved ReportPlan")
         if plan["search_audit_pack_hash"] != audit["pack_hash"]:
@@ -531,6 +596,9 @@ def _validate_plan_semantics(plan: Mapping[str, Any], corpus_snapshot: Mapping[s
         raise ReportPlanError("ReportPlan must freeze the complete classification axis order")
 
     memberships: dict[str, Mapping[str, Any]] = {}
+    resource_table_ids = tuple(str(item) for item in plan["artifacts"]["resource_tables"])
+    if len(set(resource_table_ids)) != len(resource_table_ids):
+        raise ReportPlanError("ReportPlan resource table IDs must be unique")
     for membership in plan["paper_memberships"]:
         paper_id = str(membership["paper_id"])
         assigned = tuple(str(item) for item in membership["section_ids"])
@@ -538,6 +606,25 @@ def _validate_plan_semantics(plan: Mapping[str, Any], corpus_snapshot: Mapping[s
             raise ReportPlanError(f"invalid or duplicate paper membership: {paper_id}")
         if not assigned or not set(assigned).issubset(section_ids):
             raise ReportPlanError(f"paper {paper_id} references unknown sections")
+        disposition = str(membership["coverage_disposition"])
+        reason = membership["coverage_reason"]
+        tables = tuple(str(item) for item in membership["resource_table_ids"])
+        if disposition == "evidence":
+            valid_coverage = reason is None and not tables
+        elif disposition == "resource_or_background_table":
+            valid_coverage = (
+                reason is None
+                and bool(tables)
+                and set(tables).issubset(resource_table_ids)
+            )
+        else:
+            valid_coverage = (
+                isinstance(reason, str) and bool(reason.strip()) and not tables
+            )
+        if not valid_coverage:
+            raise ReportPlanError(
+                f"paper {paper_id} has an invalid frozen coverage disposition"
+            )
         memberships[paper_id] = membership
     corpus_ids = {str(paper["paper_id"]) for paper in corpus_snapshot["papers"]}
     if set(memberships) != corpus_ids:
@@ -560,11 +647,16 @@ def _validate_report_inputs(
 def _validate_corpus_snapshot(snapshot: Mapping[str, Any]) -> None:
     core = {
         "schema_version": snapshot["schema_version"],
+        "analysis_token_estimator": snapshot["analysis_token_estimator"],
         "query_plan_hash": snapshot["query_plan_hash"],
         "search_audit_source_hash": snapshot["search_audit_source_hash"],
         "papers": snapshot["papers"],
     }
-    if snapshot["schema_version"] != "1" or snapshot["snapshot_hash"] != content_hash(core):
+    if (
+        snapshot["schema_version"] != "2"
+        or snapshot["analysis_token_estimator"] != ANALYSIS_TOKEN_ESTIMATOR
+        or snapshot["snapshot_hash"] != content_hash(core)
+    ):
         raise ReportPlanError("corpus snapshot hash has drifted")
     paper_ids = [str(paper["paper_id"]) for paper in snapshot["papers"]]
     if paper_ids != sorted(paper_ids) or len(set(paper_ids)) != len(paper_ids):
@@ -583,6 +675,23 @@ def _validate_corpus_snapshot(snapshot: Mapping[str, Any]) -> None:
             foundational=bool(paper["foundational"]),
             recent=bool(paper["recent"]),
             incomplete_reason=paper["incomplete_reason"],
+            analysis_input_tokens=paper["analysis_input_tokens"],
+            analysis_pipeline_input_hash=paper["analysis_pipeline_input_hash"],
+            analysis_config_hash=paper["analysis_config_hash"],
+            analysis_implementation_version=paper["analysis_implementation_version"],
+            analysis_prompt_input_hash=paper["analysis_prompt_input_hash"],
+            analysis_rendered_prompt_hash=paper["analysis_rendered_prompt_hash"],
+            analysis_invocation_id=paper["analysis_invocation_id"],
+            analysis_policy_facts_hash=paper["analysis_policy_facts_hash"],
+            publication_date=paper["publication_date"],
+            publication_year=paper["publication_year"],
+            venue_id=paper["venue_id"],
+            venue_name=paper["venue_name"],
+            title=paper["title"],
+            authors=tuple(paper["authors"]),
+            doi=paper["doi"],
+            canonical_url=paper["canonical_url"],
+            verification_status=paper["verification_status"],
         )
 
 
@@ -603,3 +712,11 @@ def _counts(
 ) -> dict[str, int]:
     counts = Counter(str(paper[field]) for paper in papers)
     return {value: counts[value] for value in sorted(vocabulary)}
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )

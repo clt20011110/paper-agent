@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from paper_agent.canonical import content_hash
+from paper_agent.canonical import canonical_json, content_hash
 from paper_agent.report_plan import (
     CLASSIFICATION_AXES,
     REPORT_SECTION_IDS,
@@ -62,6 +62,18 @@ def _papers() -> tuple[CorpusPaper, ...]:
             "abstract_direct",
             False,
             True,
+            analysis_input_tokens=20,
+            analysis_pipeline_input_hash="8" * 64,
+            analysis_config_hash="9" * 64,
+            analysis_implementation_version="stage4-v1",
+            analysis_prompt_input_hash="e" * 64,
+            analysis_rendered_prompt_hash="f" * 64,
+            analysis_invocation_id="invocation-p2",
+            analysis_policy_facts_hash="0" * 64,
+            publication_date="2025-05-01",
+            publication_year=2025,
+            venue_id="venue-p2",
+            venue_name="Venue Two",
         ),
         CorpusPaper(
             "p1",
@@ -75,6 +87,18 @@ def _papers() -> tuple[CorpusPaper, ...]:
             "full_text_direct",
             True,
             False,
+            analysis_input_tokens=10,
+            analysis_pipeline_input_hash="6" * 64,
+            analysis_config_hash="7" * 64,
+            analysis_implementation_version="stage4-v1",
+            analysis_prompt_input_hash="a" * 64,
+            analysis_rendered_prompt_hash="b" * 64,
+            analysis_invocation_id="invocation-p1",
+            analysis_policy_facts_hash="0" * 64,
+            publication_date="2023-01-15",
+            publication_year=2023,
+            venue_id="venue-p1",
+            venue_name="Venue One",
         ),
         CorpusPaper(
             "p3",
@@ -152,6 +176,12 @@ def _draft() -> dict:
             "inclusion_criteria": ["Relevant to rq1"],
             "exclusion_criteria": ["Off topic"],
         },
+        "stage4b_config_hash": "f" * 64,
+        "stage4b_audit_config_hash": "e" * 64,
+        "aggregation": {
+            "max_chunk_input_tokens": 1_000,
+            "reduce_output_tokens": 5_000,
+        },
         "sections": sections,
         "classification_axes": list(CLASSIFICATION_AXES),
         "cohort_rules": {
@@ -161,9 +191,9 @@ def _draft() -> dict:
             "study_setting_rule": "Registry-backed real/simulation/theory labels",
         },
         "paper_memberships": [
-            {"paper_id": "p1", "section_ids": all_sections, "primary_section_id": "evidence_synthesis"},
-            {"paper_id": "p2", "section_ids": ["field_taxonomy", "evidence_synthesis"], "primary_section_id": "evidence_synthesis"},
-            {"paper_id": "p3", "section_ids": ["report_limitations", "references_and_appendices"], "primary_section_id": "report_limitations"},
+            {"paper_id": "p1", "section_ids": all_sections, "primary_section_id": "evidence_synthesis", "coverage_disposition": "evidence", "coverage_reason": None, "resource_table_ids": []},
+            {"paper_id": "p2", "section_ids": ["field_taxonomy", "evidence_synthesis"], "primary_section_id": "evidence_synthesis", "coverage_disposition": "evidence", "coverage_reason": None, "resource_table_ids": []},
+            {"paper_id": "p3", "section_ids": ["report_limitations", "references_and_appendices"], "primary_section_id": "report_limitations", "coverage_disposition": "evidence", "coverage_reason": None, "resource_table_ids": []},
         ],
         "artifacts": {
             "comparison_tables": ["methods"],
@@ -308,6 +338,36 @@ def test_plan_rejects_silent_corpus_omission_and_section_contract_drift() -> Non
         compile_report_plan(draft, corpus_snapshot=corpus, search_audit_pack=audit, created_at="2026-08-10T00:02:00Z")
 
 
+@pytest.mark.parametrize(
+    ("disposition", "reason", "table_ids"),
+    [
+        ("background_only", None, ()),
+        ("resource_or_background_table", None, ()),
+        ("resource_or_background_table", None, ("unknown-table",)),
+        ("evidence", "not allowed", ()),
+    ],
+)
+def test_plan_rejects_invalid_frozen_coverage_dispositions(
+    disposition: str,
+    reason: str | None,
+    table_ids: tuple[str, ...],
+) -> None:
+    corpus, audit = _inputs()
+    draft = _draft()
+    draft["paper_memberships"][0].update({
+        "coverage_disposition": disposition,
+        "coverage_reason": reason,
+        "resource_table_ids": list(table_ids),
+    })
+
+    with pytest.raises(ReportPlanError, match="coverage disposition"):
+        compile_report_plan(
+            draft,
+            corpus_snapshot=corpus,
+            search_audit_pack=audit,
+            created_at="2026-08-10T00:02:00Z",
+        )
+
 def test_corpus_snapshot_is_stable_sorted_and_binds_the_raw_search_audit() -> None:
     raw = _raw_search_audit()
     first = build_corpus_snapshot(
@@ -318,6 +378,8 @@ def test_corpus_snapshot_is_stable_sorted_and_binds_the_raw_search_audit() -> No
     )
 
     assert first["snapshot_hash"] == second["snapshot_hash"]
+    assert first["schema_version"] == "2"
+    assert first["analysis_token_estimator"] == "frozen-stage4-input-estimate-v1"
     assert [paper["paper_id"] for paper in first["papers"]] == ["p1", "p2", "p3"]
     assert first["papers"][0]["lineage_hashes"] == ["c" * 64, "d" * 64]
     changed = deepcopy(raw)
@@ -425,7 +487,6 @@ def test_approved_plan_has_an_idempotent_immutable_database_entrypoint(tmp_path)
             (approved["plan_id"],),
         ).fetchone()
         assert tuple(row) == (approved["plan_hash"], "approved")
-
         database.connection.execute(
             "UPDATE report_plans SET plan_json = '{}' WHERE report_plan_id = ?",
             (approved["plan_id"],),
@@ -433,3 +494,44 @@ def test_approved_plan_has_an_idempotent_immutable_database_entrypoint(tmp_path)
         database.connection.commit()
         with pytest.raises(ReportPlanError, match="immutable"):
             persist_approved_report_plan(database, approved)
+
+
+def test_store_load_rechecks_query_plan_hash_across_the_bundle(tmp_path) -> None:
+    plan, corpus, audit = _compiled()
+    store = ReportPlanStore(tmp_path)
+    approved = store.approve_and_save(
+        plan,
+        plan["plan_hash"],
+        approved_by="owner",
+        approved_at="2026-08-10T00:03:00Z",
+        corpus_snapshot=corpus,
+        search_audit_pack=audit,
+    )
+    raw = _raw_search_audit()
+    raw["plan_hash"] = "b" * 64
+    foreign_corpus = build_corpus_snapshot(
+        _papers(),
+        query_plan_hash="b" * 64,
+        search_audit=raw,
+        created_at="2026-08-10T00:04:00Z",
+    )
+    foreign_audit = build_search_audit_pack(
+        raw,
+        foreign_corpus,
+        screening_flow={
+            "raw_discovered": 8,
+            "unique_after_dedup": 6,
+            "stage2_screened": 5,
+            "included": 3,
+        },
+        exclusion_reasons={"off_topic": 1, "duplicate_version": 1},
+        required_providers=("openalex", "semantic_scholar"),
+        search_limitations=("One venue API was unavailable",),
+        created_at="2026-08-10T00:05:00Z",
+    )
+    directory = store.directory(approved["plan_id"])
+    (directory / "CORPUS_SNAPSHOT.json").write_bytes(canonical_json(foreign_corpus))
+    (directory / "SEARCH_AUDIT.json").write_bytes(canonical_json(foreign_audit))
+
+    with pytest.raises(ReportPlanError, match="QueryPlan"):
+        store.load_bundle(approved["plan_id"])

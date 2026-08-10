@@ -382,6 +382,22 @@ class PaperAnalysisCoordinator:
     ) -> AnalysisPaperResult:
         analysis_run_id = "analysis-" + content_hash([run_id, paper.paper_id, input_hash])
         metadata_document: dict[str, Any] = {}
+        if output is not None:
+            metadata_document["report_input_tokens"] = max(1, len(_json_bytes(output)))
+        metadata_document["input_policy_facts"] = {
+            "paper_id": request.paper_id,
+            "artifact_hash": request.artifact_hash,
+            "artifact": request.artifact,
+            "input_scope": request.input_scope,
+            "license": request.license,
+            "access_basis": request.access_basis,
+            "domain": request.domain,
+            "mode": request.mode,
+            "collection_id": request.collection_id,
+            "collection_snapshot_hash": request.collection_snapshot_hash,
+            "selection_snapshot_hash": request.selection_snapshot_hash,
+            "data_category": request.data_category,
+        }
         if decision is not None:
             metadata_document["processing_decision"] = _decision_json(decision)
         if metadata is not None:

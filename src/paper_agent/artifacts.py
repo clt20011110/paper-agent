@@ -150,8 +150,19 @@ class ArtifactStore:
             metadata=metadata,
         )
 
-    def read_bytes(self, artifact_hash: str) -> bytes:
-        payload = self.path_for(artifact_hash).read_bytes()
+    def read_bytes(self, artifact_hash: str, *, max_bytes: int | None = None) -> bytes:
+        path = self.path_for(artifact_hash)
+        if max_bytes is not None:
+            if max_bytes < 0:
+                raise ValueError("max_bytes must be non-negative")
+            if path.stat().st_size > max_bytes:
+                raise ValueError("artifact exceeds its frozen byte limit")
+            with path.open("rb") as handle:
+                payload = handle.read(max_bytes + 1)
+            if len(payload) > max_bytes:
+                raise ValueError("artifact exceeds its frozen byte limit")
+        else:
+            payload = path.read_bytes()
         if _digest(payload) != artifact_hash:
             raise ValueError("artifact store contains corrupted content")
         return payload

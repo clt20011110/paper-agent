@@ -416,6 +416,101 @@ def require_parallel_comparison(units: Sequence[Mapping[str, Any]]) -> str:
     return next(iter(group_ids))  # type: ignore[return-value]
 
 
+def derive_comparison_groups(
+    claims: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Derive the only publishable comparison-group map from typed evidence."""
+    groups: dict[str, dict[str, Any]] = {}
+    for claim in claims:
+        group_value = claim.get("comparison_group_id")
+        if group_value is None:
+            continue
+        group_id = str(group_value)
+        if claim.get("claim_key", {}).get("comparison_group_id") != group_id:
+            raise EvidenceValidationError("claim comparison group bindings disagree")
+        assessments = []
+        for field in ("supporting_evidence", "contradicting_evidence"):
+            for reference in claim.get(field, ()):
+                if reference.get("kind") != "paper_evidence":
+                    continue
+                unit = reference.get("evidence_unit")
+                if not isinstance(unit, Mapping):
+                    raise EvidenceValidationError(
+                        "comparison evidence requires a typed evidence unit"
+                    )
+                assessments.append(comparison_assessment(unit))
+        if not assessments or any(
+            item.eligibility != "comparable"
+            or item.comparison_group_id != group_id
+            or item.comparison_key is None
+            for item in assessments
+        ):
+            raise EvidenceValidationError(
+                "comparison group is not exactly derivable from comparable evidence"
+            )
+        if claim.get("claim_type") == "comparison" and len(assessments) < 2:
+            raise EvidenceValidationError(
+                "a grouped comparison needs at least two comparable evidence units"
+            )
+        comparison_key = dict(assessments[0].comparison_key or {})
+        if any(
+            canonical_json(item.comparison_key) != canonical_json(comparison_key)
+            for item in assessments[1:]
+        ):
+            raise EvidenceValidationError(
+                "one comparison group resolved to conflicting comparison keys"
+            )
+        comparison_key["conditions"] = list(comparison_key.get("conditions", ()))
+        existing = groups.get(group_id)
+        if existing is not None and canonical_json(existing) != canonical_json(comparison_key):
+            raise EvidenceValidationError(
+                "one comparison group resolved to conflicting comparison keys"
+            )
+        groups[group_id] = comparison_key
+    return {key: groups[key] for key in sorted(groups)}
+
+
+def require_exact_comparison_groups(
+    claims: Sequence[Mapping[str, Any]],
+    supplied: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Bounded structural comparison against the deterministic derived map."""
+    expected = derive_comparison_groups(claims)
+    if not isinstance(supplied, Mapping) or len(supplied) != len(expected):
+        raise EvidenceValidationError(
+            "comparison groups differ from the deterministic evidence-derived map"
+        )
+    for group_id, expected_key in expected.items():
+        actual = supplied.get(group_id)
+        if not isinstance(actual, Mapping) or len(actual) != len(expected_key):
+            raise EvidenceValidationError(
+                "comparison groups differ from the deterministic evidence-derived map"
+            )
+        for field, expected_value in expected_key.items():
+            if field not in actual:
+                raise EvidenceValidationError(
+                    "comparison groups differ from the deterministic evidence-derived map"
+                )
+            actual_value = actual[field]
+            if isinstance(expected_value, list):
+                if (
+                    not isinstance(actual_value, list)
+                    or len(actual_value) != len(expected_value)
+                    or any(
+                        left != right
+                        for left, right in zip(actual_value, expected_value, strict=True)
+                    )
+                ):
+                    raise EvidenceValidationError(
+                        "comparison groups differ from the deterministic evidence-derived map"
+                    )
+            elif actual_value != expected_value or type(actual_value) is not type(expected_value):
+                raise EvidenceValidationError(
+                    "comparison groups differ from the deterministic evidence-derived map"
+                )
+    return expected
+
+
 def stable_claim_id(
     claim_key: Mapping[str, Any], *, report_run_id: str, mapping_status: str = "mapped"
 ) -> str:
