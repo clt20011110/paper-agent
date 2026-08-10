@@ -141,6 +141,12 @@ download:
   policy_matrix: ./policies/download-access-v1.yaml
   require_access_basis: true
   treat_unknown_license_as_open: false
+  metadata_lookup:
+    enabled: true
+    contact: "mailto:operator@example.invalid"
+    user_agent: "paper-agent/2.0 stage3-metadata"
+    timeout_seconds: 15
+    unpaywall_email: "operator@example.invalid"
   authorized_skill:
     enabled: false
     skill_name: download-authorized-papers

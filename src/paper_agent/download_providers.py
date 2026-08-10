@@ -64,7 +64,7 @@ class ResolverEvidence:
 class MetadataResolverTransport(Protocol):
     """A metadata-only lookup boundary for remote OA catalogues."""
 
-    def __call__(self, resolver: str, paper: Paper) -> ResolverEvidence: ...
+    def __call__(self, resolver: str, paper: Paper) -> ResolverEvidence | None: ...
 
 
 @dataclass(frozen=True, slots=True)

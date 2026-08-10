@@ -42,6 +42,7 @@ from .downloads import (
     urllib_fetch,
 )
 from .grants import GrantStore
+from .http_transport import ControlledHTTPTransport
 from .repository import PaperRepository
 from .runs import RunStatus, RunStore
 from .stage3_pipeline import (
@@ -53,6 +54,11 @@ from .stage3_pipeline import (
     Stage3RunResult,
 )
 from .stage3_luna_decisions import Stage3LunaDecisionStore
+from .stage3_metadata_lookup import (
+    PublicMetadataTransport,
+    Stage3MetadataLookup,
+    default_metadata_lookup_registry,
+)
 from .storage import Database
 
 
@@ -91,6 +97,7 @@ class Stage3DownloadService:
         provider_terms: Mapping[str, ProviderTerms] | None = None,
         fetcher: Callable[[str], HTTPResponse] = urllib_fetch,
         lookup: MetadataResolverTransport | None = None,
+        metadata_transport: PublicMetadataTransport | None = None,
         clock: Callable[[], datetime] | None = None,
         authorized_luna_planner: LunaPlanner | None = None,
     ) -> None:
@@ -99,11 +106,15 @@ class Stage3DownloadService:
         self.artifact_root = Path(artifact_root)
         self.provider_terms = {**_safe_provider_terms(), **dict(provider_terms or {})}
         self.fetcher = fetcher
-        self.lookup = lookup
         self.clock = _trusted_clock(clock)
         self.authorized_luna_planner = authorized_luna_planner
         self.download_config = _download_config(config)
         _require_frozen_routing(self.download_config)
+        self.lookup = lookup or _configured_metadata_lookup(
+            self.download_config,
+            transport=metadata_transport,
+            clock=self.clock,
+        )
 
     def select_papers(
         self,
@@ -426,6 +437,40 @@ def _require_frozen_routing(config: Mapping[str, Any]) -> None:
         raise ValueError("download resolvers must use the frozen default order")
     if tuple(config.get("providers", ())) != DEFAULT_PROVIDER_ORDER:
         raise ValueError("download providers must use the frozen default order")
+
+
+def _configured_metadata_lookup(
+    config: Mapping[str, Any],
+    *,
+    transport: PublicMetadataTransport | None,
+    clock: Callable[[], datetime],
+) -> MetadataResolverTransport | None:
+    value = config.get("metadata_lookup")
+    if not isinstance(value, Mapping) or not value.get("enabled"):
+        return None
+    contact = value.get("contact")
+    user_agent = value.get("user_agent")
+    timeout_seconds = value.get("timeout_seconds")
+    unpaywall_email = value.get("unpaywall_email")
+    if not isinstance(contact, str) or not contact:
+        raise ValueError("download metadata lookup requires a contact")
+    if not isinstance(user_agent, str) or not user_agent:
+        raise ValueError("download metadata lookup requires a user_agent")
+    if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
+        raise ValueError("download metadata lookup requires a positive timeout_seconds")
+    if not isinstance(unpaywall_email, str) or "@" not in unpaywall_email:
+        raise ValueError("download metadata lookup requires an Unpaywall email")
+    controlled = transport or ControlledHTTPTransport(
+        contact=contact,
+        user_agent=user_agent,
+        timeout_seconds=float(timeout_seconds),
+        environment={"UNPAYWALL_EMAIL": unpaywall_email},
+    )
+    return Stage3MetadataLookup(
+        controlled,
+        retrieved_at=clock,
+        registry=default_metadata_lookup_registry(),
+    )
 
 
 def _policy_path(config_root: Path, config: Mapping[str, Any]) -> Path:
