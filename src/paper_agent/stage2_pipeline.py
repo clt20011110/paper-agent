@@ -8,11 +8,15 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
-from typing import Iterable, Sequence
+from time import monotonic, sleep
+from typing import Callable, Iterable, Sequence
+from uuid import uuid4
 
 from .domain import FilterStatus
+from .leases import LeaseNotCurrent, LeaseQueue, TaskLease, TaskLeaseSpec
 from .stage2_backends import (
     AdjudicationDecision,
     AdjudicationInput,
@@ -37,13 +41,28 @@ from .schema import schema_directory
 from .storage import Database
 
 
-IMPLEMENTATION_VERSION = "stage2-cascade-v1"
+IMPLEMENTATION_VERSION = "stage2-cascade-v2"
+STAGE2_LEASE_OUTPUT_PREFIX = "filter-decision:"
+DEFAULT_LEASE_SECONDS = 3_600
+DEFAULT_PEER_WAIT_SECONDS = 3_900
 ADJUDICATION_SYSTEM_PROMPT = "Return only the required structured screening decision."
 ADJUDICATION_USER_TEMPLATE = (
     "Query version: {query_version}\nQuery: {query}\nPaper ID: {paper_id}\n{document}"
 )
 _FAILURES = (Stage2BackendError, StructuredOutputError, TimeoutError, OSError, ValueError)
 _RETRYABLE_ADJUDICATOR_FAILURES = (Stage2BackendError, TimeoutError, OSError)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _timestamp(moment: datetime) -> str:
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ValueError("Stage 2 lease clock must return a timezone-aware datetime")
+    return moment.astimezone(timezone.utc).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,7 +314,22 @@ class Stage2Pipeline:
     adjudicator: AdjudicatorBackend
     profile: Stage2Profile
     implementation_version: str = IMPLEMENTATION_VERSION
+    worker_id: str = field(default_factory=lambda: f"stage2-worker-{uuid4().hex}")
+    lease_seconds: int = DEFAULT_LEASE_SECONDS
+    peer_wait_seconds: float = DEFAULT_PEER_WAIT_SECONDS
+    lease_poll_seconds: float = 0.25
+    lease_clock: Callable[[], datetime] = field(default=_utc_now, repr=False)
+    wait_clock: Callable[[], float] = field(default=monotonic, repr=False)
+    sleeper: Callable[[float], None] = field(default=sleep, repr=False)
     _completed: dict[tuple[str, str], Stage2Decision] = field(default_factory=dict, init=False)
+
+    def __post_init__(self) -> None:
+        if not self.worker_id:
+            raise ValueError("Stage 2 worker_id is required")
+        if self.lease_seconds <= 0:
+            raise ValueError("Stage 2 lease_seconds must be positive")
+        if self.peer_wait_seconds <= 0 or self.lease_poll_seconds <= 0:
+            raise ValueError("Stage 2 peer wait settings must be positive")
 
     def run(self, run_id: str, papers: Iterable[Stage2Paper]) -> Stage2Summary:
         self.profile.assert_runtime_ready()
@@ -304,18 +338,135 @@ class Stage2Pipeline:
             raise ValueError("a Stage 2 call cannot contain duplicate paper_ids")
         self._ensure_run(run_id, candidates)
         self._completed = self._load_completed(run_id)
+        by_id = {paper.paper_id: paper for paper in candidates}
+        pending = tuple(
+            paper
+            for paper in candidates
+            if (paper.paper_id, self.input_hash(paper)) not in self._completed
+        )
+        queue = LeaseQueue(self.database)
+        if pending:
+            queue.enqueue_many(
+                run_id=run_id,
+                stage="stage-2",
+                specs=tuple(
+                    TaskLeaseSpec(
+                        paper.paper_id,
+                        self._lease_output_kind(paper),
+                        self.input_hash(paper),
+                    )
+                    for paper in pending
+                ),
+                now=_timestamp(self.lease_clock()),
+            )
 
+        fresh: dict[str, Stage2Decision] = {}
+        reranked_count = 0
+        deadline = self.wait_clock() + self.peer_wait_seconds
+        claim_limit = self.profile.document_batch_size * self.profile.reranker_max_in_flight
+        poll_seconds = self.lease_poll_seconds
+        while pending:
+            now = self.lease_clock()
+            now_text = _timestamp(now)
+            claims = queue.claim(
+                worker_id=self.worker_id,
+                now=now_text,
+                expires_at=_timestamp(now + timedelta(seconds=self.lease_seconds)),
+                limit=claim_limit,
+                run_id=run_id,
+                stage="stage-2",
+                output_kind_prefix=STAGE2_LEASE_OUTPUT_PREFIX,
+            )
+            if claims:
+                claimed_papers = tuple(by_id[claim.paper_id] for claim in claims if claim.paper_id)
+                if len(claimed_papers) != len(claims):
+                    raise RuntimeError("Stage 2 claimed a task without a paper_id")
+                batch_decisions = self._screen_batch(claimed_papers)
+                reranked_count += sum(
+                    not decision.reason_code.startswith("document_type_")
+                    for decision in batch_decisions
+                )
+                try:
+                    self._persist_claimed(
+                        run_id,
+                        tuple(zip(claims, batch_decisions, strict=True)),
+                    )
+                except LeaseNotCurrent:
+                    # A slow model response may arrive after another worker has
+                    # reclaimed the task.  Its result is intentionally dropped.
+                    continue
+                fresh.update((decision.paper_id, decision) for decision in batch_decisions)
+                self._completed.update(
+                    ((decision.paper_id, decision.input_hash), decision)
+                    for decision in batch_decisions
+                )
+                poll_seconds = self.lease_poll_seconds
+            else:
+                self._completed = self._load_completed(run_id)
+
+            pending = tuple(
+                paper
+                for paper in candidates
+                if (paper.paper_id, self.input_hash(paper)) not in self._completed
+            )
+            if not pending:
+                break
+            if claims:
+                continue
+            if self.wait_clock() >= deadline:
+                raise TimeoutError(
+                    f"Stage 2 timed out waiting for peer workers on run {run_id}"
+                )
+            self.sleeper(poll_seconds)
+            poll_seconds = min(poll_seconds * 2, 1.0)
+
+        persisted = self._load_completed(run_id)
+        ordered = tuple(
+            fresh.get(paper.paper_id)
+            or persisted[(paper.paper_id, self.input_hash(paper))]
+            for paper in candidates
+        )
+        self._completed = persisted
+        with self.database.transaction() as connection:
+            connection.execute(
+                """UPDATE pipeline_runs
+                   SET status = 'complete', completed_at = CURRENT_TIMESTAMP
+                   WHERE run_id = ? AND NOT EXISTS (
+                       SELECT 1 FROM task_leases
+                       WHERE run_id = ? AND stage = 'stage-2'
+                         AND substr(output_kind, 1, ?) = ? AND status <> 'complete'
+                   )""",
+                (
+                    run_id,
+                    run_id,
+                    len(STAGE2_LEASE_OUTPUT_PREFIX),
+                    STAGE2_LEASE_OUTPUT_PREFIX,
+                ),
+            )
+        qwen_count = sum(item.adjudicated for item in ordered)
+        qwen_share = qwen_count / len(candidates) if candidates else 0.0
+        alarms = tuple(
+            label for limit, label in ((0.15, "qwen_share_over_15_percent"), (0.30, "qwen_share_over_30_percent"))
+            if qwen_share > limit
+        )
+        return Stage2Summary(ordered, reranked_count, qwen_count, qwen_share, alarms)
+
+    def _screen_batch(
+        self, candidates: Sequence[Stage2Paper]
+    ) -> tuple[Stage2Decision, ...]:
+        """Run one claimed paper batch without touching SQLite."""
         decisions: dict[str, Stage2Decision] = {}
         rerank_inputs: list[Stage2Paper] = []
         for paper in candidates:
             input_hash = self.input_hash(paper)
-            completed = self._completed.get((paper.paper_id, input_hash))
-            if completed is not None:
-                decisions[paper.paper_id] = completed
-                continue
             deterministic = self._deterministic(paper)
             if deterministic is not None:
-                decisions[paper.paper_id] = self._from_route(paper, input_hash, deterministic.route, deterministic.reason_code)
+                decisions[paper.paper_id] = self._from_route(
+                    paper,
+                    input_hash,
+                    deterministic.route,
+                    deterministic.reason_code,
+                )
             else:
                 rerank_inputs.append(paper)
 
@@ -362,29 +513,16 @@ class Stage2Pipeline:
                     paper,
                     self.input_hash(paper),
                     route,
-                    "reranker_probability_threshold" if probability is not None else "reranker_threshold",
+                    "reranker_probability_threshold"
+                    if probability is not None
+                    else "reranker_threshold",
                     score,
                     probability,
                 )
 
         for decision in self._adjudicate(adjudication):
             decisions[decision.paper_id] = decision
-
-        ordered = tuple(decisions[paper.paper_id] for paper in candidates)
-        self._persist(run_id, ordered)
-        with self.database.transaction() as connection:
-            connection.execute(
-                "UPDATE pipeline_runs SET status = 'complete', completed_at = CURRENT_TIMESTAMP WHERE run_id = ?",
-                (run_id,),
-            )
-        reranked_count = len(rerank_inputs)
-        qwen_count = sum(item.adjudicated for item in ordered)
-        qwen_share = qwen_count / len(candidates) if candidates else 0.0
-        alarms = tuple(
-            label for limit, label in ((0.15, "qwen_share_over_15_percent"), (0.30, "qwen_share_over_30_percent"))
-            if qwen_share > limit
-        )
-        return Stage2Summary(ordered, reranked_count, qwen_count, qwen_share, alarms)
+        return tuple(decisions[paper.paper_id] for paper in candidates)
 
     def input_hash(self, paper: Stage2Paper) -> str:
         return _hash({
@@ -615,6 +753,9 @@ class Stage2Pipeline:
         tokens = max(1, len(self.document(paper).split()))
         return (tokens // self.profile.token_bucket_width) * self.profile.token_bucket_width
 
+    def _lease_output_kind(self, paper: Stage2Paper) -> str:
+        return f"{STAGE2_LEASE_OUTPUT_PREFIX}{self._bucket(paper):012d}"
+
     @staticmethod
     def _valid_adjudication(response: AdjudicationDecision, paper_id: str) -> bool:
         return (
@@ -679,9 +820,33 @@ class Stage2Pipeline:
             )
         return completed
 
-    def _persist(self, run_id: str, decisions: Sequence[Stage2Decision]) -> None:
+    def _persist_claimed(
+        self,
+        run_id: str,
+        claimed: Sequence[tuple[TaskLease, Stage2Decision]],
+    ) -> None:
+        """Publish model results and consume their fences atomically."""
         with self.database.transaction() as connection:
-            for decision in decisions:
+            validation_time = _timestamp(self.lease_clock())
+            for lease, decision in claimed:
+                if (
+                    lease.run_id != run_id
+                    or lease.stage != "stage-2"
+                    or not lease.output_kind.startswith(STAGE2_LEASE_OUTPUT_PREFIX)
+                    or lease.paper_id != decision.paper_id
+                    or lease.input_hash != decision.input_hash
+                    or lease.worker_id != self.worker_id
+                ):
+                    raise LeaseNotCurrent("Stage 2 result does not match its claimed task")
+                LeaseQueue.require_current(
+                    connection,
+                    task_id=lease.task_id,
+                    worker_id=self.worker_id,
+                    fencing_token=lease.fencing_token,
+                    now=validation_time,
+                )
+
+            for lease, decision in claimed:
                 model_id, model_revision = self._decision_model(decision)
                 provenance = {
                     "reason_code": decision.reason_code,
@@ -720,6 +885,13 @@ class Stage2Pipeline:
                     "reranker_lock_hash": self.profile.reranker_lock_hash,
                     "adjudicator_lock_hash": self.profile.adjudicator_lock_hash,
                     "release_gate_hash": self.profile.release_gate_hash,
+                    "task_lease": {
+                        "task_id": lease.task_id,
+                        "worker_id": self.worker_id,
+                        "lease_expires_at": lease.lease_expires_at,
+                        "attempt": lease.attempt,
+                        "fencing_token": lease.fencing_token,
+                    },
                 }
                 if decision.rationale is not None:
                     provenance["rationale"] = decision.rationale
@@ -731,8 +903,7 @@ class Stage2Pipeline:
                         filter_decision_id, run_id, paper_id, status, score, threshold_version, reason,
                         input_hash, implementation_version, model_id, model_revision, prompt_hash, schema_hash,
                         adjudicator_attempt_count, adjudicator_retry_reason, adjudicator_retry_outcome
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(run_id, paper_id) DO NOTHING""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         decision_id, run_id, decision.paper_id, decision.status.value,
                         self._decision_probability(decision),
@@ -746,14 +917,23 @@ class Stage2Pipeline:
                     """INSERT INTO screening_events(
                         screening_event_id, run_id, paper_id, criterion_id, decision, reason_code,
                         input_hash, implementation_version
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(run_id, paper_id, criterion_id) DO NOTHING""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event_id, run_id, decision.paper_id,
                         self.implementation_version,
                         _screening_status(decision.status), decision.reason_code, decision.input_hash,
                         self.implementation_version,
                     ),
+                )
+
+            for lease, _decision in claimed:
+                LeaseQueue.complete_in_transaction(
+                    connection,
+                    task_id=lease.task_id,
+                    worker_id=self.worker_id,
+                    fencing_token=lease.fencing_token,
+                    now=_timestamp(self.lease_clock()),
+                    retain_claim=True,
                 )
 
     def _decision_model(self, decision: Stage2Decision) -> tuple[str | None, str | None]:
