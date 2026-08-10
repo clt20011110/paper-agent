@@ -1,5 +1,7 @@
 import json
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -81,7 +83,7 @@ def _plan(tmp_path, capsys) -> tuple[dict[str, object], str]:
     return output, output["draft_path"]
 
 
-def test_search_plan_approval_run_and_history_are_frozen(tmp_path, capsys) -> None:
+def test_search_plan_approval_run_and_history_are_frozen(tmp_path, capsys, monkeypatch) -> None:
     first, draft_path = _plan(tmp_path, capsys)
     draft = json.loads((tmp_path / "output" / "search" / first["plan_id"] / "QUERY_PLAN.draft.json").read_text())
 
@@ -121,15 +123,13 @@ def test_search_plan_approval_run_and_history_are_frozen(tmp_path, capsys) -> No
     approved = json.loads(capsys.readouterr().out)
     assert (tmp_path / "output" / "search" / "latest-approved.json").exists()
 
-    runtime_path = tmp_path / "runtime.json"
-    runtime_path.write_text(json.dumps({"providers": draft["providers"], "budgets": draft["budgets"], "execution": draft["execution"]}))
-    assert main(["search", "run", "--plan", approved["approved_path"], "--runtime-providers", str(runtime_path)]) == 0
-    assert json.loads(capsys.readouterr().out)["provider_invocation"] == "not_started"
+    assert main(["--dry-run", "search", "run", "--plan", approved["approved_path"]]) == 0
+    assert json.loads(capsys.readouterr().out)["provider_invocation"] == "skipped_dry_run"
 
-    drifted = dict(draft["providers"][0], version="unexpected")
-    runtime_path.write_text(json.dumps({"providers": [drifted]}))
-    with pytest.raises(QueryPlanDriftError, match="version"):
-        main(["search", "run", "--plan", approved["approved_path"], "--runtime-providers", str(runtime_path)])
+    monkeypatch.delenv("OPENALEX_API_KEY")
+    with pytest.raises(QueryPlanDriftError, match="credential|unavailable"):
+        main(["--dry-run", "search", "run", "--plan", approved["approved_path"]])
+    monkeypatch.setenv("OPENALEX_API_KEY", "test-key")
 
     changed = _draft()
     changed["query_variants"][0]["raw_query"] = "graph representation learning"  # type: ignore[index]
@@ -140,6 +140,62 @@ def test_search_plan_approval_run_and_history_are_frozen(tmp_path, capsys) -> No
     assert second["plan_id"] != first["plan_id"]
     assert (tmp_path / "output" / "search" / first["plan_id"] / "QUERY_PLAN.json").exists()
     assert (tmp_path / "output" / "search" / second["plan_id"] / "QUERY_PLAN.draft.json").exists()
+
+
+def test_search_run_executes_library_provider_and_is_idempotent(tmp_path, capsys) -> None:
+    document = _draft()
+    document["providers"] = ["user_library"]
+    document["scope"]["user_seeds"] = ["doi:10.1000/library-seed"]  # type: ignore[index]
+    document["citation_snowball"]["enabled"] = False  # type: ignore[index]
+    document["required_roles"] = ["library"]
+    document["required_providers"] = ["user_library"]
+    input_path = tmp_path / "library-search.yaml"
+    input_path.write_text(json.dumps(document), encoding="utf-8")
+
+    assert main(
+        ["search", "plan", "--input", str(input_path), "--output-root", str(tmp_path / "output")]
+    ) == 0
+    draft = json.loads(capsys.readouterr().out)
+    assert main(
+        [
+            "search",
+            "approve",
+            "--plan",
+            draft["draft_path"],
+            "--hash",
+            draft["plan_hash"],
+            "--approved-by",
+            "owner",
+            "--approved-at",
+            "2026-08-09T01:00:00Z",
+        ]
+    ) == 0
+    approved = json.loads(capsys.readouterr().out)
+    database = tmp_path / "papers.sqlite3"
+    command = [
+        "--run-id",
+        "library-run",
+        "search",
+        "run",
+        "--plan",
+        approved["approved_path"],
+        "--database",
+        str(database),
+    ]
+
+    assert main(command) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert (first["provider_invocation"], first["status"], first["paper_count"]) == (
+        "completed",
+        "complete",
+        1,
+    )
+    assert main(command) == 0
+    assert json.loads(capsys.readouterr().out)["crawl_run_id"] == first["crawl_run_id"]
+
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM source_runs").fetchone()[0] == 1
 
 
 def test_crawl_and_citation_planning_emit_stable_audit_intent(tmp_path, capsys) -> None:

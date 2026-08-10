@@ -149,7 +149,7 @@ class SearchRunCoordinator:
                     response_hash, returned_count, status, error_json
                 ) VALUES (?, (SELECT search_plan_id FROM crawl_runs WHERE crawl_run_id = ?), ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source_run_id, query_hash, page, cursor) DO UPDATE SET
+                ON CONFLICT(query_id) DO UPDATE SET
                     completed_at = excluded.completed_at, response_hash = excluded.response_hash,
                     returned_count = excluded.returned_count, status = excluded.status,
                     error_json = excluded.error_json, provider_params_json = excluded.provider_params_json""",

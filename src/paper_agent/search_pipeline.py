@@ -114,7 +114,7 @@ class SearchPipeline:
     ) -> PipelineResult:
         """Execute the frozen plan and persist a replayable audit trail."""
         assert_runtime_matches(self.plan, self.runtime_providers, budgets=self.plan["budgets"])
-        self._ensure_run(run_id)
+        self._ensure_run(run_id, observed_at)
         self.runs.start_crawl(
             crawl_run_id=crawl_run_id,
             run_id=run_id,
@@ -233,7 +233,7 @@ class SearchPipeline:
 
     execute = run
 
-    def _ensure_run(self, run_id: str) -> None:
+    def _ensure_run(self, run_id: str, observed_at: str) -> None:
         plan_id = str(self.plan["plan_id"])
         self.database.connection.execute(
             """INSERT INTO search_plans(search_plan_id, content_hash, schema_version, plan_json, approval_json, status)
@@ -250,7 +250,7 @@ class SearchPipeline:
             """INSERT INTO pipeline_runs(run_id, stage, status, input_hash, config_hash, implementation_version, started_at)
                VALUES (?, 'stage-1', 'running', ?, ?, 'phase2-search-v1', ?)
                ON CONFLICT(run_id) DO NOTHING""",
-            (run_id, str(self.plan["plan_hash"]), str(self.plan["filter"]["config_hash"]), self.plan["created_at"]),
+            (run_id, str(self.plan["plan_hash"]), str(self.plan["filter"]["config_hash"]), observed_at),
         )
         self.database.connection.commit()
 

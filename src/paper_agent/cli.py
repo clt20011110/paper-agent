@@ -14,11 +14,12 @@ from typing import Any, Mapping, Sequence
 from . import __version__
 from .canonical import canonical_json, content_hash
 from .citations import CitationRequest, SelectedSeed, schedule_requests
-from .config import load_yaml
+from .config import ConfigError, load_config, load_yaml
 from .domain import CitationEdgeType
 from .manifests import load_catalog
 from .query_plan import QueryPlanStore, assert_runtime_matches, compile_query_plan
 from .schema import schema_directory
+from .search_execution import execute_search_plan, resolve_runtime_providers
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,9 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--hash", required=True)
     approve.add_argument("--approved-by", required=True)
     approve.add_argument("--approved-at")
-    run = search_commands.add_parser("run", help="validate a frozen plan before provider invocation")
+    run = search_commands.add_parser("run", help="execute an approved frozen search")
     run.add_argument("--plan", required=True, type=Path)
-    run.add_argument("--runtime-providers", required=True)
+    run.add_argument("--database", type=Path)
+    run.add_argument("--contact")
+    run.add_argument("--snapshot", action="append", default=[], metavar="PROVIDER=PATH")
     expand = search_commands.add_parser("expand-citations", help="plan a deterministic citation round")
     expand.add_argument("--plan", required=True, type=Path)
     expand.add_argument("--seeds", required=True, type=Path)
@@ -77,7 +80,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit(_search_approve(args.plan, args.hash, args.approved_by, args.approved_at))
         return 0
     if args.command == "search" and args.search_command == "run":
-        _emit(_search_run(args.plan, args.runtime_providers))
+        _emit(
+            _search_run(
+                args.plan,
+                database_path=args.database,
+                contact=args.contact,
+                snapshot_values=args.snapshot,
+                config_path=args.config,
+                run_id=args.run_id,
+                dry_run=args.dry_run,
+            )
+        )
         return 0
     if args.command == "search" and args.search_command == "expand-citations":
         _emit(_expand_citations(args.plan, args.seeds, args.round_index))
@@ -127,24 +140,61 @@ def _search_approve(plan_path: Path, expected_hash: str, approved_by: str, appro
     }
 
 
-def _search_run(plan_path: Path, runtime_provider_value: str) -> dict[str, Any]:
+def _search_run(
+    plan_path: Path,
+    *,
+    database_path: Path | None,
+    contact: str | None,
+    snapshot_values: Sequence[str],
+    config_path: Path | None,
+    run_id: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
     plan = _load_json(plan_path)
-    runtime = _load_runtime(runtime_provider_value)
-    assert_runtime_matches(
+    config = load_config(config_path) if config_path else None
+    if config is not None and config_path is not None:
+        _assert_config_plan(config, config_path, plan_path, plan, require_hash=not dry_run)
+    database = database_path or _configured_database(config, config_path) or (_store_root(plan_path) / "paper-agent.sqlite3")
+    snapshots = _snapshot_paths(snapshot_values)
+    operator_contact = (
+        contact
+        or os.environ.get("PAPER_AGENT_CONTACT")
+        or os.environ.get("PAPER_AGENT_CONTACT_EMAIL")
+    )
+    if dry_run:
+        runtime = resolve_runtime_providers(plan, snapshot_paths=snapshots)
+        return {
+            "command": "search.run",
+            "database_path": str(database),
+            "plan_hash": plan["plan_hash"],
+            "plan_id": plan["plan_id"],
+            "provider_invocation": "skipped_dry_run",
+            "resolved_providers": sorted(
+                provider["provider"] for provider in runtime if provider["resolved"]
+            ),
+            "status": "runtime_validated",
+        }
+    result, resolved_run_id, crawl_run_id = execute_search_plan(
         plan,
-        runtime["providers"],
-        budgets=runtime.get("budgets"),
-        policies=runtime.get("execution"),
+        database,
+        run_id=run_id,
+        contact=operator_contact,
+        snapshot_paths=snapshots,
     )
     return {
         "command": "search.run",
+        "crawl_run_id": crawl_run_id,
+        "database_path": str(database),
         "plan_hash": plan["plan_hash"],
         "plan_id": plan["plan_id"],
-        "provider_invocation": "not_started",
-        "resolved_providers": sorted(
-            provider["provider"] for provider in plan["providers"] if provider["resolved"]
-        ),
-        "status": "runtime_validated",
+        "provider_invocation": "completed",
+        "provider_outcomes": {
+            outcome.provider: outcome.status for outcome in result.fanout.outcomes
+        },
+        "paper_count": len(result.paper_ids),
+        "arxiv_candidate_count": len(result.arxiv_candidate_ids),
+        "run_id": resolved_run_id,
+        "status": result.status,
     }
 
 
@@ -249,12 +299,40 @@ def _credential_environment_variables(authentication: Mapping[str, Any]) -> tupl
     return tuple(sorted(str(name) for name in names))
 
 
-def _load_runtime(value: str) -> dict[str, Any]:
-    path = Path(value)
-    payload = _load_json(path) if path.is_file() else json.loads(value)
-    if isinstance(payload, list):
-        return {"providers": payload}
-    return dict(payload)
+def _configured_database(config: Mapping[str, Any] | None, config_path: Path | None) -> Path | None:
+    if config is None or config_path is None:
+        return None
+    path = Path(str(config["storage"]["sqlite_path"]))
+    return path if path.is_absolute() else config_path.parent / path
+
+
+def _assert_config_plan(
+    config: Mapping[str, Any],
+    config_path: Path,
+    plan_path: Path,
+    plan: Mapping[str, Any],
+    *,
+    require_hash: bool,
+) -> None:
+    approved = config["sources"]["approved_plan"]
+    configured_path = Path(str(approved["input_path"]))
+    configured_path = configured_path if configured_path.is_absolute() else config_path.parent / configured_path
+    if configured_path.resolve() != plan_path.resolve():
+        raise ConfigError("configured approved QueryPlan path does not match --plan")
+    if require_hash and approved["content_hash"] is None:
+        raise ConfigError("search execution requires an approved QueryPlan hash in config")
+    if approved["content_hash"] is not None and approved["content_hash"] != plan["plan_hash"]:
+        raise ConfigError("configured approved QueryPlan hash does not match --plan")
+
+
+def _snapshot_paths(values: Sequence[str]) -> dict[str, Path]:
+    snapshots = {}
+    for value in values:
+        provider, separator, path = value.partition("=")
+        if not separator or not provider or not path:
+            raise ValueError("--snapshot must be PROVIDER=PATH")
+        snapshots[provider] = Path(path)
+    return snapshots
 
 
 def _selected_seeds(payload: Any) -> tuple[SelectedSeed, ...]:
