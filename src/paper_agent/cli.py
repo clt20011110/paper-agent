@@ -19,7 +19,8 @@ from .domain import CitationEdgeType
 from .manifests import load_catalog
 from .query_plan import QueryPlanStore, assert_runtime_matches, compile_query_plan
 from .schema import schema_directory
-from .search_execution import execute_search_plan, resolve_runtime_providers
+from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
+from .seed_import import import_seeds, inputs_from_files
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     crawl = subcommands.add_parser("crawl", help="compatibility alias for venue descriptor discovery")
     crawl.add_argument("--venue", action="append", required=True)
+    import_command = subcommands.add_parser("import-seeds", help="import authorized library seeds")
+    import_command.add_argument("--database", required=True, type=Path)
+    import_command.add_argument("--seed", action="append", default=[])
+    import_command.add_argument("--input", action="append", default=[], type=Path)
     return parser
 
 
@@ -97,6 +102,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "crawl":
         _emit(_crawl(args.venue))
+        return 0
+    if args.command == "import-seeds":
+        _emit(_import_seeds(args.database, args.seed, args.input, args.run_id, args.dry_run))
         return 0
     raise AssertionError(args.command)
 
@@ -230,6 +238,35 @@ def _crawl(venue_ids: Sequence[str]) -> dict[str, Any]:
             "providers": sorted({venue["primary_provider"] for venue in venues}),
             "venue_ids": [venue["venue_id"] for venue in venues],
         },
+    }
+
+
+def _import_seeds(
+    database_path: Path,
+    seed_values: Sequence[str],
+    input_paths: Sequence[Path],
+    run_id: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    inputs = (*tuple(seed_input(value) for value in seed_values), *inputs_from_files(input_paths))
+    if not inputs:
+        raise ValueError("import-seeds requires at least one --seed or --input")
+    if dry_run:
+        return {
+            "command": "import-seeds",
+            "database_path": str(database_path),
+            "input_count": len(inputs),
+            "status": "validated",
+        }
+    result = import_seeds(database_path, inputs, run_id=run_id)
+    return {
+        "command": "import-seeds",
+        "database_path": str(database_path),
+        "imported_count": result.imported_count,
+        "input_count": result.input_count,
+        "paper_ids": result.paper_ids,
+        "run_id": result.run_id,
+        "status": "complete",
     }
 
 
