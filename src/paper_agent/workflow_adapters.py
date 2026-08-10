@@ -42,12 +42,14 @@ from .storage import Database
 from .workflow import (
     AnalyzeStep,
     DownloadStep,
+    FileRef,
     FilterStep,
     ReportStep,
     SearchStep,
     StageIdentity,
     StageKind,
     StageOutcome,
+    StepOutputRef,
     StepContext,
     StepObservation,
 )
@@ -60,13 +62,16 @@ TStep = TypeVar("TStep", SearchStep, FilterStep, DownloadStep, AnalyzeStep, Repo
 class PaperSelection:
     """An explicit selection of paper IDs or a persisted Stage 2 run."""
 
-    paper_ids: tuple[str, ...] = ()
+    paper_ids: tuple[str, ...] | None = None
     filter_run_id: str | None = None
 
     def __post_init__(self) -> None:
-        if bool(self.paper_ids) == bool(self.filter_run_id):
+        if (self.paper_ids is None) == (self.filter_run_id is None):
             raise ValueError("selection must contain exactly one of paper_ids or filter_run_id")
-        if len(set(self.paper_ids)) != len(self.paper_ids) or any(not item for item in self.paper_ids):
+        if self.paper_ids is not None and (
+            len(set(self.paper_ids)) != len(self.paper_ids)
+            or any(not item for item in self.paper_ids)
+        ):
             raise ValueError("selection paper_ids must be unique non-empty strings")
 
 
@@ -75,6 +80,7 @@ class _WorkflowAdapter:
 
     expected_type: type[Any]
     stage: StageKind
+    contract_version = "1"
 
     def validate(self, context: StepContext, spec: TStep) -> StageIdentity:
         self._validate_context(context, spec)
@@ -88,6 +94,7 @@ class _WorkflowAdapter:
             self._validate_dry_inputs(context, spec)
         return StageIdentity(content_hash({
             "stage": self.stage.value,
+            "adapter_contract_version": self.contract_version,
             "child_run_id": context.child_run_id,
             "config_sha256": _file_sha256(context.config_path),
             "spec": spec.document(),
@@ -151,6 +158,7 @@ class _WorkflowAdapter:
 class SearchStageAdapter(_WorkflowAdapter):
     expected_type = SearchStep
     stage = StageKind.SEARCH
+    contract_version = "2"
 
     def __init__(
         self,
@@ -187,17 +195,31 @@ class SearchStageAdapter(_WorkflowAdapter):
             historical_replay=spec.historical_replay,
         )
         status = _outcome_status(str(result.status))
-        return StageOutcome(status, {
+        eligible_value = getattr(result, "eligible_paper_ids", None)
+        if eligible_value is None:
+            eligible = tuple(result.paper_ids)
+            if bool(plan.get("scope", {}).get("include_arxiv_candidates", False)):
+                eligible = tuple(sorted(set(eligible) | set(getattr(result, "arxiv_candidate_ids", ()))))
+        else:
+            eligible = tuple(eligible_value)
+        payload: dict[str, Any] = {
             "run_id": run_id,
             "crawl_run_id": crawl_run_id,
             "pipeline_status": result.status,
             "paper_ids": list(result.paper_ids),
-        })
+            "arxiv_candidate_ids": list(getattr(result, "arxiv_candidate_ids", ())),
+            "eligible_paper_ids": list(eligible),
+        }
+        binding = _pipeline_binding_document(context, run_id, "stage-1")
+        if binding is not None:
+            payload["_pipeline_binding"] = binding
+        return StageOutcome(status, payload)
 
 
 class FilterStageAdapter(_WorkflowAdapter):
     expected_type = FilterStep
     stage = StageKind.FILTER
+    contract_version = "2"
 
     def __init__(self, runner: Callable[..., Mapping[str, Any]] = filter_database) -> None:
         self.runner = runner
@@ -206,7 +228,7 @@ class FilterStageAdapter(_WorkflowAdapter):
         load_config(context.config_path)
         plan = _json_object(spec.plan.resolved_path, "filter plan")
         load_stage2_release(spec.stage2_release.resolved_path, plan)
-        if spec.selection is not None:
+        if isinstance(spec.selection, FileRef):
             _selection(spec.selection.resolved_path)
 
     def observe(
@@ -223,7 +245,15 @@ class FilterStageAdapter(_WorkflowAdapter):
         self, context: StepContext, spec: FilterStep, identity: StageIdentity
     ) -> StageOutcome:
         del identity
-        selection = _selection(spec.selection.resolved_path) if spec.selection else None
+        selection = (
+            _selection(spec.selection.resolved_path)
+            if isinstance(spec.selection, FileRef)
+            else PaperSelection(
+                paper_ids=_upstream_paper_ids(context, spec.selection)
+            )
+            if isinstance(spec.selection, StepOutputRef)
+            else None
+        )
         if selection is not None and selection.filter_run_id is not None:
             raise ValueError("filter selection must contain paper_ids, not filter_run_id")
         if not context.dry_run:
@@ -236,10 +266,16 @@ class FilterStageAdapter(_WorkflowAdapter):
             release_path=spec.stage2_release.resolved_path,
             database_path=context.database_path,
             campaign_id=context.child_run_id,
-            paper_ids=selection.paper_ids if selection else (),
+            paper_ids=selection.paper_ids if selection else None,
             dry_run=context.dry_run,
         )
-        return StageOutcome(_outcome_status(str(result["status"])), dict(result))
+        payload = dict(result)
+        run_ids = payload.get("stage2_run_ids")
+        if isinstance(run_ids, list) and len(run_ids) == 1 and isinstance(run_ids[0], str):
+            binding = _pipeline_binding_document(context, run_ids[0], "stage-2")
+            if binding is not None:
+                payload["_pipeline_binding"] = binding
+        return StageOutcome(_outcome_status(str(result["status"])), payload)
 
 
 DownloadServiceFactory = Callable[[Database, Mapping[str, Any], Path, Path, Mapping[str, Any] | None], Any]
@@ -248,6 +284,7 @@ DownloadServiceFactory = Callable[[Database, Mapping[str, Any], Path, Path, Mapp
 class DownloadStageAdapter(_WorkflowAdapter):
     expected_type = DownloadStep
     stage = StageKind.DOWNLOAD
+    contract_version = "2"
 
     def __init__(self, service_factory: DownloadServiceFactory | None = None) -> None:
         self.service_factory = service_factory or _download_service
@@ -257,7 +294,8 @@ class DownloadStageAdapter(_WorkflowAdapter):
         # strict config parser plus typed selection/terms parsers cover its
         # frozen local inputs without touching a provider or SQLite.
         load_config(context.config_path)
-        _selection(spec.selection.resolved_path)
+        if isinstance(spec.selection, FileRef):
+            _selection(spec.selection.resolved_path)
         if spec.provider_terms is not None:
             load_provider_terms(spec.provider_terms.resolved_path)
 
@@ -271,7 +309,13 @@ class DownloadStageAdapter(_WorkflowAdapter):
         self, context: StepContext, spec: DownloadStep, identity: StageIdentity
     ) -> StageOutcome:
         del identity
-        selection = _selection(spec.selection.resolved_path)
+        selection = (
+            _selection(spec.selection.resolved_path)
+            if isinstance(spec.selection, FileRef)
+            else PaperSelection(
+                filter_run_id=_upstream_filter_run(context, spec.selection)
+            )
+        )
         config = load_config(context.config_path)
         terms = load_provider_terms(spec.provider_terms.resolved_path) if spec.provider_terms else None
         with _database(context) as database:
@@ -279,8 +323,9 @@ class DownloadStageAdapter(_WorkflowAdapter):
                 database, config, context.config_path.parent, _artifact_root(context), terms,
             )
             result = service.run(
-                paper_ids=selection.paper_ids,
+                paper_ids=selection.paper_ids or (),
                 filter_run_id=selection.filter_run_id,
+                include_needs_review=bool(spec.include_needs_review),
                 authorization_grant_id=spec.authorization_grant_id,
                 run_id=context.child_run_id,
                 dry_run=context.dry_run,
@@ -306,6 +351,7 @@ class _AnalysisRuntime:
 class AnalyzeStageAdapter(_WorkflowAdapter):
     expected_type = AnalyzeStep
     stage = StageKind.ANALYZE
+    contract_version = "2"
 
     def __init__(
         self,
@@ -406,6 +452,7 @@ _WORKFLOW_REPORT_EXECUTION_MODE = "unattended"
 class ReportStageAdapter(_WorkflowAdapter):
     expected_type = ReportStep
     stage = StageKind.REPORT
+    contract_version = "2"
 
     def __init__(self, service_factory: ReportServiceFactory | None = None) -> None:
         self.service_factory = service_factory or _report_service
@@ -615,6 +662,76 @@ def _selection(path: Path) -> PaperSelection:
     raise ValueError("workflow selection must contain paper_ids or filter_run_id")
 
 
+def _upstream_paper_ids(
+    context: StepContext, reference: StepOutputRef
+) -> tuple[str, ...]:
+    result = context.upstream(reference, StageKind.SEARCH)
+    payload = result.payload
+    _require_upstream_binding(context, payload, result.child_run_id, "stage-1")
+    values = payload.get("eligible_paper_ids")
+    if not isinstance(values, list) or not all(
+        isinstance(item, str) and item for item in values
+    ):
+        raise ValueError("workflow search output has invalid eligible_paper_ids")
+    if len(set(values)) != len(values):
+        raise ValueError("workflow search output has duplicate eligible_paper_ids")
+    return tuple(values)
+
+
+def _upstream_filter_run(context: StepContext, reference: StepOutputRef) -> str:
+    result = context.upstream(reference, StageKind.FILTER)
+    payload = result.payload
+    run_ids = payload.get("stage2_run_ids")
+    if (
+        not isinstance(run_ids, list)
+        or len(run_ids) != 1
+        or not isinstance(run_ids[0], str)
+        or not run_ids[0]
+    ):
+        raise ValueError("workflow filter output must contain exactly one Stage 2 run")
+    _require_upstream_binding(context, payload, run_ids[0], "stage-2")
+    return run_ids[0]
+
+
+def _pipeline_binding_document(
+    context: StepContext, run_id: str, expected_stage: str
+) -> dict[str, str] | None:
+    if not context.database_path.is_file():
+        return None
+    with Database(context.database_path, read_only=True) as database:
+        row = database.connection.execute(
+            """SELECT stage, status, input_hash, config_hash, implementation_version
+               FROM pipeline_runs WHERE run_id = ?""",
+            (run_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    if row["stage"] != expected_stage:
+        raise ValueError("workflow child run has the wrong stage")
+    return {
+        "run_id": run_id,
+        "stage": str(row["stage"]),
+        "status": str(row["status"]),
+        "input_hash": str(row["input_hash"]),
+        "config_hash": str(row["config_hash"]),
+        "implementation_version": str(row["implementation_version"]),
+    }
+
+
+def _require_upstream_binding(
+    context: StepContext,
+    payload: Mapping[str, Any],
+    run_id: str,
+    expected_stage: str,
+) -> None:
+    recorded = payload.get("_pipeline_binding")
+    current = _pipeline_binding_document(context, run_id, expected_stage)
+    if not isinstance(recorded, Mapping) or current is None or dict(recorded) != current:
+        raise ValueError("workflow upstream child binding has drifted")
+    if current["status"] != "complete":
+        raise ValueError("workflow upstream child run is not complete")
+
+
 def _grant_mapping(path: Path) -> Mapping[str, str]:
     value = _json_object(path, "processing grants")
     if set(value) == {"schema_version", "grants"}:
@@ -704,7 +821,7 @@ def _ordered_timestamp(value: datetime) -> str:
 
 def _run_observation(status: str) -> StepObservation:
     return {
-        "complete": StepObservation.COMPLETE,
+        "complete": StepObservation.SAFE_TO_RESUME,
         "running": StepObservation.RUNNING,
         "incomplete": StepObservation.SAFE_TO_RESUME,
         "failed": StepObservation.UNCERTAIN_TERMINAL,

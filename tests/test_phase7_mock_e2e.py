@@ -1,4 +1,4 @@
-"""Offline CLI acceptance for the typed five-stage workflow."""
+"""Offline CLI acceptance for the typed recoverable workflow."""
 
 from __future__ import annotations
 
@@ -13,20 +13,17 @@ import yaml
 from paper_agent import cli
 from paper_agent.storage import Database
 from paper_agent.workflow import (
-    AnalyzeStep,
     DownloadStep,
     FileRef,
     FilterStep,
-    ReportStep,
     SearchStep,
     StageKind,
+    StepOutputRef,
     WorkflowManifest,
 )
 from paper_agent.workflow_adapters import (
-    AnalyzeStageAdapter,
     DownloadStageAdapter,
     FilterStageAdapter,
-    ReportStageAdapter,
     SearchStageAdapter,
 )
 
@@ -53,38 +50,18 @@ def _workflow_inputs(root: Path, database_path: Path) -> Path:
     config_path = root / "research.yaml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
-    policy_path = root / "artifact-policy.yaml"
-    policy_path.write_text(
-        (ROOT / "policies" / "artifact-processing-v1.yaml").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
     plan = _json_ref(root, "QUERY_PLAN.json", {"plan_id": "offline-e2e"})
     release = _json_ref(root, "stage2-release.json", {"release": "offline-e2e"})
-    selection = _json_ref(
-        root, "selection.json", {"schema_version": "1", "paper_ids": ["paper-e2e"]}
-    )
-    analysis_input = _json_ref(root, "analysis-input.json", {
-        "schema_version": "1",
-        "paper_ids": ["paper-e2e"],
-        "stage3_artifact_ids": [],
-    })
-    report_plan = _json_ref(root, "REPORT_PLAN.json", {"plan_id": "report-e2e"})
-    corpus = _json_ref(root, "CORPUS_SNAPSHOT.json", {"corpus_id": "offline-e2e"})
-    audit = _json_ref(root, "SEARCH_AUDIT.json", {"crawl_run_id": "offline-e2e"})
-    grants = _json_ref(root, "processing-grants.json", {
-        "schema_version": "1", "grants": {"a" * 64: "processing-grant"},
-    })
     manifest = WorkflowManifest(
         "offline-e2e",
         _ref(config_path),
         (
             SearchStep("search", plan, release, (), False),
-            FilterStep("filter", plan, release, selection),
-            DownloadStep("download", selection, None, None),
-            AnalyzeStep("analyze", analysis_input, None, _ref(policy_path)),
-            ReportStep("report", report_plan, corpus, audit, grants, None, _ref(policy_path)),
+            FilterStep("filter", plan, release, StepOutputRef("search")),
+            DownloadStep("download", StepOutputRef("filter"), None, None, False),
         ),
         root / "workflow.json",
+        "2",
     )
     workflow_path = root / "workflow.json"
     workflow_path.write_text(json.dumps(manifest.document()), encoding="utf-8")
@@ -98,27 +75,18 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
     database_path = tmp_path / "papers.sqlite3"
     workflow_path = _workflow_inputs(tmp_path, database_path)
     calls: list[tuple[str, str]] = []
-    report_modes: list[str] = []
     pause_recovery_download = True
-
-    runtime = SimpleNamespace(
-        enabled=True,
-        resources=object(),
-        validate_for_run=lambda _plan, *, execution_mode: report_modes.append(
-            execution_mode
-        ),
-    )
-    monkeypatch.setattr(
-        "paper_agent.workflow_adapters._report_runtime_config",
-        lambda _config, _path: runtime,
-    )
-    monkeypatch.setattr(
-        "paper_agent.workflow_adapters.assert_report_plan_resource_binding",
-        lambda _plan, _resources: None,
-    )
 
     def search_runner(_plan: object, _database: Path, **options: Any):
         calls.append(("search", options["run_id"]))
+        with Database(database_path) as database:
+            database.connection.execute(
+                """INSERT INTO pipeline_runs(
+                       run_id, stage, status, input_hash, config_hash, implementation_version
+                   ) VALUES (?, 'stage-1', 'complete', 'search-input', 'search-config', 'test')""",
+                (options["run_id"],),
+            )
+            database.connection.commit()
         return (
             SimpleNamespace(status="complete", paper_ids=("paper-e2e",)),
             options["run_id"],
@@ -127,7 +95,20 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
 
     def filter_runner(**options: Any) -> dict[str, Any]:
         calls.append(("filter", options["campaign_id"]))
-        return {"status": "complete", "campaign_id": options["campaign_id"]}
+        stage2_run_id = f"{options['campaign_id']}:stage2"
+        with Database(database_path) as database:
+            database.connection.execute(
+                """INSERT INTO pipeline_runs(
+                       run_id, stage, status, input_hash, config_hash, implementation_version
+                   ) VALUES (?, 'stage-2', 'complete', 'filter-input', 'filter-config', 'test')""",
+                (stage2_run_id,),
+            )
+            database.connection.commit()
+        return {
+            "status": "complete",
+            "campaign_id": options["campaign_id"],
+            "stage2_run_ids": [stage2_run_id],
+        }
 
     class FakeDownloadService:
         def run(self, **options: Any) -> SimpleNamespace:
@@ -146,41 +127,14 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
                 dry_run=options["dry_run"],
             )
 
-    class FakeAnalysisService:
-        def run(self, run_id: str, manifest: Any, **options: Any) -> SimpleNamespace:
-            calls.append(("analyze", run_id))
-            return SimpleNamespace(
-                run_id=run_id,
-                dry_run=options["dry_run"],
-                selected_paper_ids=manifest.paper_ids,
-                input_scopes=("metadata_only",),
-                result=SimpleNamespace(papers=(SimpleNamespace(status="complete"),)),
-            )
-
-    class FakeReportService:
-        def run(self, report_run_id: str, pipeline_run_id: str, _bundle: Any, **options: Any) -> SimpleNamespace:
-            assert report_run_id == pipeline_run_id
-            calls.append(("report", report_run_id))
-            return SimpleNamespace(
-                report_run_id=report_run_id,
-                status="complete",
-                dry_run=options["dry_run"],
-            )
-
     adapters = {
         StageKind.SEARCH: SearchStageAdapter(search_runner),
         StageKind.FILTER: FilterStageAdapter(filter_runner),
         StageKind.DOWNLOAD: DownloadStageAdapter(lambda *_args: FakeDownloadService()),
-        StageKind.ANALYZE: AnalyzeStageAdapter(
-            lambda *_args, **_options: FakeAnalysisService()
-        ),
-        StageKind.REPORT: ReportStageAdapter(lambda *_args: FakeReportService()),
     }
     assert isinstance(adapters[StageKind.SEARCH], SearchStageAdapter)
     assert isinstance(adapters[StageKind.FILTER], FilterStageAdapter)
     assert isinstance(adapters[StageKind.DOWNLOAD], DownloadStageAdapter)
-    assert isinstance(adapters[StageKind.ANALYZE], AnalyzeStageAdapter)
-    assert isinstance(adapters[StageKind.REPORT], ReportStageAdapter)
     monkeypatch.setattr(cli, "default_stage_adapters", lambda: adapters)
 
     def recursive_cli(*_args: Any, **_kwargs: Any) -> None:
@@ -202,7 +156,7 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
     assert first["status"] == "incomplete"
     assert first["event_code"] == "run.incomplete"
     assert [step["status"] for step in first["steps"]] == [
-        "complete", "complete", "incomplete", "pending", "pending",
+        "complete", "complete", "incomplete",
     ]
     assert calls == [
         ("search", "recovery:search"),
@@ -212,26 +166,21 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
 
     resumed = invoke("resume", "recovery", 0)
     assert resumed["status"] == "complete"
-    assert [step["status"] for step in resumed["steps"]] == ["complete"] * 5
+    assert [step["status"] for step in resumed["steps"]] == ["complete"] * 3
     assert calls == [
         ("search", "recovery:search"),
         ("filter", "recovery:filter"),
         ("download", "recovery:download"),
         ("download", "recovery:download"),
-        ("analyze", "recovery:analyze"),
-        ("report", "recovery:report"),
     ]
 
     clean = invoke("run", "clean", 0)
     assert clean["status"] == "complete"
-    assert calls[-5:] == [
+    assert calls[-3:] == [
         ("search", "clean:search"),
         ("filter", "clean:filter"),
         ("download", "clean:download"),
-        ("analyze", "clean:analyze"),
-        ("report", "clean:report"),
     ]
-    assert report_modes == ["unattended", "unattended"]
 
     with Database(database_path, read_only=True) as database:
         for run_id in ("recovery", "clean"):
@@ -246,5 +195,5 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
             ).fetchall()
             assert [(row["child_run_id"], row["status"]) for row in steps] == [
                 (f"{run_id}:{stage}", "complete")
-                for stage in ("search", "filter", "download", "analyze", "report")
+                for stage in ("search", "filter", "download")
             ]

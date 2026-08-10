@@ -24,6 +24,7 @@ from paper_agent.workflow import (
     StageKind,
     StepContext,
     StepObservation,
+    StepOutputRef,
     WorkflowManifest,
 )
 from paper_agent.workflow_adapters import (
@@ -263,6 +264,119 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
         assert database.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] > 0
 
 
+@pytest.mark.parametrize(
+    ("eligible_paper_ids", "include_needs_review"),
+    [
+        ((), False),
+        (("paper-eligible-2", "paper-eligible-1"), True),
+    ],
+)
+def test_v2_workflow_hands_exact_search_and_filter_outputs_to_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    eligible_paper_ids: tuple[str, ...],
+    include_needs_review: bool,
+) -> None:
+    context = _context(tmp_path)
+    plan = _write(
+        tmp_path,
+        "plan.json",
+        {"scope": {"include_arxiv_candidates": False}},
+    )
+    release = _write(tmp_path, "release.json", {})
+    config = _ref(context.config_path)
+    search = SearchStep("search", plan, release, (), False)
+    filtering = FilterStep(
+        "filter", plan, release, StepOutputRef("search")
+    )
+    download = DownloadStep(
+        "download",
+        StepOutputRef("filter"),
+        "download-grant",
+        None,
+        include_needs_review,
+    )
+    manifest = WorkflowManifest(
+        "lineage",
+        config,
+        (search, filtering, download),
+        tmp_path / "workflow.json",
+        "2",
+    )
+    filter_calls: list[Mapping[str, Any]] = []
+    download_calls: list[Mapping[str, Any]] = []
+
+    def search_runner(*_args: Any, **kwargs: Any):
+        database.connection.execute(
+            """INSERT INTO pipeline_runs(
+                   run_id, stage, status, input_hash, config_hash, implementation_version
+               ) VALUES (?, 'stage-1', 'complete', 'search-input', 'search-config', 'test')""",
+            (kwargs["run_id"],),
+        )
+        database.connection.commit()
+        result = SimpleNamespace(
+            status="complete",
+            # This must never replace an explicitly empty eligible set.
+            paper_ids=("paper-must-not-leak",),
+            arxiv_candidate_ids=("arxiv-must-not-leak",),
+            eligible_paper_ids=eligible_paper_ids,
+        )
+        return result, kwargs["run_id"], "crawl-current"
+
+    def filter_runner(**kwargs: Any) -> Mapping[str, Any]:
+        filter_calls.append(kwargs)
+        database.connection.execute(
+            """INSERT INTO pipeline_runs(
+                   run_id, stage, status, input_hash, config_hash, implementation_version
+               ) VALUES ('stage2-current', 'stage-2', 'complete',
+                         'filter-input', 'filter-config', 'test')"""
+        )
+        database.connection.commit()
+        return {
+            "status": "complete",
+            "campaign_id": kwargs["campaign_id"],
+            "stage2_run_ids": ["stage2-current"],
+        }
+
+    @dataclass
+    class DownloadService:
+        def run(self, **kwargs: Any) -> SimpleNamespace:
+            download_calls.append(kwargs)
+            return SimpleNamespace(
+                run_id=kwargs["run_id"],
+                paper_ids=(),
+                status="complete",
+                dry_run=kwargs["dry_run"],
+            )
+
+    monkeypatch.setattr("paper_agent.workflow_adapters.load_config", lambda _path: {})
+    database = Database(context.database_path)
+    database.migrate()
+    try:
+        result = SequentialWorkflowOrchestrator(
+            database,
+            manifest,
+            {
+                StageKind.SEARCH: SearchStageAdapter(search_runner),
+                StageKind.FILTER: FilterStageAdapter(filter_runner),
+                StageKind.DOWNLOAD: DownloadStageAdapter(
+                    lambda *_args: DownloadService()
+                ),
+            },
+        ).run("workflow-lineage")
+    finally:
+        database.close()
+
+    assert result["status"] == "complete"
+    assert len(filter_calls) == 1
+    assert filter_calls[0]["paper_ids"] == eligible_paper_ids
+    assert filter_calls[0]["paper_ids"] is not None
+    assert len(download_calls) == 1
+    assert download_calls[0]["paper_ids"] == ()
+    assert download_calls[0]["filter_run_id"] == "stage2-current"
+    assert download_calls[0]["include_needs_review"] is include_needs_review
+
+
 def test_disabled_workflow_report_skips_before_bundle_policy_and_database(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -477,7 +591,7 @@ def test_running_stage4_without_dispatch_is_safe_to_resume(tmp_path: Path) -> No
     assert _observe_running_stage4(tmp_path, None) is StepObservation.SAFE_TO_RESUME
 
 
-def test_incomplete_child_run_is_safe_to_resume_and_complete_run_is_not_replayed(
+def test_incomplete_and_uncheckpointed_complete_child_runs_are_safe_to_reconcile(
     tmp_path: Path,
 ) -> None:
     context = _context(tmp_path)
@@ -504,6 +618,6 @@ def test_incomplete_child_run_is_safe_to_resume_and_complete_run_is_not_replayed
             (context.child_run_id,),
         )
         database.connection.commit()
-        assert adapter.observe(context, spec, identity) is StepObservation.COMPLETE
+        assert adapter.observe(context, spec, identity) is StepObservation.SAFE_TO_RESUME
     finally:
         database.close()

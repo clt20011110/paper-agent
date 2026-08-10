@@ -65,6 +65,18 @@ class SnapshotRef:
 
 
 @dataclass(frozen=True, slots=True)
+class StepOutputRef:
+    from_step: str
+
+    def __post_init__(self) -> None:
+        if not self.from_step:
+            raise ValueError("workflow step output reference is invalid")
+
+    def document(self) -> dict[str, str]:
+        return {"from_step": self.from_step}
+
+
+@dataclass(frozen=True, slots=True)
 class SearchStep:
     step_id: str
     plan: FileRef
@@ -92,7 +104,7 @@ class FilterStep:
     step_id: str
     plan: FileRef
     stage2_release: FileRef
-    selection: FileRef | None
+    selection: FileRef | StepOutputRef | None
     stage: StageKind = StageKind.FILTER
 
     def document(self) -> dict[str, Any]:
@@ -105,28 +117,34 @@ class FilterStep:
         }
 
     def file_refs(self) -> tuple[FileRef, ...]:
-        return (self.plan, self.stage2_release, *((self.selection,) if self.selection else ()))
+        selection = (self.selection,) if isinstance(self.selection, FileRef) else ()
+        return (self.plan, self.stage2_release, *selection)
 
 
 @dataclass(frozen=True, slots=True)
 class DownloadStep:
     step_id: str
-    selection: FileRef
+    selection: FileRef | StepOutputRef
     authorization_grant_id: str | None
     provider_terms: FileRef | None
+    include_needs_review: bool | None = None
     stage: StageKind = StageKind.DOWNLOAD
 
     def document(self) -> dict[str, Any]:
-        return {
+        document: dict[str, Any] = {
             "id": self.step_id,
             "stage": self.stage.value,
             "selection": self.selection.document(),
             "authorization_grant_id": self.authorization_grant_id,
             "provider_terms": self.provider_terms.document() if self.provider_terms else None,
         }
+        if self.include_needs_review is not None:
+            document["include_needs_review"] = self.include_needs_review
+        return document
 
     def file_refs(self) -> tuple[FileRef, ...]:
-        return (self.selection, *((self.provider_terms,) if self.provider_terms else ()))
+        selection = (self.selection,) if isinstance(self.selection, FileRef) else ()
+        return (*selection, *((self.provider_terms,) if self.provider_terms else ()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,9 +207,10 @@ class WorkflowManifest:
     config: FileRef
     steps: tuple[StageSpec, ...]
     source_path: Path
+    schema_version: str = "1"
 
     def __post_init__(self) -> None:
-        if not self.workflow_id or not self.steps:
+        if self.schema_version not in {"1", "2"} or not self.workflow_id or not self.steps:
             raise ValueError("workflow manifest identity is invalid")
         if len({step.step_id for step in self.steps}) != len(self.steps):
             raise ValueError("workflow step IDs must be unique")
@@ -203,10 +222,49 @@ class WorkflowManifest:
             raise ValueError(
                 "workflow stages must follow search -> filter -> download -> analyze -> report"
             )
+        self._validate_lineage()
+
+    def _validate_lineage(self) -> None:
+        if self.schema_version == "1":
+            if len(self.steps) > 1:
+                raise ValueError("multi-stage workflow schema_version 1 must be migrated to version 2")
+            return
+        preceding: dict[StageKind, StageSpec] = {}
+        for step in self.steps:
+            if isinstance(step, FilterStep):
+                source = preceding.get(StageKind.SEARCH)
+                self._validate_selection(step.selection, source, step.stage)
+            elif isinstance(step, DownloadStep):
+                if step.include_needs_review is None:
+                    raise ValueError("workflow v2 download requires include_needs_review")
+                source = preceding.get(StageKind.FILTER)
+                self._validate_selection(step.selection, source, step.stage)
+                if source is None and preceding:
+                    raise ValueError("workflow v2 download requires an upstream filter step")
+            elif step.stage in {StageKind.ANALYZE, StageKind.REPORT} and preceding:
+                raise ValueError(
+                    "workflow v2 analyze/report lineage requires the version 2 upstream contract"
+                )
+            preceding[step.stage] = step
+
+    @staticmethod
+    def _validate_selection(
+        selection: FileRef | StepOutputRef | None,
+        source: StageSpec | None,
+        stage: StageKind,
+    ) -> None:
+        if source is None:
+            if not isinstance(selection, FileRef):
+                raise ValueError(f"standalone workflow v2 {stage.value} requires a FileRef selection")
+            return
+        if not isinstance(selection, StepOutputRef) or selection.from_step != source.step_id:
+            raise ValueError(
+                f"workflow v2 {stage.value} must select the current {source.stage.value} step output"
+            )
 
     def document(self) -> dict[str, Any]:
         return {
-            "schema_version": "1",
+            "schema_version": self.schema_version,
             "workflow_id": self.workflow_id,
             "config": self.config.document(),
             "steps": [step.document() for step in self.steps],
@@ -230,6 +288,28 @@ class StepContext:
     workflow_run_id: str
     child_run_id: str
     dry_run: bool
+    upstream_results: tuple["StepResultRef", ...] = ()
+
+    def upstream(self, reference: StepOutputRef, stage: StageKind) -> "StepResultRef":
+        matches = tuple(
+            item
+            for item in self.upstream_results
+            if item.step_id == reference.from_step and item.stage is stage
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"workflow requires one complete {stage.value} result from {reference.from_step}"
+            )
+        return matches[0]
+
+
+@dataclass(frozen=True, slots=True)
+class StepResultRef:
+    step_id: str
+    stage: StageKind
+    child_run_id: str
+    identity_hash: str
+    payload: Mapping[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,9 +476,6 @@ class SequentialWorkflowOrchestrator:
                 context = self._context(workflow_run_id, step, dry_run=False)
                 adapter = self.adapters[step.stage]
                 observation = adapter.observe(context, step, identity)
-                if observation is StepObservation.COMPLETE:
-                    self._checkpoint_observed_complete(workflow_run_id, token, step)
-                    continue
                 if observation in {
                     StepObservation.RUNNING,
                     StepObservation.BLOCKED,
@@ -592,23 +669,6 @@ class SequentialWorkflowOrchestrator:
                 """UPDATE workflow_runs SET status = ?, updated_at = CURRENT_TIMESTAMP
                    WHERE workflow_run_id = ? AND lease_owner = ? AND lease_token = ?""",
                 (run_status, workflow_run_id, self.owner_id, workflow_token),
-            )
-
-    def _checkpoint_observed_complete(
-        self, workflow_run_id: str, workflow_token: int, step: StageSpec
-    ) -> None:
-        database = self._database()
-        with database.transaction() as connection:
-            if not self._owns_workflow(
-                connection, workflow_run_id, workflow_token, self._now_text()
-            ):
-                raise RuntimeError("workflow checkpoint lost its fencing token")
-            connection.execute(
-                """UPDATE workflow_steps
-                   SET status = 'complete', lease_owner = NULL, lease_expires_at = NULL,
-                       completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
-                   WHERE workflow_run_id = ? AND step_id = ?""",
-                (workflow_run_id, step.step_id),
             )
 
     def _checkpoint_stop(
@@ -839,12 +899,41 @@ class SequentialWorkflowOrchestrator:
         self, workflow_run_id: str, step: StageSpec, *, dry_run: bool
     ) -> StepContext:
         database_path = self.database.path if self.database is not None else Path(":memory:")
+        upstream_results: tuple[StepResultRef, ...] = ()
+        if self.database is not None and self._run_row(workflow_run_id) is not None:
+            ordinal = next(
+                index for index, candidate in enumerate(self.manifest.steps)
+                if candidate.step_id == step.step_id
+            )
+            rows = self.database.connection.execute(
+                """SELECT step_id, stage, child_run_id, identity_hash, result_json
+                   FROM workflow_steps
+                   WHERE workflow_run_id = ? AND ordinal < ? AND status = 'complete'
+                   ORDER BY ordinal""",
+                (workflow_run_id, ordinal),
+            ).fetchall()
+            values: list[StepResultRef] = []
+            for row in rows:
+                if row["result_json"] is None:
+                    continue
+                payload = json.loads(row["result_json"])
+                if not isinstance(payload, dict):
+                    raise ValueError("workflow upstream result must be an object")
+                values.append(StepResultRef(
+                    str(row["step_id"]),
+                    StageKind(str(row["stage"])),
+                    str(row["child_run_id"]),
+                    str(row["identity_hash"]),
+                    payload,
+                ))
+            upstream_results = tuple(values)
         return StepContext(
             database_path=database_path,
             config_path=self.manifest.config.resolved_path,
             workflow_run_id=workflow_run_id,
             child_run_id=f"{workflow_run_id}:{step.step_id}",
             dry_run=dry_run,
+            upstream_results=upstream_results,
         )
 
     def _database(self) -> Database:
@@ -876,23 +965,26 @@ def load_workflow_manifest(path: Path) -> WorkflowManifest:
         "steps",
     }:
         raise ValueError("workflow manifest has unexpected or missing fields")
-    if value["schema_version"] != "1" or not isinstance(value["workflow_id"], str) or not value["workflow_id"]:
+    schema_version = value["schema_version"]
+    if schema_version not in {"1", "2"} or not isinstance(value["workflow_id"], str) or not value["workflow_id"]:
         raise ValueError("workflow manifest identity is invalid")
     if not isinstance(value["steps"], list) or not value["steps"]:
         raise ValueError("workflow manifest requires at least one step")
     root = source_path.parent
     config = _file_ref(value["config"], root, "config")
-    steps = tuple(_step(item, root) for item in value["steps"])
+    steps = tuple(_step(item, root, schema_version) for item in value["steps"])
     if len({step.step_id for step in steps}) != len(steps):
         raise ValueError("workflow step IDs must be unique")
     if len({step.stage for step in steps}) != len(steps):
         raise ValueError("workflow stages must be unique")
-    manifest = WorkflowManifest(value["workflow_id"], config, steps, source_path)
+    manifest = WorkflowManifest(
+        value["workflow_id"], config, steps, source_path, schema_version
+    )
     manifest.verify_files()
     return manifest
 
 
-def _step(value: object, root: Path) -> StageSpec:
+def _step(value: object, root: Path, schema_version: str) -> StageSpec:
     if not isinstance(value, dict) or not isinstance(value.get("stage"), str):
         raise ValueError("workflow step must be a typed object")
     try:
@@ -925,15 +1017,24 @@ def _step(value: object, root: Path) -> StageSpec:
             step_id,
             _file_ref(value["plan"], root, "filter plan"),
             _file_ref(value["stage2_release"], root, "Stage 2 release"),
-            _optional_file_ref(value["selection"], root, "filter selection"),
+            _selection_ref(value["selection"], root, "filter selection", schema_version),
         )
     if stage is StageKind.DOWNLOAD:
-        _exact(value, {"id", "stage", "selection", "authorization_grant_id", "provider_terms"})
+        fields = {"id", "stage", "selection", "authorization_grant_id", "provider_terms"}
+        if schema_version == "2":
+            fields.add("include_needs_review")
+        _exact(value, fields)
+        include_needs_review = value.get("include_needs_review")
+        if include_needs_review is not None and not isinstance(include_needs_review, bool):
+            raise ValueError("include_needs_review must be boolean")
         return DownloadStep(
             step_id,
-            _file_ref(value["selection"], root, "download selection"),
+            _required_selection_ref(
+                value["selection"], root, "download selection", schema_version
+            ),
             _optional_text(value["authorization_grant_id"], "authorization_grant_id"),
             _optional_file_ref(value["provider_terms"], root, "provider terms"),
+            include_needs_review,
         )
     if stage is StageKind.ANALYZE:
         _exact(value, {"id", "stage", "selection", "processing_grant_id", "policy"})
@@ -987,6 +1088,28 @@ def _file_ref(value: object, root: Path, label: str) -> FileRef:
 
 def _optional_file_ref(value: object, root: Path, label: str) -> FileRef | None:
     return None if value is None else _file_ref(value, root, label)
+
+
+def _selection_ref(
+    value: object, root: Path, label: str, schema_version: str
+) -> FileRef | StepOutputRef | None:
+    if value is None:
+        return None
+    if schema_version == "2" and isinstance(value, dict) and set(value) == {"from_step"}:
+        from_step = value["from_step"]
+        if not isinstance(from_step, str) or not from_step:
+            raise ValueError(f"workflow {label} output reference is invalid")
+        return StepOutputRef(from_step)
+    return _file_ref(value, root, label)
+
+
+def _required_selection_ref(
+    value: object, root: Path, label: str, schema_version: str
+) -> FileRef | StepOutputRef:
+    reference = _selection_ref(value, root, label, schema_version)
+    if reference is None:
+        raise ValueError(f"workflow {label} is required")
+    return reference
 
 
 def _optional_text(value: object, label: str) -> str | None:

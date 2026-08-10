@@ -109,8 +109,11 @@ grant；全文及其受限派生物进入 Luna/Sol 前必须另有匹配的 proc
 
 ## 6. 可恢复 typed workflow（可选）
 
-当要把多个阶段串成一次可恢复运行时，创建 JSON workflow manifest，而不是把 CLI argv 写入
-文件。manifest 必须有 `schema_version`、`workflow_id`、config FileRef 和 typed steps；每个 FileRef
+当要把多个阶段串成一次可恢复运行时，创建 schema version 2 的 JSON workflow manifest，
+而不是把 CLI argv 写入文件。Filter 与 Download 的 `selection` 必须分别使用
+`{"from_step":"search"}` 与 `{"from_step":"filter"}`，Download 还要显式冻结
+`include_needs_review`。version 1 仅用于单阶段清单。manifest 必须有 `schema_version`、
+`workflow_id`、config FileRef 和 typed steps；每个 FileRef
 只包含相对 manifest 目录的 `path` 与该文件的小写 SHA-256。最小 search step 的 JSON 和摘要生成
 命令见根目录 [README](../README.md#typed-workflow-与恢复)。先运行：
 

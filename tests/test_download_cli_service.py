@@ -185,6 +185,26 @@ def test_filter_selection_rejects_non_complete_or_non_stage2_run(
         )
 
 
+def test_complete_empty_filter_run_selects_no_stage3_papers(
+    tmp_path: Path, database: Database,
+) -> None:
+    database.connection.execute(
+        """INSERT INTO pipeline_runs(
+               run_id, stage, status, input_hash, config_hash, implementation_version
+           ) VALUES ('empty-stage2', 'stage-2', 'complete', 'input', 'config', 'test')"""
+    )
+    database.connection.commit()
+
+    service = _service(tmp_path, database, Fetcher())
+    assert service.select_papers(filter_run_id="empty-stage2") == ()
+    result = service.run(filter_run_id="empty-stage2", run_id="empty-stage3")
+    assert result.status == "complete"
+    assert result.paper_ids == ()
+    assert database.connection.execute(
+        "SELECT stage, status FROM pipeline_runs WHERE run_id = 'empty-stage3'"
+    ).fetchone()[:] == ("stage-3-download", "complete")
+
+
 def test_no_grant_never_fetches_restricted_candidate(
     tmp_path: Path, database: Database,
 ) -> None:

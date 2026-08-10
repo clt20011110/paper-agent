@@ -132,8 +132,6 @@ class Stage2SearchScreener:
 
     def screen(self, paper_ids: Sequence[str]) -> Mapping[str, FilterStatus]:
         ordered_ids = tuple(sorted(set(paper_ids)))
-        if not ordered_ids:
-            return {}
         papers = tuple(self._paper(paper_id) for paper_id in ordered_ids)
         run_id = f"stage2-{uuid5(NAMESPACE_URL, f'{self.campaign_id}:{len(self.run_ids)}').hex}"
         summary = self.pipeline.run(run_id, papers)

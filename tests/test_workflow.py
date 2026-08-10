@@ -13,6 +13,7 @@ import pytest
 
 from paper_agent.storage import Database
 from paper_agent.workflow import (
+    DownloadStep,
     FileRef,
     FilterStep,
     SearchStep,
@@ -21,6 +22,7 @@ from paper_agent.workflow import (
     StageKind,
     StageOutcome,
     StepObservation,
+    StepOutputRef,
     StopToken,
     WorkflowManifest,
     load_workflow_manifest,
@@ -49,8 +51,16 @@ def _manifest(tmp_path: Path, *, two_steps: bool = False) -> WorkflowManifest:
         SearchStep("search", _ref(plan), _ref(release), (), False),
     )
     if two_steps:
-        steps += (FilterStep("filter", _ref(plan), _ref(release), None),)
-    return WorkflowManifest("fixture", _ref(config), steps, tmp_path / "workflow.json")
+        steps += (
+            FilterStep("filter", _ref(plan), _ref(release), StepOutputRef("search")),
+        )
+    return WorkflowManifest(
+        "fixture",
+        _ref(config),
+        steps,
+        tmp_path / "workflow.json",
+        "2" if two_steps else "1",
+    )
 
 
 def _database(tmp_path: Path) -> Database:
@@ -107,6 +117,80 @@ def test_manifest_is_strictly_typed_and_file_refs_are_frozen(tmp_path: Path) -> 
     (tmp_path / "config.json").write_text('{"changed": true}', encoding="utf-8")
     with pytest.raises(ValueError, match="drifted"):
         manifest.verify_files()
+
+
+def test_v1_rejects_multi_stage_workflows(tmp_path: Path) -> None:
+    config = tmp_path / "config.json"
+    plan = tmp_path / "plan.json"
+    release = tmp_path / "release.json"
+    for path in (config, plan, release):
+        path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema_version 1 must be migrated"):
+        WorkflowManifest(
+            "unsafe-v1",
+            _ref(config),
+            (
+                SearchStep("search", _ref(plan), _ref(release), (), False),
+                FilterStep("filter", _ref(plan), _ref(release), None),
+            ),
+            tmp_path / "workflow.json",
+        )
+
+
+def test_v2_requires_current_upstream_selection_and_explicit_download_flag(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.json"
+    plan = tmp_path / "plan.json"
+    release = tmp_path / "release.json"
+    selection = tmp_path / "selection.json"
+    for path in (config, plan, release, selection):
+        path.write_text("{}", encoding="utf-8")
+    search = SearchStep("search", _ref(plan), _ref(release), (), False)
+
+    with pytest.raises(ValueError, match="filter must select the current search"):
+        WorkflowManifest(
+            "unbound-filter",
+            _ref(config),
+            (
+                search,
+                FilterStep("filter", _ref(plan), _ref(release), _ref(selection)),
+            ),
+            tmp_path / "workflow.json",
+            "2",
+        )
+
+    filtering = FilterStep(
+        "filter", _ref(plan), _ref(release), StepOutputRef("search")
+    )
+    with pytest.raises(ValueError, match="download requires include_needs_review"):
+        WorkflowManifest(
+            "implicit-download-policy",
+            _ref(config),
+            (
+                search,
+                filtering,
+                DownloadStep("download", StepOutputRef("filter"), None, None),
+            ),
+            tmp_path / "workflow.json",
+            "2",
+        )
+
+    with pytest.raises(ValueError, match="download must select the current filter"):
+        WorkflowManifest(
+            "wrong-download-source",
+            _ref(config),
+            (
+                search,
+                filtering,
+                DownloadStep(
+                    "download", StepOutputRef("search"), None, None, False
+                ),
+            ),
+            tmp_path / "workflow.json",
+            "2",
+        )
 
 
 def test_dry_run_validates_without_database_writes_or_execution(tmp_path: Path) -> None:

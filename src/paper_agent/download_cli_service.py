@@ -566,7 +566,7 @@ def _selected_ids(
             statuses,
         ).fetchall()
     selected = tuple(str(row["paper_id"]) for row in rows)
-    if not selected:
+    if not selected and filter_run_id is None:
         raise ValueError("no Stage 2 papers were selected for Stage 3")
     return selected
 

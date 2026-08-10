@@ -111,18 +111,23 @@ paper-agent resume --workflow /absolute/path/to/workflow.json \
   --workflow-run-id literature-2026-08
 ```
 
-一个 manifest 最多按 `search → filter → download → analyze → report` 各包含一个 typed
-step。`run --help` 只列命令参数；manifest 字段合同如下，未列字段会被拒绝：
+`schema_version: "1"` 只允许单阶段清单。多阶段必须使用 version 2，并通过
+`{"from_step":"..."}` 绑定本次 workflow 的上游结果；静态 selection 不能替代这一绑定。
+当前可连续运行 `search → filter → download`，例如 Filter 的 `selection` 写
+`{"from_step":"search"}`，Download 的 `selection` 写 `{"from_step":"filter"}`。
+Download 还必须显式冻结 `include_needs_review`；默认建议为 `false`。空 Search 结果会保持
+为空，不会退化成筛选全库。`run --help` 只列命令参数；字段合同如下，未列字段会被拒绝：
 
 | stage | typed step 字段（另含 `id`、`stage`） |
 | --- | --- |
 | `search` | `plan`、`stage2_release`、`snapshots`、`historical_replay` |
-| `filter` | `plan`、`stage2_release`、`selection`（可为 `null`） |
-| `download` | `selection`、`authorization_grant_id`、`provider_terms` |
+| `filter` | `plan`、`stage2_release`、`selection`（单阶段为 `FileRef`；v2 链为 Search output ref） |
+| `download` | `selection`、`authorization_grant_id`、`provider_terms`；v2 另需 `include_needs_review` |
 | `analyze` | `selection`、`processing_grant_id`、`policy` |
 | `report` | `plan`、`corpus_snapshot`、`search_audit`、`processing_grants`、`previous_report_run_id`、`policy` |
 
-其中所有文件字段均为 `FileRef`，`snapshots` 元素为
+Analyze 与 Report 的动态上游绑定仍受 ReportPlan 人工审批边界约束，暂时使用各自的单阶段
+version 1 清单。所有文件字段均为 `FileRef`，`snapshots` 元素为
 `{"provider":"...","file":<FileRef>}`；可选字段也必须显式写成 `null`。收到 SIGINT/SIGTERM
 时，已在运行的 step 会先返回到自己的安全点，工作流仅在 step 边界 checkpoint 为可恢复状态。
 

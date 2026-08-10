@@ -28,7 +28,8 @@ paper-agent resume --workflow /absolute/path/to/workflow.json \
 paper-agent verify-report --run-id <report-run-id> --config /absolute/path/to/research.yaml
 ```
 
-`resume` 不接受单独的 `--run-id`：必须重传原始 `--workflow` manifest。其 FileRef（包括
+`resume` 不接受单独的 `--run-id`：必须重传原始 `--workflow` manifest。多阶段清单必须使用
+schema version 2 的 `from_step` 绑定；version 1 多阶段清单会被拒绝。其 FileRef（包括
 config、plan、release、selection、policy 和 report inputs）必须仍在原清单目录中、摘要完全一致；
 全局 `--config` 若显式传入，也必须匹配清单的 config FileRef。只恢复同一冻结输入的 recoverable
 工作。plan、provider resolution、模型 revision、prompt/schema、grant、release 或 artifact hash
