@@ -4,23 +4,53 @@
   "title": "Stage 4 paper analysis",
   "type": "object",
   "additionalProperties": false,
-  "required": ["paper_id", "artifact_hash", "model", "model_revision", "prompt_hash", "schema_hash", "created_at", "summary", "methods", "datasets", "results", "limitations", "resources", "topic_relevance", "labels", "evidence_units"],
+  "required": ["paper_id", "artifact_hash", "input_scope", "model", "model_revision", "prompt_hash", "schema_hash", "created_at", "research_question_and_motivation", "summary", "methods", "key_techniques", "datasets", "experimental_setup", "metrics", "results", "limitations", "credibility", "resources", "topic_relevance", "labels", "label_evidence", "evidence_units", "comparison_eligibility", "missing_fields"],
   "properties": {
     "paper_id": {"type": "string", "minLength": 1},
     "artifact_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "input_scope": {"type": "string", "enum": ["full_pdf", "abstract_only", "metadata_only"]},
     "model": {"type": "string", "const": "gpt-5.6-luna"},
     "model_revision": {"type": "string", "minLength": 1},
     "prompt_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "schema_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "created_at": {"type": "string", "format": "date-time"},
+    "research_question_and_motivation": {"type": "string", "minLength": 1},
     "summary": {"type": "string", "minLength": 1},
     "methods": {"type": "array", "items": {"type": "string"}},
+    "key_techniques": {"type": "array", "items": {"type": "string"}},
     "datasets": {"type": "array", "items": {"type": "string"}},
+    "experimental_setup": {"type": "array", "items": {"type": "string"}},
+    "metrics": {"type": "array", "items": {"type": "string"}},
     "results": {"type": "array", "items": {"type": "string"}},
     "limitations": {"type": "array", "items": {"type": "string"}},
+    "credibility": {"type": "string", "minLength": 1},
     "resources": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["kind", "url"], "properties": {"kind": {"type": "string", "enum": ["code", "data", "model", "other"]}, "url": {"type": "string", "pattern": "^https?://[^\\s]+$"}}}},
     "topic_relevance": {"type": "string", "minLength": 1},
     "labels": {"type": "object", "additionalProperties": false, "required": ["subquestion", "theme", "method_family", "task", "dataset", "benchmark", "evidence_type", "publication_status", "study_setting"], "properties": {"subquestion": {"type": "array", "items": {"type": "string"}}, "theme": {"type": "array", "items": {"type": "string"}}, "method_family": {"type": "array", "items": {"type": "string"}}, "task": {"type": "array", "items": {"type": "string"}}, "dataset": {"type": "array", "items": {"type": "string"}}, "benchmark": {"type": "array", "items": {"type": "string"}}, "evidence_type": {"type": "array", "items": {"type": "string"}}, "publication_status": {"type": "string", "enum": ["peer_reviewed", "workshop", "preprint", "unknown"]}, "study_setting": {"type": "string", "enum": ["real", "simulation", "theory", "other"]}}},
-    "evidence_units": {"type": "array", "items": {"$ref": "evidence-unit.schema.json"}}
+    "label_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["axis", "value", "source_text", "locator"],
+        "properties": {
+          "axis": {"type": "string", "enum": ["subquestion", "theme", "method_family", "task", "dataset", "benchmark", "evidence_type", "publication_status", "study_setting"]},
+          "value": {"type": "string", "minLength": 1},
+          "source_text": {"type": "string", "minLength": 1},
+          "locator": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "value"],
+            "properties": {
+              "kind": {"type": "string", "enum": ["page", "section", "input_field"]},
+              "value": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "evidence_units": {"type": "array", "items": {"$ref": "evidence-unit.schema.json"}},
+    "comparison_eligibility": {"type": "string", "enum": ["comparable", "not_comparable"]},
+    "missing_fields": {"type": "array", "items": {"type": "string"}}
   }
 }
