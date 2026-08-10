@@ -274,8 +274,91 @@ def test_doctor_returns_nonzero_for_required_blockers(monkeypatch, capsys) -> No
     assert cli.main(["doctor", "--run-id", "doctor-run"]) == 1
     payload = _payload(capsys)
     assert payload["ready"] is False
-    assert payload["event_code"] == "doctor.completed"
+    assert payload["event_code"] == "doctor.blocked"
     assert payload["run_id"] == "doctor-run"
+
+
+@pytest.mark.parametrize(
+    ("target", "argv", "command", "status"),
+    (
+        ("_search_run", ["search", "run", "--plan", "plan.json"], "search.run", "incomplete"),
+        ("_crawl", ["crawl", "--venue", "venue-1"], "crawl", "incomplete"),
+        ("_filter", ["filter", "--plan", "plan.json"], "filter", "failed"),
+        ("_download", ["download"], "download", "incomplete"),
+        ("_analyze", ["analyze", "--input", "input.json"], "analyze", "incomplete"),
+        ("_report", ["report", "--plan", "plan.json"], "report", "manual_required"),
+    ),
+)
+def test_stage_non_success_status_returns_nonzero_and_matching_event(
+    monkeypatch, capsys, target, argv, command, status
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        target,
+        lambda *_args, **_kwargs: {"command": command, "status": status},
+    )
+
+    assert cli.main(argv) == 1
+    payload = _payload(capsys)
+    assert payload["event_code"] == f"{command}.{status}"
+    assert payload["status"] == status
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        "approved",
+        "complete",
+        "draft",
+        "passed",
+        "ready",
+        "revoked",
+        "runtime_validated",
+        "validated",
+        "written",
+    ),
+)
+def test_finish_success_status_contract(status, capsys) -> None:
+    args = cli.build_parser().parse_args(["crawl", "--venue", "venue-1"])
+
+    assert cli._finish(args, {"command": "fixture", "status": status}) == 0
+    assert _payload(capsys)["event_code"] == "fixture.completed"
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        "blocked",
+        "cancelled",
+        "failed",
+        "failed_terminal",
+        "incomplete",
+        "manual_required",
+        "pending",
+        "retryable",
+        "running",
+        "uncertain_terminal",
+    ),
+)
+def test_finish_known_non_success_status_contract(status, capsys) -> None:
+    args = cli.build_parser().parse_args(["crawl", "--venue", "venue-1"])
+
+    assert cli._finish(args, {"command": "fixture", "status": status}) == 1
+    assert _payload(capsys)["event_code"] == f"fixture.{status}"
+
+
+def test_finish_missing_and_unknown_statuses_fail_closed(capsys) -> None:
+    args = cli.build_parser().parse_args(["crawl", "--venue", "venue-1"])
+
+    assert cli._finish(args, {"command": "default"}) == 0
+    assert _payload(capsys)["status"] == "complete"
+    assert cli._finish(
+        args,
+        {"command": "future", "status": "future_status", "event_code": "spoofed"},
+    ) == 1
+    payload = _payload(capsys)
+    assert payload["status"] == "future_status"
+    assert payload["event_code"] == "future.failed"
 
 
 def test_doctor_cli_wires_local_model_probe_and_audited_skill_runtime(

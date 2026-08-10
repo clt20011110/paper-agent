@@ -298,10 +298,11 @@ def test_download_cli_wires_explicit_authorized_skill_handoff(
         "--authorized-skill-queue", str(queue),
         "--authorized-skill-output", str(tmp_path / "handoff-output"),
         "--authorized-skill-root", str(tmp_path / "skills"),
-    ]) == 0
+    ]) == 1
 
     result = _payload(capsys)
     assert result["authorized_queue_path"] == str(queue)
+    assert result["event_code"] == "download.incomplete"
     options = captured["authorized_skill"]
     assert options.queue_path == queue
     assert options.skill_roots == (tmp_path / "skills",)

@@ -17,7 +17,8 @@ Paper Agent 的 SQLite 数据库、冻结计划、grant、模型 release 和报�
 ## 运行、观察和恢复
 
 为一次 campaign 固定数据库和 `--run-id`。读取每条 JSON 输出的 `status`、`event_code`、
-`run_id` 和 artifact path；不要根据终端文本判断完成。
+`run_id` 和 artifact path；不要根据终端文本判断完成。`incomplete`、`manual_required`、
+`blocked` 和 `failed` 等非成功状态会返回非零退出码，调度器必须保留产物并进入人工检查或恢复流程。
 
 ```sh
 paper-agent search audit --database /absolute/path/to/papers.sqlite3 \

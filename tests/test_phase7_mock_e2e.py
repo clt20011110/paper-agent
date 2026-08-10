@@ -198,6 +198,7 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
 
     first = invoke("run", "recovery", 1)
     assert first["status"] == "incomplete"
+    assert first["event_code"] == "run.incomplete"
     assert [step["status"] for step in first["steps"]] == [
         "complete", "complete", "incomplete", "pending", "pending",
     ]

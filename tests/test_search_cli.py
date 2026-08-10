@@ -190,9 +190,11 @@ def test_search_run_cli_replays_an_approved_snapshot_without_contact(tmp_path, c
             "--snapshot",
             f"crossref={snapshot}",
         ]
-    ) == 0
+    ) == 1
     result = json.loads(capsys.readouterr().out)
     assert (result["provider_invocation"], result["paper_count"]) == ("completed", 1)
+    assert result["status"] == "incomplete"
+    assert result["event_code"] == "search.run.incomplete"
 
 
 def test_search_plan_approval_run_and_history_are_frozen(tmp_path, capsys, monkeypatch) -> None:

@@ -79,6 +79,32 @@ class CliUsageError(ValueError):
     """A command-line usage error suitable for structured console output."""
 
 
+_SUCCESS_STATUSES = frozenset({
+    "approved",
+    "complete",
+    "draft",
+    "passed",
+    "ready",
+    "revoked",
+    "runtime_validated",
+    "validated",
+    "written",
+})
+
+_NON_SUCCESS_EVENT_STATUSES = frozenset({
+    "blocked",
+    "cancelled",
+    "failed",
+    "failed_terminal",
+    "incomplete",
+    "manual_required",
+    "pending",
+    "retryable",
+    "running",
+    "uncertain_terminal",
+})
+
+
 class _StructuredArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise CliUsageError(message)
@@ -344,18 +370,15 @@ def main(
     )
     if args.command == "doctor":
         report = _doctor(args)
-        exit_code = int(
-            not (report.production_ready if args.production_ready else report.ready)
-        )
+        ready = report.production_ready if args.production_ready else report.ready
         return _finish(
             args,
             {
                 "command": "doctor",
                 "paper_agent_version": __version__,
-                "status": "ready" if exit_code == 0 else "blocked",
+                "status": "ready" if ready else "blocked",
                 **report.as_dict(),
             },
-            exit_code,
         )
     if args.command == "grant" and args.grant_command == "create":
         return _finish(args, _grant_create(args))
@@ -451,7 +474,7 @@ def main(
             soak_manifest_path=args.soak_manifest,
             soak_record_path=args.soak_record,
         )
-        return _finish(args, result, int(result["status"] != "passed"))
+        return _finish(args, result)
     if args.command == "report":
         return _finish(args, _report(args))
     if args.command == "verify-report":
@@ -471,11 +494,7 @@ def main(
         return _finish(args, _analyze(args))
     if args.command in {"run", "resume"}:
         result = _workflow(args)
-        return _finish(
-            args,
-            result,
-            int(result["status"] not in {"complete", "validated"}),
-        )
+        return _finish(args, result)
     if args.command == "import-seeds":
         return _finish(
             args,
@@ -1929,17 +1948,27 @@ def _command_stage(command: str) -> str:
 
 
 def _finish(
-    args: argparse.Namespace, payload: Mapping[str, Any], exit_code: int = 0
+    args: argparse.Namespace,
+    payload: Mapping[str, Any],
 ) -> int:
     document = dict(payload)
     command = str(document.get("command", args.command))
-    document.setdefault("event_code", f"{command}.completed")
+    status = str(document.get("status", "complete"))
+    success = status in _SUCCESS_STATUSES
+    event = (
+        "completed"
+        if success
+        else status
+        if status in _NON_SUCCESS_EVENT_STATUSES
+        else "failed"
+    )
+    document["event_code"] = f"{command}.{event}"
     document.setdefault("stage", _command_stage(command))
-    document.setdefault("status", "complete" if exit_code == 0 else "blocked")
+    document["status"] = status
     if args.run_id is not None:
         document.setdefault("run_id", args.run_id)
     _emit(document)
-    return exit_code
+    return int(not success)
 
 
 def _emit(payload: Mapping[str, Any]) -> None:
