@@ -15,8 +15,12 @@
       "DOI",
       "title"
     ],
+    "snapshot_bytes": null,
+    "snapshot_file": null,
     "timestamp": "2026-08-09T15:18:13+00:00"
   },
   "phase": 2,
-  "purpose": "controlled public metadata smoke"
+  "purpose": "controlled public metadata smoke",
+  "snapshot_status": "absent",
+  "snapshot_status_reason": "The historical response bytes were not retained in the workspace; this record preserves only the observed digest and metadata."
 }

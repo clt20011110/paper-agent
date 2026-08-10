@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 from paper_agent.provider_runtime import (
+    BulkSnapshot,
     ProviderRequestError,
     ProviderRuntime,
     RetryableProviderError,
@@ -47,6 +48,55 @@ class CachedResponse:
     content_type: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovedMetadataSnapshot:
+    """Approved bytes for replaying one recorded JSON or XML API response.
+
+    This is intentionally a response replay mechanism, not support for any
+    provider's bulk data format or a substitute for a provider API client.
+    """
+
+    body: bytes
+    sha256: str
+    content_type: str
+
+
+@dataclass(slots=True)
+class ApprovedSnapshotTransport:
+    """Network-free transport for approved metadata response snapshots."""
+
+    responses: Mapping[tuple[str, str], ApprovedMetadataSnapshot]
+    runtime: ProviderRuntime
+    environment: Mapping[str, str] | None = None
+
+    def __call__(self, provider: str, operation: str, parameters: Mapping[str, Any]) -> Mapping[str, Any]:
+        try:
+            snapshot = self.responses[(provider, operation)]
+        except KeyError as error:
+            raise ValueError(f"no approved response snapshot for {provider}:{operation}") from error
+        content = self.runtime.request(
+            provider,
+            query_hash=sha256(
+                json.dumps({"provider": provider, "operation": operation, "parameters": parameters}, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest(),
+            cursor=str(parameters["cursor"]) if parameters.get("cursor") is not None else None,
+            api_version=f"{provider}:approved-response-v1",
+            mode="snapshot",
+            snapshot=BulkSnapshot(snapshot.body, snapshot.sha256),
+            expected_snapshot_hash=snapshot.sha256,
+            environment=self.environment,
+        )
+        payload = ControlledHTTPTransport._decode(content, snapshot.content_type)
+        if not isinstance(payload, dict):
+            raise ProviderRequestError(f"{provider}: approved snapshot is not an object")
+        response = dict(payload)
+        if response.get("status") == "ok":
+            response["provider_status"] = "ok"
+            response["status"] = "success"
+        response["raw_response_artifact_hash"] = snapshot.sha256
+        return response
+
+
 @dataclass(slots=True)
 class ControlledHTTPTransport:
     """Route built-in metadata operations through one :class:`ProviderRuntime`.
@@ -66,6 +116,7 @@ class ControlledHTTPTransport:
     _credential_envs: dict[str, dict[str, str]] = field(default_factory=dict, init=False)
     last_request_url: str | None = field(default=None, init=False)
     last_response_sha256: str | None = field(default=None, init=False)
+    last_response_body: bytes | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.contact.strip():
@@ -114,7 +165,8 @@ class ControlledHTTPTransport:
         if provider not in _METADATA_PROVIDERS:
             raise ValueError(f"no public HTTP mapping for {provider}:{operation}")
         payload, bodies = self._operation(provider, operation, parameters)
-        self.last_response_sha256 = sha256(b"".join(bodies)).hexdigest()
+        self.last_response_body = b"".join(bodies)
+        self.last_response_sha256 = sha256(self.last_response_body).hexdigest()
         # Do not mutate a value that can have been returned from ProviderRuntime's
         # cache: callers may safely add their own envelope data.
         response = dict(payload)

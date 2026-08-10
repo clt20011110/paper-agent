@@ -48,3 +48,6 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning",
 ]
+markers = [
+    "live_smoke: manual network smoke test; requires PAPER_AGENT_RUN_LIVE_SMOKE=1",
+]

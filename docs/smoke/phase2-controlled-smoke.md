@@ -15,6 +15,24 @@ Official sources:
 - <https://www.crossref.org/documentation/retrieve-metadata/rest-api/>
 - <https://github.com/CrossRef/rest-api-doc>
 
-The run evidence is stored beside this document in
-`phase2-controlled-smoke-evidence.json`; its response digest permits comparison
-without committing the volatile response body.
+The historical evidence beside this document records an observed request and
+its digest, but the corresponding raw bytes are not present in this workspace.
+It is therefore marked `snapshot_status: absent` and must not be presented as a
+replayable fixture.
+
+To make a new manual, auditable run (never in ordinary test runs), set an
+explicit opt-in flag, a Crossref contact, and an output directory outside the
+repository. This makes exactly one request with page size 1 and no retry; it
+writes `crossref-response.json` and `crossref-evidence.json` to that directory.
+
+```sh
+PAPER_AGENT_RUN_LIVE_SMOKE=1 \
+PAPER_AGENT_SMOKE_CONTACT='mailto:you@example.org' \
+PAPER_AGENT_SMOKE_OUTPUT_DIR=/secure/path/paper-agent-smoke \
+uv run pytest -m live_smoke
+```
+
+`ApprovedSnapshotTransport` can replay an approved JSON or XML API response
+without network access after verifying its SHA-256. It is only a response replay
+mechanism; it does not claim support for Crossref or any other provider's bulk
+snapshot format.
