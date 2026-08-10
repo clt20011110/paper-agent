@@ -39,9 +39,11 @@ from .processing import (
     ProcessingRequest,
 )
 from .report_budget import CanonicalReportBudgetError, canonical_report_budget
+from .report_config import ReportResources
 from .report_invocations import (
     ReportInvocationError,
     register_report_invocation,
+    report_invocation_metadata_hash,
     require_report_invocation,
 )
 from .report_artifacts import (
@@ -104,6 +106,7 @@ def stage4b_audit_config_hash(
     execution_mode: str = "attended",
     schema_root: Path | None = None,
     prompt_root: Path | None = None,
+    resources: ReportResources | None = None,
     rubric_path: Path | None = None,
     implementation_version: str = IMPLEMENTATION_VERSION,
 ) -> str:
@@ -112,17 +115,21 @@ def stage4b_audit_config_hash(
         raise ValueError("execution_mode must be attended or unattended")
     schemas = schema_directory(schema_root)
     prompts = prompt_directory() if prompt_root is None else prompt_root
+    report_resources = resources or ReportResources.defaults(
+        schema_root=schema_root, prompt_root=prompt_root
+    )
+    report_resources.validate_files()
     rubric_file = rubric_path or _default_rubric_path()
     schema_hashes = {
-        kind: _json_hash(json.loads(
-            (schemas / CALL_KIND_SCHEMAS[kind]).read_text(encoding="utf-8")
-        ))
+        kind: _json_hash(report_resources.schema(kind))
+        for kind in ("quality_audit", "repair")
+    }
+    service_schema_hashes = {
+        kind: report_resources.service_schema_hash(kind)
         for kind in ("quality_audit", "repair")
     }
     prompt_hashes = {
-        kind: sha256(
-            (prompts / CALL_KIND_PROMPTS[kind]).read_bytes()
-        ).hexdigest()
+        kind: sha256(report_resources.prompt_paths[kind].read_bytes()).hexdigest()
         for kind in ("quality_audit", "repair")
     }
     stage4_schema_hash = _json_hash(json.loads(
@@ -139,6 +146,7 @@ def stage4b_audit_config_hash(
         "processing_policy_hash": processing_policy_hash,
         "rubric_hash": rubric_hash,
         "schema_hashes": schema_hashes,
+        "service_schema_hashes": service_schema_hashes,
         "prompt_hashes": prompt_hashes,
         "stage4_schema_hash": stage4_schema_hash,
         "stage4_prompt_hash": stage4_prompt_hash,
@@ -222,6 +230,7 @@ def stage4b_audit_repair_budget_bounds(
     *,
     final_output_byte_limit: int,
     synthesis_output_byte_limit: int,
+    rubric_path: Path | None = None,
 ) -> AuditRepairBudgetBounds:
     """Pure conservative bound shared by reduce preflight and the audit gate.
 
@@ -282,7 +291,7 @@ def stage4b_audit_repair_budget_bounds(
         + _BUDGET_FIXED_BYTES
     )
     rubric_bytes = len(canonical_json(
-        _load_mapping(_default_rubric_path(), "report audit rubric")
+        _load_mapping(rubric_path or _default_rubric_path(), "report audit rubric")
     ))
     variable_source = (
         final_output_byte_limit
@@ -293,16 +302,19 @@ def stage4b_audit_repair_budget_bounds(
         + len(canonical_json(frozen_corpus_snapshot))
         + len(canonical_json(frozen_bibliography))
         + coverage_upper_bound
-        + rubric_bytes
     )
     repeated = _BUDGET_PROMPT_WRAPPER_BYTES + 2 * (
-        shared_context + _BUDGET_FIXED_BYTES
+        shared_context + rubric_bytes + _BUDGET_FIXED_BYTES
     )
+    if repeated >= AUDIT_MAX_INPUT_TOKENS:
+        raise ReportAuditBudgetError(
+            "frozen audit rubric leaves no room for one stable audit component"
+        )
     source_capacity = max(1, (AUDIT_MAX_INPUT_TOKENS - repeated) // 2)
 
     def audit_shape(variable_bytes: int) -> tuple[int, int, int, int]:
         direct = _BUDGET_PROMPT_WRAPPER_BYTES + 2 * (
-            frozen_context + variable_bytes + _BUDGET_FIXED_BYTES
+            frozen_context + rubric_bytes + variable_bytes + _BUDGET_FIXED_BYTES
         )
         if direct <= AUDIT_MAX_INPUT_TOKENS:
             return 1, 0, 1, direct
@@ -410,6 +422,7 @@ class ReportAuditCoordinator:
         invoker_factory: Callable[[], SolInvoker] = CodexExec,
         schema_root: Path | None = None,
         prompt_root: Path | None = None,
+        resources: ReportResources | None = None,
         rubric_path: Path | None = None,
         execution_mode: str = "attended",
         clock: Callable[[], datetime] | None = None,
@@ -423,6 +436,10 @@ class ReportAuditCoordinator:
         self.invoker_factory = invoker_factory
         self.schema_root = schema_directory(schema_root)
         self.prompt_root = prompt_directory() if prompt_root is None else prompt_root
+        self.resources = resources or ReportResources.defaults(
+            schema_root=schema_root, prompt_root=prompt_root
+        )
+        self.resources.validate_files()
         self.rubric_path = rubric_path or _default_rubric_path()
         self.execution_mode = execution_mode
         self.clock = clock or (lambda: datetime.now(timezone.utc))
@@ -431,16 +448,16 @@ class ReportAuditCoordinator:
         if self.rubric_hash != audit_rubric_hash(self.rubric_path):
             raise ReportAuditError("report audit rubric hash is not deterministic")
         self.schemas = {
-            kind: json.loads(
-                (self.schema_root / CALL_KIND_SCHEMAS[kind]).read_text(encoding="utf-8")
-            )
+            kind: self.resources.schema(kind)
             for kind in ("quality_audit", "repair")
         }
         self.schema_hashes = {kind: _json_hash(value) for kind, value in self.schemas.items()}
+        self.service_schema_hashes = {
+            kind: self.resources.service_schema_hash(kind)
+            for kind in ("quality_audit", "repair")
+        }
         self.prompt_hashes = {
-            kind: sha256(
-                (self.prompt_root / CALL_KIND_PROMPTS[kind]).read_bytes()
-            ).hexdigest()
+            kind: sha256(self.resources.prompt_paths[kind].read_bytes()).hexdigest()
             for kind in ("quality_audit", "repair")
         }
         self.stage4_schema_hash = _json_hash(json.loads(
@@ -454,6 +471,7 @@ class ReportAuditCoordinator:
             execution_mode=execution_mode,
             schema_root=self.schema_root,
             prompt_root=self.prompt_root,
+            resources=self.resources,
             rubric_path=self.rubric_path,
         )
 
@@ -719,7 +737,7 @@ class ReportAuditCoordinator:
         search = bundle["search_audit"]
         try:
             require_valid_approval(plan, "plan_hash")
-            validate(plan, "report-plan.schema.json", self.schema_root)
+            self.resources.validate(plan, "planning_assist")
             runtime = compile_report_plan(
                 plan,
                 corpus_snapshot=corpus,
@@ -728,6 +746,7 @@ class ReportAuditCoordinator:
                 created_at=str(plan["created_at"]),
                 schema_root=self.schema_root,
                 prompt_root=self.prompt_root,
+                resources=self.resources,
             )
             assert_report_runtime_matches(
                 plan,
@@ -744,13 +763,11 @@ class ReportAuditCoordinator:
             raise ReportAuditError(str(error)) from error
         if str(bundle["document"].get("report_run_id")) != report_run_id:
             raise ReportAuditError("ReportDocument belongs to another report run")
-        if plan["schema_hash"] != content_hash(
-            json.loads((self.schema_root / "report-plan.schema.json").read_text(encoding="utf-8"))
-        ):
+        if plan["schema_hash"] != content_hash(self.resources.schema("planning_assist")):
             raise ReportAuditError("approved ReportPlan schema has drifted")
         expected_prompts = {
-            kind: sha256((self.prompt_root / name).read_bytes()).hexdigest()
-            for kind, name in CALL_KIND_PROMPTS.items()
+            kind: sha256(self.resources.prompt_paths[kind].read_bytes()).hexdigest()
+            for kind in CALL_KIND_PROMPTS
         }
         if dict(plan["prompt_hashes"]) != expected_prompts:
             raise ReportAuditError("approved ReportPlan prompt hashes have drifted")
@@ -807,14 +824,12 @@ class ReportAuditCoordinator:
             or report["pipeline_stage"] != "stage4b"
             or report["pipeline_status"] != report["status"]
             or report["prompt_hash"] != content_hash({
-                kind: sha256((self.prompt_root / name).read_bytes()).hexdigest()
-                for kind, name in CALL_KIND_PROMPTS.items()
+                kind: sha256(self.resources.prompt_paths[kind].read_bytes()).hexdigest()
+                for kind in CALL_KIND_PROMPTS
             })
             or report["schema_hash"] != content_hash({
-                kind: _json_hash(json.loads(
-                    (self.schema_root / name).read_text(encoding="utf-8")
-                ))
-                for kind, name in CALL_KIND_SCHEMAS.items()
+                kind: _json_hash(self.resources.schema(kind))
+                for kind in CALL_KIND_SCHEMAS
             })
             or (
                 report["status"] == "complete"
@@ -1047,6 +1062,7 @@ class ReportAuditCoordinator:
             bundle["search_audit"],
             final_output_byte_limit=output_limits[final.node_id],
             synthesis_output_byte_limit=output_limits[synthesis_id],
+            rubric_path=self.rubric_path,
         )
         report = self.database.connection.execute(
             """SELECT rr.aggregation_tree_json, rr.run_id,
@@ -1091,6 +1107,7 @@ class ReportAuditCoordinator:
             execution_mode=self.execution_mode,
             schema_root=self.schema_root,
             prompt_root=self.prompt_root,
+            resources=self.resources,
         )
         pipeline_input_hash = content_hash({
             "plan_hash": plan["plan_hash"],
@@ -1130,15 +1147,9 @@ class ReportAuditCoordinator:
                 MODEL,
                 REASONING_EFFORT,
                 CALL_KIND_PROMPTS[node.call_kind],
-                sha256(
-                    (self.prompt_root / CALL_KIND_PROMPTS[node.call_kind]).read_bytes()
-                ).hexdigest(),
+                sha256(self.resources.prompt_paths[node.call_kind].read_bytes()).hexdigest(),
                 CALL_KIND_SCHEMAS[node.call_kind],
-                _json_hash(json.loads(
-                    (self.schema_root / CALL_KIND_SCHEMAS[node.call_kind]).read_text(
-                        encoding="utf-8"
-                    )
-                )),
+                _json_hash(self.resources.schema(node.call_kind)),
             )
             actual_static = tuple(row[key] for key in (
                 "status",
@@ -1228,9 +1239,9 @@ class ReportAuditCoordinator:
         schema_name = CALL_KIND_SCHEMAS[call_kind]
         prompt_name = CALL_KIND_PROMPTS[call_kind]
         try:
-            schema = json.loads((self.schema_root / schema_name).read_text(encoding="utf-8"))
-            validate(output, schema_name, self.schema_root)
-        except (OSError, json.JSONDecodeError, SchemaValidationError) as error:
+            schema = self.resources.schema(call_kind)
+            self.resources.validate(output, call_kind)
+        except (OSError, SchemaValidationError) as error:
             raise ReportAuditError("persisted reduce output violates its frozen schema") from error
         expected_row = (
             "complete",
@@ -1238,7 +1249,7 @@ class ReportAuditCoordinator:
             MODEL,
             REASONING_EFFORT,
             prompt_name,
-            sha256((self.prompt_root / prompt_name).read_bytes()).hexdigest(),
+            sha256(self.resources.prompt_paths[call_kind].read_bytes()).hexdigest(),
             schema_name,
             _json_hash(schema),
         )
@@ -1285,6 +1296,9 @@ class ReportAuditCoordinator:
         if (
             actual_row != expected_row
             or actual_metadata != expected_metadata
+            or not self.resources.accepts_metadata_paths(
+                call_kind, metadata.schema_path, metadata.prompt_path
+            )
             or not str(metadata.invocation_id).strip()
             or metadata.attempts < 1
             or metadata.attempts > MAX_RETRIES + 1
@@ -1367,7 +1381,7 @@ class ReportAuditCoordinator:
                 metadata = _metadata(row["invocation_metadata_json"])
                 expected[(phase, str(row["node_key"]))] = (
                     metadata.invocation_id,
-                    content_hash(asdict(metadata)),
+                    report_invocation_metadata_hash(asdict(metadata)),
                 )
         for row in self.database.connection.execute(
             """SELECT audit_pass, node_id, invocation_metadata_json
@@ -1378,7 +1392,7 @@ class ReportAuditCoordinator:
             metadata = _metadata(row["invocation_metadata_json"])
             expected[("audit_shard", f"{row['audit_pass']}:{row['node_id']}")] = (
                 metadata.invocation_id,
-                content_hash(asdict(metadata)),
+                report_invocation_metadata_hash(asdict(metadata)),
             )
         persisted = {
             (str(row["phase"]), str(row["node_key"])): (
@@ -2052,6 +2066,7 @@ class ReportAuditCoordinator:
             bundle["search_audit"],
             final_output_byte_limit=int(final[0]["output_byte_limit"]),
             synthesis_output_byte_limit=int(synthesis["output_byte_limit"]),
+            rubric_path=self.rubric_path,
         )
         if canonical_json(tree.get("audit_repair_budget_bounds")) != canonical_json(
             asdict(bounds)
@@ -2859,6 +2874,11 @@ class ReportAuditCoordinator:
                 prompt_name=CALL_KIND_PROMPTS[call_kind],
                 input_hash=input_hash,
                 call_kind=call_kind,
+                schema_path=self.resources.schema_path(call_kind),
+                prompt_path=self.resources.prompt_path(call_kind),
+                expected_prompt_hash=self.prompt_hashes[call_kind],
+                schema_resource_paths=self.resources.configured_schema_resources(),
+                expected_service_schema_hash=self.service_schema_hashes[call_kind],
             )
             result = self.invoker_factory().invoke(request_value)
             self._validate_metadata(result.metadata, call_kind, input_hash, rendered_hash)
@@ -2986,6 +3006,13 @@ class ReportAuditCoordinator:
                 prompt_name=CALL_KIND_PROMPTS["quality_audit"],
                 input_hash=input_hash,
                 call_kind="quality_audit",
+                schema_path=self.resources.schema_path("quality_audit"),
+                prompt_path=self.resources.prompt_path("quality_audit"),
+                expected_prompt_hash=self.prompt_hashes["quality_audit"],
+                schema_resource_paths=self.resources.configured_schema_resources(),
+                expected_service_schema_hash=self.service_schema_hashes[
+                    "quality_audit"
+                ],
             )
             result = self.invoker_factory().invoke(request_value)
             self._validate_metadata(
@@ -3800,7 +3827,9 @@ class ReportAuditCoordinator:
             metadata.actual_model,
             metadata.actual_profile,
         )
-        if actual != expected:
+        if actual != expected or not self.resources.accepts_metadata_paths(
+            call_kind, metadata.schema_path, metadata.prompt_path
+        ):
             raise ReportAuditOutputError("Sol invocation metadata does not match the frozen audit step")
         if not str(metadata.invocation_id).strip():
             raise ReportAuditOutputError("Sol invocation metadata lacks a fresh invocation ID")
@@ -3816,7 +3845,7 @@ class ReportAuditCoordinator:
         payload: Mapping[str, Any],
     ) -> None:
         try:
-            validate(output, CALL_KIND_SCHEMAS[call_kind], self.schema_root)
+            self.resources.validate(output, call_kind)
         except SchemaValidationError as error:
             raise ReportAuditOutputError(str(error)) from error
         if call_kind == "quality_audit":
@@ -4108,6 +4137,7 @@ class ReportAuditCoordinator:
                         bibliography=bundle["bibliography"],
                         audit=audit,
                         previous=previous,
+                        rubric_path=self.rubric_path,
                     )
                 except ReportArtifactError:
                     if not target.exists():
@@ -4176,6 +4206,7 @@ class ReportAuditCoordinator:
                 bibliography=bundle["bibliography"],
                 audit=audit,
                 previous=previous,
+                rubric_path=self.rubric_path,
             )
         except ReportArtifactError as error:
             raise ReportAuditError(
@@ -4457,7 +4488,7 @@ class ReportAuditCoordinator:
         )
 
     def _rendered_prompt(self, call_kind: str, prompt: str) -> str:
-        template = (self.prompt_root / CALL_KIND_PROMPTS[call_kind]).read_text(encoding="utf-8")
+        template = self.resources.prompt(call_kind)
         encoded = json.dumps(
             {"authorized_input": prompt}, ensure_ascii=False, separators=(",", ":")
         )

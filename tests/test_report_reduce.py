@@ -31,6 +31,7 @@ from paper_agent.report_plan import (
 )
 from paper_agent.report_artifacts import ReportArtifactStore
 from paper_agent.report_audit import ReportAuditCoordinator, stage4b_audit_config_hash
+from paper_agent.report_config import ReportResources
 from paper_agent.report_reduce import (
     PROFILE,
     REASONING_EFFORT,
@@ -351,6 +352,8 @@ class FakeSol:
             attempts=1,
             actual_model=actual_model,
             actual_profile=actual_profile,
+            schema_path=request.schema_path,
+            prompt_path=request.prompt_path,
         )
         return CodexExecResult(output, metadata)
 
@@ -397,6 +400,8 @@ def _fixture(
     summary_size: int = 0,
     normalized_text: bool = False,
     execution_mode: str = "attended",
+    resources: ReportResources | None = None,
+    rubric_path: Path | None = None,
     coverage_dispositions: dict[str, tuple[str, str | None, tuple[str, ...]]] | None = None,
 ) -> Fixture:
     database = Database(tmp_path / "papers.sqlite")
@@ -729,16 +734,20 @@ def _fixture(
     draft_document["stage4b_config_hash"] = stage4b_reduce_config_hash(
         policy.hash,
         execution_mode=execution_mode,
+        resources=resources,
     )
     draft_document["stage4b_audit_config_hash"] = stage4b_audit_config_hash(
         policy.hash,
         execution_mode=execution_mode,
+        resources=resources,
+        rubric_path=rubric_path,
     )
     draft = compile_report_plan(
         draft_document,
         corpus_snapshot=corpus,
         search_audit_pack=audit,
         created_at="2026-08-10T00:03:00Z",
+        resources=resources,
     )
     plan = approve_report_plan(
         draft,
@@ -777,6 +786,8 @@ def _fixture(
         memberships,
         invoker_factory=factory,
         execution_mode=execution_mode,
+        resources=resources,
+        rubric_path=rubric_path,
         clock=lambda: clock[0],
     )
     reduce_plan = ReportPlanner(

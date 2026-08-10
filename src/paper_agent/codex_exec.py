@@ -18,6 +18,7 @@ import sysconfig
 from tempfile import TemporaryDirectory
 from types import MappingProxyType
 from typing import Any, Callable, Literal, Mapping, Sequence
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from jsonschema import Draft202012Validator
@@ -168,6 +169,100 @@ def _validate_strict_schema(schema: Mapping[str, Any]) -> None:
     visit(schema, "$")
 
 
+def prepare_service_schema(
+    schema_name: str,
+    schema: Mapping[str, Any],
+    *,
+    schema_root: Path,
+    resource_paths: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Resolve frozen local refs and enforce Codex structured-output rules."""
+    configured = {
+        name: Path(path) for name, path in (resource_paths or {}).items()
+    }
+    documents = {schema_name: dict(schema)}
+    resolving: set[tuple[str, str]] = set()
+
+    def document(name: str) -> dict[str, Any]:
+        if name not in documents:
+            parsed = urlsplit(name)
+            relative = Path(parsed.path)
+            if (
+                parsed.scheme
+                or parsed.netloc
+                or relative.is_absolute()
+                or ".." in relative.parts
+                or len(relative.parts) != 1
+            ):
+                raise CodexOutputError(
+                    f"referenced frozen schema is not a local sibling: {name}"
+                )
+            path = configured.get(name, schema_root / name)
+            if not path.is_file():
+                raise CodexOutputError(
+                    f"referenced frozen schema is missing: {name}"
+                )
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as error:
+                raise CodexOutputError(
+                    f"referenced frozen schema is not valid JSON: {name}"
+                ) from error
+            if not isinstance(value, dict):
+                raise CodexOutputError(
+                    f"referenced schema must be a JSON object: {name}"
+                )
+            documents[name] = value
+        return documents[name]
+
+    def resolve_pointer(value: Any, fragment: str, reference: str) -> Any:
+        try:
+            for part in fragment.removeprefix("/").split("/") if fragment else ():
+                value = value[part.replace("~1", "/").replace("~0", "~")]
+        except (KeyError, IndexError, TypeError) as error:
+            raise CodexOutputError(
+                f"referenced frozen schema pointer is missing: {reference}"
+            ) from error
+        return value
+
+    def expand(
+        value: Any, current_name: str, current_document: Mapping[str, Any]
+    ) -> Any:
+        if isinstance(value, list):
+            return [expand(item, current_name, current_document) for item in value]
+        if not isinstance(value, Mapping):
+            return value
+        if "$ref" in value:
+            if set(value) != {"$ref"}:
+                raise CodexOutputError(
+                    "Codex output schemas do not support sibling constraints beside $ref"
+                )
+            reference = str(value["$ref"])
+            filename, _, fragment = reference.partition("#")
+            target_name = filename or current_name
+            target_document = document(target_name) if filename else current_document
+            marker = (target_name, fragment)
+            if marker in resolving:
+                raise CodexOutputError(
+                    f"recursive frozen schema reference is unsupported: {reference}"
+                )
+            resolving.add(marker)
+            try:
+                target = resolve_pointer(target_document, fragment, reference)
+                return expand(target, target_name, target_document)
+            finally:
+                resolving.remove(marker)
+        return {
+            key: expand(item, current_name, current_document)
+            for key, item in value.items()
+            if key not in {"$schema", "$id", "$defs", "uniqueItems"}
+        }
+
+    result = expand(schema, schema_name, schema)
+    _validate_strict_schema(result)
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class CodexExecRequest:
     """One new, independent model invocation.
@@ -184,6 +279,11 @@ class CodexExecRequest:
     prompt_name: str
     input_hash: str
     call_kind: CallKind | None = None
+    schema_path: str | None = None
+    prompt_path: str | None = None
+    expected_prompt_hash: str | None = None
+    schema_resource_paths: Mapping[str, str] | None = None
+    expected_service_schema_hash: str | None = None
 
     def __post_init__(self) -> None:
         if not self.prompt:
@@ -204,6 +304,55 @@ class CodexExecRequest:
             raise ValueError("profile requires its frozen output schema name")
         elif self.prompt_name != PROFILE_PROMPTS[self.profile]:
             raise ValueError("profile requires its frozen prompt")
+        if (self.schema_path is None) != (self.prompt_path is None):
+            raise ValueError("custom schema and prompt paths must be supplied together")
+        if self.schema_path is not None and self.profile != "stage4b_summary_sol":
+            raise ValueError("only Stage 4b calls may use configured resource paths")
+        if self.schema_resource_paths is not None:
+            if self.profile != "stage4b_summary_sol" or self.schema_path is None:
+                raise ValueError(
+                    "only configured Stage 4b calls may map schema resources"
+                )
+            if set(self.schema_resource_paths) != set(CALL_KIND_SCHEMAS.values()):
+                raise ValueError(
+                    "configured Stage 4b schema resources must map every call kind"
+                )
+            resources = {
+                str(name): str(path)
+                for name, path in self.schema_resource_paths.items()
+            }
+            if Path(resources[self.schema_name]) != Path(self.schema_path):
+                raise ValueError(
+                    "configured Stage 4b schema path differs from its resource map"
+                )
+            object.__setattr__(
+                self, "schema_resource_paths", MappingProxyType(resources)
+            )
+            if self.expected_service_schema_hash is None:
+                raise ValueError(
+                    "configured Stage 4b resources require an effective schema SHA-256"
+                )
+        if self.expected_service_schema_hash is not None and (
+            len(self.expected_service_schema_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.expected_service_schema_hash
+            )
+        ):
+            raise ValueError(
+                "expected effective schema hash must be a lowercase SHA-256"
+            )
+        if self.schema_path is not None and (
+            self.expected_prompt_hash is None
+            or len(self.expected_prompt_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.expected_prompt_hash
+            )
+        ):
+            raise ValueError(
+                "configured Stage 4b resources require an expected prompt SHA-256"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +371,8 @@ class InvocationMetadata:
     attempts: int
     actual_model: str | None
     actual_profile: str | None
+    schema_path: str | None = None
+    prompt_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,13 +451,33 @@ class CodexExec:
     def invoke(self, request: CodexExecRequest) -> CodexExecResult:
         profile = self.profile(request.profile)
         invocation_id = str(uuid4())
-        frozen_schema = self._frozen_schema(request.schema_name)
+        schema_path = Path(request.schema_path) if request.schema_path is not None else None
+        prompt_path = Path(request.prompt_path) if request.prompt_path is not None else None
+        frozen_schema = self._frozen_schema(request.schema_name, schema_path)
         if _digest(request.output_schema) != _digest(frozen_schema):
             raise CodexOutputError(f"{request.schema_name} does not match the frozen repository schema")
-        service_schema = self._service_schema(request.schema_name, frozen_schema)
+        service_schema = self._service_schema(
+            request.schema_name,
+            frozen_schema,
+            request.schema_resource_paths,
+        )
+        if (
+            request.expected_service_schema_hash is not None
+            and _digest(service_schema) != request.expected_service_schema_hash
+        ):
+            raise CodexOutputError(
+                f"{request.schema_name} dependencies changed after approval"
+            )
         schema_hash = _digest(frozen_schema)
-        prompt_template = self._frozen_prompt(request.prompt_name)
+        prompt_template = self._frozen_prompt(request.prompt_name, prompt_path)
         prompt_hash = _digest(prompt_template)
+        if (
+            request.expected_prompt_hash is not None
+            and prompt_hash != request.expected_prompt_hash
+        ):
+            raise CodexOutputError(
+                f"{request.prompt_name} changed after its caller approved the prompt"
+            )
         rendered_prompt = self._render_prompt(prompt_template, request.prompt)
         rendered_prompt_hash = _digest(rendered_prompt)
         with TemporaryDirectory(prefix="paper-agent-codex-exec-", dir=self._temporary_root) as directory:
@@ -344,6 +515,8 @@ class CodexExec:
                 attempts=self._attempt_count(completed),
                 actual_model=actual_model,
                 actual_profile=actual_profile,
+                schema_path=request.schema_path,
+                prompt_path=request.prompt_path,
             )
             return CodexExecResult(MappingProxyType(output), metadata)
 
@@ -415,60 +588,35 @@ class CodexExec:
             raise CodexProcessError(f"{' '.join(argv[:3])} exited with status {completed.returncode}")
         return completed.stdout
 
-    def _frozen_schema(self, schema_name: str) -> dict[str, Any]:
-        path = self._schema_root / schema_name
-        if not path.is_file() or path.parent != self._schema_root:
+    def _frozen_schema(
+        self, schema_name: str, configured_path: Path | None = None
+    ) -> dict[str, Any]:
+        path = configured_path or self._schema_root / schema_name
+        if not path.is_file() or (configured_path is None and path.parent != self._schema_root):
             raise CodexOutputError(f"frozen schema is missing: {schema_name}")
         value = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise CodexOutputError(f"frozen schema must be a JSON object: {schema_name}")
         return value
 
-    def _service_schema(self, schema_name: str, schema: Mapping[str, Any]) -> dict[str, Any]:
-        """Resolve local refs and enforce the strict structured-output subset."""
-        documents = {schema_name: dict(schema)}
+    def _service_schema(
+        self,
+        schema_name: str,
+        schema: Mapping[str, Any],
+        resource_paths: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return prepare_service_schema(
+            schema_name,
+            schema,
+            schema_root=self._schema_root,
+            resource_paths=resource_paths,
+        )
 
-        def document(name: str) -> dict[str, Any]:
-            if name not in documents:
-                path = self._schema_root / name
-                if not path.is_file() or path.parent != self._schema_root:
-                    raise CodexOutputError(f"referenced frozen schema is missing: {name}")
-                value = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(value, dict):
-                    raise CodexOutputError(f"referenced schema must be a JSON object: {name}")
-                documents[name] = value
-            return documents[name]
-
-        def resolve_pointer(value: Any, fragment: str) -> Any:
-            for part in fragment.removeprefix("/").split("/") if fragment else ():
-                value = value[part.replace("~1", "/").replace("~0", "~")]
-            return value
-
-        def expand(value: Any, current_name: str, current_document: Mapping[str, Any]) -> Any:
-            if isinstance(value, list):
-                return [expand(item, current_name, current_document) for item in value]
-            if not isinstance(value, Mapping):
-                return value
-            if "$ref" in value:
-                reference = str(value["$ref"])
-                filename, _, fragment = reference.partition("#")
-                target_name = filename or current_name
-                target_document = document(target_name) if filename else current_document
-                target = resolve_pointer(target_document, fragment)
-                return expand(target, target_name, target_document)
-            return {
-                key: expand(item, current_name, current_document)
-                for key, item in value.items()
-                if key not in {"$schema", "$id", "$defs", "uniqueItems"}
-            }
-
-        result = expand(schema, schema_name, schema)
-        _validate_strict_schema(result)
-        return result
-
-    def _frozen_prompt(self, prompt_name: str) -> str:
-        path = self._prompt_root / prompt_name
-        if not path.is_file() or path.parent != self._prompt_root:
+    def _frozen_prompt(
+        self, prompt_name: str, configured_path: Path | None = None
+    ) -> str:
+        path = configured_path or self._prompt_root / prompt_name
+        if not path.is_file() or (configured_path is None and path.parent != self._prompt_root):
             raise CodexOutputError(f"frozen prompt is missing: {prompt_name}")
         return path.read_text(encoding="utf-8")
 

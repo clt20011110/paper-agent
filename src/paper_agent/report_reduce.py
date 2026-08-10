@@ -36,6 +36,7 @@ from .processing import (
     ProcessingRequest,
 )
 from .report_budget import canonical_report_budget
+from .report_config import ReportResources
 from .report_invocations import (
     ReportInvocationError,
     register_report_invocation,
@@ -90,24 +91,30 @@ def stage4b_reduce_config_hash(
     implementation_version: str = IMPLEMENTATION_VERSION,
     schema_root: Path | None = None,
     prompt_root: Path | None = None,
+    resources: ReportResources | None = None,
 ) -> str:
     if execution_mode not in {"attended", "unattended"}:
         raise ValueError("execution_mode must be attended or unattended")
-    schemas = schema_directory(schema_root)
-    prompts = prompt_directory() if prompt_root is None else prompt_root
+    report_resources = resources or ReportResources.defaults(
+        schema_root=schema_root, prompt_root=prompt_root
+    )
+    report_resources.validate_files()
     schema_hashes = {
-        call_kind: _json_hash(
-            json.loads((schemas / schema_name).read_text(encoding="utf-8"))
-        )
-        for call_kind, schema_name in CALL_KIND_SCHEMAS.items()
+        call_kind: _json_hash(report_resources.schema(call_kind))
+        for call_kind in CALL_KIND_SCHEMAS
+    }
+    service_schema_hashes = {
+        call_kind: report_resources.service_schema_hash(call_kind)
+        for call_kind in CALL_KIND_SCHEMAS
     }
     prompt_hashes = {
-        call_kind: sha256((prompts / prompt_name).read_bytes()).hexdigest()
-        for call_kind, prompt_name in CALL_KIND_PROMPTS.items()
+        call_kind: sha256(report_resources.prompt_paths[call_kind].read_bytes()).hexdigest()
+        for call_kind in CALL_KIND_PROMPTS
     }
     return content_hash(_stage4b_config_document(
         processing_policy_hash,
         schema_hashes,
+        service_schema_hashes,
         prompt_hashes,
         execution_mode,
         implementation_version,
@@ -117,6 +124,7 @@ def stage4b_reduce_config_hash(
 def _stage4b_config_document(
     processing_policy_hash: str,
     schema_hashes: Mapping[str, str],
+    service_schema_hashes: Mapping[str, str],
     prompt_hashes: Mapping[str, str],
     execution_mode: str,
     implementation_version: str,
@@ -126,6 +134,7 @@ def _stage4b_config_document(
         "model": SUMMARY_MODEL,
         "reasoning_effort": REASONING_EFFORT,
         "schema_hashes": dict(schema_hashes),
+        "service_schema_hashes": dict(service_schema_hashes),
         "prompt_hashes": dict(prompt_hashes),
         "processing_policy_hash": processing_policy_hash,
         "prompt_token_estimator": PROMPT_TOKEN_ESTIMATOR,
@@ -253,6 +262,8 @@ class SolReduceCoordinator:
         invoker_factory: Callable[[], SolInvoker] = CodexExec,
         schema_root: Path | None = None,
         prompt_root: Path | None = None,
+        resources: ReportResources | None = None,
+        rubric_path: Path | None = None,
         implementation_version: str = IMPLEMENTATION_VERSION,
         execution_mode: str = "attended",
         clock: Callable[[], datetime] | None = None,
@@ -268,12 +279,17 @@ class SolReduceCoordinator:
         self.invoker_factory = invoker_factory
         self.schema_root = schema_directory(schema_root)
         self.prompt_root = prompt_directory() if prompt_root is None else prompt_root
+        self.resources = resources or ReportResources.defaults(
+            schema_root=schema_root, prompt_root=prompt_root
+        )
+        self.resources.validate_files()
+        self.rubric_path = rubric_path
         self.implementation_version = implementation_version
         self.execution_mode = execution_mode
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.schemas = {
-            call_kind: json.loads((self.schema_root / schema_name).read_text(encoding="utf-8"))
-            for call_kind, schema_name in CALL_KIND_SCHEMAS.items()
+            call_kind: self.resources.schema(call_kind)
+            for call_kind in CALL_KIND_SCHEMAS
         }
         self.analysis_schema = json.loads(
             (self.schema_root / "paper-analysis.schema.json").read_text(encoding="utf-8")
@@ -285,13 +301,18 @@ class SolReduceCoordinator:
         self.schema_hashes = {
             call_kind: _json_hash(schema) for call_kind, schema in self.schemas.items()
         }
+        self.service_schema_hashes = {
+            call_kind: self.resources.service_schema_hash(call_kind)
+            for call_kind in CALL_KIND_SCHEMAS
+        }
         self.prompt_hashes = {
-            call_kind: sha256((self.prompt_root / prompt_name).read_bytes()).hexdigest()
-            for call_kind, prompt_name in CALL_KIND_PROMPTS.items()
+            call_kind: sha256(self.resources.prompt_paths[call_kind].read_bytes()).hexdigest()
+            for call_kind in CALL_KIND_PROMPTS
         }
         self.config_hash = content_hash(_stage4b_config_document(
             self.gate.policy.hash,
             self.schema_hashes,
+            self.service_schema_hashes,
             self.prompt_hashes,
             execution_mode,
             implementation_version,
@@ -303,6 +324,8 @@ class SolReduceCoordinator:
             execution_mode=execution_mode,
             schema_root=self.schema_root,
             prompt_root=self.prompt_root,
+            resources=self.resources,
+            rubric_path=self.rubric_path,
         )
 
     def run(
@@ -440,7 +463,7 @@ class SolReduceCoordinator:
     ) -> None:
         try:
             require_valid_approval(plan, "plan_hash")
-            validate(plan, "report-plan.schema.json", self.schema_root)
+            self.resources.validate(plan, "planning_assist")
             runtime_plan = compile_report_plan(
                 plan,
                 corpus_snapshot=corpus_snapshot,
@@ -449,6 +472,7 @@ class SolReduceCoordinator:
                 created_at=str(plan["created_at"]),
                 schema_root=self.schema_root,
                 prompt_root=self.prompt_root,
+                resources=self.resources,
             )
             assert_report_runtime_matches(
                 plan,
@@ -1139,6 +1163,7 @@ class SolReduceCoordinator:
                 search_audit_pack,
                 final_output_byte_limit=output_limits[final.node_id],
                 synthesis_output_byte_limit=output_limits[synthesis_id],
+                rubric_path=self.rubric_path,
             )
         except ReportAuditBudgetError as error:
             raise SolBudgetError(str(error)) from error
@@ -1181,7 +1206,7 @@ class SolReduceCoordinator:
         return limits
 
     def _rendered_prompt(self, call_kind: str, prompt: str) -> str:
-        template = (self.prompt_root / CALL_KIND_PROMPTS[call_kind]).read_text(encoding="utf-8")
+        template = self.resources.prompt(call_kind)
         encoded = json.dumps(
             {"authorized_input": prompt}, ensure_ascii=False, separators=(",", ":")
         )
@@ -1415,6 +1440,13 @@ class SolReduceCoordinator:
                 prompt_name=CALL_KIND_PROMPTS[node.call_kind],
                 input_hash=input_hash,
                 call_kind=node.call_kind,
+                schema_path=self.resources.schema_path(node.call_kind),
+                prompt_path=self.resources.prompt_path(node.call_kind),
+                expected_prompt_hash=self.prompt_hashes[node.call_kind],
+                schema_resource_paths=self.resources.configured_schema_resources(),
+                expected_service_schema_hash=self.service_schema_hashes[
+                    node.call_kind
+                ],
             )
             result = self.invoker_factory().invoke(request)
             self._validate_metadata(
@@ -1534,6 +1566,9 @@ class SolReduceCoordinator:
         )
         if (
             actual != expected
+            or not self.resources.accepts_metadata_paths(
+                node.call_kind, metadata.schema_path, metadata.prompt_path
+            )
             or metadata.actual_model != SUMMARY_MODEL
             or metadata.actual_profile != PROFILE
             or metadata.rendered_prompt_hash != rendered_prompt_hash
@@ -1556,7 +1591,7 @@ class SolReduceCoordinator:
         if len(canonical_json(output)) > output_byte_limit:
             raise SolOutputError("Sol output exceeded the frozen node byte limit")
         try:
-            validate(output, CALL_KIND_SCHEMAS[node.call_kind], self.schema_root)
+            self.resources.validate(output, node.call_kind)
         except SchemaValidationError as error:
             raise SolOutputError(str(error)) from error
         dependencies = tuple(dependency_outputs[dependency] for dependency in node.dependency_ids)

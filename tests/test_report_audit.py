@@ -111,6 +111,8 @@ class FakeAuditSol:
             attempts=1,
             actual_model=actual_model,
             actual_profile=PROFILE,
+            schema_path=request.schema_path,
+            prompt_path=request.prompt_path,
         )
         return CodexExecResult(output, metadata)
 

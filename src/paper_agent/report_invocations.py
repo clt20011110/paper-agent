@@ -37,7 +37,7 @@ def register_report_invocation(
                 invocation_id,
                 phase,
                 node_key,
-                content_hash(dict(metadata)),
+                report_invocation_metadata_hash(metadata),
             ),
         )
     except sqlite3.IntegrityError as error:
@@ -66,7 +66,7 @@ def require_report_invocation(
     if (
         row is None
         or row["invocation_id"] != invocation_id
-        or row["metadata_hash"] != content_hash(dict(metadata))
+        or row["metadata_hash"] != report_invocation_metadata_hash(metadata)
     ):
         raise ReportInvocationError(
             "persisted Sol invocation registry binding has drifted"
@@ -78,3 +78,12 @@ def _validate_identity(invocation_id: str, phase: str, node_key: str) -> None:
         raise ReportInvocationError("unsupported report invocation phase")
     if not invocation_id.strip() or not node_key.strip():
         raise ReportInvocationError("report invocation identity must not be empty")
+
+
+def report_invocation_metadata_hash(metadata: Mapping[str, Any]) -> str:
+    """Hash metadata while preserving compatibility with pre-path records."""
+    document = dict(metadata)
+    for key in ("schema_path", "prompt_path"):
+        if document.get(key) is None:
+            document.pop(key, None)
+    return content_hash(document)

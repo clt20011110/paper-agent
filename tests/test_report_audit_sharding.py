@@ -27,6 +27,7 @@ from paper_agent.report_audit import (
     stage4b_audit_config_hash,
     stage4b_audit_repair_budget_bounds,
 )
+from paper_agent.report_config import ReportResources
 from paper_agent.storage import Database
 import test_report_reduce
 from test_report_audit import _audit_fixture
@@ -122,6 +123,7 @@ def _bundle() -> dict:
 def _planner() -> ReportAuditCoordinator:
     coordinator = object.__new__(ReportAuditCoordinator)
     coordinator.prompt_root = prompt_directory()
+    coordinator.resources = ReportResources.defaults()
     coordinator.rubric = {"version": 1, "rules": ["audit everything"]}
     coordinator.rubric_hash = content_hash(coordinator.rubric)
     return coordinator
@@ -287,6 +289,42 @@ def test_shared_preflight_budget_includes_frozen_bibliography_bytes() -> None:
     )
 
     assert expanded.worst_case_input_tokens > baseline.worst_case_input_tokens
+
+
+def test_shared_preflight_repeats_custom_rubric_in_every_audit_shard(
+    tmp_path: Path,
+) -> None:
+    plan = {
+        "plan_hash": "a" * 64,
+        "sections": [{"id": "evidence"}],
+        "paper_memberships": [{"paper_id": "p1", "section_ids": ["evidence"]}],
+    }
+    corpus = {"snapshot_hash": "b" * 64, "papers": [{"paper_id": "p1"}]}
+    search = {"pack_hash": "c" * 64}
+    rubric = tmp_path / "large-rubric.yaml"
+    rubric.write_text(
+        "version: 1\nproject_note: " + json.dumps("x" * 400_000) + "\n",
+        encoding="utf-8",
+    )
+
+    baseline = stage4b_audit_repair_budget_bounds(
+        plan,
+        corpus,
+        search,
+        final_output_byte_limit=65_536,
+        synthesis_output_byte_limit=65_536,
+    )
+    expanded = stage4b_audit_repair_budget_bounds(
+        plan,
+        corpus,
+        search,
+        final_output_byte_limit=65_536,
+        synthesis_output_byte_limit=65_536,
+        rubric_path=rubric,
+    )
+
+    assert expanded.audit_shards_per_pass > baseline.audit_shards_per_pass
+    assert expanded.worst_case_calls > baseline.worst_case_calls
 
 
 def test_migration_014_persists_recoverable_audit_shard_steps(tmp_path: Path) -> None:

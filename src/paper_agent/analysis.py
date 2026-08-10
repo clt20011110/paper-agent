@@ -34,6 +34,7 @@ from .codex_exec import (
     CodexExecRequest,
     CodexExecResult,
     InvocationMetadata,
+    prepare_service_schema,
     prompt_directory,
 )
 from .grants import GrantStore
@@ -254,6 +255,11 @@ class PaperAnalysisCoordinator:
         self.schema_path, self.schema, self.schema_hash = load_analysis_output_schema(
             output_schema_path
         )
+        self.service_schema_hash = content_hash(prepare_service_schema(
+            ANALYSIS_SCHEMA,
+            self.schema,
+            schema_root=schema_directory(),
+        ))
         self.prompt_hash = sha256(
             (prompt_directory() / ANALYSIS_PROMPT).read_bytes()
         ).hexdigest()
@@ -268,6 +274,7 @@ class PaperAnalysisCoordinator:
         self.legacy_config_hash = content_hash(legacy_config)
         policy_config = {
             **legacy_config,
+            "service_schema_hash": self.service_schema_hash,
             "processing_policy_version": self.gate.policy.version,
             "processing_policy_hash": self.gate.policy.hash,
         }
@@ -653,6 +660,8 @@ class PaperAnalysisCoordinator:
             result = self.invoker_factory().invoke(CodexExecRequest(
                 profile=ANALYSIS_PROFILE, prompt=prompt, output_schema=self.schema,
                 schema_name=ANALYSIS_SCHEMA, prompt_name=ANALYSIS_PROMPT, input_hash=sent_hash,
+                expected_prompt_hash=self.prompt_hash,
+                expected_service_schema_hash=self.service_schema_hash,
             ))
             metadata = result.metadata
             analysis_output = self._validate_output(

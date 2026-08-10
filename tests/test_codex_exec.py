@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 import subprocess
 
@@ -17,6 +18,7 @@ from paper_agent.codex_exec import (
     CodexProcessError,
     CodexTimeoutError,
     FROZEN_PROFILES,
+    prepare_service_schema,
 )
 
 
@@ -153,6 +155,131 @@ def test_stage4b_requires_its_call_kind_schema_and_hashes() -> None:
         )
 
 
+def test_stage4b_invocation_uses_explicit_configured_resource_paths(tmp_path: Path) -> None:
+    schema_path = tmp_path / "configured" / "project-audit.json"
+    schema_path.parent.mkdir()
+    schema = {**SCHEMA, "title": "Project audit output"}
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    prompt_path = tmp_path / "configured" / "project-audit.md"
+    prompt_path.write_text("Project-specific audit instructions.\n", encoding="utf-8")
+    request = _request(
+        profile="stage4b_summary_sol",
+        call_kind="quality_audit",
+        output_schema=schema,
+        schema_name=CALL_KIND_SCHEMAS["quality_audit"],
+        prompt_name=CALL_KIND_PROMPTS["quality_audit"],
+        schema_path=str(schema_path),
+        prompt_path=str(prompt_path),
+        expected_prompt_hash=sha256(prompt_path.read_bytes()).hexdigest(),
+    )
+    runner = FakeRunner([0])
+
+    result = CodexExec(runner=runner).invoke(request)
+
+    assert str(runner.calls[0]["input"]).startswith("Project-specific audit instructions.")
+    assert result.metadata.schema_path == str(schema_path)
+    assert result.metadata.prompt_path == str(prompt_path)
+
+
+def test_configured_resources_are_stage4b_only_and_prompt_drift_fails_before_call(
+    tmp_path: Path,
+) -> None:
+    schema_path = tmp_path / "custom.schema.json"
+    schema_path.write_text(json.dumps(SCHEMA), encoding="utf-8")
+    prompt_path = tmp_path / "custom.md"
+    prompt_path.write_text("Changed prompt\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="only Stage 4b"):
+        _request(
+            schema_path=str(schema_path),
+            prompt_path=str(prompt_path),
+            expected_prompt_hash="a" * 64,
+        )
+
+    request = _request(
+        profile="stage4b_summary_sol",
+        call_kind="quality_audit",
+        schema_name=CALL_KIND_SCHEMAS["quality_audit"],
+        prompt_name=CALL_KIND_PROMPTS["quality_audit"],
+        schema_path=str(schema_path),
+        prompt_path=str(prompt_path),
+        expected_prompt_hash="a" * 64,
+    )
+    runner = FakeRunner([0])
+
+    with pytest.raises(CodexOutputError, match="changed after"):
+        CodexExec(runner=runner).invoke(request)
+    assert runner.calls == []
+
+
+def test_stage4b_resolves_refs_through_the_configured_call_kind_map(
+    tmp_path: Path,
+) -> None:
+    schema = {
+        **SCHEMA,
+        "properties": {
+            **SCHEMA["properties"],
+            "status": {"$ref": "report-document.schema.json"},
+        },
+    }
+    schema_path = tmp_path / "custom" / "audit.schema.json"
+    schema_path.parent.mkdir()
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    dependency_path = tmp_path / "other" / "document.schema.json"
+    dependency_path.parent.mkdir()
+    dependency_path.write_text(
+        json.dumps({"type": "string", "const": "ok"}), encoding="utf-8"
+    )
+    prompt_path = tmp_path / "custom" / "audit.md"
+    prompt_path.write_text("Configured audit prompt.\n", encoding="utf-8")
+    resources = {
+        name: str(tmp_path / name) for name in CALL_KIND_SCHEMAS.values()
+    }
+    resources[CALL_KIND_SCHEMAS["quality_audit"]] = str(schema_path)
+    resources[CALL_KIND_SCHEMAS["final_reduce"]] = str(dependency_path)
+    service_schema = prepare_service_schema(
+        CALL_KIND_SCHEMAS["quality_audit"],
+        schema,
+        schema_root=tmp_path,
+        resource_paths=resources,
+    )
+    request = _request(
+        profile="stage4b_summary_sol",
+        call_kind="quality_audit",
+        output_schema=schema,
+        schema_name=CALL_KIND_SCHEMAS["quality_audit"],
+        prompt_name=CALL_KIND_PROMPTS["quality_audit"],
+        schema_path=str(schema_path),
+        prompt_path=str(prompt_path),
+        expected_prompt_hash=sha256(prompt_path.read_bytes()).hexdigest(),
+        schema_resource_paths=resources,
+        expected_service_schema_hash=sha256(
+            json.dumps(
+                service_schema,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    )
+    runner = FakeRunner([0])
+
+    CodexExec(runner=runner).invoke(request)
+
+    assert runner.output_schemas[0]["properties"]["status"] == {
+        "type": "string",
+        "const": "ok",
+    }
+
+    dependency_path.write_text(
+        json.dumps({"type": "string", "const": "changed"}), encoding="utf-8"
+    )
+    drift_runner = FakeRunner([0])
+    with pytest.raises(CodexOutputError, match="dependencies changed"):
+        CodexExec(runner=drift_runner).invoke(request)
+    assert drift_runner.calls == []
+
+
 def test_request_schema_must_match_frozen_repository_schema() -> None:
     changed = {**SCHEMA, "required": ["paper_id"]}
     with pytest.raises(CodexOutputError, match="frozen repository schema"):
@@ -186,6 +313,22 @@ def test_service_schema_resolves_local_refs_and_checks_strict_objects(tmp_path: 
     (tmp_path / "paper-analysis.schema.json").write_text(json.dumps(invalid), encoding="utf-8")
     with pytest.raises(CodexOutputError, match="require every declared property"):
         CodexExec(runner=FakeRunner([0])).invoke(_request(output_schema=invalid))
+
+    sibling = {
+        **schema,
+        "properties": {
+            **schema["properties"],
+            "status": {
+                "$ref": "evidence-unit.schema.json",
+                "description": "This constraint would otherwise be discarded",
+            },
+        },
+    }
+    (tmp_path / "paper-analysis.schema.json").write_text(
+        json.dumps(sibling), encoding="utf-8"
+    )
+    with pytest.raises(CodexOutputError, match="sibling constraints"):
+        CodexExec(runner=FakeRunner([0])).invoke(_request(output_schema=sibling))
 
 
 @pytest.mark.parametrize("output, message", [

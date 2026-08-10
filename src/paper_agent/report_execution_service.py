@@ -12,6 +12,7 @@ from .canonical import content_hash
 from .processing import ProcessingGate
 from .report_artifacts import ReportArtifactStore
 from .report_audit import ReportAuditCoordinator, ReportAuditResult, ReportBundle, SolInvoker as AuditInvoker
+from .report_config import ReportRuntimeConfig
 from .report_plan import ReportPlanBundle, assert_report_runtime_matches, persist_approved_report_plan
 from .report_reduce import FrozenDerivedArtifact, ReportReduceResult, SolInvoker as ReduceInvoker, SolReduceCoordinator
 from .reporting import AnalysisRecord, ReportPlanner, SectionRule, derive_comparison_groups
@@ -25,6 +26,7 @@ class ReportExecutionResult:
     dry_run: bool
     reduce: ReportReduceResult | None = None
     audit: ReportAuditResult | None = None
+    skipped: bool = False
 
 
 class ReportExecutionService:
@@ -40,6 +42,7 @@ class ReportExecutionService:
         reduce_invoker_factory: Callable[[], ReduceInvoker] | None = None,
         audit_invoker_factory: Callable[[], AuditInvoker] | None = None,
         execution_mode: str = "attended",
+        runtime_config: ReportRuntimeConfig | None = None,
     ) -> None:
         self.database = database
         self.artifact_store = artifact_store
@@ -48,6 +51,7 @@ class ReportExecutionService:
         self.reduce_invoker_factory = reduce_invoker_factory
         self.audit_invoker_factory = audit_invoker_factory
         self.execution_mode = execution_mode
+        self.runtime_config = runtime_config or ReportRuntimeConfig.defaults()
         self.last_reduce: SolReduceCoordinator | None = None
         self.last_audit: ReportAuditCoordinator | None = None
 
@@ -61,6 +65,11 @@ class ReportExecutionService:
         previous: Mapping[str, Any] | None = None,
         dry_run: bool = False,
     ) -> ReportExecutionResult:
+        if not self.runtime_config.enabled:
+            return ReportExecutionResult(report_run_id, "complete", dry_run, skipped=True)
+        self.runtime_config.validate_for_run(
+            bundle.plan, execution_mode=self.execution_mode
+        )
         _validate_processing_grants(processing_grants)
         assert_report_runtime_matches(
             bundle.plan, bundle.plan,
@@ -82,7 +91,11 @@ class ReportExecutionService:
             return ReportExecutionResult(report_run_id, "validated", True)
 
         persist_approved_report_plan(self.database, bundle.plan)
-        reduce_options: dict[str, Any] = {"execution_mode": self.execution_mode}
+        reduce_options: dict[str, Any] = {
+            "execution_mode": self.execution_mode,
+            "resources": self.runtime_config.resources,
+            "rubric_path": self.runtime_config.rubric_path,
+        }
         if self.reduce_invoker_factory is not None:
             reduce_options["invoker_factory"] = self.reduce_invoker_factory
         reducer = SolReduceCoordinator(
@@ -98,7 +111,11 @@ class ReportExecutionService:
         if reduced.status != "generation_complete":
             return ReportExecutionResult(report_run_id, reduced.status, False, reduce=reduced)
 
-        audit_options: dict[str, Any] = {"execution_mode": self.execution_mode}
+        audit_options: dict[str, Any] = {
+            "execution_mode": self.execution_mode,
+            "resources": self.runtime_config.resources,
+            "rubric_path": self.runtime_config.rubric_path,
+        }
         if self.audit_invoker_factory is not None:
             audit_options["invoker_factory"] = self.audit_invoker_factory
         auditor = ReportAuditCoordinator(

@@ -14,8 +14,9 @@ from typing import Any
 
 from .approval import ApprovalError, approve, approved_content_hash, require_valid_approval
 from .canonical import canonical_json, content_hash
-from .codex_exec import CALL_KIND_PROMPTS, prompt_directory
-from .schema import SchemaValidationError, schema_directory, validate
+from .codex_exec import CALL_KIND_PROMPTS
+from .report_config import ReportResources
+from .schema import SchemaValidationError, validate
 
 
 REPORT_SECTION_IDS = (
@@ -324,18 +325,21 @@ def compile_report_plan(
     created_at: str | None = None,
     schema_root: Path | None = None,
     prompt_root: Path | None = None,
+    resources: ReportResources | None = None,
 ) -> dict[str, Any]:
     _validate_report_inputs(corpus_snapshot, search_audit_pack)
     source = deepcopy(dict(draft))
     timestamp = created_at or str(source.pop("created_at", ""))
     if not timestamp:
         raise ReportPlanError("created_at is required to compile a ReportPlan")
-    root = schema_directory(schema_root)
-    report_schema = json.loads((root / "report-plan.schema.json").read_text(encoding="utf-8"))
-    prompts = prompt_directory() if prompt_root is None else prompt_root
+    report_resources = resources or ReportResources.defaults(
+        schema_root=schema_root, prompt_root=prompt_root
+    )
+    report_resources.validate_files()
+    report_schema = report_resources.schema("planning_assist")
     prompt_hashes = {
-        call_kind: sha256((prompts / filename).read_bytes()).hexdigest()
-        for call_kind, filename in CALL_KIND_PROMPTS.items()
+        call_kind: sha256(report_resources.prompt_paths[call_kind].read_bytes()).hexdigest()
+        for call_kind in CALL_KIND_PROMPTS
     }
     fields = (
         "objective",
@@ -377,7 +381,7 @@ def compile_report_plan(
     plan["plan_id"] = plan_id or f"report-plan-{plan_hash[:12]}"
     plan["plan_hash"] = plan_hash
     try:
-        validate(plan, "report-plan.schema.json", root)
+        report_resources.validate(plan, "planning_assist")
     except SchemaValidationError as error:
         raise ReportPlanError(str(error)) from error
     return plan

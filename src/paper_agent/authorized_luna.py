@@ -8,7 +8,14 @@ from hashlib import sha256
 import json
 from typing import Any, Protocol
 
-from .codex_exec import CodexExec, CodexExecRequest, CodexExecResult
+from .canonical import content_hash
+from .codex_exec import (
+    CodexExec,
+    CodexExecRequest,
+    CodexExecResult,
+    prepare_service_schema,
+    prompt_directory,
+)
 from .schema import schema_directory
 from .stage3_pipeline import LunaPlannerInput
 
@@ -35,6 +42,14 @@ class AuthorizedLunaPlanner:
         self.invoker = invoker or CodexExec()
         path = schema_directory() / "authorized-browser-result.schema.json"
         self.schema = json.loads(path.read_text(encoding="utf-8"))
+        self.service_schema_hash = content_hash(prepare_service_schema(
+            "authorized-browser-result.schema.json",
+            self.schema,
+            schema_root=schema_directory(),
+        ))
+        self.prompt_hash = sha256(
+            (prompt_directory() / "authorized-browser.md").read_bytes()
+        ).hexdigest()
 
     def __call__(self, control: LunaPlannerInput) -> AuthorizedLunaDecision:
         payload = json.dumps(asdict(control), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -45,6 +60,8 @@ class AuthorizedLunaPlanner:
             schema_name="authorized-browser-result.schema.json",
             prompt_name="authorized-browser.md",
             input_hash=sha256(payload.encode("utf-8")).hexdigest(),
+            expected_prompt_hash=self.prompt_hash,
+            expected_service_schema_hash=self.service_schema_hash,
         ))
         metadata = result.metadata
         if (

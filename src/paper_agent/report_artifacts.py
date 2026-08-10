@@ -222,6 +222,7 @@ def _validate_audit_binding(
     bibliography: Mapping[str, Mapping[str, Any]],
     search_audit: Mapping[str, Any],
     corpus_snapshot: Mapping[str, Any],
+    rubric_path: str | Path | None = None,
 ) -> None:
     expected = (
         content_hash(document),
@@ -234,7 +235,7 @@ def _validate_audit_binding(
             bibliography=bibliography,
         ),
         str(plan.get("plan_hash") or content_hash(plan)),
-        audit_rubric_hash(),
+        audit_rubric_hash(rubric_path),
         content_hash(list(_disclosures(search_audit, corpus_snapshot))),
         canonical_json(audit_coverage_ledger(document, claims)),
     )
@@ -875,6 +876,7 @@ class ReportArtifactStore:
         bibliography: Mapping[str, Mapping[str, Any]],
         audit: Mapping[str, Any],
         previous: Mapping[str, Any] | None = None,
+        rubric_path: str | Path | None = None,
     ) -> Path:
         contents, markdown = self._bundle_contents(
             plan=plan,
@@ -888,6 +890,7 @@ class ReportArtifactStore:
             bibliography=bibliography,
             audit=audit,
             previous=previous,
+            rubric_path=rubric_path,
         )
         report_run_id = str(document["report_run_id"])
         target = self.directory(report_run_id)
@@ -921,6 +924,7 @@ class ReportArtifactStore:
         bibliography: Mapping[str, Mapping[str, Any]],
         audit: Mapping[str, Any],
         previous: Mapping[str, Any] | None = None,
+        rubric_path: str | Path | None = None,
     ) -> Path:
         """Verify a crash-left bundle byte-for-byte, then restore ``latest.md``."""
         contents, markdown = self._bundle_contents(
@@ -935,6 +939,7 @@ class ReportArtifactStore:
             bibliography=bibliography,
             audit=audit,
             previous=previous,
+            rubric_path=rubric_path,
         )
         target = self.directory(str(document["report_run_id"]))
         try:
@@ -978,6 +983,7 @@ class ReportArtifactStore:
         bibliography: Mapping[str, Mapping[str, Any]],
         audit: Mapping[str, Any],
         previous: Mapping[str, Any] | None,
+        rubric_path: str | Path | None = None,
     ) -> tuple[dict[str, str], str]:
         try:
             canonical_comparison_groups = require_exact_comparison_groups(
@@ -1009,6 +1015,7 @@ class ReportArtifactStore:
             bibliography=bibliography,
             search_audit=search_audit,
             corpus_snapshot=corpus_snapshot,
+            rubric_path=rubric_path,
         )
         severe = [item for item in audit.get("findings", ()) if item.get("severity") in {"blocker", "major"}]
         if severe:
