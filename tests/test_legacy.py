@@ -53,7 +53,7 @@ def test_migrates_legacy_configuration_to_schema_valid_v2(tmp_path: Path) -> Non
     assert converted["analysis"]["workers"] == 7
     assert converted["sources"]["plan_defaults"]["arxiv"]["include_arxiv_candidates"] is True
     assert converted["sources"]["plan_defaults"]["venues"][1] == {
-        "descriptor": "venues/ieee_tcad.yaml",
+        "descriptor": "venues/tcad.yaml",
         "date_from": "2024-01-01",
         "date_to": "2024-12-31",
     }

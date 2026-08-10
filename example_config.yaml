@@ -1,99 +1,227 @@
-output_dir: ./paper_research
-topic: "Diffusion Models for Molecular Generation"
-
+# Full v2 example. Create and approve the search/report plans before an unattended run.
+version: 2
+project:
+  topic: "Diffusion Models for Molecular Generation"
+  output_dir: ./paper_research
+  report_language: zh-CN
+storage:
+  sqlite_path: ./paper_research/papers.sqlite3
+  wal: true
+  exports:
+    - {format: jsonl, path: ./paper_research/exports/papers.jsonl}
+    - {format: csv, path: ./paper_research/exports/papers.csv}
 sources:
-  conferences:
-    - name: ICLR
-      years: [2024]
-      platform: openreview
-    - name: AAAI
-      years: [2024]
-      platform: openreview
-    - name: ACL
-      years: [2024]
-      platform: acl
-    - name: CVPR
-      years: [2024]
-      platform: cvpr
-    - name: ICCV
-      years: [2023]
-      platform: iccv
-    - name: IJCAI
-      years: [2024]
-      platform: ijcai
-    - name: DAC
-      years: [2024]
-      platform: dblp_dac
-    - name: ICCAD
-      years: [2024]
-      platform: dblp_iccad
-    - name: TCAD
-      years: [2024]
-      platform: dblp_tcad
-
-  journals:
-    - name: Nature Machine Intelligence
-      years: [2024]
-      platform: nature
-    - name: Nature Chemistry
-      years: [2024]
-      platform: nature
-    - name: Nature Computer Science
-      years: [2024]
-      platform: nature_computer_science
-    - name: Nature Communications
-      years: [2024]
-      platform: nature
-    - name: Nature Catalysis
-      years: [2024]
-      platform: nature_catalysis
-    - name: Nature Biotechnology
-      years: [2024]
-      platform: nature_biotechnology
-    - name: Nature Biomedical Engineering
-      years: [2024]
-      platform: nature_biomedical_engineering
-    - name: Cell
-      years: [2024]
-      platform: cell
-    - name: Science
-      years: [2024]
-      platform: science
-
-  arxiv:
-    enabled: true
-    categories: [cs.AI, cs.LG, cs.CL]
-    keywords: "diffusion model, molecular generation"
-    date_range: "2023-01-01 to 2024-12-31"
-    save_to_database: false
-    max_results: 100
-
-database:
-  format: json
-  path: ./paper_research/database/papers.json
-  incremental: true
-  backup: true
-
+  approved_plan:
+    input_path: ./paper_research/search/latest-approved.json
+    content_hash: null
+    required: true
+  plan_defaults:
+    required_roles: [venue_primary, search, citation, metadata_verifier]
+    provider_policy: all_resolved
+    user_seeds: {inputs: []}
+    venues:
+      - {descriptor: venues/iclr.yaml, years: [2024]}
+      - {descriptor: venues/aaai.yaml, years: [2024]}
+      - {descriptor: venues/acl.yaml, years: [2024]}
+      - {descriptor: venues/cvpr.yaml, years: [2024]}
+      - {descriptor: venues/iccv.yaml, years: [2023]}
+      - {descriptor: venues/ijcai.yaml, years: [2024]}
+      - {descriptor: venues/dac.yaml, years: [2024]}
+      - {descriptor: venues/iccad.yaml, years: [2024]}
+      - {descriptor: venues/tcad.yaml, date_from: "2024-01-01", date_to: "2024-12-31"}
+      - {descriptor: venues/nature_machine_intelligence.yaml, years: [2024]}
+      - {descriptor: venues/nature_chemistry.yaml, years: [2024]}
+      - {descriptor: venues/nature_computational_science.yaml, years: [2024]}
+      - {descriptor: venues/nature_communications.yaml, years: [2024]}
+      - {descriptor: venues/nature_catalysis.yaml, years: [2024]}
+      - {descriptor: venues/nature_biotechnology.yaml, years: [2024]}
+      - {descriptor: venues/nature_biomedical_engineering.yaml, years: [2024]}
+      - {descriptor: venues/cell.yaml, years: [2024]}
+      - {descriptor: venues/science.yaml, years: [2024]}
+    arxiv:
+      enabled: true
+      roles: [search, metadata_enricher, metadata_verifier, oa_resolver]
+      categories: [cs.AI, cs.LG, cs.CL]
+      date_from: "2023-01-01"
+      include_arxiv_candidates: false
+      use_matched_arxiv_as_download_source: true
+      global_min_interval_seconds: 3
+    providers:
+      crossref:
+        enabled: true
+        roles: [search, metadata_enricher, metadata_verifier]
+        mailto_env: CROSSREF_MAILTO
+        rate_policy: response_headers
+      dblp:
+        enabled: auto_for_cs
+        roles: [search, metadata_enricher, metadata_verifier]
+        bulk_snapshot_preferred: true
+      semantic_scholar:
+        enabled: true
+        roles: [search, citation, metadata_enricher, metadata_verifier]
+        api_key_env: SEMANTIC_SCHOLAR_API_KEY
+        use_batch_endpoints: true
+      openalex:
+        enabled: true
+        roles: [search, citation, metadata_enricher, metadata_verifier]
+        api_key_env: OPENALEX_API_KEY
+        mode: api
+        snapshot_path: null
+      pubmed:
+        enabled: auto_for_biomed
+        roles: [search, metadata_enricher, metadata_verifier]
+        api_key_env: NCBI_API_KEY
+        tool: paper-agent
+        email_env: NCBI_EMAIL
+      europe_pmc:
+        enabled: auto_for_biomed
+        roles: [search, citation, metadata_enricher, metadata_verifier, oa_resolver]
+      unpaywall:
+        enabled: true
+        roles: [oa_resolver]
+        email_env: UNPAYWALL_EMAIL
+    verification:
+      prefer_formal_version: true
+      require_two_sources_when_feasible: true
+      preserve_conflicts: true
+    citation_snowball:
+      enabled: true
+      directions: [references, citations]
+      max_depth: 2
+      max_rounds: 2
+      seed_selector: relevant_topk_by_subquestion_v1
+      seeds_per_subquestion: 20
+      max_per_seed_per_source: 500
+      max_candidates_per_round: 50000
+      max_seconds_per_round: 14400
+    saturation:
+      min_unique_included_yield: 0.05
+      consecutive_low_yield_rounds: 2
+      max_candidates: 200000
+      max_requests: 20000
+  plugin_allowlist: []
 filter:
-  mode: hybrid
-  regex:
-    include_groups:
-      - [diffusion, molecular]
-      - [diffusion, generation]
-    exclude:
-      - survey
-      - review
-    match_fields: [title, abstract]
-    case_sensitive: false
-    whole_word: false
-
-analysis:
-  model: "stepfun/step-3.5-flash:free"
-  summary_model: "anthropic/claude-3.5-sonnet"
-  generate_summary: true
-  workers: 4
-
+  mode: cascade
+  deterministic:
+    include: ["diffusion AND molecular", "diffusion AND generation"]
+    exclude_document_types: [editorial, retraction, survey, review]
+  reranker:
+    backend: omlx_rerank
+    model: BAAI/bge-reranker-v2-m3
+    source_repo: BAAI/bge-reranker-v2-m3
+    source_revision: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
+    format: fp32
+    document_batch_size: 32
+    candidate_batch_sizes: [16, 32, 64]
+    max_in_flight: 2
+    thresholds_artifact: ./paper_research/models/stage2-thresholds.json
+  adjudicator:
+    backend: omlx_chat
+    model: mlx-community/Qwen3.5-9B-8bit
+    revision: 16daa4818c54ce5f5436f929d52542eb65bbed9d
+    chat_template_kwargs: {enable_thinking: false}
+    temperature: 0
+    seed: 42
+    stream: false
+    max_tokens: 256
+    max_context_window: 16384
+    structured_output:
+      transport: extra_body.structured_outputs.json
+      schema: ./schemas/filter-decision.schema.json
+    client_concurrency: 4
+    server_max_concurrent_requests: 8
+    benchmark_concurrency_pairs: [[4, 8], [8, 8], [8, 16], [16, 16]]
+    expected_max_share: 0.15
+  fail_open: true
 download:
-  delay: 1.0
-  timeout: 60
-  preferred_source: auto
+  include_supplements: false
+  resolvers: [publisher_public, europe_pmc, unpaywall, arxiv]
+  providers: [public_direct, europe_pmc, unpaywall_location, arxiv, authorized_skill, manual]
+  purpose: personal_research
+  policy_matrix: ./policies/download-access-v1.yaml
+  require_access_basis: true
+  treat_unknown_license_as_open: false
+  authorized_skill:
+    enabled: false
+    skill_name: download-authorized-papers
+    authorization_grant_id: null
+    data_sharing_grant_id: null
+    profile: stage3_authorized_luna
+    codex_model: gpt-5.6-luna
+    reasoning_effort: low
+    grant_defaults:
+      source_zip_sha256: null
+      installed_content_sha256: null
+      allowed_domains: []
+      paper_ids: []
+      collection_snapshot_hash: null
+      selection_snapshot_hash: null
+      max_papers: null
+      actions: [download, store, extract]
+      purpose: personal_research
+      mode: attended
+      allow_unattended: false
+      authorization_expires_at: null
+analysis:
+  profile: stage4_analysis_luna
+  provider: codex_exec
+  model: gpt-5.6-luna
+  reasoning_effort: medium
+  sandbox: read_only
+  network: false
+  output_schema: ./schemas/paper-analysis.schema.json
+  workers: 4
+  allow_abstract_only: true
+  remote_model_processing:
+    policy_matrix: ./policies/artifact-processing-v1.yaml
+    processing_grant_id: null
+    require_artifact_hash_scope: true
+summary:
+  enabled: true
+  profile: stage4b_summary_sol
+  provider: codex_exec
+  model: gpt-5.6-sol
+  reasoning_effort: high
+  sandbox: read_only
+  network: false
+  schemas:
+    planning_assist: ./schemas/report-plan.schema.json
+    section_reduce: ./schemas/section-synthesis.schema.json
+    cross_section_reduce: ./schemas/cross-section-synthesis.schema.json
+    final_reduce: ./schemas/report-document.schema.json
+    quality_audit: ./schemas/report-audit.schema.json
+    repair: ./schemas/report-repair.schema.json
+  prompts:
+    planning_assist: ./prompts/report-plan.md
+    section_reduce: ./prompts/section-synthesis.md
+    cross_section_reduce: ./prompts/cross-section-synthesis.md
+    final_reduce: ./prompts/final-report.md
+    quality_audit: ./prompts/report-audit.md
+    repair: ./prompts/report-repair.md
+  format: markdown
+  language: zh-CN
+  report_plan:
+    input_path: null
+    content_hash: null
+    required_for_unattended: true
+    classification_axes: [subquestion, theme, method_family, task, dataset, benchmark, time, publication_status, evidence_type, study_setting]
+  require_search_audit: true
+  require_complete_coverage: true
+  require_claim_evidence: true
+  semantic_chunking: true
+  remote_model_processing:
+    policy_matrix: ./policies/artifact-processing-v1.yaml
+    processing_grant_id: null
+    require_lineage_hash_scope: true
+  citations: {marker: stable_paper_id, style: ieee, bibliography_from_canonical_metadata: true}
+  final_audit:
+    deterministic: true
+    independent_sol_session: true
+    rubric: ./policies/report-audit-rubric-v1.yaml
+    max_blocker_findings: 0
+    max_major_findings: 0
+    max_repair_calls: 1
+    reverify_and_reaudit_after_repair: true
+  immutable_run_directories: true
+  update_latest_after_pass: true
+  emit_incremental_diff: true

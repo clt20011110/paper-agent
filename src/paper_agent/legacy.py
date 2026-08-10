@@ -36,7 +36,7 @@ _VENUE_DESCRIPTORS = {
     "IJCAI": "venues/ijcai.yaml",
     "DAC": "venues/dac.yaml",
     "ICCAD": "venues/iccad.yaml",
-    "TCAD": "venues/ieee_tcad.yaml",
+    "TCAD": "venues/tcad.yaml",
     "Nature Machine Intelligence": "venues/nature_machine_intelligence.yaml",
     "Nature Chemistry": "venues/nature_chemistry.yaml",
     "Nature Computational Science": "venues/nature_computational_science.yaml",
