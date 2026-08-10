@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+import re
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
@@ -185,9 +186,22 @@ def _arxiv_identifier(value: str | None) -> str | None:
     if not value:
         return None
     normalized = value.strip().replace("arXiv:", "").replace("arxiv:", "")
-    if "/abs/" in normalized:
-        normalized = normalized.rstrip("/").rsplit("/", 1)[-1]
+    parsed = urlsplit(normalized)
+    if parsed.scheme and parsed.hostname:
+        path = parsed.path.rstrip("/")
+        for prefix in ("/abs/", "/pdf/"):
+            if path.startswith(prefix):
+                normalized = path.removeprefix(prefix)
+                break
+    if normalized.endswith(".pdf"):
+        normalized = normalized[:-4]
     return normalized or None
+
+
+def _arxiv_identifier_matches(expected: str, observed: str) -> bool:
+    expected_base = re.sub(r"v\d+$", "", expected)
+    observed_base = re.sub(r"v\d+$", "", observed)
+    return observed == expected if expected != expected_base else observed_base == expected_base
 
 
 class OfficialPublicResolver:
@@ -205,8 +219,13 @@ class OfficialPublicResolver:
             if source.access_basis not in {
                 AccessBasis.OPEN_LICENSE,
                 AccessBasis.PUBLIC_READ_ONLY,
+                AccessBasis.USER_SUBSCRIPTION,
             }:
                 continue
+            evidence = ResolverEvidence(
+                payload=source.to_dict(),
+                retrieved_at=source.last_seen_at or context.retrieved_at,
+            )
             candidate = _candidate(
                 context.paper,
                 resolver=self.name,
@@ -215,6 +234,7 @@ class OfficialPublicResolver:
                 publication_version=source.publication_version,
                 license=source.license,
                 access_basis=source.access_basis,
+                evidence=evidence,
                 retrieved_at=context.retrieved_at,
                 provenance={"source_id": source.source_id, "source_provider": source.provider},
             )
@@ -328,7 +348,7 @@ class MatchedArxivResolver:
         output: list[AccessLocationCandidate] = []
         for entry in entries:
             entry_id = _arxiv_identifier(_text(entry.get("id")))
-            if entry_id != expected:
+            if entry_id is None or not _arxiv_identifier_matches(expected, entry_id):
                 continue
             landing_url = _text(entry.get("id"))
             url = landing_url.replace("/abs/", "/pdf/") if landing_url else None

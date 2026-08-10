@@ -16,7 +16,7 @@ from .authorized_skill_runtime import (
     AuthorizedSkillRuntime,
     AuthorizedSkillRuntimeError,
 )
-from .downloads import AuthorizationContext
+from .downloads import AuthorizationContext, FetchRejected
 from .domain import (
     AccessLocationCandidate,
     DownloadResult,
@@ -45,6 +45,18 @@ class Stage3GrantAuthorizer(Protocol):
     def load(self, grant_id: str, **kwargs: object) -> object: ...
 
     def require_active(self, grant_id: str, **kwargs: object) -> object: ...
+
+
+class Stage3ManualQueue(Protocol):
+    """Persist one deduplicated manual item after the provider chain is exhausted."""
+
+    def enqueue_manual(
+        self,
+        queue_type: str,
+        dedup_key: str,
+        paper_id: str | None,
+        reason: Mapping[str, object],
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +144,7 @@ class Stage3Pipeline:
     purpose: str
     now: str
     run_id: str
+    manual_queue: Stage3ManualQueue
     resolver_order: tuple[str, ...] = DEFAULT_RESOLVER_ORDER
     authorized: AuthorizedSkillOptions = AuthorizedSkillOptions()
 
@@ -167,16 +180,32 @@ class Stage3Pipeline:
     ) -> Stage3PaperResult:
         candidates = self._resolve(item)
         attempts: list[Stage3Attempt] = []
+        authorized_candidates: list[tuple[AccessLocationCandidate, Stage3Attempt]] = []
+        denied_candidates = 0
         for candidate in candidates:
             public = self._probe(candidate, provider=None, context=self._public_context())
             attempts.append(public)
+            if public.status == FetchDecisionStatus.DENY.value:
+                denied_candidates += 1
+                continue
             result = self._fetch_if_allowed(candidate, public, self._public_fetch_context())
             if result is not None:
-                attempts.append(_download_attempt(candidate, public.provider, result))
+                fetch_attempt = _download_attempt(candidate, public.provider, result)
+                attempts.append(fetch_attempt)
                 if result.status is DownloadStatus.DOWNLOADED:
                     return Stage3PaperResult(item.paper.paper_id, result.status, "downloaded", tuple(attempts), result)
+                if result.status is DownloadStatus.AUTH_REQUIRED:
+                    authorized_candidates.append((candidate, fetch_attempt))
+            elif public.status in {
+                FetchDecisionStatus.NEEDS_GRANT.value,
+                FetchDecisionStatus.MANUAL.value,
+            }:
+                authorized_candidates.append((candidate, public))
 
-            if self.authorized.enabled:
+        # Authorized browser work is a fallback provider stage.  Do not enter
+        # it until every public/OA candidate has been tried in frozen order.
+        if self.authorized.enabled:
+            for candidate, public in authorized_candidates:
                 assert skill_state is not None
                 skill_attempt = self._authorized_attempt(candidate, public, skill_state)
                 attempts.append(skill_attempt)
@@ -186,9 +215,36 @@ class Stage3Pipeline:
                     if skill_result.status is DownloadStatus.DOWNLOADED:
                         return Stage3PaperResult(item.paper.paper_id, skill_result.status, "downloaded", tuple(attempts), skill_result)
 
+        if candidates and denied_candidates == len(candidates):
+            return Stage3PaperResult(
+                item.paper.paper_id,
+                DownloadStatus.FAILED_TERMINAL,
+                "all_access_locations_denied",
+                tuple(attempts),
+            )
         reason = "no_access_location_candidates" if not candidates else "manual_queue_required"
         attempts.append(Stage3Attempt(None, "manual", FetchDecisionStatus.MANUAL.value, reason))
-        return Stage3PaperResult(item.paper.paper_id, DownloadStatus.MANUAL_REQUIRED, reason, tuple(attempts))
+        self.manual_queue.enqueue_manual(
+            "download",
+            f"{self.run_id}:{item.paper.paper_id}",
+            item.paper.paper_id,
+            {
+                "run_id": self.run_id,
+                "reason_code": reason,
+                "attempts": [
+                    {
+                        "candidate_id": attempt.candidate_id,
+                        "provider": attempt.provider,
+                        "status": attempt.status,
+                        "reason_code": attempt.reason_code,
+                    }
+                    for attempt in attempts
+                ],
+            },
+        )
+        return Stage3PaperResult(
+            item.paper.paper_id, DownloadStatus.MANUAL_REQUIRED, reason, tuple(attempts)
+        )
 
     def _resolve(self, item: Stage3Paper) -> tuple[AccessLocationCandidate, ...]:
         context = ResolverContext(
@@ -232,6 +288,11 @@ class Stage3Pipeline:
             return None
         try:
             return self.providers.fetch(attempt.fetch_request, context)
+        except FetchRejected:
+            return DownloadResult(
+                attempt.fetch_request.request_id, candidate.paper_id, DownloadStatus.MANUAL_REQUIRED,
+                attempt.provider, error_code="fetch_request_rejected",
+            )
         except (DownloadProviderError, OSError, ValueError):
             return DownloadResult(
                 attempt.fetch_request.request_id, candidate.paper_id, DownloadStatus.FAILED_RETRYABLE,

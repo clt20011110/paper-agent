@@ -21,6 +21,7 @@ from paper_agent.download_providers import (
     ResolverDescriptor,
     ResolverRegistry,
 )
+from paper_agent.downloads import FetchRejected
 from paper_agent.stage3_pipeline import (
     AuthorizedSkillOptions,
     Stage3Paper,
@@ -54,6 +55,7 @@ class Provider:
     decisions: dict[str, FetchDecision]
     probes: list[tuple[str, str]]
     fetches: list[FetchRequest]
+    fetch_error: Exception | None = None
 
     def probe(self, value, _context: ProbeContext) -> FetchDecision:
         self.probes.append((self.name, value.candidate_id))
@@ -61,11 +63,42 @@ class Provider:
 
     def fetch(self, value: FetchRequest, _context: FetchContext) -> DownloadResult:
         self.fetches.append(value)
+        if self.fetch_error is not None:
+            raise self.fetch_error
         return DownloadResult(value.request_id, "paper-1", DownloadStatus.DOWNLOADED, self.name)
 
 
-def pipeline(*, resolvers: ResolverRegistry, providers: DownloadProviderRegistry, authorized=AuthorizedSkillOptions()) -> Stage3Pipeline:
-    return Stage3Pipeline(resolvers, providers, "research", NOW, "run-1", resolvers.names, authorized)
+@dataclass
+class ManualQueue:
+    calls: list[tuple[str, str, str | None, dict[str, object]]]
+
+    def enqueue_manual(
+        self,
+        queue_type: str,
+        dedup_key: str,
+        paper_id: str | None,
+        reason: dict[str, object],
+    ) -> None:
+        self.calls.append((queue_type, dedup_key, paper_id, reason))
+
+
+def pipeline(
+    *,
+    resolvers: ResolverRegistry,
+    providers: DownloadProviderRegistry,
+    authorized=AuthorizedSkillOptions(),
+    manual_queue: ManualQueue | None = None,
+) -> Stage3Pipeline:
+    return Stage3Pipeline(
+        resolvers,
+        providers,
+        "research",
+        NOW,
+        "run-1",
+        manual_queue or ManualQueue([]),
+        resolvers.names,
+        authorized,
+    )
 
 
 def test_resolves_in_frozen_order_continues_after_unavailable_and_fetches_only_allow_request() -> None:
@@ -96,12 +129,137 @@ def test_explicit_manual_outcome_never_fetches_a_non_allow_probe() -> None:
     }, [], [])
     registry = DownloadProviderRegistry((DownloadProviderDescriptor("public_direct", provider, lambda _value: True),))
 
-    result = pipeline(resolvers=resolver_registry, providers=registry).run((Stage3Paper(Paper("paper-1", "One")),)).for_paper("paper-1")
+    manual_queue = ManualQueue([])
+    result = pipeline(
+        resolvers=resolver_registry, providers=registry, manual_queue=manual_queue
+    ).run((Stage3Paper(Paper("paper-1", "One")),)).for_paper("paper-1")
 
     assert provider.fetches == []
     assert result.status is DownloadStatus.MANUAL_REQUIRED
     assert result.attempts[-1].provider == "manual"
     assert result.attempts[-1].status == "manual"
+    assert manual_queue.calls[0][:3] == ("download", "run-1:paper-1", "paper-1")
+    assert manual_queue.calls[0][3]["reason_code"] == "manual_queue_required"
+
+
+def test_policy_deny_is_terminal_and_never_escalates_to_the_authorized_skill() -> None:
+    value = candidate("denied", "publisher")
+    resolver_registry = ResolverRegistry((
+        ResolverDescriptor("publisher", Resolver("publisher", (value,))),
+    ))
+    public = Provider("public_direct", {
+        "denied": FetchDecision(
+            "denied", FetchDecisionStatus.DENY, "redistribution_forbidden", "policy-v1"
+        ),
+    }, [], [])
+    skill = Provider("authorized_skill", {
+        "denied": FetchDecision(
+            "denied", FetchDecisionStatus.ALLOW, "granted", "policy-v1",
+            request("denied", "authorized_skill"),
+        ),
+    }, [], [])
+    registry = DownloadProviderRegistry((
+        DownloadProviderDescriptor("public_direct", public, lambda _value: True),
+        DownloadProviderDescriptor("authorized_skill", skill, lambda _value: False),
+    ))
+    options = AuthorizedSkillOptions(
+        enabled=True,
+        runtime=Runtime(SimpleNamespace(installed_content_sha256="skill", dependency_lock_sha256="deps")),  # type: ignore[arg-type]
+    )
+
+    result = pipeline(
+        resolvers=resolver_registry, providers=registry, authorized=options
+    ).run((Stage3Paper(Paper("paper-1", "One")),)).for_paper("paper-1")
+
+    assert result.status is DownloadStatus.FAILED_TERMINAL
+    assert result.reason_code == "all_access_locations_denied"
+    assert skill.probes == []
+
+
+def test_all_public_locations_are_tried_before_authorized_browser_fallback() -> None:
+    private = candidate("private", "publisher")
+    public_copy = candidate("public-copy", "arxiv")
+    resolver_registry = ResolverRegistry((
+        ResolverDescriptor("publisher", Resolver("publisher", (private,))),
+        ResolverDescriptor("arxiv", Resolver("arxiv", (public_copy,))),
+    ))
+    public = Provider(
+        "public_direct",
+        {
+            "private": FetchDecision(
+                "private", FetchDecisionStatus.NEEDS_GRANT, "grant_required", "policy-v1"
+            ),
+            "public-copy": FetchDecision(
+                "public-copy", FetchDecisionStatus.ALLOW, "open", "policy-v1",
+                request("public-copy", "public_direct"),
+            ),
+        },
+        [],
+        [],
+    )
+    skill = Provider(
+        "authorized_skill",
+        {
+            "private": FetchDecision(
+                "private", FetchDecisionStatus.ALLOW, "granted", "policy-v1",
+                request("private", "authorized_skill"),
+            ),
+        },
+        [],
+        [],
+    )
+    registry = DownloadProviderRegistry((
+        DownloadProviderDescriptor("public_direct", public, lambda _value: True),
+        DownloadProviderDescriptor("authorized_skill", skill, lambda _value: False),
+    ))
+    options = AuthorizedSkillOptions(
+        enabled=True,
+        runtime=Runtime(
+            SimpleNamespace(
+                installed_content_sha256="skill", dependency_lock_sha256="deps"
+            )
+        ),  # type: ignore[arg-type]
+        grant_store=Grants([]),
+        authorization_grant_id="grant-1",
+    )
+
+    result = pipeline(
+        resolvers=resolver_registry, providers=registry, authorized=options
+    ).run((Stage3Paper(Paper("paper-1", "One")),)).for_paper("paper-1")
+
+    assert result.status is DownloadStatus.DOWNLOADED
+    assert [value.candidate_id for value in public.fetches] == ["public-copy"]
+    assert skill.probes == []
+
+
+def test_rejected_persisted_request_is_manual_not_blindly_retryable() -> None:
+    value = candidate("rejected", "publisher")
+    resolver_registry = ResolverRegistry((
+        ResolverDescriptor("publisher", Resolver("publisher", (value,))),
+    ))
+    provider = Provider(
+        "public_direct",
+        {
+            "rejected": FetchDecision(
+                "rejected", FetchDecisionStatus.ALLOW, "open", "policy-v1",
+                request("rejected", "public_direct"),
+            )
+        },
+        [],
+        [],
+        FetchRejected("authorization grant is revoked"),
+    )
+    registry = DownloadProviderRegistry((
+        DownloadProviderDescriptor("public_direct", provider, lambda _value: True),
+    ))
+
+    result = pipeline(
+        resolvers=resolver_registry, providers=registry
+    ).run((Stage3Paper(Paper("paper-1", "One")),)).for_paper("paper-1")
+
+    fetch_attempt = next(item for item in result.attempts if item.status == "fetch")
+    assert fetch_attempt.download_status is DownloadStatus.MANUAL_REQUIRED
+    assert fetch_attempt.reason_code == "fetch_request_rejected"
 
 
 @dataclass

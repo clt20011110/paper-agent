@@ -594,8 +594,9 @@ class DownloadService:
         }
         late_failure: tuple[DownloadStatus, str] | None = None
         with self.database.transaction() as connection:
+            late_completed_at = max(completed_at, _as_datetime(self.clock()))
             late_failure = self._completion_failure(
-                request, candidate, terms, runtime_context, completed_at, connection=connection
+                request, candidate, terms, runtime_context, late_completed_at, connection=connection
             )
             if late_failure:
                 return self._finish_failure(
@@ -732,7 +733,6 @@ class DownloadService:
             grant=grant,
             authorization_context=runtime_context if grant else None,
             now=at,
-            force_new=True,
         )
 
     def _save_policy_decision(
@@ -798,7 +798,6 @@ class DownloadService:
         grant: ActiveGrant | None,
         authorization_context: AuthorizationContext | None,
         now: datetime,
-        force_new: bool = False,
     ) -> FetchRequest:
         grant_id = grant.grant_id if grant else None
         grant_hash = grant.content_hash if grant else None
@@ -810,7 +809,7 @@ class DownloadService:
                    ORDER BY fencing_token DESC LIMIT 1""",
                 (candidate.candidate_id, provider, purpose, self.policy.hash, grant_id, grant_hash),
             ).fetchone()
-            if existing is not None and not force_new:
+            if existing is not None:
                 existing_identity = self._request_identity_hash(
                     candidate,
                     purpose,
@@ -964,10 +963,13 @@ class DownloadService:
             raise GrantError("download grant does not cover candidate domain")
         scoped_paper = candidate.paper_id if scope["paper_ids"] else None
         scoped_collection = collection_id if scope["collection_ids"] else None
+        has_selection = False
         if scope["paper_ids"]:
+            has_selection = True
             if candidate.paper_id not in scope["paper_ids"]:
                 raise GrantError("download grant does not cover paper")
-        elif scope["collection_ids"]:
+        if scope["collection_ids"]:
+            has_selection = True
             if collection_id not in scope["collection_ids"]:
                 raise GrantError("download grant does not cover collection")
             membership = self.database.connection.execute(
@@ -977,19 +979,22 @@ class DownloadService:
             ).fetchone()
             if membership is None:
                 raise GrantError("paper is outside the authorized collection")
-            if scope["collection_snapshot_hash"] and (
+        if scope["collection_snapshot_hash"]:
+            has_selection = True
+            if (
                 self.scope_membership is None
                 or not self.scope_membership(scope["collection_snapshot_hash"], candidate.paper_id)
             ):
                 raise GrantError("paper is outside the frozen collection snapshot")
-        elif scope["selection_snapshot_hash"]:
+        if scope["selection_snapshot_hash"]:
+            has_selection = True
             if selection_snapshot_hash != scope["selection_snapshot_hash"]:
                 raise GrantError("download grant selection snapshot does not match")
             if self.scope_membership is None or not self.scope_membership(
                 scope["selection_snapshot_hash"], candidate.paper_id
             ):
                 raise GrantError("paper is outside the frozen selection snapshot")
-        else:
+        if not has_selection:
             raise GrantError("download grant has no usable paper selection")
         data_category = "full_text" if scope["data_categories"] else None
         if scope["data_categories"] and "full_text" not in scope["data_categories"]:
@@ -1067,7 +1072,7 @@ class DownloadService:
         if row is None or row["status"] != "consumed":
             return DownloadStatus.FAILED_TERMINAL, "stale_fencing_token"
         if completed_at >= _as_datetime(row["expires_at"]):
-            return DownloadStatus.MANUAL_REQUIRED, "authorization_expired_during_fetch"
+            return DownloadStatus.FAILED_RETRYABLE, "fetch_request_expired_during_fetch"
         current = reader.execute(
             """SELECT MAX(fencing_token) FROM fetch_requests
                WHERE candidate_id = ? AND provider = ? AND policy_hash = ?
@@ -1145,7 +1150,7 @@ class DownloadService:
             connection.execute(
                 """UPDATE download_attempts
                    SET result_status = ?, failure_category = ?, http_status = ?, browser_result_json = ?
-                   WHERE download_attempt_id = ?""",
+                   WHERE download_attempt_id = ? AND result_status = 'pending'""",
                 (
                     persisted_status,
                     category,

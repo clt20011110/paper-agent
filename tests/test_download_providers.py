@@ -116,7 +116,7 @@ def test_default_resolver_order_uses_only_metadata_evidence_and_preserves_licens
     assert all(candidate.raw_evidence_hash is not None for candidate in candidates)
 
 
-def test_official_subscription_source_and_unmatched_arxiv_are_not_emitted() -> None:
+def test_official_subscription_source_is_preserved_without_being_promoted_to_public() -> None:
     lookup = FixtureLookup(evidence_fixture())
     candidates = default_resolver_registry().resolve(
         ResolverContext(
@@ -124,11 +124,42 @@ def test_official_subscription_source_and_unmatched_arxiv_are_not_emitted() -> N
         )
     )
 
-    assert all(candidate.resolver != "publisher_public" for candidate in candidates)
+    publisher = next(candidate for candidate in candidates if candidate.resolver == "publisher_public")
+    assert publisher.access_basis is AccessBasis.USER_SUBSCRIPTION
+    assert publisher.raw_evidence_hash is not None
     assert all(candidate.resolver != "arxiv" for candidate in candidates)
     assert MatchedArxivResolver().resolve(
         ResolverContext(paper=paper(), lookup=lookup, matched_arxiv=True)
     )[-1].url == "https://arxiv.org/pdf/2501.01234v2"
+
+
+def test_arxiv_base_identifier_accepts_the_versioned_feed_record() -> None:
+    lookup = FixtureLookup(evidence_fixture())
+    value = MatchedArxivResolver().resolve(
+        ResolverContext(
+            paper=Paper("paper-1", "Paper", arxiv_id="2501.01234"),
+            lookup=lookup,
+            matched_arxiv=True,
+        )
+    )
+
+    assert value[-1].url == "https://arxiv.org/pdf/2501.01234v2"
+
+
+def test_arxiv_old_style_identifier_keeps_its_archive_prefix() -> None:
+    evidence = ResolverEvidence(
+        payload={"feed": {"entry": {"id": "https://arxiv.org/abs/hep-th/9901001v2"}}},
+        retrieved_at=NOW,
+    )
+    value = MatchedArxivResolver().resolve(
+        ResolverContext(
+            paper=Paper("paper-1", "Paper", arxiv_id="hep-th/9901001"),
+            lookup=FixtureLookup({"arxiv": evidence}),
+            matched_arxiv=True,
+        )
+    )
+
+    assert value[-1].url == "https://arxiv.org/pdf/hep-th/9901001v2"
 
 
 @dataclass

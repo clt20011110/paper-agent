@@ -123,6 +123,7 @@ def service(
     *,
     provider_terms: ProviderTerms | None = None,
     scope_membership=None,
+    clock=None,
 ) -> DownloadService:
     registry = {} if provider_terms is None else {"public_http": provider_terms}
     return DownloadService(
@@ -132,7 +133,7 @@ def service(
         registry,
         fetcher,
         scope_membership,
-        lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00")),
+        clock or (lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))),
     )
 
 
@@ -340,6 +341,7 @@ def _approved_download_grant(
     mode: str = "attended",
     skill_digest: str | None = None,
     dependency_digest: str | None = None,
+    selection_snapshot_hash: str | None = None,
 ) -> dict[str, object]:
     grants = GrantStore(database)
     draft = grants.create_draft(
@@ -354,7 +356,7 @@ def _approved_download_grant(
             "artifact_hashes": [],
             "collection_ids": [],
             "collection_snapshot_hash": None,
-            "selection_snapshot_hash": None,
+            "selection_snapshot_hash": selection_snapshot_hash,
             "domains": [domain],
             "provider": "public_http",
             "model": None,
@@ -519,6 +521,32 @@ def test_selection_snapshot_grant_requires_proven_candidate_membership(
 
     assert denied.status is FetchDecisionStatus.NEEDS_GRANT
     assert allowed.status is FetchDecisionStatus.ALLOW
+
+
+def test_every_declared_selection_scope_must_cover_the_candidate(
+    database: Database, tmp_path: Path, policy: DownloadAccessPolicy
+) -> None:
+    _approved_download_grant(database, selection_snapshot_hash=HASH)
+    downloads = service(
+        database,
+        tmp_path,
+        policy,
+        FakeFetcher(),
+        provider_terms=terms(),
+        scope_membership=lambda _snapshot, _paper: False,
+    )
+
+    decision = downloads.probe(
+        candidate(access_basis=AccessBasis.USER_SUBSCRIPTION, license=None),
+        purpose="internal_analysis",
+        provider="public_http",
+        now=NOW,
+        authorization_grant_id="grant-1",
+        selection_snapshot_hash=HASH,
+    )
+
+    assert decision.status is FetchDecisionStatus.NEEDS_GRANT
+    assert decision.reason_code == "download_grant_invalid"
 
 
 def test_fetch_reproves_runtime_skill_and_dependency_digests(
@@ -788,11 +816,15 @@ def test_network_failure_can_be_resumed_with_a_new_fencing_token(
     second_request = downloads.reissue_retryable(
         first_request.request_id, now="2026-08-10T00:01:00Z"
     )
+    duplicate_reissue = downloads.reissue_retryable(
+        first_request.request_id, now="2026-08-10T00:01:00Z"
+    )
     completed = downloads.fetch(second_request, run_id="run-1", now="2026-08-10T00:01:00Z")
 
     assert failed.status is DownloadStatus.FAILED_RETRYABLE
     assert replay == failed
     assert second_request.fencing_token == first_request.fencing_token + 1
+    assert duplicate_reissue == second_request
     assert second_request.idempotency_key != first_request.idempotency_key
     assert completed.status is DownloadStatus.DOWNLOADED
     assert fetcher.calls == [candidate().url, candidate().url]
@@ -863,6 +895,41 @@ def test_late_worker_cannot_commit_after_a_new_fencing_token_is_issued(
         DownloadStatus.FAILED_TERMINAL, "stale_fencing_token",
     )
     assert issued["request"].fencing_token == request.fencing_token + 1
+    assert database.connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0] == 0
+    interrupted = database.connection.execute(
+        "SELECT result_status, failure_category FROM download_attempts"
+    ).fetchone()
+    assert tuple(interrupted) == ("failed_retryable", "interrupted")
+
+
+def test_expiry_during_artifact_validation_is_checked_with_a_fresh_clock(
+    database: Database, tmp_path: Path, policy: DownloadAccessPolicy
+) -> None:
+    moments = iter(
+        (
+            datetime.fromisoformat(NOW.replace("Z", "+00:00")),
+            datetime.fromisoformat("2026-08-10T00:15:00+00:00"),
+        )
+    )
+    downloads = service(
+        database,
+        tmp_path,
+        policy,
+        FakeFetcher(HTTPResponse(200, {"Content-Type": "application/pdf"}, valid_pdf())),
+        provider_terms=terms(),
+        clock=lambda: next(moments),
+    )
+    request = downloads.probe(
+        candidate(), purpose="internal_analysis", provider="public_http", now=NOW
+    ).fetch_request
+    assert request is not None
+
+    result = downloads.fetch(request, run_id="run-1", now=NOW)
+
+    assert (result.status, result.error_code) == (
+        DownloadStatus.FAILED_RETRYABLE,
+        "fetch_request_expired_during_fetch",
+    )
     assert database.connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0] == 0
 
 
