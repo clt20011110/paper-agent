@@ -541,6 +541,7 @@ class SystemDoctor:
             version = str(entry["version"])
             entry_point_value = str(entry["entry_point"])
             expected_digest = str(entry["artifact_sha256"])
+            expected_signature = entry.get("signature")
             manifest = catalog.providers.get(provider)
             if manifest is None:
                 errors.append(f"{provider}: no trusted provider manifest")
@@ -560,6 +561,7 @@ class SystemDoctor:
                 installed_name = str(installed.metadata["Name"])
                 installed_version = str(installed.version)
                 installed_digest = distribution_digest(installed)
+                installed_signature = installed.metadata.get("X-Paper-Agent-Signature")
                 installed_entry_points = tuple(installed.entry_points)
             except (
                 metadata.PackageNotFoundError, KeyError, OSError, TypeError, ValueError,
@@ -570,6 +572,9 @@ class SystemDoctor:
                 distribution_name, version, expected_digest,
             ):
                 errors.append(f"{provider}: installed distribution version or digest has drifted")
+                continue
+            if installed_signature != expected_signature:
+                errors.append(f"{provider}: installed distribution signature has drifted")
                 continue
             candidates = [
                 point

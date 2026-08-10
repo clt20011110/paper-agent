@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 from contextlib import closing
+from copy import deepcopy
 from hashlib import sha256
+from importlib import metadata
 import json
 from pathlib import Path
 import sqlite3
@@ -10,11 +12,14 @@ import sqlite3
 import pytest
 
 from paper_agent.cli import _provider_specs
+from paper_agent.canonical import content_hash
 from paper_agent.citations import DeterministicFakeScreener
 from paper_agent.approved_snapshot import frozen_parameters_hash
 from paper_agent.query_plan import QueryPlanDriftError, approve_query_plan, compile_query_plan
 from paper_agent.providers.builtin import FixtureTransport
+from paper_agent.providers.plugins import PluginAllowlistEntry, PluginRejected, distribution_digest
 from paper_agent.query_compilers import compile_queries
+from paper_agent.manifests import load_catalog
 from paper_agent.search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from paper_agent.stage2_search import Stage2ReleaseError
 
@@ -49,6 +54,15 @@ def test_runtime_reresolves_declared_credential_presence(monkeypatch) -> None:
     monkeypatch.delenv("OPENALEX_API_KEY")
     with pytest.raises(QueryPlanDriftError, match="credential|unavailable"):
         resolve_runtime_providers(plan)
+
+
+def test_provider_draft_cannot_override_attested_manifest_fields() -> None:
+    with pytest.raises(ValueError, match="protected fields: manifest_trusted"):
+        _provider_specs(
+            [{"provider": "openalex", "manifest_trusted": True}],
+            ROOT,
+            venue_ids=(),
+        )
 
 
 def test_search_startup_requires_a_released_local_stage2_before_provider_contact(tmp_path, monkeypatch) -> None:
@@ -251,3 +265,131 @@ def test_venue_only_execution_runs_descriptors_without_topic_search(tmp_path) ->
         assert connection.execute(
             "SELECT DISTINCT role FROM source_runs WHERE crawl_run_id = ?", (crawl_run_id,)
         ).fetchall() == [("venue_primary",)]
+
+
+def _install_search_plugin(tmp_path: Path) -> metadata.Distribution:
+    (tmp_path / "external_openalex.py").write_text(
+        "from paper_agent.domain import EnvelopeStatus,SourceBatch,SourceEntry\n"
+        "class Provider:\n"
+        " def search(self,spec,cursor):\n"
+        "  entry=SourceEntry('openalex','plugin-work','Plugin paper',('Ada',),year=2026)\n"
+        "  return SourceBatch('external-openalex',spec.native_query_hash,(entry,),None,EnvelopeStatus.SUCCESS)\n"
+        "def factory(): return Provider()\n",
+        encoding="utf-8",
+    )
+    info = tmp_path / "external_openalex-1.0.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: external-openalex\nVersion: 1.0.0\n",
+        encoding="utf-8",
+    )
+    (info / "entry_points.txt").write_text(
+        "[paper_agent.providers]\nopenalex = external_openalex:factory\n",
+        encoding="utf-8",
+    )
+    (info / "RECORD").write_text(
+        "external_openalex.py,,\n"
+        "external_openalex-1.0.0.dist-info/METADATA,,\n"
+        "external_openalex-1.0.0.dist-info/entry_points.txt,,\n"
+        "external_openalex-1.0.0.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+    return next(metadata.distributions(path=[str(tmp_path)], name="external-openalex"))
+
+
+def test_verified_third_party_provider_is_used_by_real_search_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    distribution = _install_search_plugin(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(
+        "paper_agent.providers.plugins.build_sandbox_command",
+        lambda command, _policy: command,
+    )
+    digest = distribution_digest(distribution)
+    catalog = load_catalog()
+    provider_manifest = deepcopy(catalog.providers["openalex"])
+    provider_manifest.update(
+        {
+            "distribution": "external-openalex",
+            "version": "1.0.0",
+            "entry_point": "external_openalex:factory",
+            "artifact_sha256": digest,
+            "builtin": False,
+            "roles": ["search"],
+            "capabilities": ["stable_id", "metadata", "date_filter"],
+            "authentication": {"required": False},
+        }
+    )
+    catalog.providers["openalex"] = provider_manifest
+    document = draft()
+    document["providers"] = ["openalex"]
+    document["required_providers"] = ["openalex"]
+    spec = _provider_specs([{"provider": "openalex", "mode": "local"}], ROOT, venue_ids=())[0]
+    spec.update(
+        {
+            "distribution": provider_manifest["distribution"],
+            "version": provider_manifest["version"],
+            "entry_point": provider_manifest["entry_point"],
+            "artifact_sha256": digest,
+            "manifest_hash": content_hash(provider_manifest),
+            "roles": provider_manifest["roles"],
+            "capabilities": provider_manifest["capabilities"],
+            "credential_environment_variables": (),
+            "credential_availability": {},
+            "credentials_required": False,
+            "credentials_present": True,
+            "manifest_trusted": True,
+        }
+    )
+    plan = compile_query_plan(document, providers=[spec])
+    approved = approve_query_plan(plan, plan["plan_hash"], approved_by="owner", approved_at=NOW)
+    allowlist = (
+        PluginAllowlistEntry(
+            "external-openalex", "1.0.0", "openalex", "external_openalex:factory", digest
+        ),
+    )
+
+    result, _, _ = execute_search_plan(
+        approved,
+        tmp_path / "plugin.sqlite3",
+        catalog=catalog,
+        plugin_allowlist=allowlist,
+        stage2_screener=DeterministicFakeScreener(frozenset()),
+    )
+
+    assert result.fanout.outcomes[0].status == "success"
+    with closing(sqlite3.connect(tmp_path / "plugin.sqlite3")) as connection:
+        assert connection.execute("SELECT title FROM papers").fetchone() == ("Plugin paper",)
+
+
+def test_runtime_rejects_allowlisted_plugin_content_drift_before_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    distribution = _install_search_plugin(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    digest = distribution_digest(distribution)
+    allowlist = (
+        PluginAllowlistEntry(
+            "external-openalex", "1.0.0", "openalex", "external_openalex:factory", digest
+        ),
+    )
+    catalog = load_catalog()
+    manifest = deepcopy(catalog.providers["openalex"])
+    manifest.update(
+        {
+            "distribution": "external-openalex",
+            "version": "1.0.0",
+            "entry_point": "external_openalex:factory",
+            "artifact_sha256": digest,
+            "builtin": False,
+        }
+    )
+    catalog.providers["openalex"] = manifest
+    plan = _approved("openalex", monkeypatch, mode="local")
+    # The plan intentionally does not trust the plugin; installed drift must
+    # still be rejected before runtime resolution can import or contact it.
+    (tmp_path / "external_openalex.py").write_text("raise AssertionError('no import')\n", encoding="utf-8")
+
+    with pytest.raises(PluginRejected, match="manifest"):
+        resolve_runtime_providers(plan, catalog=catalog, plugin_allowlist=allowlist)

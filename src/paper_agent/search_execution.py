@@ -25,6 +25,11 @@ from .provider_runtime import ProviderRuntime, ProviderRuntimePolicy, policy_fro
 from .provider_response_artifacts import ProviderResponseArtifactService
 from .providers.api import CrawlWindow, SeedInput
 from .providers.builtin import create_builtin, manifest_from_document
+from .providers.plugins import (
+    IsolatedProviderClient,
+    PluginAllowlistEntry,
+    PluginRegistry,
+)
 from .query_plan import (
     QueryPlanDriftError,
     QueryPlanError,
@@ -43,9 +48,42 @@ def resolve_runtime_providers(
     catalog: ManifestCatalog | None = None,
     environment: Mapping[str, str] | None = None,
     snapshot_paths: Mapping[str, Path] | None = None,
+    plugin_allowlist: tuple[PluginAllowlistEntry, ...] = (),
 ) -> tuple[dict[str, Any], ...]:
     """Re-read installed manifests, credential presence, and approved snapshots."""
+    runtime, _ = _resolve_runtime_provider_state(
+        plan,
+        catalog=catalog,
+        environment=environment,
+        snapshot_paths=snapshot_paths,
+        plugin_allowlist=plugin_allowlist,
+    )
+    return runtime
+
+
+def _resolve_runtime_provider_state(
+    plan: Mapping[str, Any],
+    *,
+    catalog: ManifestCatalog | None = None,
+    environment: Mapping[str, str] | None = None,
+    snapshot_paths: Mapping[str, Path] | None = None,
+    plugin_allowlist: tuple[PluginAllowlistEntry, ...] = (),
+) -> tuple[tuple[dict[str, Any], ...], PluginRegistry]:
+    """Resolve a plan plus its pre-import verified third-party registry."""
+
     installed = catalog or load_catalog()
+    requested_names = tuple(str(provider["provider"]) for provider in plan["providers"])
+    try:
+        requested_manifests = {
+            name: manifest_from_document(installed.provider(name))
+            for name in requested_names
+        }
+    except KeyError as error:
+        raise QueryPlanDriftError(
+            f"provider {error.args[0]} is no longer installed"
+        ) from error
+    plugin_registry = PluginRegistry(plugin_allowlist)
+    plugin_registry.verify_requested(requested_manifests, requested_names)
     values = environment if environment is not None else os.environ
     snapshots = snapshot_paths or {}
     approved_snapshot_providers = {
@@ -90,7 +128,7 @@ def resolve_runtime_providers(
                 "upstream_policies": manifest.get("upstream_policies", {}),
                 "mode": mode,
                 "snapshot_hash": snapshot_hash,
-                "manifest_trusted": manifest["builtin"],
+                "manifest_trusted": bool(manifest["builtin"] or name in plugin_registry.registrations),
                 "exact_required": bool(expected["required"]),
             }
         )
@@ -105,7 +143,7 @@ def resolve_runtime_providers(
         policies=plan["execution"],
         include_arxiv_candidates=plan["scope"]["include_arxiv_candidates"],
     )
-    return runtime
+    return runtime, plugin_registry
 
 
 def execute_search_plan(
@@ -123,6 +161,7 @@ def execute_search_plan(
     stage2_transport: Any | None = None,
     venue_only: bool = False,
     historical_replay: bool = False,
+    plugin_allowlist: tuple[PluginAllowlistEntry, ...] = (),
 ) -> tuple[PipelineResult, str, str]:
     """Execute one approved plan through the same single-writer pipeline as tests."""
     released_stage2 = None
@@ -134,11 +173,12 @@ def execute_search_plan(
             )
         released_stage2 = load_stage2_release(release_path, plan)
     installed = catalog or load_catalog()
-    runtime = resolve_runtime_providers(
+    runtime, plugin_registry = _resolve_runtime_provider_state(
         plan,
         catalog=installed,
         environment=environment,
         snapshot_paths=snapshot_paths,
+        plugin_allowlist=plugin_allowlist,
     )
     active = tuple(provider for provider in runtime if provider["resolved"])
     if any(provider["mode"] == "bulk_snapshot" for provider in active):
@@ -225,14 +265,19 @@ def execute_search_plan(
     if snapshot_transports:
         transport = ProviderTransportRouter(snapshot_transports, transport)
 
-    clients = {
-        str(provider["provider"]): create_builtin(
-            str(provider["provider"]),
-            transport,
-            manifest_from_document(installed.provider(str(provider["provider"]))),
+    clients = {}
+    for provider in active:
+        name = str(provider["provider"])
+        manifest = manifest_from_document(installed.provider(name))
+        clients[name] = (
+            create_builtin(name, transport, manifest)
+            if manifest.builtin
+            else IsolatedProviderClient(
+                plugin_registry,
+                name,
+                environment=environment,
+            )
         )
-        for provider in active
-    }
     trusts = {
         name: ProviderTrust.from_manifest(installed.provider(name))
         for name in clients

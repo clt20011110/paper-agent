@@ -17,6 +17,7 @@ from paper_agent.canonical import content_hash
 from paper_agent.doctor import DoctorCheck, DoctorPaths, SystemDoctor, SystemDoctorReport
 from paper_agent.grants import GrantStore
 from paper_agent.manifests import load_catalog
+from paper_agent.providers.plugins import distribution_digest
 from paper_agent.storage import Database
 
 
@@ -405,7 +406,7 @@ def test_plugin_allowlist_verifies_installed_metadata_digest_before_import(
     plugin = tmp_path / "plugin.py"
     plugin.write_text("PLUGIN = True\n")
     distribution = _Distribution(tmp_path)
-    digest = sha256(b"plugin.py" + plugin.read_bytes()).hexdigest()
+    digest = distribution_digest(distribution)
     catalog = load_catalog()
     catalog.providers["example"] = {
         **catalog.providers["alphaxiv"],

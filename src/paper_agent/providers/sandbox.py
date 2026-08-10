@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import shutil
 import sys
+import sysconfig
 
 
 class SandboxUnavailable(RuntimeError):
@@ -23,10 +24,29 @@ class SandboxPolicy:
 
 
 def interpreter_read_roots() -> tuple[Path, ...]:
-    """Return the Python executable, standard library, and installed package roots."""
+    """Return interpreter-owned roots without exposing the caller's working tree."""
 
-    candidates = [Path(sys.executable).resolve().parent, Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()]
-    candidates.extend(Path(item).resolve() for item in sys.path if item)
+    paths = sysconfig.get_paths()
+    library_name = sysconfig.get_config_var("LDLIBRARY")
+    library_dir = sysconfig.get_config_var("LIBDIR")
+    candidates = [
+        Path(sys.executable).resolve().parent,
+        *(Path(paths[name]).resolve() for name in ("stdlib",) if paths.get(name)),
+        *(
+            ((Path(str(library_dir)) / str(library_name)).resolve(),)
+            if library_name and library_dir
+            else ()
+        ),
+        *(
+            tuple(
+                root
+                for root in map(Path, ("/lib", "/lib64", "/usr/lib", "/usr/lib64"))
+                if root.exists()
+            )
+            if platform.system() == "Linux"
+            else ()
+        ),
+    ]
     roots: list[Path] = []
     for candidate in candidates:
         if candidate.exists() and candidate not in roots:
@@ -49,7 +69,8 @@ def build_sandbox_command(command: tuple[str, ...], policy: SandboxPolicy) -> tu
         executable = shutil.which("bwrap")
         if executable is None:
             raise SandboxUnavailable("bubblewrap is required to run third-party providers on Linux")
-        return linux_command(executable, command, policy)
+        resolved_command = (str(Path(command[0]).resolve()), *command[1:])
+        return linux_command(executable, resolved_command, policy)
     raise SandboxUnavailable(f"no supported third-party provider sandbox on {system}")
 
 
@@ -65,8 +86,24 @@ def macos_profile(policy: SandboxPolicy, *, executable_path: Path | None = None)
     ]
     if executable_path is not None:
         rules.append(f"(allow process-exec (literal {json.dumps(str(executable_path.absolute()))}))")
-    for root in policy.read_roots:
-        rules.append(f"(allow file-read* file-test-existence (subpath {json.dumps(str(root))}))")
+    resolved_roots = tuple(root.resolve() for root in policy.read_roots)
+    ancestors = tuple(
+        dict.fromkeys(
+            ancestor
+            for root in (*resolved_roots, policy.work_root.resolve())
+            for ancestor in root.parents
+        )
+    )
+    for ancestor in ancestors:
+        rules.append(
+            f"(allow file-read-metadata file-test-existence (literal {json.dumps(str(ancestor))}))"
+        )
+    for resolved in resolved_roots:
+        rules.append(f"(allow file-read* file-test-existence (literal {json.dumps(str(resolved))}))")
+        rules.append(f"(allow file-read* file-test-existence (subpath {json.dumps(str(resolved))}))")
+    rules.append(
+        f"(allow file-read* file-test-existence file-write* (literal {json.dumps(str(policy.work_root))}))"
+    )
     rules.append(f"(allow file-read* file-test-existence file-write* (subpath {json.dumps(str(policy.work_root))}))")
     return "\n".join(rules)
 
@@ -78,14 +115,17 @@ def linux_command(executable: str, command: tuple[str, ...], policy: SandboxPoli
         executable,
         "--die-with-parent",
         "--new-session",
-        "--unshare-net",
+        "--unshare-all",
+        "--cap-drop",
+        "ALL",
         "--proc",
         "/proc",
         "--dev",
         "/dev",
     ]
     for root in policy.read_roots:
-        result.extend(("--ro-bind", str(root), str(root)))
+        resolved = root.resolve()
+        result.extend(("--ro-bind", str(resolved), str(resolved)))
     result.extend(("--bind", str(policy.work_root), str(policy.work_root), "--chdir", str(policy.work_root), "--"))
     result.extend(command)
     return tuple(result)

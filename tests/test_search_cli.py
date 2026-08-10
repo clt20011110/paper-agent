@@ -7,6 +7,7 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from paper_agent.approval import ApprovalError
 from paper_agent.approved_snapshot import frozen_parameters_hash
@@ -14,6 +15,7 @@ from paper_agent.citations import DeterministicFakeScreener
 from paper_agent.cli import build_parser, main
 from paper_agent.query_plan import QueryPlanDriftError
 from paper_agent.query_compilers import compile_queries
+from paper_agent.manifests import load_catalog
 
 
 @pytest.fixture(autouse=True)
@@ -464,3 +466,141 @@ def test_venue_scope_automatically_freezes_exact_primary_provider(tmp_path, caps
 
     assert plan["execution"]["required_providers"] == ["openalex", "pmlr"]
     assert {provider["provider"] for provider in plan["providers"]} == {"openalex", "pmlr"}
+
+
+def test_cli_plan_and_run_forward_exact_plugin_allowlist(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).parents[1]
+    config = yaml.safe_load((root / "configs" / "abstract_focus.yaml").read_text(encoding="utf-8"))
+    allow_document = {
+        "distribution": "external-openalex",
+        "version": "1.0.0",
+        "provider": "openalex",
+        "entry_point": "external_openalex:factory",
+        "artifact_sha256": "a" * 64,
+    }
+    config["sources"]["plugin_allowlist"] = [allow_document]
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    input_path = tmp_path / "search.yaml"
+    input_path.write_text(json.dumps(_draft()), encoding="utf-8")
+
+    catalog = load_catalog()
+    catalog.providers["openalex"] = {
+        **catalog.providers["openalex"],
+        "distribution": allow_document["distribution"],
+        "version": allow_document["version"],
+        "entry_point": allow_document["entry_point"],
+        "artifact_sha256": allow_document["artifact_sha256"],
+        "builtin": False,
+    }
+    monkeypatch.setattr("paper_agent.cli.load_catalog", lambda _root=None: catalog)
+    verified_allowlists = []
+
+    def verify_requested(registry, _manifests, providers):
+        verified_allowlists.append(registry.allowlist)
+        assert tuple(providers) == ("openalex",)
+        registry.registrations["openalex"] = SimpleNamespace()
+        return tuple(registry.registrations.values())
+
+    monkeypatch.setattr(
+        "paper_agent.cli.PluginRegistry.verify_requested",
+        verify_requested,
+    )
+    output_root = tmp_path / "output"
+    assert main(
+        [
+            "--config",
+            str(config_path),
+            "search",
+            "plan",
+            "--input",
+            str(input_path),
+            "--output-root",
+            str(output_root),
+        ]
+    ) == 0
+    planned = json.loads(capsys.readouterr().out)
+    frozen = json.loads(Path(planned["draft_path"]).read_text(encoding="utf-8"))
+    assert frozen["providers"][0]["resolved"] is True
+    assert verified_allowlists[0][0].artifact_sha256 == allow_document["artifact_sha256"]
+
+    assert main(
+        [
+            "search",
+            "approve",
+            "--plan",
+            planned["draft_path"],
+            "--hash",
+            planned["plan_hash"],
+            "--approved-by",
+            "owner",
+            "--approved-at",
+            "2026-08-09T01:00:00Z",
+        ]
+    ) == 0
+    approved = json.loads(capsys.readouterr().out)
+    config["sources"]["approved_plan"] = {
+        "input_path": approved["approved_path"],
+        "content_hash": planned["plan_hash"],
+        "required": True,
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    runtime_allowlists = []
+
+    def resolve(_plan, **options):
+        runtime_allowlists.append(options["plugin_allowlist"])
+        return tuple(_plan["providers"])
+
+    monkeypatch.setattr("paper_agent.cli.resolve_runtime_providers", resolve)
+    monkeypatch.setattr(
+        "paper_agent.cli.load_stage2_release",
+        lambda _path, _plan: SimpleNamespace(release_hash="b" * 64),
+    )
+    release = tmp_path / "release.json"
+    monkeypatch.setenv("PAPER_AGENT_STAGE2_RELEASE", str(release))
+    assert main(
+        [
+            "--dry-run",
+            "--config",
+            str(config_path),
+            "search",
+            "run",
+            "--plan",
+            approved["approved_path"],
+        ]
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "runtime_validated"
+    assert runtime_allowlists[0][0].entry_point == allow_document["entry_point"]
+
+    execution_allowlists = []
+
+    def execute(_plan, _database, **options):
+        execution_allowlists.append(options["plugin_allowlist"])
+        return (
+            SimpleNamespace(
+                fanout=SimpleNamespace(outcomes=()),
+                paper_ids=(),
+                arxiv_candidate_ids=(),
+                status="complete",
+            ),
+            "plugin-search-run",
+            "plugin-crawl-run",
+        )
+
+    monkeypatch.setattr("paper_agent.cli.execute_search_plan", execute)
+    assert main(
+        [
+            "--config",
+            str(config_path),
+            "search",
+            "run",
+            "--plan",
+            approved["approved_path"],
+        ]
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "complete"
+    assert execution_allowlists[0][0].distribution == allow_document["distribution"]

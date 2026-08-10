@@ -35,7 +35,8 @@ from .report_cli_service import (
 from .report_config import ReportRuntimeConfig
 from .report_execution_service import ReportExecutionService
 from .report_plan import ReportPlanBundle, assert_report_runtime_matches
-from .search_execution import execute_search_plan
+from .providers.plugins import plugin_allowlist_from_config
+from .search_execution import execute_search_plan, resolve_runtime_providers
 from .stage2_commands import filter_database
 from .stage2_search import load_stage2_release
 from .storage import Database
@@ -169,11 +170,16 @@ class SearchStageAdapter(_WorkflowAdapter):
     def _validate_dry_inputs(self, context: StepContext, spec: SearchStep) -> None:
         # ``load_stage2_release`` also validates the approved QueryPlan and
         # every local release-bundle reference.  It performs no model request.
-        load_config(context.config_path)
+        config = load_config(context.config_path)
         plan = _json_object(spec.plan.resolved_path, "search plan")
         load_stage2_release(spec.stage2_release.resolved_path, plan)
         for snapshot in spec.snapshots:
             _json_object(snapshot.file.resolved_path, f"search snapshot {snapshot.provider}")
+        resolve_runtime_providers(
+            plan,
+            snapshot_paths={item.provider: item.file.resolved_path for item in spec.snapshots},
+            plugin_allowlist=plugin_allowlist_from_config(config),
+        )
 
     def observe(
         self, context: StepContext, spec: SearchStep, identity: StageIdentity
@@ -186,6 +192,7 @@ class SearchStageAdapter(_WorkflowAdapter):
     ) -> StageOutcome:
         del identity
         plan = _json_object(spec.plan.resolved_path, "search plan")
+        config = load_config(context.config_path)
         result, run_id, crawl_run_id = self.runner(
             plan,
             context.database_path,
@@ -193,6 +200,7 @@ class SearchStageAdapter(_WorkflowAdapter):
             snapshot_paths={item.provider: item.file.resolved_path for item in spec.snapshots},
             stage2_release_path=spec.stage2_release.resolved_path,
             historical_replay=spec.historical_replay,
+            plugin_allowlist=plugin_allowlist_from_config(config),
         )
         status = _outcome_status(str(result.status))
         eligible_value = getattr(result, "eligible_paper_ids", None)

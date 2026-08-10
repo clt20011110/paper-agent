@@ -54,6 +54,12 @@ from .query_plan import (
     compile_query_plan,
 )
 from .processing import ArtifactProcessingPolicy, ProcessingGate
+from .providers.builtin import manifest_from_document
+from .providers.plugins import (
+    PluginAllowlistEntry,
+    PluginRegistry,
+    plugin_allowlist_from_config,
+)
 from .report_artifacts import ReportArtifactStore
 from .report_cli_service import (
     approve_report_plan_from_files,
@@ -412,7 +418,12 @@ def main(
     if args.command == "search" and args.search_command == "plan":
         return _finish(
             args,
-            _search_plan(args.input, args.output_root, dry_run=args.dry_run),
+            _search_plan(
+                args.input,
+                args.output_root,
+                config_path=args.config,
+                dry_run=args.dry_run,
+            ),
         )
     if args.command == "search" and args.search_command == "approve":
         return _finish(
@@ -1495,13 +1506,19 @@ def _grant_scope(args: argparse.Namespace, defaults: Mapping[str, Any]) -> dict[
 
 
 def _search_plan(
-    input_path: Path, output_root: Path, *, dry_run: bool = False
+    input_path: Path,
+    output_root: Path,
+    *,
+    config_path: Path | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     draft = load_yaml(input_path)
+    config = load_config(config_path) if config_path is not None else None
     providers = _provider_specs(
         draft.pop("providers"),
         input_path.parent,
         venue_ids=draft["scope"]["venues"],
+        plugin_allowlist=plugin_allowlist_from_config(config),
     )
     plan = compile_query_plan(draft, providers=providers)
     store = QueryPlanStore(output_root)
@@ -1572,6 +1589,7 @@ def _search_run(
 ) -> dict[str, Any]:
     plan = _load_json(plan_path)
     config = load_config(config_path) if config_path else None
+    plugin_allowlist = plugin_allowlist_from_config(config)
     if config is not None and config_path is not None:
         _assert_config_plan(config, config_path, plan_path, plan, require_hash=not dry_run)
     database = database_path or _configured_database(config, config_path) or (_store_root(plan_path) / "paper-agent.sqlite3")
@@ -1582,7 +1600,11 @@ def _search_run(
         or os.environ.get("PAPER_AGENT_CONTACT_EMAIL")
     )
     if dry_run:
-        runtime = resolve_runtime_providers(plan, snapshot_paths=snapshots)
+        runtime = resolve_runtime_providers(
+            plan,
+            snapshot_paths=snapshots,
+            plugin_allowlist=plugin_allowlist,
+        )
         release_path = stage2_release_path or _configured_stage2_release()
         if release_path is None:
             raise Stage2ReleaseError(
@@ -1610,6 +1632,7 @@ def _search_run(
         stage2_release_path=stage2_release_path,
         venue_only=venue_only,
         historical_replay=historical_replay,
+        plugin_allowlist=plugin_allowlist,
     )
     return {
         "command": "search.run",
@@ -1756,22 +1779,42 @@ def _import_seeds(
     }
 
 
-def _provider_specs(value: Any, root: Path, *, venue_ids: Sequence[str]) -> list[dict[str, Any]]:
+def _provider_specs(
+    value: Any,
+    root: Path,
+    *,
+    venue_ids: Sequence[str],
+    plugin_allowlist: tuple[PluginAllowlistEntry, ...] = (),
+) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise ValueError("providers must be a list")
     catalog = load_catalog(root if (root / "providers").exists() else None)
-    requested_by_provider = {
-        str(item if isinstance(item, str) else item["provider"]): (
-            {"provider": item} if isinstance(item, str) else dict(item)
-        )
-        for item in value
-    }
+    requested_by_provider: dict[str, dict[str, Any]] = {}
+    for item in value:
+        requested = {"provider": item} if isinstance(item, str) else dict(item)
+        unexpected = set(requested) - {"provider", "mode", "snapshot_hash"}
+        if unexpected:
+            names = ", ".join(sorted(str(name) for name in unexpected))
+            raise ValueError(f"provider draft contains protected fields: {names}")
+        provider_name = str(requested["provider"])
+        if provider_name in requested_by_provider:
+            raise ValueError(f"provider draft repeats {provider_name}")
+        requested_by_provider[provider_name] = requested
     exact_providers = {
         catalog.venue(Path(str(venue_id)).stem)["primary_provider"]
         for venue_id in venue_ids
     }
     for provider in exact_providers:
         requested_by_provider.setdefault(provider, {"provider": provider})
+
+    plugin_registry = PluginRegistry(plugin_allowlist)
+    plugin_registry.verify_requested(
+        {
+            provider: manifest_from_document(catalog.provider(provider))
+            for provider in requested_by_provider
+        },
+        requested_by_provider,
+    )
 
     specs: list[dict[str, Any]] = []
     for provider_name in sorted(requested_by_provider):
@@ -1807,7 +1850,9 @@ def _provider_specs(value: Any, root: Path, *, venue_ids: Sequence[str]) -> list
             "mode": "api",
             "credentials_required": authentication["required"],
             "credentials_present": credentials_present,
-            "manifest_trusted": manifest["builtin"],
+            "manifest_trusted": bool(
+                manifest["builtin"] or provider_name in plugin_registry.registrations
+            ),
             "exact_required": provider_name in exact_providers,
         }
         spec.update(requested)
