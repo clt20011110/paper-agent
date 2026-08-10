@@ -193,6 +193,22 @@ def test_search_run_executes_library_provider_and_is_idempotent(tmp_path, capsys
     assert main(command) == 0
     assert json.loads(capsys.readouterr().out)["crawl_run_id"] == first["crawl_run_id"]
 
+    assert main(
+        [
+            "search",
+            "audit",
+            "--database",
+            str(database),
+            "--crawl-run-id",
+            first["crawl_run_id"],
+        ]
+    ) == 0
+    audit = json.loads(capsys.readouterr().out)
+    assert (audit["status"], audit["totals"]["sources"]["raw_discovered"]) == ("complete", 1)
+    assert audit["sources"][0]["provider"] == "user_library"
+    assert audit["queries"][0]["returned_count"] == 1
+    assert audit["rounds"] == []
+
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM source_runs").fetchone()[0] == 1

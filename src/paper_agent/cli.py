@@ -20,6 +20,7 @@ from .manifests import load_catalog
 from .query_plan import QueryPlanStore, assert_runtime_matches, compile_query_plan
 from .schema import schema_directory
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
+from .search_audit import search_audit
 from .seed_import import import_seeds, inputs_from_files
 
 
@@ -47,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--database", type=Path)
     run.add_argument("--contact")
     run.add_argument("--snapshot", action="append", default=[], metavar="PROVIDER=PATH")
+    audit = search_commands.add_parser("audit", help="read a persisted search audit")
+    audit.add_argument("--database", required=True, type=Path)
+    audit.add_argument("--crawl-run-id", required=True)
     expand = search_commands.add_parser("expand-citations", help="plan a deterministic citation round")
     expand.add_argument("--plan", required=True, type=Path)
     expand.add_argument("--seeds", required=True, type=Path)
@@ -96,6 +100,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
         )
+        return 0
+    if args.command == "search" and args.search_command == "audit":
+        _emit(search_audit(args.database, args.crawl_run_id))
         return 0
     if args.command == "search" and args.search_command == "expand-citations":
         _emit(_expand_citations(args.plan, args.seeds, args.round_index))
