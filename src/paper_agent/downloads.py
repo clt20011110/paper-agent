@@ -122,6 +122,7 @@ class AuthorizationContext:
     collection_id: str | None = None
     collection_snapshot_hash: str | None = None
     selection_snapshot_hash: str | None = None
+    planner_decision_id: str | None = None
 
     @property
     def hash(self) -> str:
@@ -478,6 +479,21 @@ class DownloadService:
             {"run_id": run_id, "request_id": request.request_id, "provider": request.provider}
         )[:32]
         with self.database.transaction() as connection:
+            if runtime_context.planner_decision_id is not None:
+                planner = connection.execute(
+                    """SELECT run_id, candidate_id, authorization_grant_id, status, selected
+                       FROM stage3_luna_decisions WHERE planner_decision_id = ?""",
+                    (runtime_context.planner_decision_id,),
+                ).fetchone()
+                if (
+                    planner is None
+                    or planner["run_id"] != run_id
+                    or planner["candidate_id"] != candidate.candidate_id
+                    or planner["authorization_grant_id"] != request.authorization_grant_id
+                    or planner["status"] != "complete"
+                    or planner["selected"] != 1
+                ):
+                    raise FetchRejected("authorized Luna planner decision is not bound to this fetch")
             consumed = connection.execute(
                 """UPDATE fetch_requests SET status = 'consumed'
                    WHERE request_id = ? AND status = 'ready' AND fencing_token = ?
@@ -501,8 +517,9 @@ class DownloadService:
             connection.execute(
                 """INSERT INTO download_attempts(
                        download_attempt_id, run_id, candidate_id, provider,
-                       authorization_grant_id, fetch_request_id, result_status, attempted_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                       authorization_grant_id, fetch_request_id, planner_decision_id,
+                       result_status, attempted_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
                 (
                     attempt_id,
                     run_id,
@@ -510,6 +527,7 @@ class DownloadService:
                     request.provider,
                     request.authorization_grant_id,
                     request.request_id,
+                    runtime_context.planner_decision_id,
                     _iso(at),
                 ),
             )

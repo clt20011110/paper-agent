@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 import json
@@ -47,6 +48,7 @@ def _service(
     terms: ProviderTerms | None = None,
     authorized: bool = False,
     clock=None,
+    planner=None,
 ) -> Stage3DownloadService:
     return Stage3DownloadService(
         database,
@@ -64,7 +66,33 @@ def _service(
         provider_terms={"public_direct": terms} if terms else None,
         fetcher=fetcher,
         clock=clock or (lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))),
+        authorized_luna_planner=planner,
     )
+
+
+@dataclass
+class FakeAuthorizedLunaPlanner:
+    selected: bool = True
+    calls: list[object] | None = None
+
+    def __call__(self, control):
+        assert self.calls is not None
+        self.calls.append(control)
+        return SimpleNamespace(
+            selected=self.selected,
+            status="invoke_skill" if self.selected else "manual_queue",
+            page_state="unknown",
+            next_action="invoke_audited_skill" if self.selected else "manual_queue",
+            reason_code="authorized_handoff_selected" if self.selected else "authorized_handoff_deferred",
+            invocation_metadata={
+                "invocation_id": f"fake-luna-{len(self.calls)}",
+                "profile": "stage3_authorized_luna",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "low",
+                "actual_model": "gpt-5.6-luna",
+                "actual_profile": "stage3_authorized_luna",
+            },
+        )
 
 
 def _terms() -> ProviderTerms:
@@ -190,7 +218,10 @@ def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
         "authorized_skill", "test-v1", "https://publisher.example/terms", True, True, True,
         domain_allowlist=("publisher.example",),
     )}
-    service = _service(tmp_path, database, Fetcher(), terms=None, authorized=True)
+    planner = FakeAuthorizedLunaPlanner(calls=[])
+    service = _service(
+        tmp_path, database, Fetcher(), terms=None, authorized=True, planner=planner,
+    )
     service.provider_terms.update(terms)
     options = AuthorizedSkillHandoffOptions(
         queue_path=tmp_path / "handoff" / "papers.csv",
@@ -204,6 +235,7 @@ def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
     )
 
     assert waiting.status == "incomplete"
+    assert len(planner.calls) == 1
     assert options.queue_path.is_file()
     assert "10.1038/example" in options.queue_path.read_text(encoding="utf-8")
     _stage_authorized_article(options.output_dir)
@@ -217,6 +249,72 @@ def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
     assert database.connection.execute(
         "SELECT COUNT(*) FROM artifacts WHERE artifact_kind = 'pdf'"
     ).fetchone()[0] == 1
+    assert len(planner.calls) == 1
+    decision = database.connection.execute(
+        """SELECT status, selected, reason_code, invocation_metadata_json
+           FROM stage3_luna_decisions"""
+    ).fetchone()
+    assert tuple(decision[:3]) == ("complete", 1, "authorized_handoff_selected")
+    metadata = json.loads(decision["invocation_metadata_json"])
+    assert metadata["actual_model"] == "gpt-5.6-luna"
+    assert metadata["actual_profile"] == "stage3_authorized_luna"
+    attempt = database.connection.execute(
+        "SELECT planner_decision_id FROM download_attempts WHERE result_status = 'downloaded'"
+    ).fetchone()
+    assert attempt["planner_decision_id"].startswith("stage3-luna-")
+
+
+def test_authorized_luna_manual_decision_is_durable(tmp_path: Path, database: Database, monkeypatch) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/example",
+    )
+    _approved_authorized_grant(database, paper_id)
+    installed = tmp_path / "installed-skill"
+    (installed / "scripts").mkdir(parents=True)
+    (installed / "scripts" / "paper_queue.py").write_text("# fixture\n", encoding="utf-8")
+    ready = SimpleNamespace(
+        ready=True,
+        installed_path=installed,
+        installed_content_sha256="a" * 64,
+        dependency_lock_sha256="b" * 64,
+    )
+
+    class Runtime:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def require_ready(self):
+            return ready
+
+    monkeypatch.setattr("paper_agent.download_cli_service.AuthorizedSkillRuntime", Runtime)
+    planner = FakeAuthorizedLunaPlanner(selected=False, calls=[])
+    service = _service(tmp_path, database, Fetcher(), terms=None, authorized=True, planner=planner)
+    service.provider_terms["authorized_skill"] = ProviderTerms(
+        "authorized_skill", "test-v1", "https://publisher.example/terms", True, True, True,
+        domain_allowlist=("publisher.example",),
+    )
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+
+    first = service.run(
+        paper_ids=[paper_id], authorization_grant_id="download-grant", authorized_skill=options,
+    )
+    second = service.run(
+        paper_ids=[paper_id], authorization_grant_id="download-grant", authorized_skill=options,
+    )
+
+    assert first.status == second.status == "incomplete"
+    assert len(planner.calls) == 1
+    decision = database.connection.execute(
+        "SELECT status, selected, reason_code FROM stage3_luna_decisions"
+    ).fetchone()
+    assert tuple(decision) == ("complete", 0, "authorized_handoff_deferred")
 
 
 def test_download_service_uses_injected_clock_for_grant_expiry(

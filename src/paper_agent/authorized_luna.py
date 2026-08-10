@@ -25,6 +25,7 @@ class AuthorizedLunaDecision:
     next_action: str
     reason_code: str
     invocation_metadata: Mapping[str, Any]
+    planner_decision_id: str | None = None
 
 
 class AuthorizedLunaPlanner:

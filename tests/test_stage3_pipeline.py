@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+from paper_agent.authorized_luna import AuthorizedLunaDecision
 from paper_agent.authorized_skill_runtime import AuthorizedSkillRuntimeError
 from paper_agent.domain import (
     AccessLocationCandidate,
@@ -311,12 +312,24 @@ def test_skill_is_opt_in_and_planner_receives_only_sanitized_control_fields() ->
     ))
     planner_inputs = []
     grants = Grants([])
+
+    def planner(control):
+        planner_inputs.append(control)
+        return AuthorizedLunaDecision(
+            True,
+            "invoke_skill",
+            "unknown",
+            "invoke_audited_skill",
+            "authorized_handoff_selected",
+            {},
+        )
+
     options = AuthorizedSkillOptions(
         enabled=True,
         runtime=Runtime(SimpleNamespace(installed_content_sha256="skill", dependency_lock_sha256="deps")),  # type: ignore[arg-type]
         grant_store=grants,
         authorization_grant_id="grant-1",
-        planner=lambda control: planner_inputs.append(control) is None,
+        planner=planner,
     )
 
     result = pipeline(resolvers=resolver_registry, providers=registry, authorized=options).run((Stage3Paper(Paper("paper-1", "One")),)).for_paper("paper-1")

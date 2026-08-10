@@ -22,6 +22,7 @@ from .authorized_skill_adapter import (
     SkillQueueItem,
 )
 from .authorized_skill_runtime import AuthorizedSkillRuntime
+from .authorized_luna import AuthorizedLunaPlanner
 from .canonical import content_hash
 from .domain import DownloadResult, DownloadStatus, FilterStatus, PaperSource
 from .download_providers import (
@@ -45,11 +46,13 @@ from .repository import PaperRepository
 from .runs import RunStatus, RunStore
 from .stage3_pipeline import (
     AuthorizedSkillOptions,
+    LunaPlanner,
     Stage3Paper,
     Stage3PaperResult,
     Stage3Pipeline,
     Stage3RunResult,
 )
+from .stage3_luna_decisions import Stage3LunaDecisionStore
 from .storage import Database
 
 
@@ -89,6 +92,7 @@ class Stage3DownloadService:
         fetcher: Callable[[str], HTTPResponse] = urllib_fetch,
         lookup: MetadataResolverTransport | None = None,
         clock: Callable[[], datetime] | None = None,
+        authorized_luna_planner: LunaPlanner | None = None,
     ) -> None:
         self.database = database
         self.config_root = Path(config_root)
@@ -97,6 +101,7 @@ class Stage3DownloadService:
         self.fetcher = fetcher
         self.lookup = lookup
         self.clock = _trusted_clock(clock)
+        self.authorized_luna_planner = authorized_luna_planner
         self.download_config = _download_config(config)
         _require_frozen_routing(self.download_config)
 
@@ -228,6 +233,17 @@ class Stage3DownloadService:
                 runtime=handoff.runtime if handoff else None,
                 grant_store=GrantStore(self.database) if handoff else None,
                 authorization_grant_id=authorization_grant_id if handoff else None,
+                planner=(
+                    _DurableAuthorizedLunaPlanner(
+                        Stage3LunaDecisionStore(
+                            self.database, resolved_run_id, authorization_grant_id,
+                        ),
+                        self.authorized_luna_planner or AuthorizedLunaPlanner(),
+                        timestamp,
+                    )
+                    if handoff is not None and authorization_grant_id is not None
+                    else None
+                ),
             ),
             public_authorization_grant_id=authorization_grant_id,
         )
@@ -324,6 +340,16 @@ class _RollbackDryRun(Exception):
 class _AuthorizedHandoff:
     runtime: AuthorizedSkillRuntime
     queue: AuthorizedSkillQueue
+
+
+@dataclass(frozen=True, slots=True)
+class _DurableAuthorizedLunaPlanner:
+    store: Stage3LunaDecisionStore
+    planner: LunaPlanner
+    decided_at: str
+
+    def __call__(self, control):
+        return self.store.decide(control, self.planner, decided_at=self.decided_at)
 
 
 def load_provider_terms(path: str | Path) -> dict[str, ProviderTerms]:

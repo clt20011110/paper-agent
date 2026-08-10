@@ -85,8 +85,12 @@ class LunaPlannerInput:
 
 class LunaPlannerResult(Protocol):
     selected: bool
+    status: str
+    page_state: str
+    next_action: str
     reason_code: str
     invocation_metadata: Mapping[str, Any]
+    planner_decision_id: str | None
 
 
 LunaPlanner = Callable[[LunaPlannerInput], bool | LunaPlannerResult]
@@ -116,6 +120,7 @@ class Stage3Attempt:
     download_status: DownloadStatus | None = None
     fetch_request: FetchRequest | None = field(default=None, repr=False)
     planner_metadata: Mapping[str, Any] | None = field(default=None, repr=False)
+    planner_decision_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,7 +223,10 @@ class Stage3Pipeline:
                 assert skill_state is not None
                 skill_attempt = self._authorized_attempt(candidate, public, skill_state)
                 attempts.append(skill_attempt)
-                skill_result = self._fetch_if_allowed(candidate, skill_attempt, self._skill_fetch_context(skill_state))
+                skill_result = self._fetch_if_allowed(
+                    candidate, skill_attempt,
+                    self._skill_fetch_context(skill_state, skill_attempt.planner_decision_id),
+                )
                 if skill_result is not None:
                     attempts.append(_download_attempt(candidate, "authorized_skill", skill_result))
                     if skill_result.status is DownloadStatus.DOWNLOADED:
@@ -367,6 +375,7 @@ class Stage3Pipeline:
             return Stage3Attempt(candidate.candidate_id, "authorized_skill", FetchDecisionStatus.MANUAL.value, "authorized_grant_invalid:" + _reason(error))
         control = LunaPlannerInput(candidate.candidate_id, candidate.paper_id, candidate.host, public.status, public.reason_code)
         planner_metadata = None
+        planner_decision_id = None
         if options.planner is not None:
             try:
                 planned = options.planner(control)
@@ -376,10 +385,12 @@ class Stage3Pipeline:
                     selected = planned.selected
                     planner_reason = planned.reason_code
                     planner_metadata = planned.invocation_metadata
+                    planner_decision_id = planned.planner_decision_id
                 if not selected:
                     return Stage3Attempt(
                         candidate.candidate_id, "authorized_skill", FetchDecisionStatus.MANUAL.value,
                         planner_reason, planner_metadata=planner_metadata,
+                        planner_decision_id=planner_decision_id,
                     )
             except (CodexExecError, OSError, ValueError) as error:
                 return Stage3Attempt(candidate.candidate_id, "authorized_skill", FetchDecisionStatus.MANUAL.value, "authorized_planner_failed:" + _reason(error))
@@ -391,15 +402,19 @@ class Stage3Pipeline:
         return replace(
             self._probe(candidate, provider="authorized_skill", context=context),
             planner_metadata=planner_metadata,
+            planner_decision_id=planner_decision_id,
         )
 
-    def _skill_fetch_context(self, state: _SkillState) -> FetchContext:
+    def _skill_fetch_context(
+        self, state: _SkillState, planner_decision_id: str | None,
+    ) -> FetchContext:
         if state.ready is None:
             return self._public_fetch_context()
         options = self.authorized
         return FetchContext(self.run_id, self.now, AuthorizationContext(
             options.mode, state.ready.installed_content_sha256, state.ready.dependency_lock_sha256,
             options.collection_id, options.collection_snapshot_hash, options.selection_snapshot_hash,
+            planner_decision_id,
         ))
 
 
