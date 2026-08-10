@@ -21,6 +21,8 @@ from paper_agent.download_providers import (
     ProbeContext,
     ResolverDescriptor,
     ResolverRegistry,
+    RoutedDownloadProvider,
+    provider_contract,
 )
 from paper_agent.downloads import FetchRejected
 from paper_agent.stage3_pipeline import (
@@ -39,6 +41,10 @@ def candidate(identifier: str, resolver: str, paper_id: str = "paper-1") -> Acce
 
 def request(identifier: str, provider: str) -> FetchRequest:
     return FetchRequest(f"request-{identifier}", identifier, "policy-v1", "research", provider, NOW, "2026-08-11T00:00:00Z", identifier)
+
+
+def descriptor(name: str, provider: RoutedDownloadProvider, handles) -> DownloadProviderDescriptor:
+    return DownloadProviderDescriptor(name, provider, handles, provider_contract())
 
 
 @dataclass
@@ -112,7 +118,7 @@ def test_resolves_in_frozen_order_continues_after_unavailable_and_fetches_only_a
         "first": FetchDecision("first", FetchDecisionStatus.MANUAL, "unavailable", "policy-v1"),
         "second": FetchDecision("second", FetchDecisionStatus.ALLOW, "open", "policy-v1", request("second", "public_direct")),
     }, [], [])
-    registry = DownloadProviderRegistry((DownloadProviderDescriptor("public_direct", provider, lambda _value: True),))
+    registry = DownloadProviderRegistry((descriptor("public_direct", provider, lambda _value: True),))
 
     result = pipeline(resolvers=resolver_registry, providers=registry).run((Stage3Paper(Paper("paper-1", "One")),)).for_paper("paper-1")
 
@@ -128,7 +134,7 @@ def test_explicit_manual_outcome_never_fetches_a_non_allow_probe() -> None:
     provider = Provider("public_direct", {
         "only": FetchDecision("only", FetchDecisionStatus.NEEDS_GRANT, "grant_required", "policy-v1"),
     }, [], [])
-    registry = DownloadProviderRegistry((DownloadProviderDescriptor("public_direct", provider, lambda _value: True),))
+    registry = DownloadProviderRegistry((descriptor("public_direct", provider, lambda _value: True),))
 
     manual_queue = ManualQueue([])
     result = pipeline(
@@ -160,8 +166,8 @@ def test_policy_deny_is_terminal_and_never_escalates_to_the_authorized_skill() -
         ),
     }, [], [])
     registry = DownloadProviderRegistry((
-        DownloadProviderDescriptor("public_direct", public, lambda _value: True),
-        DownloadProviderDescriptor("authorized_skill", skill, lambda _value: False),
+        descriptor("public_direct", public, lambda _value: True),
+        descriptor("authorized_skill", skill, lambda _value: False),
     ))
     options = AuthorizedSkillOptions(
         enabled=True,
@@ -210,8 +216,8 @@ def test_all_public_locations_are_tried_before_authorized_browser_fallback() -> 
         [],
     )
     registry = DownloadProviderRegistry((
-        DownloadProviderDescriptor("public_direct", public, lambda _value: True),
-        DownloadProviderDescriptor("authorized_skill", skill, lambda _value: False),
+        descriptor("public_direct", public, lambda _value: True),
+        descriptor("authorized_skill", skill, lambda _value: False),
     ))
     options = AuthorizedSkillOptions(
         enabled=True,
@@ -251,7 +257,7 @@ def test_rejected_persisted_request_is_manual_not_blindly_retryable() -> None:
         FetchRejected("authorization grant is revoked"),
     )
     registry = DownloadProviderRegistry((
-        DownloadProviderDescriptor("public_direct", provider, lambda _value: True),
+        descriptor("public_direct", provider, lambda _value: True),
     ))
 
     result = pipeline(
@@ -307,8 +313,8 @@ def test_skill_is_opt_in_and_planner_receives_only_sanitized_control_fields() ->
         "private": FetchDecision("private", FetchDecisionStatus.ALLOW, "granted", "policy-v1", request("private", "authorized_skill")),
     }, [], [])
     registry = DownloadProviderRegistry((
-        DownloadProviderDescriptor("public_direct", public, lambda _value: True),
-        DownloadProviderDescriptor("authorized_skill", skill, lambda _value: False),
+        descriptor("public_direct", public, lambda _value: True),
+        descriptor("authorized_skill", skill, lambda _value: False),
     ))
     planner_inputs = []
     grants = Grants([])
@@ -350,7 +356,7 @@ def test_skill_drift_is_manual_and_does_not_block_other_papers_or_resumption() -
         "first": FetchDecision("first", FetchDecisionStatus.MANUAL, "private", "policy-v1"),
         "second": FetchDecision("second", FetchDecisionStatus.ALLOW, "open", "policy-v1", request("second", "public_direct")),
     }, [], [])
-    registry = DownloadProviderRegistry((DownloadProviderDescriptor("public_direct", public, lambda _value: True),))
+    registry = DownloadProviderRegistry((descriptor("public_direct", public, lambda _value: True),))
     runtime = Runtime(AuthorizedSkillRuntimeError("drift"))
     options = AuthorizedSkillOptions(enabled=True, runtime=runtime)  # type: ignore[arg-type]
     stage = pipeline(resolvers=resolver_registry, providers=registry, authorized=options)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,7 +36,9 @@ from paper_agent.download_providers import (
     ResolverRegistry,
     RoutedDownloadProvider,
     UnavailableDownloadProvider,
+    default_download_provider_registry,
     default_resolver_registry,
+    provider_contract,
 )
 
 
@@ -187,6 +190,10 @@ def request(provider: str = "fixture") -> FetchRequest:
     return FetchRequest("request-1", "candidate-1", "v1", "personal_research", provider, NOW, "2026-08-11T00:00:00Z", "key")
 
 
+def descriptor(name: str, provider: RoutedDownloadProvider, handles) -> DownloadProviderDescriptor:
+    return DownloadProviderDescriptor(name, provider, handles, provider_contract())
+
+
 def test_persisted_adapter_probes_without_fetching_and_fetch_requires_bound_provider() -> None:
     service = RecordingService(policy=type("Policy", (), {"version": "v1"})(), probes=[], fetches=[])
     adapter = PersistedRequestDownloadProvider("fixture", service)  # type: ignore[arg-type]
@@ -207,7 +214,7 @@ def test_persisted_adapter_probes_without_fetching_and_fetch_requires_bound_prov
 def test_registry_order_and_placeholder_boundaries_are_explicit_and_extensible() -> None:
     manual = UnavailableDownloadProvider("manual", "v1", "manual_queue_required")
     registry = DownloadProviderRegistry(
-        (DownloadProviderDescriptor("manual", manual, lambda _candidate: True),)
+        (descriptor("manual", manual, lambda _candidate: True),)
     )
 
     attempt = registry.probe(candidate(), ProbeContext("personal_research", NOW))
@@ -230,3 +237,55 @@ def test_registry_order_and_placeholder_boundaries_are_explicit_and_extensible()
     assert DEFAULT_PROVIDER_ORDER == (
         "public_direct", "europe_pmc", "unpaywall_location", "arxiv", "authorized_skill", "manual"
     )
+
+
+def test_default_download_descriptors_declare_complete_contracts() -> None:
+    registry = default_download_provider_registry(SimpleNamespace(policy=SimpleNamespace(version="v1")))
+
+    assert registry.names == DEFAULT_PROVIDER_ORDER
+    for name in registry.names:
+        contract = registry.descriptor(name).contract
+        assert set(contract) == {
+            "authentication_required", "supports_main_document", "supports_supplements",
+            "supports_version_selection", "allows_unattended", "handled_domains",
+            "handled_resolvers", "retry_semantics", "probe_input_schema_id",
+            "probe_output_schema_id", "fetch_input_schema_id", "fetch_output_schema_id",
+            "idempotency_key_boundary", "side_effect_boundary",
+        }
+        assert contract["probe_input_schema_id"].endswith("probe-input.v1")
+        assert contract["fetch_output_schema_id"].endswith("fetch-output.v1")
+    assert registry.descriptor("authorized_skill").contract["authentication_required"] is True
+    assert registry.descriptor("authorized_skill").contract["allows_unattended"] is False
+    assert registry.descriptor("manual").contract["supports_main_document"] is False
+
+
+@pytest.mark.parametrize("mutate", (
+    lambda contract: contract.pop("retry_semantics"),
+    lambda contract: contract.__setitem__("unexpected", "value"),
+    lambda contract: contract.__setitem__("side_effect_boundary", "fetch_any_url"),
+))
+def test_registry_rejects_incomplete_or_unsafe_extension_contracts(mutate) -> None:
+    provider = UnavailableDownloadProvider("extension", "v1", "manual")
+    contract = provider_contract(handled_resolvers=("fixture",), handled_domains=("example.test",))
+    mutate(contract)
+
+    with pytest.raises(DownloadProviderError):
+        DownloadProviderRegistry((DownloadProviderDescriptor("extension", provider, lambda _candidate: True, contract),))
+
+
+def test_extension_descriptor_routes_only_its_declared_domain_and_resolver() -> None:
+    provider = UnavailableDownloadProvider("extension", "v1", "manual")
+    registry = DownloadProviderRegistry((
+        DownloadProviderDescriptor(
+            "extension", provider, lambda _candidate: True,
+            provider_contract(handled_resolvers=("fixture",), handled_domains=("example.test",)),
+        ),
+    ))
+
+    attempt = registry.probe(candidate(), ProbeContext("personal_research", NOW))
+
+    assert attempt.provider == "extension"
+    with pytest.raises(DownloadProviderError, match="no download provider accepts resolver"):
+        registry.probe(candidate("other"), ProbeContext("personal_research", NOW))
+    with pytest.raises(DownloadProviderError, match="does not handle other"):
+        registry.probe_with("extension", candidate("other"), ProbeContext("personal_research", NOW))

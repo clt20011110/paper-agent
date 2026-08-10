@@ -11,8 +11,9 @@ addition does not require editing a central conditional chain.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
@@ -45,6 +46,30 @@ DEFAULT_PROVIDER_ORDER = (
     "authorized_skill",
     "manual",
 )
+
+PROBE_INPUT_SCHEMA_ID = "paper-agent.stage3.probe-input.v1"
+PROBE_OUTPUT_SCHEMA_ID = "paper-agent.stage3.probe-output.v1"
+FETCH_INPUT_SCHEMA_ID = "paper-agent.stage3.fetch-input.v1"
+FETCH_OUTPUT_SCHEMA_ID = "paper-agent.stage3.fetch-output.v1"
+_PROVIDER_CONTRACT_FIELDS = frozenset({
+    "authentication_required",
+    "supports_main_document",
+    "supports_supplements",
+    "supports_version_selection",
+    "allows_unattended",
+    "handled_domains",
+    "handled_resolvers",
+    "retry_semantics",
+    "probe_input_schema_id",
+    "probe_output_schema_id",
+    "fetch_input_schema_id",
+    "fetch_output_schema_id",
+    "idempotency_key_boundary",
+    "side_effect_boundary",
+})
+_RETRY_SEMANTICS = frozenset({"not_retryable", "transient_retryable", "external_ledger_resumable"})
+_IDEMPOTENCY_KEY_BOUNDARY = "persisted_fetch_request_idempotency_key"
+_SIDE_EFFECT_BOUNDARY = "probe_no_body_download__fetch_persisted_request_only"
 
 
 class DownloadProviderError(ValueError):
@@ -466,9 +491,17 @@ class AuthorizedSkillAdapter(RoutedDownloadProvider, Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DownloadProviderDescriptor:
+    """Declarative contract for a routed Stage 3 download provider.
+
+    ``contract`` is deliberately a closed mapping rather than an informal
+    provider comment.  Registry validation makes an extension state every
+    security and execution boundary before it can receive a candidate.
+    """
+
     name: str
     provider: RoutedDownloadProvider
     handles: Callable[[AccessLocationCandidate], bool]
+    contract: Mapping[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,16 +523,26 @@ class DownloadProviderRegistry:
     def names(self) -> tuple[str, ...]:
         return tuple(self._descriptors)
 
+    def descriptor(self, name: str) -> DownloadProviderDescriptor:
+        """Return the validated descriptor, including its frozen contract."""
+
+        try:
+            return self._descriptors[name]
+        except KeyError as error:
+            raise DownloadProviderError(f"unknown download provider: {name}") from error
+
     def register(self, descriptor: DownloadProviderDescriptor) -> None:
         if not descriptor.name or descriptor.name != descriptor.provider.name:
             raise DownloadProviderError("provider descriptor name must match its provider")
         if descriptor.name in self._descriptors:
             raise DownloadProviderError(f"duplicate download provider descriptor: {descriptor.name}")
-        self._descriptors[descriptor.name] = descriptor
+        self._descriptors[descriptor.name] = replace(
+            descriptor, contract=_validate_provider_contract(descriptor.contract)
+        )
 
     def probe(self, candidate: AccessLocationCandidate, context: ProbeContext) -> ProbeAttempt:
         for descriptor in self._descriptors.values():
-            if descriptor.handles(candidate):
+            if _contract_handles(descriptor.contract, candidate) and descriptor.handles(candidate):
                 return self.probe_with(descriptor.name, candidate, context)
         raise DownloadProviderError(f"no download provider accepts resolver {candidate.resolver}")
 
@@ -516,6 +559,10 @@ class DownloadProviderRegistry:
             descriptor = self._descriptors[provider]
         except KeyError as error:
             raise DownloadProviderError(f"unknown download provider: {provider}") from error
+        if not _contract_handles(descriptor.contract, candidate):
+            raise DownloadProviderError(
+                f"download provider {provider} does not handle {candidate.resolver} at {candidate.host}"
+            )
         return ProbeAttempt(candidate, descriptor.name, descriptor.provider.probe(candidate, context))
 
     def probe_all(
@@ -558,26 +605,135 @@ def default_download_provider_registry(
             DownloadProviderDescriptor(
                 "public_direct", PersistedRequestDownloadProvider("public_direct", service),
                 lambda candidate: candidate.resolver == "publisher_public",
+                provider_contract(
+                    handled_domains=("*",), handled_resolvers=("publisher_public",),
+                ),
             ),
             DownloadProviderDescriptor(
                 "europe_pmc", PersistedRequestDownloadProvider("europe_pmc", service),
                 lambda candidate: candidate.resolver == "europe_pmc",
+                provider_contract(
+                    handled_domains=("*",),
+                    handled_resolvers=("europe_pmc",),
+                ),
             ),
             DownloadProviderDescriptor(
                 "unpaywall_location", PersistedRequestDownloadProvider("unpaywall_location", service),
                 lambda candidate: candidate.resolver == "unpaywall",
+                provider_contract(
+                    handled_domains=("*",), handled_resolvers=("unpaywall",),
+                ),
             ),
             DownloadProviderDescriptor(
                 "arxiv", PersistedRequestDownloadProvider("arxiv", service),
                 lambda candidate: candidate.resolver == "arxiv",
+                provider_contract(
+                    handled_domains=("*",),
+                    handled_resolvers=("arxiv",),
+                ),
             ),
-            DownloadProviderDescriptor("authorized_skill", skill, lambda _candidate: False),
+            DownloadProviderDescriptor(
+                "authorized_skill", skill, lambda _candidate: False,
+                provider_contract(
+                    authentication_required=True,
+                    supports_supplements=True,
+                    supports_version_selection=True,
+                    allows_unattended=False,
+                    handled_domains=("*",),
+                    handled_resolvers=("*",),
+                    retry_semantics="external_ledger_resumable",
+                ),
+            ),
             DownloadProviderDescriptor(
                 "manual",
                 UnavailableDownloadProvider("manual", policy_version, "manual_queue_required"),
                 lambda _candidate: True,
+                provider_contract(
+                    supports_main_document=False,
+                    handled_domains=("*",),
+                    handled_resolvers=("*",),
+                    retry_semantics="not_retryable",
+                ),
             ),
         )
+    )
+
+
+def provider_contract(
+    *,
+    authentication_required: bool = False,
+    supports_main_document: bool = True,
+    supports_supplements: bool = False,
+    supports_version_selection: bool = False,
+    allows_unattended: bool = True,
+    handled_domains: Sequence[str] = ("*",),
+    handled_resolvers: Sequence[str] = ("*",),
+    retry_semantics: str = "transient_retryable",
+    probe_input_schema_id: str = PROBE_INPUT_SCHEMA_ID,
+    probe_output_schema_id: str = PROBE_OUTPUT_SCHEMA_ID,
+    fetch_input_schema_id: str = FETCH_INPUT_SCHEMA_ID,
+    fetch_output_schema_id: str = FETCH_OUTPUT_SCHEMA_ID,
+    idempotency_key_boundary: str = _IDEMPOTENCY_KEY_BOUNDARY,
+    side_effect_boundary: str = _SIDE_EFFECT_BOUNDARY,
+) -> dict[str, Any]:
+    """Build the explicit, closed contract required by a descriptor.
+
+    Extensions may use provider-specific schema IDs and route constraints, but
+    cannot omit the probe/fetch idempotency and side-effect declarations.
+    """
+
+    return {
+        "authentication_required": authentication_required,
+        "supports_main_document": supports_main_document,
+        "supports_supplements": supports_supplements,
+        "supports_version_selection": supports_version_selection,
+        "allows_unattended": allows_unattended,
+        "handled_domains": tuple(handled_domains),
+        "handled_resolvers": tuple(handled_resolvers),
+        "retry_semantics": retry_semantics,
+        "probe_input_schema_id": probe_input_schema_id,
+        "probe_output_schema_id": probe_output_schema_id,
+        "fetch_input_schema_id": fetch_input_schema_id,
+        "fetch_output_schema_id": fetch_output_schema_id,
+        "idempotency_key_boundary": idempotency_key_boundary,
+        "side_effect_boundary": side_effect_boundary,
+    }
+
+
+def _validate_provider_contract(contract: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not isinstance(contract, Mapping) or set(contract) != _PROVIDER_CONTRACT_FIELDS:
+        raise DownloadProviderError("provider descriptor contract must declare exactly the required fields")
+    booleans = (
+        "authentication_required", "supports_main_document", "supports_supplements",
+        "supports_version_selection", "allows_unattended",
+    )
+    if any(type(contract[field]) is not bool for field in booleans):
+        raise DownloadProviderError("provider descriptor boolean contract fields must be booleans")
+    for field in ("handled_domains", "handled_resolvers"):
+        values = contract[field]
+        if not isinstance(values, tuple) or not values or not all(isinstance(item, str) and item for item in values):
+            raise DownloadProviderError(f"provider descriptor {field} must be a non-empty string tuple")
+    if contract["retry_semantics"] not in _RETRY_SEMANTICS:
+        raise DownloadProviderError("provider descriptor retry_semantics is unsupported")
+    for field in (
+        "probe_input_schema_id", "probe_output_schema_id", "fetch_input_schema_id", "fetch_output_schema_id",
+    ):
+        if not isinstance(contract[field], str) or not contract[field]:
+            raise DownloadProviderError(f"provider descriptor {field} must be a non-empty schema ID")
+    if contract["idempotency_key_boundary"] != _IDEMPOTENCY_KEY_BOUNDARY:
+        raise DownloadProviderError("provider descriptor must bind fetch to the persisted idempotency key")
+    if contract["side_effect_boundary"] != _SIDE_EFFECT_BOUNDARY:
+        raise DownloadProviderError("provider descriptor must keep probe free of body downloads")
+    return MappingProxyType(dict(contract))
+
+
+def _contract_handles(contract: Mapping[str, Any], candidate: AccessLocationCandidate) -> bool:
+    resolvers = contract["handled_resolvers"]
+    domains = contract["handled_domains"]
+    return (
+        "*" in resolvers or candidate.resolver in resolvers
+    ) and (
+        "*" in domains or candidate.host in domains
     )
 
 
