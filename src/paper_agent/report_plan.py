@@ -303,6 +303,7 @@ def compile_report_plan(
         **{field: source[field] for field in fields[:6]},
         "query_plan_hash": corpus_snapshot["query_plan_hash"],
         "corpus_snapshot_hash": corpus_snapshot["snapshot_hash"],
+        "search_audit_pack_hash": search_audit_pack["pack_hash"],
         **{field: source[field] for field in fields[6:]},
         "schema_hash": content_hash(report_schema),
         "prompt_hashes": prompt_hashes,
@@ -340,6 +341,40 @@ def approve_report_plan(
     return approved
 
 
+def persist_approved_report_plan(database: Any, plan: Mapping[str, Any]) -> None:
+    """Persist one immutable approved plan before any Stage 4b model work."""
+    try:
+        require_valid_approval(plan, "plan_hash")
+        validate(plan, "report-plan.schema.json")
+    except (ApprovalError, SchemaValidationError) as error:
+        raise ReportPlanError(str(error)) from error
+    plan_text = canonical_json(dict(plan)).decode("utf-8")
+    approval_text = canonical_json(dict(plan["approval"])).decode("utf-8")
+    expected = (
+        str(plan["plan_hash"]),
+        str(plan["schema_version"]),
+        plan_text,
+        approval_text,
+        "approved",
+    )
+    with database.transaction() as connection:
+        row = connection.execute(
+            """SELECT content_hash, schema_version, plan_json, approval_json, status
+               FROM report_plans WHERE report_plan_id = ?""",
+            (plan["plan_id"],),
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                """INSERT INTO report_plans(
+                       report_plan_id, content_hash, schema_version,
+                       plan_json, approval_json, status
+                   ) VALUES (?, ?, ?, ?, ?, 'approved')""",
+                (plan["plan_id"], *expected[:-1]),
+            )
+        elif tuple(row) != expected:
+            raise ReportPlanError("persisted approved ReportPlan is immutable")
+
+
 def assert_report_runtime_matches(
     approved_plan: Mapping[str, Any],
     runtime_plan: Mapping[str, Any],
@@ -359,6 +394,8 @@ def assert_report_runtime_matches(
         raise ReportPlanDriftError("corpus snapshot has drifted")
     if corpus_snapshot["query_plan_hash"] != approved_plan["query_plan_hash"]:
         raise ReportPlanDriftError("QueryPlan hash has drifted")
+    if search_audit_pack["pack_hash"] != approved_plan["search_audit_pack_hash"]:
+        raise ReportPlanDriftError("search audit pack has drifted")
     if approved_content_hash(runtime_plan) != approved_plan["plan_hash"]:
         raise ReportPlanDriftError("ReportPlan scope, membership, schema, prompt, or budget has drifted")
 
@@ -424,6 +461,8 @@ class ReportPlanStore:
             raise ReportPlanError("ReportPlan QueryPlan hash does not match its corpus")
         if plan["corpus_snapshot_hash"] != corpus_snapshot["snapshot_hash"]:
             raise ReportPlanError("ReportPlan corpus snapshot hash does not match")
+        if plan["search_audit_pack_hash"] != search_audit_pack["pack_hash"]:
+            raise ReportPlanError("ReportPlan search audit pack hash does not match")
         directory = self.directory(str(plan["plan_id"]))
         documents = {
             directory / "REPORT_PLAN.json": plan,
@@ -454,6 +493,8 @@ class ReportPlanStore:
         _validate_report_inputs(corpus, audit)
         if plan["corpus_snapshot_hash"] != corpus["snapshot_hash"]:
             raise ReportPlanError("stored corpus does not match the approved ReportPlan")
+        if plan["search_audit_pack_hash"] != audit["pack_hash"]:
+            raise ReportPlanError("stored search audit does not match the approved ReportPlan")
         return ReportPlanBundle(plan, corpus, audit)
 
     @staticmethod

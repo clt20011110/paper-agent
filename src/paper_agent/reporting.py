@@ -351,7 +351,7 @@ class ReportPlanner:
         retries = int(budget["max_retries"])
         audit_calls = int(budget["audit_calls"])
         repair_calls = int(budget["repair_calls"])
-        if retries < 0 or audit_calls < 2 or repair_calls != 1:
+        if retries < 0 or audit_calls != 2 or repair_calls != 1:
             raise ReportPlanningError("budget must reserve non-negative retries, two audits, and one repair")
         generation_tokens = sum(node.input_tokens for node in nodes)
         audit_tokens = audit_calls * self.audit_input_tokens

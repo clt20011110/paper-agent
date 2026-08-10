@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from paper_agent.canonical import content_hash
 from paper_agent.report_plan import (
     CLASSIFICATION_AXES,
     REPORT_SECTION_IDS,
@@ -17,7 +18,9 @@ from paper_agent.report_plan import (
     build_corpus_snapshot,
     build_search_audit_pack,
     compile_report_plan,
+    persist_approved_report_plan,
 )
+from paper_agent.storage import Database
 
 
 HASH = "a" * 64
@@ -197,6 +200,7 @@ def test_compiled_report_plan_binds_frozen_inputs_prompts_and_required_contract(
     assert plan["plan_id"] == second["plan_id"]
     assert plan["query_plan_hash"] == HASH
     assert plan["corpus_snapshot_hash"] == corpus["snapshot_hash"]
+    assert plan["search_audit_pack_hash"] == audit["pack_hash"]
     assert set(plan["prompt_hashes"]) == {
         "planning_assist",
         "section_reduce",
@@ -254,6 +258,23 @@ def test_runtime_rejects_corpus_query_and_approval_drift() -> None:
             search_audit_pack=audit,
         )
 
+    changed_audit = deepcopy(audit)
+    changed_audit["limitations"].append("New frozen limitation")
+    audit_core = {
+        key: value
+        for key, value in changed_audit.items()
+        if key not in {"pack_id", "pack_hash", "created_at"}
+    }
+    changed_audit["pack_hash"] = content_hash(audit_core)
+    changed_audit["pack_id"] = f"search-audit-{changed_audit['pack_hash'][:12]}"
+    with pytest.raises(ReportPlanDriftError, match="search audit pack has drifted"):
+        assert_report_runtime_matches(
+            approved,
+            runtime,
+            corpus_snapshot=corpus,
+            search_audit_pack=changed_audit,
+        )
+
     approved["objective"] = "Changed after approval"
     with pytest.raises(ReportPlanDriftError, match="approved document content has drifted"):
         assert_report_runtime_matches(
@@ -270,6 +291,16 @@ def test_plan_rejects_silent_corpus_omission_and_section_contract_drift() -> Non
     draft["paper_memberships"] = draft["paper_memberships"][:-1]
     with pytest.raises(ReportPlanError, match="does not exactly match"):
         compile_report_plan(draft, corpus_snapshot=corpus, search_audit_pack=audit, created_at="2026-08-10T00:02:00Z")
+
+    draft = _draft()
+    draft["budget"]["audit_calls"] = 3
+    with pytest.raises(ReportPlanError, match="audit_calls"):
+        compile_report_plan(
+            draft,
+            corpus_snapshot=corpus,
+            search_audit_pack=audit,
+            created_at="2026-08-10T00:02:00Z",
+        )
 
     draft = _draft()
     draft["sections"] = draft["sections"][:-1]
@@ -374,3 +405,31 @@ def test_store_keeps_approved_bundle_immutable_and_validates_on_load(tmp_path) -
     path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(ReportPlanError, match="drifted"):
         store.load_approved(approved["plan_id"])
+
+
+def test_approved_plan_has_an_idempotent_immutable_database_entrypoint(tmp_path) -> None:
+    plan, _, _ = _compiled()
+    approved = approve_report_plan(
+        plan,
+        plan["plan_hash"],
+        approved_by="owner",
+        approved_at="2026-08-10T00:03:00Z",
+    )
+    with Database(tmp_path / "paper-agent.sqlite") as database:
+        database.migrate()
+        persist_approved_report_plan(database, approved)
+        persist_approved_report_plan(database, approved)
+        row = database.connection.execute(
+            """SELECT content_hash, status FROM report_plans
+               WHERE report_plan_id = ?""",
+            (approved["plan_id"],),
+        ).fetchone()
+        assert tuple(row) == (approved["plan_hash"], "approved")
+
+        database.connection.execute(
+            "UPDATE report_plans SET plan_json = '{}' WHERE report_plan_id = ?",
+            (approved["plan_id"],),
+        )
+        database.connection.commit()
+        with pytest.raises(ReportPlanError, match="immutable"):
+            persist_approved_report_plan(database, approved)
