@@ -7,20 +7,25 @@
     "no volatile totals"
   ],
   "evidence": {
-    "api_url": "https://api.crossref.org/works?query=machine+learning&rows=1",
+    "api_url": "https://api.crossref.org/works?query=machine+learning&rows=1&mailto=84181669%2Bclt20011110%40users.noreply.github.com",
     "mapped_entries": 1,
     "provider": "crossref",
-    "response_sha256": "de38476f4cb7fa581330ec838e492d516dce9e6f49373209d478d39b6936b4d4",
+    "response_sha256": "c87414d897f94e71a8540770e3ac0fcc43418e51f08eef3920365a897bfb650f",
     "schema_minimum": [
       "DOI",
       "title"
     ],
-    "snapshot_bytes": null,
-    "snapshot_file": null,
-    "timestamp": "2026-08-09T15:18:13+00:00"
+    "snapshot_bytes": 2467,
+    "snapshot_encoding": "base64",
+    "snapshot_file": "crossref-response.json.b64",
+    "timestamp": "2026-08-10T13:56:49+00:00"
   },
   "phase": 2,
+  "provider_manifest": {
+    "path": "providers/crossref.yaml",
+    "sha256": "e172fd76b73dd9faf3386e3f0f37ba29f1fbc53a0ec8a2e969833f22a36f36d0"
+  },
   "purpose": "controlled public metadata smoke",
-  "snapshot_status": "absent",
-  "snapshot_status_reason": "The historical response bytes were not retained in the workspace; this record preserves only the observed digest and metadata."
+  "snapshot_status": "present",
+  "source_commit": "0ded23fd389bc621cd099d23fd2b046295604067"
 }

@@ -15,10 +15,13 @@ Official sources:
 - <https://www.crossref.org/documentation/retrieve-metadata/rest-api/>
 - <https://github.com/CrossRef/rest-api-doc>
 
-The historical evidence beside this document records an observed request and
-its digest, but the corresponding raw bytes are not present in this workspace.
-It is therefore marked `snapshot_status: absent` and must not be presented as a
-replayable fixture.
+The evidence beside this document records a controlled request made on
+2026-08-10 and binds the source commit, provider manifest digest, raw response
+size, and response digest. The exact response bytes are retained as
+`crossref-response.json.b64` so text encoding or formatting cannot change the
+captured hash; the offline suite decodes and replays them. Changing either the
+snapshot or provider manifest invalidates the committed evidence. Volatile
+result totals are observed but never used as acceptance assertions.
 
 To make a new manual, auditable run (never in ordinary test runs), set an
 explicit opt-in flag, a Crossref contact, and an output directory outside the

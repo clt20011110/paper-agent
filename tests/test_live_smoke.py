@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from base64 import b64decode
 from hashlib import sha256
+import json
 import os
 from pathlib import Path
 
 import pytest
 
 from paper_agent.http_transport import ApprovedMetadataSnapshot, ApprovedSnapshotTransport
+from paper_agent.domain import QuerySpec
 from paper_agent.provider_runtime import ProviderRuntime, ProviderRuntimePolicy, SnapshotDriftError
+from paper_agent.providers.builtin import create_builtin
 from paper_agent.smoke import SmokeEvidence, run_crossref_smoke, run_venue_smoke, write_smoke_evidence
 
 
@@ -122,6 +126,38 @@ def test_approved_snapshot_rejects_digest_drift() -> None:
     )
     with pytest.raises(SnapshotDriftError):
         transport("crossref", "search", {"query": "fixture"})
+
+
+def test_committed_phase2_smoke_snapshot_is_replayable() -> None:
+    root = Path(__file__).parents[1]
+    evidence = json.loads(
+        (root / "docs" / "smoke" / "phase2-controlled-smoke-evidence.json").read_text()
+    )
+    snapshot = root / "docs" / "smoke" / evidence["evidence"]["snapshot_file"]
+    assert evidence["evidence"]["snapshot_encoding"] == "base64"
+    body = b64decode(snapshot.read_bytes().strip(), validate=True)
+
+    assert evidence["snapshot_status"] == "present"
+    assert len(body) == evidence["evidence"]["snapshot_bytes"]
+    assert sha256(body).hexdigest() == evidence["evidence"]["response_sha256"]
+    manifest = root / evidence["provider_manifest"]["path"]
+    assert sha256(manifest.read_bytes()).hexdigest() == evidence["provider_manifest"]["sha256"]
+
+    runtime = ProviderRuntime({"crossref": ProviderRuntimePolicy("crossref")})
+    transport = ApprovedSnapshotTransport(
+        {
+            ("crossref", "search"): ApprovedMetadataSnapshot(
+                body, evidence["evidence"]["response_sha256"], "application/json"
+            )
+        },
+        runtime,
+    )
+    batch = create_builtin("crossref", transport).search(
+        QuerySpec(1, "phase2-smoke", "machine learning", page_size=1)
+    )
+    assert len(batch.entries) == evidence["evidence"]["mapped_entries"]
+    assert batch.entries[0].external_id
+    assert batch.entries[0].title
 
 
 @pytest.mark.live_smoke
