@@ -17,7 +17,7 @@ SKILL = ROOT / "skills" / "paper-agent" / "SKILL.md"
 # rather than leaving the skill to promise a private Python fallback.
 REQUIRED_TOP_LEVEL_COMMANDS = frozenset({
     "doctor", "search", "import-seeds", "crawl", "filter", "grant", "download",
-    "analyze", "report", "verify-report", "run", "resume", "export",
+    "analyze", "report", "verify-report", "run", "resume", "export", "import",
     "migrate-config", "benchmark-stage2",
 })
 
@@ -39,6 +39,7 @@ REQUIRED_SKILL_COMMANDS = (
     "paper-agent run",
     "paper-agent resume",
     "paper-agent export",
+    "paper-agent import",
     "paper-agent migrate-config",
     "paper-agent benchmark-stage2",
 )

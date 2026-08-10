@@ -28,6 +28,10 @@ paper-agent resume --workflow /absolute/path/to/workflow.json \
 paper-agent verify-report --run-id <report-run-id> --config /absolute/path/to/research.yaml
 ```
 
+迁移事实库时，先用 `paper-agent --dry-run import --format jsonl|csv|legacy-json
+--input <FILE> --database <DB>` 验证全部记录，再去掉 `--dry-run`。正式导入在单一事务内
+提交，重复导入相同规范 JSONL/CSV 不会制造重复 paper、source 或 membership。
+
 `resume` 不接受单独的 `--run-id`：必须重传原始 `--workflow` manifest。多阶段清单必须使用
 schema version 2 的 `from_step` 绑定；version 1 多阶段清单会被拒绝。其 FileRef（包括
 config、plan、release、selection、policy 和 report inputs）必须仍在原清单目录中、摘要完全一致；

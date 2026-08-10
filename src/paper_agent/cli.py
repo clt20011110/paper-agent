@@ -32,7 +32,14 @@ from .download_cli_service import (
     load_provider_terms,
 )
 from .domain import CitationEdgeType
-from .exchange import export_csv, export_jsonl, validate_export
+from .exchange import (
+    export_csv,
+    export_jsonl,
+    import_csv,
+    import_jsonl,
+    import_legacy_json,
+    validate_export,
+)
 from .grants import (
     GrantStore,
     create_grant_draft,
@@ -177,6 +184,15 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     export.add_argument("--database", type=Path)
     export.add_argument("--format", required=True, choices=("jsonl", "csv"))
     export.add_argument("--output", required=True, type=Path)
+
+    import_data = subcommands.add_parser(
+        "import", help="import canonical JSONL/CSV or legacy JSON into SQLite"
+    )
+    import_data.add_argument("--database", type=Path)
+    import_data.add_argument(
+        "--format", required=True, choices=("jsonl", "csv", "legacy-json")
+    )
+    import_data.add_argument("--input", required=True, type=Path)
 
     migrate = subcommands.add_parser("migrate-config", help="convert a legacy YAML configuration to v2")
     migrate.add_argument("--input", required=True, type=Path)
@@ -389,6 +405,8 @@ def main(
         return _finish(args, _grant_revoke(args))
     if args.command == "export":
         return _finish(args, _export(args))
+    if args.command == "import":
+        return _finish(args, _import_data(args))
     if args.command == "migrate-config":
         return _finish(args, _migrate_config(args))
     if args.command == "search" and args.search_command == "plan":
@@ -1333,6 +1351,56 @@ def _assert_safe_export_destination(database_path: Path, output_path: Path) -> N
             raise ConfigError("export output must not alias the SQLite fact store")
 
 
+def _import_data(args: argparse.Namespace) -> dict[str, Any]:
+    config = load_config(args.config) if args.config else None
+    database_path = _database_path(args.database, config, args.config)
+    if not args.input.is_file():
+        raise FileNotFoundError(f"import input does not exist: {args.input}")
+    _assert_safe_import_source(database_path, args.input)
+    importer = {
+        "jsonl": import_jsonl,
+        "csv": import_csv,
+        "legacy-json": import_legacy_json,
+    }[args.format]
+    if args.dry_run and not database_path.is_file():
+        with TemporaryDirectory(prefix="paper-agent-import-") as temporary:
+            with Database(Path(temporary) / "validation.sqlite3") as database:
+                database.migrate()
+                report = importer(PaperRepository(database), args.input, dry_run=True)
+    else:
+        with Database(database_path, read_only=args.dry_run) as database:
+            if not args.dry_run:
+                database.migrate()
+            report = importer(
+                PaperRepository(database), args.input, dry_run=args.dry_run
+            )
+    return {
+        "command": "import",
+        "database_path": str(database_path),
+        "format": args.format,
+        "input_path": str(args.input),
+        "counts": dict(report.counts),
+        "field_mappings": dict(report.mappings),
+        "warnings": list(report.warnings),
+        "unmigrated": list(report.unmigrated),
+        "status": "validated" if args.dry_run else "complete",
+    }
+
+
+def _assert_safe_import_source(database_path: Path, input_path: Path) -> None:
+    source = input_path.resolve()
+    for candidate in (
+        database_path,
+        Path(f"{database_path}-wal"),
+        Path(f"{database_path}-shm"),
+        Path(f"{database_path}-journal"),
+    ):
+        if source == candidate.resolve() or (
+            candidate.exists() and input_path.samefile(candidate)
+        ):
+            raise ConfigError("import input must not alias the SQLite fact store")
+
+
 def _migrate_config(args: argparse.Namespace) -> dict[str, Any]:
     report = migrate_legacy_yaml(args.input)
     if args.write is not None and not args.dry_run:
@@ -1932,7 +2000,7 @@ def _command_from_argv(argv: Sequence[str]) -> str:
 
 
 def _command_stage(command: str) -> str:
-    if command.startswith(("search", "crawl", "import-seeds")):
+    if command.startswith(("search", "crawl", "import-seeds", "import")):
         return "stage1"
     if command.startswith(("filter", "benchmark-stage2")):
         return "stage2"

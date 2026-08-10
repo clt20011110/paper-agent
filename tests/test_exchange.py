@@ -2,7 +2,13 @@ import csv
 import json
 
 from paper_agent.domain import CollectionMembership, MembershipStatus, SourceEntry
-from paper_agent.exchange import export_csv, export_jsonl, import_jsonl, import_legacy_json
+from paper_agent.exchange import (
+    export_csv,
+    export_jsonl,
+    import_csv,
+    import_jsonl,
+    import_legacy_json,
+)
 from paper_agent.repository import PaperRepository
 from paper_agent.storage import Database
 
@@ -53,6 +59,44 @@ def test_csv_export_encodes_nested_values_as_json_strings(tmp_path) -> None:
     assert json.loads(row["authors"]) == ["Ada"]
     assert json.loads(row["sources_json"])[0]["raw_metadata"] == {"kind": "article"}
     assert json.loads(row["memberships_json"])[0]["collection"]["collection_id"] == "iclr-2025"
+    database.close()
+
+
+def test_csv_round_trip_preserves_papers_sources_and_memberships(tmp_path) -> None:
+    database, repository = _repository(tmp_path)
+    paper = _seed(repository)
+    exported = tmp_path / "papers.csv"
+    export_csv(repository, exported)
+
+    destination_database, destination = _repository(tmp_path / "destination")
+    report = import_csv(destination, exported)
+
+    assert report.counts == {"papers": 1, "sources": 1, "memberships": 1}
+    assert destination.get_paper(paper.paper_id).authors == ("Ada",)
+    assert destination.connection.execute(
+        "SELECT COUNT(*) FROM paper_sources"
+    ).fetchone()[0] == 1
+    assert destination.connection.execute(
+        "SELECT COUNT(*) FROM paper_collections"
+    ).fetchone()[0] == 1
+    database.close()
+    destination_database.close()
+
+
+def test_csv_import_is_idempotent_and_dry_run_does_not_write(tmp_path) -> None:
+    source_database, source = _repository(tmp_path / "source")
+    _seed(source)
+    exported = tmp_path / "papers.csv"
+    export_csv(source, exported)
+    database, repository = _repository(tmp_path / "destination")
+
+    assert import_csv(repository, exported, dry_run=True).counts["papers"] == 1
+    assert repository.connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 0
+    import_csv(repository, exported)
+    import_csv(repository, exported)
+    assert repository.connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
+    assert repository.connection.execute("SELECT COUNT(*) FROM paper_sources").fetchone()[0] == 1
+    source_database.close()
     database.close()
 
 

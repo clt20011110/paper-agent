@@ -29,6 +29,20 @@ python3 -m venv .venv
 .venv/bin/paper-agent search --help
 ```
 
+已有事实库可无损导出并回灌到新 SQLite；正式导入前先 dry-run 校验整个文件：
+
+```bash
+.venv/bin/paper-agent export --database /absolute/path/to/source.sqlite3 \
+  --format jsonl --output /absolute/path/to/papers.jsonl
+.venv/bin/paper-agent --dry-run import --database /absolute/path/to/new.sqlite3 \
+  --format jsonl --input /absolute/path/to/papers.jsonl
+.venv/bin/paper-agent import --database /absolute/path/to/new.sqlite3 \
+  --format jsonl --input /absolute/path/to/papers.jsonl
+```
+
+`--format csv` 只接受本 CLI 导出的规范 CSV；旧版论文 JSON 使用
+`--format legacy-json`，结果会报告字段映射、警告和未迁移路径。
+
 ## 冻结检索流程
 
 先从 v2 YAML 编译草案并检查预算，再按显示的内容 hash 显式批准：

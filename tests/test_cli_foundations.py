@@ -12,6 +12,7 @@ from paper_agent.authorized_skill_runtime import load_audit_record
 from paper_agent.config import ConfigError
 from paper_agent.doctor import DoctorCheck, SystemDoctorReport
 from paper_agent.domain import SourceEntry
+from paper_agent.exchange import export_csv, export_jsonl
 from paper_agent.grants import GrantError
 from paper_agent.repository import PaperRepository
 from paper_agent.storage import Database
@@ -242,6 +243,51 @@ def test_export_dry_run_materializes_canonical_values_without_writing(
             "--output", str(output), "--dry-run",
         ])
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("exchange_format", "exporter", "suffix"),
+    (("jsonl", export_jsonl, ".jsonl"), ("csv", export_csv, ".csv")),
+)
+def test_import_cli_validates_then_creates_a_new_database(
+    tmp_path: Path, capsys, exchange_format, exporter, suffix: str
+) -> None:
+    source_path = tmp_path / "source.sqlite3"
+    with Database(source_path) as source_database:
+        source_database.migrate()
+        source = PaperRepository(source_database)
+        source.ingest(SourceEntry("openalex", "1", "Imported title"))
+        exchange_path = tmp_path / f"papers{suffix}"
+        exporter(source, exchange_path)
+
+    destination = tmp_path / "destination" / "papers.sqlite3"
+    command = [
+        "import", "--database", str(destination), "--format", exchange_format,
+        "--input", str(exchange_path),
+    ]
+    assert cli.main([*command, "--dry-run"]) == 0
+    dry_run = _payload(capsys)
+    assert dry_run["status"] == "validated"
+    assert dry_run["counts"]["papers"] == 1
+    assert not destination.exists()
+
+    assert cli.main(command) == 0
+    imported = _payload(capsys)
+    assert imported["status"] == "complete"
+    assert imported["counts"]["sources"] == 1
+    with Database(destination, read_only=True) as database:
+        assert database.connection.execute("SELECT title FROM papers").fetchone()[0] == "Imported title"
+
+
+def test_import_rejects_the_database_as_its_input(tmp_path: Path) -> None:
+    database_path = tmp_path / "papers.sqlite3"
+    with Database(database_path) as database:
+        database.migrate()
+    with pytest.raises(ConfigError, match="must not alias"):
+        cli.main([
+            "import", "--database", str(database_path), "--format", "jsonl",
+            "--input", str(database_path),
+        ])
 
 
 def test_migrate_config_is_dry_by_default_and_writes_only_when_requested(tmp_path: Path, capsys) -> None:

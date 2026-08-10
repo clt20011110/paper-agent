@@ -6,7 +6,7 @@ import csv
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .domain import CollectionMembership, MembershipStatus, Paper, PaperSource
 from .identity import paper_id_for, source_id_for, title_author_year_key
@@ -88,22 +88,64 @@ def import_jsonl(
                 raise ValueError(f"JSONL line {line_number} must be an object")
             records.append(record)
 
-    papers = [record["paper"] for record in records if _record_kind(record) == "paper"]
-    sources = [record["source"] for record in records if _record_kind(record) == "source"]
+    papers = [Paper.from_dict(record["paper"]) for record in records if _record_kind(record) == "paper"]
+    sources = [PaperSource.from_dict(record["source"]) for record in records if _record_kind(record) == "source"]
     memberships = [record for record in records if _record_kind(record) == "membership"]
     if len(papers) + len(sources) + len(memberships) != len(records):
         raise ValueError("JSONL records must be paper, source, or membership records")
 
     if not dry_run:
-        for paper in papers:
-            repository.save_paper(Paper.from_dict(paper))
-        for source in sources:
-            repository.upsert_source(PaperSource.from_dict(source))
-        for record in memberships:
-            _save_membership(repository, record)
+        _import_values(repository, papers, sources, memberships)
 
     return ImportReport(
         counts={"papers": len(papers), "sources": len(sources), "memberships": len(memberships)},
+        mappings={},
+    )
+
+
+def import_csv(
+    repository: PaperRepository, path: str | Path, *, dry_run: bool = False
+) -> ImportReport:
+    """Import the lossless flat format emitted by :func:`export_csv`."""
+
+    paper_fields = tuple(Paper.__dataclass_fields__)
+    expected_fields = (*paper_fields, "sources_json", "memberships_json")
+    papers: list[Paper] = []
+    sources: list[PaperSource] = []
+    memberships: list[Mapping[str, Any]] = []
+    with Path(path).open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != expected_fields:
+            raise ValueError("CSV columns do not match the canonical export format")
+        for line_number, row in enumerate(reader, start=2):
+            paper = _paper_from_csv(row, line_number)
+            row_sources = _json_list(row["sources_json"], line_number, "sources_json")
+            row_memberships = _json_list(
+                row["memberships_json"], line_number, "memberships_json"
+            )
+            decoded_sources = [PaperSource.from_dict(value) for value in row_sources]
+            if any(source.paper_id != paper.paper_id for source in decoded_sources):
+                raise ValueError(f"CSV line {line_number} contains a source for another paper")
+            for record in row_memberships:
+                membership = CollectionMembership.from_dict(record["membership"])
+                if membership.paper_id != paper.paper_id:
+                    raise ValueError(
+                        f"CSV line {line_number} contains a membership for another paper"
+                    )
+            papers.append(paper)
+            sources.extend(decoded_sources)
+            memberships.extend(row_memberships)
+    if len({paper.paper_id for paper in papers}) != len(papers):
+        raise ValueError("CSV contains duplicate paper rows")
+
+    if not dry_run:
+        _import_values(repository, papers, sources, memberships)
+    return ImportReport(
+        counts={
+            "papers": len(papers),
+            "sources": len(sources),
+            "memberships": len(memberships),
+        },
         mappings={},
     )
 
@@ -130,9 +172,12 @@ def import_legacy_json(
         unmigrated.extend(row_unmigrated)
 
     if not dry_run:
-        for paper, source in converted:
-            repository.save_paper(paper)
-            repository.upsert_source(source)
+        _import_values(
+            repository,
+            [paper for paper, _source in converted],
+            [source for _paper, source in converted],
+            (),
+        )
 
     return ImportReport(
         counts={"papers": len(converted), "sources": len(converted), "memberships": 0},
@@ -217,6 +262,41 @@ def _save_membership(repository: PaperRepository, record: Mapping[str, Any]) -> 
         descriptor=collection.get("descriptor"),
     )
     repository.upsert_membership(membership)
+
+
+def _import_values(
+    repository: PaperRepository,
+    papers: Sequence[Paper],
+    sources: Sequence[PaperSource],
+    memberships: Sequence[Mapping[str, Any]],
+) -> None:
+    with repository.database.transaction():
+        for paper in papers:
+            repository.save_paper(paper)
+        for source in sources:
+            repository.upsert_source(source)
+        for record in memberships:
+            _save_membership(repository, record)
+
+
+def _paper_from_csv(row: Mapping[str, str], line_number: int) -> Paper:
+    value: dict[str, Any] = {
+        field: (row[field] if row[field] != "" else None)
+        for field in Paper.__dataclass_fields__
+    }
+    if value["paper_id"] is None or value["title"] is None:
+        raise ValueError(f"CSV line {line_number} requires paper_id and title")
+    value["authors"] = _json_list(row["authors"], line_number, "authors")
+    value["keywords"] = _json_list(row["keywords"], line_number, "keywords")
+    value["year"] = int(row["year"]) if row["year"] else None
+    return Paper.from_dict(value)
+
+
+def _json_list(value: str, line_number: int, field: str) -> list[Any]:
+    decoded = json.loads(value)
+    if not isinstance(decoded, list):
+        raise ValueError(f"CSV line {line_number} {field} must be a JSON list")
+    return decoded
 
 
 _LEGACY_MAPPINGS = {

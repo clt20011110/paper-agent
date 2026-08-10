@@ -30,6 +30,7 @@ paper-agent verify-report
 paper-agent run --workflow <WORKFLOW.json>
 paper-agent resume --workflow <WORKFLOW.json>
 paper-agent export
+paper-agent import
 paper-agent migrate-config
 paper-agent benchmark-stage2
 ```
@@ -43,6 +44,11 @@ code, and artifact paths in the task response. Do not emulate a missing CLI
 command with Python imports, SQLite edits, shell pipelines, or a second
 implementation. If a required command is unavailable or its help conflicts
 with this contract, stop and report the installed version as a product gate.
+
+`paper-agent import --format jsonl|csv|legacy-json --input <FILE>` validates the
+entire portable dataset before committing it to the configured SQLite store.
+Run it once with `--dry-run`; CSV input is accepted only in the canonical format
+emitted by `paper-agent export --format csv`.
 
 ## Locate and inspect the CLI
 
