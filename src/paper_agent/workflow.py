@@ -675,8 +675,8 @@ class SequentialWorkflowOrchestrator:
         step_token: int,
         stop: Event,
     ) -> Thread:
-        # Keep the heartbeat safely inside even short test/development leases.
-        interval = max(0.01, self.lease_ttl.total_seconds() / 3)
+        # Renew three times per lease, capped so long-running stages stay observable.
+        interval = min(30.0, self.lease_ttl.total_seconds() / 3)
 
         def heartbeat() -> None:
             while not stop.wait(interval):

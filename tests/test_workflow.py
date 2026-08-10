@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from hashlib import sha256
 import json
 from pathlib import Path
 from threading import Event, Thread
-from time import sleep
+from time import monotonic, sleep
 from typing import Any
 
 import pytest
@@ -182,45 +182,75 @@ def test_concurrent_resume_is_fenced_and_heartbeat_keeps_ownership(tmp_path: Pat
     entered = Event()
     release = Event()
     adapter = FakeAdapter()
+    lease_ttl = timedelta(seconds=1)
 
     def block(_spec: Any) -> None:
         entered.set()
-        assert release.wait(2)
+        assert release.wait(10)
 
     adapter.before_return = block
     manifest = _manifest(tmp_path)
     result: dict[str, Any] = {}
+    errors: list[BaseException] = []
 
     def run_first() -> None:
-        with Database(database.path) as first_database:
-            first = SequentialWorkflowOrchestrator(
-                first_database,
-                manifest,
-                _adapters(adapter),
-                owner_id="owner-a",
-                lease_ttl=timedelta(milliseconds=30),
-            )
-            result.update(first.run("fenced-1"))
+        try:
+            with Database(database.path) as first_database:
+                first = SequentialWorkflowOrchestrator(
+                    first_database,
+                    manifest,
+                    _adapters(adapter),
+                    owner_id="owner-a",
+                    lease_ttl=lease_ttl,
+                )
+                result.update(first.run("fenced-1"))
+        except BaseException as error:
+            errors.append(error)
 
     thread = Thread(target=run_first)
     thread.start()
-    assert entered.wait(2)
-    # Wait well past the original lease.  The heartbeat must keep a competing
-    # owner from executing the same child run.
-    sleep(0.09)
-    second_database = Database(database.path)
     try:
-        second = SequentialWorkflowOrchestrator(
-            second_database, manifest, _adapters(adapter), owner_id="owner-b", lease_ttl=timedelta(milliseconds=30)
-        ).resume("fenced-1")
-        assert second["outcome"] == "already_running"
-        assert adapter.executions == ["search"]
+        assert entered.wait(2)
+
+        def lease_expiry() -> datetime:
+            row = database.connection.execute(
+                "SELECT lease_expires_at FROM workflow_runs WHERE workflow_run_id = ?",
+                ("fenced-1",),
+            ).fetchone()
+            assert row is not None and row["lease_expires_at"] is not None
+            return datetime.fromisoformat(
+                str(row["lease_expires_at"]).replace("Z", "+00:00")
+            )
+
+        original_expiry = lease_expiry()
+        deadline = monotonic() + 5
+        while monotonic() < deadline:
+            renewed_expiry = lease_expiry()
+            if renewed_expiry > original_expiry:
+                break
+            sleep(0.02)
+        else:
+            pytest.fail("workflow heartbeat did not renew the original lease")
+
+        probe_time = original_expiry + (renewed_expiry - original_expiry) / 2
+        with Database(database.path) as second_database:
+            second = SequentialWorkflowOrchestrator(
+                second_database,
+                manifest,
+                _adapters(adapter),
+                owner_id="owner-b",
+                clock=lambda: probe_time,
+                lease_ttl=lease_ttl,
+            ).resume("fenced-1")
+            assert second["outcome"] == "already_running"
+            assert adapter.executions == ["search"]
     finally:
-        second_database.close()
         release.set()
-        thread.join(2)
+        thread.join(5)
         database.close()
 
+    assert not thread.is_alive()
+    assert not errors
     assert result["status"] == "complete"
 
 
