@@ -873,6 +873,7 @@ class SearchPipeline:
             )
             if not seeds:
                 break
+            scheduled_count = len(providers) * len(set(directions)) * len(seeds)
             requests = schedule_requests(
                 seeds,
                 providers=providers,
@@ -880,9 +881,10 @@ class SearchPipeline:
                 max_requests=max(0, max_requests - used_requests),
                 max_candidates_per_request=max_per_request,
             )
+            schedule_cutoff = len(requests) < scheduled_count
             round_id = self.rounds.freeze(crawl_run_id=crawl_run_id, round_index=round_index, seeds=seeds, requests=requests)
             round_ids.append(round_id)
-            batches, time_exhausted, requests_made = self._execute_citation_requests(
+            batches, request_cutoff, requests_made = self._execute_citation_requests(
                 round_id,
                 requests,
                 observed_at,
@@ -913,11 +915,25 @@ class SearchPipeline:
                         depth, round_index,
                     )
             expanded.update(seed.paper_id for seed in seeds)
-            exhausted = bool(batches) and not any(batch.entries for batch in batches) and not audit.source_failed
-            budget_exhausted = (
-                used_requests >= max_requests
-                or used_candidates >= max_candidates
-                or time_exhausted
+            next_seeds = select_seeds(
+                tuple(candidates.values()),
+                user_seed_ids=frozenset(roots),
+                expanded_paper_ids=frozenset(expanded),
+                max_depth=max_depth,
+                per_subquestion=20,
+                selector_version=str(self.plan["filter"]["seed_selector_version"]),
+                selector_config_hash=str(self.plan["filter"]["seed_selector_config_hash"]),
+            )
+            budget_exhausted = schedule_cutoff or request_cutoff
+            exhausted = (
+                bool(requests)
+                and len(batches) == len(requests)
+                and all(
+                    batch.status is EnvelopeStatus.SUCCESS and not batch.error and batch.next_cursor is None
+                    for batch in batches
+                )
+                and not budget_exhausted
+                and not next_seeds
             )
             saturation = self.plan["budgets"]["saturation"]
             from .citations import decide_stop
@@ -937,7 +953,7 @@ class SearchPipeline:
                 decision = StopDecision(
                     True,
                     "max_rounds",
-                    not audit.screening_complete or bool(audit.needs_review),
+                    True,
                     low_yield_rounds,
                 )
             self._audit_round(round_id, audit, decision, observed_at)
@@ -956,12 +972,12 @@ class SearchPipeline:
         deadline: float,
     ) -> tuple[tuple[CitationBatch, ...], bool, int]:
         batches: list[CitationBatch] = []
-        time_exhausted = False
+        budget_cutoff = False
         remaining = candidate_budget
         requests_made = 0
         for request in requests:
             if remaining <= 0 or requests_made >= request_budget or time.monotonic() >= deadline:
-                time_exhausted = True
+                budget_cutoff = True
                 self.database.connection.execute(
                     "UPDATE citation_requests SET status = 'skipped_budget', error_json = ? WHERE search_round_id = ? AND schedule_order = ?",
                     (json.dumps({"message": "candidate or time budget exhausted"}), round_id, request.schedule_order),
@@ -975,13 +991,13 @@ class SearchPipeline:
             seen_cursors: set[str] = set()
             status = EnvelopeStatus.SUCCESS
             error_message = None
-            budget_cutoff = False
+            request_cutoff = False
             query_hash = str(request.schedule_order)
             raw_response_artifact_hash = None
             while len(entries) < min(request.max_candidates, remaining):
                 if requests_made >= request_budget or time.monotonic() >= deadline:
-                    time_exhausted = True
                     budget_cutoff = True
+                    request_cutoff = True
                     break
                 try:
                     page = operation(paper, cursor)
@@ -998,6 +1014,7 @@ class SearchPipeline:
                 query_hash = page.query_hash
                 raw_response_artifact_hash = page.raw_response_artifact_hash
                 capacity = min(request.max_candidates, remaining) - len(entries)
+                page_truncated = len(page.entries) > capacity
                 entries.extend(
                     replace(
                         edge,
@@ -1008,12 +1025,24 @@ class SearchPipeline:
                     )
                     for edge in page.entries[:capacity]
                 )
-                if page.status is EnvelopeStatus.FAILED or page.error:
-                    status = EnvelopeStatus.PARTIAL if entries else EnvelopeStatus.FAILED
+                if page.status is not EnvelopeStatus.SUCCESS or page.error:
+                    status = (
+                        EnvelopeStatus.FAILED
+                        if page.status is EnvelopeStatus.FAILED and not entries
+                        else EnvelopeStatus.PARTIAL
+                    )
                     error_message = page.error or "citation page failed"
                     break
                 cursor = page.next_cursor
-                if not cursor or len(entries) >= min(request.max_candidates, remaining):
+                if page_truncated:
+                    budget_cutoff = True
+                    request_cutoff = True
+                    break
+                if not cursor:
+                    break
+                if len(entries) >= min(request.max_candidates, remaining):
+                    budget_cutoff = True
+                    request_cutoff = True
                     break
                 if cursor in seen_cursors:
                     status = EnvelopeStatus.PARTIAL if entries else EnvelopeStatus.FAILED
@@ -1035,19 +1064,19 @@ class SearchPipeline:
                 "UPDATE citation_requests SET status = ?, error_json = ? WHERE search_round_id = ? AND schedule_order = ?",
                 (
                     "skipped_budget"
-                    if budget_cutoff
+                    if request_cutoff
                     else "failed"
                     if batch.status is EnvelopeStatus.FAILED
                     else "complete",
                     json.dumps({"message": batch.error or "request budget exhausted"})
-                    if batch.error or budget_cutoff
+                    if batch.error or request_cutoff
                     else None,
                     round_id,
                     request.schedule_order,
                 ),
             )
         self.database.connection.commit()
-        return tuple(batches), time_exhausted, requests_made
+        return tuple(batches), budget_cutoff, requests_made
 
     def _canonicalize_citation_batches(
         self,

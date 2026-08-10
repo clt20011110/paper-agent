@@ -35,6 +35,7 @@ def _plan(
     providers: list[dict[str, object]], *, required: list[str], citation_cap: int = 10,
     max_depth: int = 1, max_rounds: int = 2, max_requests: int = 4, max_candidates: int = 10,
     max_seconds: int = 10, required_roles: tuple[str, ...] = ("search",),
+    citation_directions: tuple[str, ...] = ("references", "citations"),
 ) -> dict[str, object]:
     plan = compile_query_plan(
         {
@@ -44,7 +45,7 @@ def _plan(
             "inclusion": {"criteria": [], "exclusion_criteria": []},
             "query_variants": [{"id": "q", "subquestion_id": "q", "alias_group": "q", "raw_query": "paper agents", "synonyms": []}],
             "filter": {"profile": "fake", "config_hash": "c" * 64, "thresholds_hash": "d" * 64, "seed_selector_version": "v1", "seed_selector_config_hash": "e" * 64, "round_state_machine_version": "v1"},
-            "citation_snowball": {"enabled": True, "directions": ["references", "citations"], "max_depth": max_depth, "max_rounds": max_rounds, "max_per_seed_per_source": citation_cap},
+            "citation_snowball": {"enabled": True, "directions": list(citation_directions), "max_depth": max_depth, "max_rounds": max_rounds, "max_per_seed_per_source": citation_cap},
             "budgets": {"max_requests": max_requests, "max_candidates": max_candidates, "max_seconds": max_seconds, "saturation": {"min_unique_included_yield": 0.01, "consecutive_low_yield_rounds": 2}},
             "provider_policy": "all_resolved",
             "required_roles": list(required_roles),
@@ -495,7 +496,7 @@ def test_citation_pages_consume_the_global_request_budget(tmp_path) -> None:
     plan = _plan(
         [_provider("openalex", ["search", "citation"])],
         required=["openalex"],
-        max_requests=4,
+        max_requests=3,
         max_candidates=10,
         citation_cap=5,
     )
@@ -552,15 +553,140 @@ def test_citation_pages_consume_the_global_request_budget(tmp_path) -> None:
             run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id]
         )
 
-        assert database.connection.execute("SELECT COUNT(*) FROM citation_edges").fetchone()[0] == 2
+        assert database.connection.execute("SELECT COUNT(*) FROM citation_edges").fetchone()[0] == 1
         assert database.connection.execute(
             "SELECT stop_reason FROM search_rounds"
         ).fetchone()[0] == "budget_exhausted"
 
-    assert client.reference_cursors == [None, "next"]
+    assert client.reference_cursors == [None]
 
 
-def test_citation_depth_propagates_to_a_second_round_and_global_candidate_cap_stops(tmp_path) -> None:
+def test_exact_citation_request_cap_with_complete_pages_exhausts_sources(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex", ["search", "citation"])],
+        required=["openalex"],
+        max_requests=2,
+        citation_directions=("references",),
+    )
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class CompleteCitationFixture:
+        def references(self, _seed, _cursor):
+            return CitationBatch("fixture", "refs", (), None, EnvelopeStatus.SUCCESS)
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
+            trusts={"openalex": _trust("openalex")},
+            citation_clients={"openalex": CompleteCitationFixture()},
+        )
+        root = pipeline.repository.ingest(
+            SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)
+        )
+        result = pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
+        round_state = database.connection.execute(
+            "SELECT stop_reason, limited_scope FROM search_rounds"
+        ).fetchone()
+
+    assert result.status == "complete"
+    assert tuple(round_state) == ("sources_exhausted", 0)
+
+
+def test_final_citation_page_larger_than_candidate_capacity_is_budget_exhausted(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex", ["search", "citation"])],
+        required=["openalex"],
+        max_requests=4,
+        max_candidates=1,
+        citation_directions=("references",),
+    )
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class OversizedFinalPage:
+        def references(self, seed, _cursor):
+            return CitationBatch(
+                "fixture",
+                "refs",
+                tuple(
+                    CitationEdge(
+                        seed.paper_id,
+                        f"native-{number}",
+                        CitationEdgeType.REFERENCES,
+                        "openalex",
+                        NOW,
+                        candidate=SourceEntry(
+                            "openalex", f"native-{number}", f"Paper {number}",
+                            ("Ada",), doi=f"10.1000/final-{number}", year=2024,
+                        ),
+                    )
+                    for number in (1, 2)
+                ),
+                None,
+                EnvelopeStatus.SUCCESS,
+            )
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
+            trusts={"openalex": _trust("openalex")},
+            citation_clients={"openalex": OversizedFinalPage()},
+        )
+        root = pipeline.repository.ingest(
+            SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)
+        )
+        pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
+        round_state = database.connection.execute(
+            "SELECT stop_reason, limited_scope FROM search_rounds"
+        ).fetchone()
+
+    assert tuple(round_state) == ("budget_exhausted", 1)
+
+
+def test_partial_citation_page_without_error_is_unresolved_not_exhausted(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex", ["search", "citation"])],
+        required=["openalex"],
+        citation_directions=("references",),
+    )
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class PartialPage:
+        def references(self, _seed, _cursor):
+            return CitationBatch("fixture", "refs", (), None, EnvelopeStatus.PARTIAL)
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
+            trusts={"openalex": _trust("openalex")},
+            citation_clients={"openalex": PartialPage()},
+        )
+        root = pipeline.repository.ingest(
+            SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)
+        )
+        result = pipeline.run(
+            run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id]
+        )
+        round_state = database.connection.execute(
+            "SELECT stop_reason, limited_scope FROM search_rounds"
+        ).fetchone()
+
+    assert result.status == "incomplete"
+    assert tuple(round_state) == ("saturated_with_unresolved", 1)
+
+
+def test_citation_depth_propagates_to_a_second_round_and_exact_candidate_cap_exhausts_sources(tmp_path) -> None:
     plan = _plan(
         [_provider("openalex", ["search", "citation"])], required=["openalex"],
         max_depth=2, max_rounds=2, max_requests=5, max_candidates=2,
@@ -614,7 +740,7 @@ def test_citation_depth_propagates_to_a_second_round_and_global_candidate_cap_st
         ).fetchone()
 
     assert [tuple(row) for row in rows] == [("10.1000/one", 1, "q"), ("10.1000/two", 2, "q")]
-    assert tuple(round_state) == ("budget_exhausted", 1)
+    assert tuple(round_state) == ("sources_exhausted", 0)
     assert tuple(second_round_seed) == (0, 1, "q")
 
 
