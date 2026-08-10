@@ -11,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 import json
+from jsonschema import ValidationError as JsonSchemaValidationError
+from jsonschema import validate as validate_json_schema
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError
@@ -71,12 +73,16 @@ class UrlLibOmlxTransport:
 
     base_url: str = "http://127.0.0.1:8000"
     timeout_seconds: float = 120.0
+    api_key: str | None = None
 
     def request(self, path: str, payload: Mapping[str, Any]) -> OmlxResponse:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         request = Request(
             f"{self.base_url.rstrip('/')}{path}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -270,8 +276,9 @@ class OmlxChatBackend:
         if not isinstance(value, dict):
             raise StructuredOutputError("oMLX chat decision must be an object")
         try:
+            validate_json_schema(value, self.schema)
             validate(value, "filter-decision.schema.json")
-        except SchemaValidationError as error:
+        except (JsonSchemaValidationError, SchemaValidationError) as error:
             raise StructuredOutputError(f"oMLX chat decision violates schema: {error}") from error
         if value["paper_id"] != request.paper_id:
             raise StructuredOutputError("oMLX chat decision paper_id does not match request")

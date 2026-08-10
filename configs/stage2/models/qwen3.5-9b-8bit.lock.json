@@ -1,0 +1,24 @@
+{
+  "backend": "omlx_chat",
+  "conversion_repo": "mlx-community/Qwen3.5-9B-8bit",
+  "conversion_revision": "16daa4818c54ce5f5436f929d52542eb65bbed9d",
+  "file_hashes": {
+    "README.md": "771b58cca5f45b018360375843eb55fa6991534ed20c78c5b18b5c39a16a492b",
+    "chat_template.jinja": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+    "config.json": "19082a0ef21dee3840a8bab56ee5325ead177085285c63ea47e79a204a566a53",
+    "model-00001-of-00002.safetensors": "0dcb3cdba0f43743875c861792685da5266aebcb58f7c0e345b9cd090bb0d289",
+    "model-00002-of-00002.safetensors": "5abf861e7a13e7af805105270b2648634b41fda02238ae8ee1bd64628acce9b1",
+    "model.safetensors.index.json": "87d95b037f57d101448b262059b7d28d65d55f60231100cdb1827d7cd44202cd",
+    "tokenizer.json": "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4"
+  },
+  "format": "mlx",
+  "license": "apache-2.0",
+  "lock_version": 1,
+  "mlx_version": "0.32.0",
+  "model_id": "qwen3.5-9b-8bit",
+  "omlx_version": "0.5.7",
+  "parameter_count": 9409813744,
+  "quantization": "8bit-affine-group64",
+  "source_repo": "Qwen/Qwen3.5-9B",
+  "source_revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+}

@@ -1,0 +1,45 @@
+{
+  "phase": 3,
+  "purpose": "local Stage 2 oMLX endpoint and structured-output verification",
+  "timestamp_utc": "2026-08-10T02:50:15Z",
+  "machine": {
+    "model_identifier": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gb": 36,
+    "macos": "26.3 (25D125)"
+  },
+  "runtime": {
+    "install_source": "git+https://github.com/jundot/omlx.git@f24198e94794e6cabaf5b47e13b7f964f79ec464",
+    "omlx_version": "0.5.7",
+    "mlx_version": "0.32.0",
+    "xgrammar_version": "0.2.3",
+    "grammar_available": true,
+    "custom_kernel_available": false,
+    "custom_kernel_note": "The optional Homebrew custom-kernel build requires the full Xcode Metal compiler; the official Python runtime and grammar path are installed and verified."
+  },
+  "reranker": {
+    "model_lock": "configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json",
+    "endpoint": "/v1/rerank",
+    "authenticated_transport": true,
+    "query": "molecular graph neural networks",
+    "documents": 2,
+    "relevance_scores_by_input_index": [
+      0.9908556342124939,
+      0.00001603606688149739
+    ],
+    "result_indexes_preserved": true
+  },
+  "adjudicator": {
+    "model_lock": "configs/stage2/models/qwen3.5-9b-8bit.lock.json",
+    "endpoint": "/v1/chat/completions",
+    "authenticated_repo_transport": true,
+    "structured_outputs_json": true,
+    "warning_header_absent": true,
+    "secondary_jsonschema_validation": true,
+    "paper_id_preserved": true,
+    "decision": "relevant",
+    "score": 0.95,
+    "elapsed_seconds_including_model_load": 6.223
+  },
+  "secrets_persisted": false
+}

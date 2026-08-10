@@ -1,0 +1,21 @@
+{
+  "backend": "omlx_rerank",
+  "conversion_repo": null,
+  "conversion_revision": null,
+  "file_hashes": {
+    "README.md": "c887aa6dd2598f908bf0582ca7068cc816585c7a1b6a07df305b631ede0cb174",
+    "config.json": "13dcd6c31d9fec9d1d8e158702072f62d7fa7d312a64b9fe057bec9a08cfe41a",
+    "model.safetensors": "d9e3e081faff1eefb84019509b2f5558fd74c1a05a2c7db22f74174fcedb5286",
+    "tokenizer.json": "69564b696052886ed0ac63fa393e928384e0f8caada38c1f4864a9bfbf379c15"
+  },
+  "format": "safetensors-fp32",
+  "license": "apache-2.0",
+  "lock_version": 1,
+  "mlx_version": "0.32.0",
+  "model_id": "bge-reranker-v2-m3",
+  "omlx_version": "0.5.7",
+  "parameter_count": 567755777,
+  "quantization": "none",
+  "source_repo": "BAAI/bge-reranker-v2-m3",
+  "source_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+}

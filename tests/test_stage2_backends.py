@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +18,7 @@ from paper_agent.stage2_backends import (
     Stage2BackendError,
     StructuredOutputError,
     ThresholdArtifact,
+    UrlLibOmlxTransport,
     load_model_lock,
     load_threshold_artifact,
     route_cascade,
@@ -104,6 +106,43 @@ def test_omlx_chat_uses_fixed_generation_and_structured_output_contract() -> Non
     assert "thinking" not in payload
 
 
+def test_urllib_transport_adds_optional_bearer_auth_without_changing_payload(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        status = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b'{}'
+
+    def fake_urlopen(request, timeout):
+        captured["authorization"] = request.get_header("Authorization")
+        captured["body"] = json.loads(request.data)
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr("paper_agent.stage2_backends.urlopen", fake_urlopen)
+    response = UrlLibOmlxTransport(api_key="local-secret", timeout_seconds=7).request("/v1/rerank", {"query": "topic"})
+
+    assert response.status_code == 200
+    assert captured == {"authorization": "Bearer local-secret", "body": {"query": "topic"}, "timeout": 7}
+
+
+def test_omlx_chat_revalidates_the_exact_wire_schema() -> None:
+    schema = {**_schema(), "properties": {"paper_id": {"const": "different-paper"}}}
+    backend = OmlxChatBackend("model", FakeTransport([_response({"choices": [{"message": {"content": json.dumps(_decision())}}]})]), schema)
+
+    with pytest.raises(StructuredOutputError, match="violates schema"):
+        backend.adjudicate(AdjudicationInput("paper-1", ({"role": "user", "content": "classify"},)))
+
+
 @pytest.mark.parametrize(
     ("response", "error"),
     [
@@ -146,6 +185,19 @@ def test_model_lock_preserves_source_and_conversion_revisions_separately(tmp_pat
         ModelLock(**{**lock.document(), "parameter_count": 10_000_000_001})
     with pytest.raises(ValueError, match="specified together"):
         ModelLock(**{**lock.document(), "conversion_revision": None})
+
+
+def test_shipped_model_locks_pin_verified_local_artifacts() -> None:
+    root = Path(__file__).parents[1] / "configs" / "stage2" / "models"
+    bge = load_model_lock(root / "bge-reranker-v2-m3-fp32.lock.json")
+    qwen = load_model_lock(root / "qwen3.5-9b-8bit.lock.json")
+
+    assert bge.source_revision == "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+    assert bge.conversion_revision is None
+    assert bge.parameter_count == 567_755_777
+    assert qwen.source_revision != qwen.conversion_revision
+    assert qwen.conversion_revision == "16daa4818c54ce5f5436f929d52542eb65bbed9d"
+    assert qwen.parameter_count == 9_409_813_744
 
 
 def test_thresholds_keep_raw_scores_and_route_uncertain_inputs_to_qwen(tmp_path) -> None:
