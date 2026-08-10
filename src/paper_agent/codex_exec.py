@@ -143,6 +143,31 @@ def _digest(value: str | bytes | Mapping[str, Any]) -> str:
     return sha256(encoded).hexdigest()
 
 
+def _validate_strict_schema(schema: Mapping[str, Any]) -> None:
+    """Check constraints required by Codex structured outputs before a paid call."""
+    def visit(value: Any, location: str) -> None:
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{location}/{index}")
+            return
+        if not isinstance(value, Mapping):
+            return
+        if "properties" in value:
+            properties = set(value["properties"])
+            required = set(value.get("required", ()))
+            if value.get("additionalProperties") is not False or required != properties:
+                raise CodexOutputError(
+                    f"Codex output schema object at {location} must forbid additional properties "
+                    "and require every declared property"
+                )
+        if ("enum" in value or "const" in value) and "type" not in value:
+            raise CodexOutputError(f"Codex output schema enum/const at {location} requires an explicit type")
+        for key, item in value.items():
+            visit(item, f"{location}/{key}")
+
+    visit(schema, "$")
+
+
 @dataclass(frozen=True, slots=True)
 class CodexExecRequest:
     """One new, independent model invocation.
@@ -278,6 +303,7 @@ class CodexExec:
         frozen_schema = self._frozen_schema(request.schema_name)
         if _digest(request.output_schema) != _digest(frozen_schema):
             raise CodexOutputError(f"{request.schema_name} does not match the frozen repository schema")
+        service_schema = self._service_schema(request.schema_name, frozen_schema)
         schema_hash = _digest(frozen_schema)
         prompt_template = self._frozen_prompt(request.prompt_name)
         prompt_hash = _digest(prompt_template)
@@ -287,13 +313,13 @@ class CodexExec:
             workdir = Path(directory)
             schema_path = workdir / "output-schema.json"
             result_path = workdir / "last-message.json"
-            self._write_schema_bundle(schema_path, frozen_schema)
+            schema_path.write_text(json.dumps(service_schema, ensure_ascii=False, sort_keys=True), encoding="utf-8")
             argv = self._argv(profile, workdir, schema_path, result_path)
             completed = self._run_with_retry(argv, workdir, profile, rendered_prompt)
             if completed.returncode != 0:
                 raise CodexProcessError(f"codex exec exited with status {completed.returncode}")
             output = self._read_output(result_path)
-            self._validate_output(output, frozen_schema)
+            self._validate_output(output, service_schema)
             actual_model, actual_profile = self._actual_invocation_metadata(completed.stdout)
             if actual_model is not None and actual_model != profile.model:
                 raise CodexModelMismatchError(
@@ -389,12 +415,6 @@ class CodexExec:
             raise CodexProcessError(f"{' '.join(argv[:3])} exited with status {completed.returncode}")
         return completed.stdout
 
-    def _write_schema_bundle(self, path: Path, output_schema: Mapping[str, Any]) -> None:
-        """Make local schema references resolvable without exposing project files."""
-        for source in self._schema_root.glob("*.schema.json"):
-            (path.parent / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-        path.write_text(json.dumps(output_schema, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-
     def _frozen_schema(self, schema_name: str) -> dict[str, Any]:
         path = self._schema_root / schema_name
         if not path.is_file() or path.parent != self._schema_root:
@@ -403,6 +423,48 @@ class CodexExec:
         if not isinstance(value, dict):
             raise CodexOutputError(f"frozen schema must be a JSON object: {schema_name}")
         return value
+
+    def _service_schema(self, schema_name: str, schema: Mapping[str, Any]) -> dict[str, Any]:
+        """Resolve local refs and enforce the strict structured-output subset."""
+        documents = {schema_name: dict(schema)}
+
+        def document(name: str) -> dict[str, Any]:
+            if name not in documents:
+                path = self._schema_root / name
+                if not path.is_file() or path.parent != self._schema_root:
+                    raise CodexOutputError(f"referenced frozen schema is missing: {name}")
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(value, dict):
+                    raise CodexOutputError(f"referenced schema must be a JSON object: {name}")
+                documents[name] = value
+            return documents[name]
+
+        def resolve_pointer(value: Any, fragment: str) -> Any:
+            for part in fragment.removeprefix("/").split("/") if fragment else ():
+                value = value[part.replace("~1", "/").replace("~0", "~")]
+            return value
+
+        def expand(value: Any, current_name: str, current_document: Mapping[str, Any]) -> Any:
+            if isinstance(value, list):
+                return [expand(item, current_name, current_document) for item in value]
+            if not isinstance(value, Mapping):
+                return value
+            if "$ref" in value:
+                reference = str(value["$ref"])
+                filename, _, fragment = reference.partition("#")
+                target_name = filename or current_name
+                target_document = document(target_name) if filename else current_document
+                target = resolve_pointer(target_document, fragment)
+                return expand(target, target_name, target_document)
+            return {
+                key: expand(item, current_name, current_document)
+                for key, item in value.items()
+                if key not in {"$schema", "$id", "$defs", "uniqueItems"}
+            }
+
+        result = expand(schema, schema_name, schema)
+        _validate_strict_schema(result)
+        return result
 
     def _frozen_prompt(self, prompt_name: str) -> str:
         path = self._prompt_root / prompt_name
@@ -419,7 +481,7 @@ class CodexExec:
         """Perform an opt-in real dry invocation; declarations alone prove nothing."""
         schema = {
             "type": "object", "additionalProperties": False,
-            "required": ["ok"], "properties": {"ok": {"const": True}},
+            "required": ["ok"], "properties": {"ok": {"type": "boolean", "const": True}},
         }
         with TemporaryDirectory(prefix="paper-agent-codex-probe-", dir=self._temporary_root) as directory:
             workdir = Path(directory)

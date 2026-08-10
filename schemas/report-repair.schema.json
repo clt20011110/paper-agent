@@ -6,6 +6,6 @@
   "required": ["base_artifact_hash", "patches"],
   "properties": {
     "base_artifact_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    "patches": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["target", "operation", "path", "precondition_hash", "value"], "properties": {"target": {"enum": ["REPORT_DOCUMENT", "CLAIMS_EVIDENCE", "COVERAGE"]}, "operation": {"enum": ["add", "replace", "remove"]}, "path": {"type": "string", "pattern": "^/"}, "precondition_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "value": {}}}}
+    "patches": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["target", "operation", "path", "precondition_hash", "value"], "properties": {"target": {"type": "string", "enum": ["REPORT_DOCUMENT", "CLAIMS_EVIDENCE", "COVERAGE"]}, "operation": {"type": "string", "enum": ["add", "replace", "remove"]}, "path": {"type": "string", "pattern": "^/"}, "precondition_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "value": {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}, {"type": "array", "items": {"type": "string"}}]}}}}
   }
 }

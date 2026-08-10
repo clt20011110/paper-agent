@@ -4,24 +4,41 @@
   "title": "Claims-Evidence Matrix record",
   "type": "object",
   "additionalProperties": false,
-  "required": ["claim_id", "claim_key", "research_question_id", "report_section", "claim_text", "claim_type", "supporting_evidence", "contradicting_evidence", "evidence_level", "confidence", "known_limitations", "status"],
+  "required": ["claim_id", "claim_key", "research_question_id", "report_section", "claim_text", "claim_type", "supporting_evidence", "contradicting_evidence", "evidence_level", "comparison_group_id", "confidence", "known_limitations", "status", "mapping_status"],
   "properties": {
     "claim_id": {"type": "string", "format": "uuid"},
     "claim_key": {"type": "object", "additionalProperties": false, "required": ["subject_id", "predicate_id", "object_or_scope_id", "qualifier_context_hash", "comparison_group_id"], "properties": {"subject_id": {"type": "string", "minLength": 1}, "predicate_id": {"type": "string", "minLength": 1}, "object_or_scope_id": {"type": "string", "minLength": 1}, "qualifier_context_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "comparison_group_id": {"type": ["string", "null"], "format": "uuid"}}},
     "research_question_id": {"type": "string", "minLength": 1},
     "report_section": {"type": "string", "minLength": 1},
     "claim_text": {"type": "string", "minLength": 1},
-    "claim_type": {"enum": ["finding", "trend", "comparison", "gap", "recommendation", "corpus_stat"]},
+    "claim_type": {"type": "string", "enum": ["finding", "trend", "comparison", "gap", "recommendation", "corpus_stat"]},
     "supporting_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceRef"}},
     "contradicting_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceRef"}},
-    "evidence_level": {"enum": ["full_text_direct", "full_text_inferred", "abstract_direct", "metadata_only", "corpus_stat"]},
+    "evidence_level": {"type": "string", "enum": ["full_text_direct", "full_text_inferred", "abstract_direct", "metadata_only", "corpus_stat"]},
     "comparison_group_id": {"type": ["string", "null"], "format": "uuid"},
-    "confidence": {"enum": ["high", "medium", "low"]},
+    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
     "known_limitations": {"type": "array", "items": {"type": "string"}},
-    "status": {"enum": ["supported", "mixed", "insufficient"]},
-    "mapping_status": {"enum": ["mapped", "unmapped_new"]}
+    "status": {"type": "string", "enum": ["supported", "mixed", "insufficient"]},
+    "mapping_status": {"type": "string", "enum": ["mapped", "unmapped_new"]}
   },
   "$defs": {
-    "evidenceRef": {"type": "object", "additionalProperties": false, "required": ["kind", "evidence_level"], "properties": {"kind": {"enum": ["paper_evidence", "corpus_evidence"]}, "evidence_level": {"enum": ["full_text_direct", "full_text_inferred", "abstract_direct", "metadata_only", "corpus_stat"]}, "paper_id": {"type": "string"}, "analysis_run_id": {"type": "string"}, "evidence_unit": {"$ref": "evidence-unit.schema.json"}, "locator": {"type": "string"}, "search_plan_id": {"type": "string"}, "source_run_id": {"type": "string"}, "query_id": {"type": "string"}, "statistic": {"type": "string"}, "calculation": {"type": "string"}}, "allOf": [{"if": {"properties": {"kind": {"const": "paper_evidence"}}, "required": ["kind"]}, "then": {"required": ["paper_id", "analysis_run_id", "evidence_unit", "locator"]}}, {"if": {"properties": {"kind": {"const": "corpus_evidence"}}, "required": ["kind"]}, "then": {"required": ["search_plan_id", "source_run_id", "query_id", "statistic", "calculation"]}}]}
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "evidence_level", "paper_id", "analysis_run_id", "evidence_unit", "locator", "search_plan_id", "source_run_id", "query_id", "statistic", "calculation"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["paper_evidence", "corpus_evidence"]},
+        "evidence_level": {"type": "string", "enum": ["full_text_direct", "full_text_inferred", "abstract_direct", "metadata_only", "corpus_stat"]},
+        "paper_id": {"type": ["string", "null"]},
+        "analysis_run_id": {"type": ["string", "null"]},
+        "evidence_unit": {"anyOf": [{"$ref": "evidence-unit.schema.json"}, {"type": "null"}]},
+        "locator": {"type": ["string", "null"]},
+        "search_plan_id": {"type": ["string", "null"]},
+        "source_run_id": {"type": ["string", "null"]},
+        "query_id": {"type": ["string", "null"]},
+        "statistic": {"type": ["string", "null"]},
+        "calculation": {"type": ["string", "null"]}
+      }
+    }
   }
 }

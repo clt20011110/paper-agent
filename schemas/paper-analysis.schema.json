@@ -8,7 +8,7 @@
   "properties": {
     "paper_id": {"type": "string", "minLength": 1},
     "artifact_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    "model": {"const": "gpt-5.6-luna"},
+    "model": {"type": "string", "const": "gpt-5.6-luna"},
     "model_revision": {"type": "string", "minLength": 1},
     "prompt_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "schema_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
@@ -18,9 +18,9 @@
     "datasets": {"type": "array", "items": {"type": "string"}},
     "results": {"type": "array", "items": {"type": "string"}},
     "limitations": {"type": "array", "items": {"type": "string"}},
-    "resources": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["kind", "url"], "properties": {"kind": {"enum": ["code", "data", "model", "other"]}, "url": {"type": "string", "format": "uri"}}}},
+    "resources": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["kind", "url"], "properties": {"kind": {"type": "string", "enum": ["code", "data", "model", "other"]}, "url": {"type": "string", "pattern": "^https?://[^\\s]+$"}}}},
     "topic_relevance": {"type": "string", "minLength": 1},
-    "labels": {"type": "object", "additionalProperties": false, "required": ["subquestion", "theme", "method_family", "task", "dataset", "benchmark", "evidence_type", "publication_status", "study_setting"], "properties": {"subquestion": {"type": "array", "items": {"type": "string"}}, "theme": {"type": "array", "items": {"type": "string"}}, "method_family": {"type": "array", "items": {"type": "string"}}, "task": {"type": "array", "items": {"type": "string"}}, "dataset": {"type": "array", "items": {"type": "string"}}, "benchmark": {"type": "array", "items": {"type": "string"}}, "evidence_type": {"type": "array", "items": {"type": "string"}}, "publication_status": {"enum": ["peer_reviewed", "workshop", "preprint", "unknown"]}, "study_setting": {"enum": ["real", "simulation", "theory", "other"]}}},
+    "labels": {"type": "object", "additionalProperties": false, "required": ["subquestion", "theme", "method_family", "task", "dataset", "benchmark", "evidence_type", "publication_status", "study_setting"], "properties": {"subquestion": {"type": "array", "items": {"type": "string"}}, "theme": {"type": "array", "items": {"type": "string"}}, "method_family": {"type": "array", "items": {"type": "string"}}, "task": {"type": "array", "items": {"type": "string"}}, "dataset": {"type": "array", "items": {"type": "string"}}, "benchmark": {"type": "array", "items": {"type": "string"}}, "evidence_type": {"type": "array", "items": {"type": "string"}}, "publication_status": {"type": "string", "enum": ["peer_reviewed", "workshop", "preprint", "unknown"]}, "study_setting": {"type": "string", "enum": ["real", "simulation", "theory", "other"]}}},
     "evidence_units": {"type": "array", "items": {"$ref": "evidence-unit.schema.json"}}
   }
 }

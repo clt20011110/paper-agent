@@ -6,12 +6,12 @@
   "additionalProperties": false,
   "required": ["schema_version", "candidate_id", "status", "page_state", "next_action", "reason_code", "sensitive_data_included"],
   "properties": {
-    "schema_version": {"const": "1"},
+    "schema_version": {"type": "string", "const": "1"},
     "candidate_id": {"type": "string", "minLength": 1},
-    "status": {"enum": ["invoke_skill", "auth_required", "manual_required", "not_available", "failed_retryable", "failed_terminal"]},
-    "page_state": {"enum": ["public_pdf", "login_required", "logged_in", "challenge", "unsupported", "unknown"]},
-    "next_action": {"enum": ["invoke_audited_skill", "wait_for_user", "enqueue_manual", "stop"]},
+    "status": {"type": "string", "enum": ["invoke_skill", "auth_required", "manual_required", "not_available", "failed_retryable", "failed_terminal"]},
+    "page_state": {"type": "string", "enum": ["public_pdf", "login_required", "logged_in", "challenge", "unsupported", "unknown"]},
+    "next_action": {"type": "string", "enum": ["invoke_audited_skill", "wait_for_user", "enqueue_manual", "stop"]},
     "reason_code": {"type": "string", "minLength": 1},
-    "sensitive_data_included": {"const": false}
+    "sensitive_data_included": {"type": "boolean", "const": false}
   }
 }
