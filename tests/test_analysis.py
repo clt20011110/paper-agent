@@ -75,6 +75,8 @@ class FakeInvoker:
     fail: bool = False
     calls: list[object] | None = None
     evidence_unit: dict | None = None
+    actual_model: str | None = "gpt-5.6-luna"
+    actual_profile: str | None = "stage4_analysis_luna"
 
     def invoke(self, request):
         assert self.calls is not None
@@ -103,7 +105,7 @@ class FakeInvoker:
             "fake-id", "stage4_analysis_luna", "gpt-5.6-luna", "medium",
             "paper-analysis.schema.json", self.coordinator.schema_hash, request.input_hash,
             "paper-analysis.md", self.coordinator.prompt_hash, "rendered", None, 1,
-            "gpt-5.6-luna", "stage4_analysis_luna",
+            self.actual_model, self.actual_profile,
         )
         return CodexExecResult(output, metadata)
 
@@ -158,6 +160,55 @@ def test_authorized_output_is_bound_persisted_and_resume_skips_model(tmp_path: P
         ).fetchone()[0]
         assert "# 论文分析：one" in coordinator.artifact_store.read_bytes(markdown_sha).decode("utf-8")
         assert database.connection.execute("SELECT status FROM pipeline_runs").fetchone()[0] == "complete"
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize(
+    ("actual_model", "actual_profile"),
+    (
+        (None, "stage4_analysis_luna"),
+        ("gpt-5.6-sol", "stage4_analysis_luna"),
+        ("gpt-5.6-luna", None),
+        ("gpt-5.6-luna", "stage4b_summary_sol"),
+    ),
+)
+def test_actual_luna_metadata_must_be_present_and_exact(
+    tmp_path: Path,
+    actual_model: str | None,
+    actual_profile: str | None,
+) -> None:
+    calls: list[object] = []
+    holder: dict[str, PaperAnalysisCoordinator] = {}
+    database, coordinator = _coordinator(
+        tmp_path,
+        lambda: FakeInvoker(
+            holder["coordinator"],
+            calls=calls,
+            actual_model=actual_model,
+            actual_profile=actual_profile,
+        ),
+    )
+    holder["coordinator"] = coordinator
+    try:
+        result = coordinator.run(
+            "run-actual-metadata",
+            [AnalysisInput("one", "CC-BY-4.0", "open_license", normalized_text="paper")],
+        )
+
+        paper = result.for_paper("one")
+        assert paper.status == "failed"
+        assert paper.output is None
+        assert len(calls) == 1
+        row = database.connection.execute(
+            "SELECT status, output_artifact_id FROM analysis_runs"
+        ).fetchone()
+        assert (row["status"], row["output_artifact_id"]) == ("failed", None)
+        dispatch = database.connection.execute(
+            "SELECT status, error_json FROM analysis_dispatches"
+        ).fetchone()
+        assert dispatch["status"] == "failed_terminal"
+        assert json.loads(dispatch["error_json"])["cause"]["error"] == "AnalysisValidationError"
     finally:
         database.close()
 

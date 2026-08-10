@@ -486,6 +486,16 @@ class PaperAnalysisCoordinator:
         self, output: Mapping[str, Any], paper_id: str, artifact_hash: str, input_scope: str,
         created_at: str, metadata: InvocationMetadata,
     ) -> Mapping[str, Any]:
+        if (
+            metadata.profile != ANALYSIS_PROFILE
+            or metadata.model != "gpt-5.6-luna"
+            or metadata.reasoning_effort != "medium"
+            or metadata.actual_model != "gpt-5.6-luna"
+            or metadata.actual_profile != ANALYSIS_PROFILE
+        ):
+            raise AnalysisValidationError(
+                "Luna invocation metadata does not match the frozen analysis profile"
+            )
         try:
             validate(output, ANALYSIS_SCHEMA)
         except SchemaValidationError as error:
