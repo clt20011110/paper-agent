@@ -209,7 +209,8 @@ def _provider_records(provider: str, payload: Mapping[str, Any]) -> list[Mapping
     """Extract the documented top-level collection without doing any selection."""
 
     if provider == "crossref" and isinstance(payload.get("message"), Mapping):
-        return _records(payload["message"])
+        records = _records(payload["message"])
+        return records or ([payload["message"]] if payload["message"].get("DOI") else [])
     if provider == "dblp":
         result = payload.get("result")
         if isinstance(result, Mapping) and isinstance(result.get("hits"), Mapping):
@@ -225,6 +226,10 @@ def _provider_records(provider: str, payload: Mapping[str, Any]) -> list[Mapping
         return _items(payload["resultList"].get("result"))
     if provider == "arxiv" and isinstance(payload.get("feed"), Mapping):
         return _items(payload["feed"].get("entry"))
+    if provider == "semantic_scholar" and "paperId" in payload:
+        return [payload]
+    if provider == "openalex" and ("id" in payload or "ids" in payload):
+        return [payload]
     return _records(payload)
 
 
@@ -263,6 +268,13 @@ def _doi(value: Any) -> str | None:
     if not text:
         return None
     return re.sub(r"^https?://(?:dx\.)?doi\.org/", "", text, flags=re.I).lower()
+
+
+def _arxiv_id(value: Any) -> str | None:
+    text = _text(value)
+    if not text:
+        return None
+    return re.sub(r"^https?://arxiv\.org/abs/|^arxiv:", "", text, flags=re.I)
 
 
 def _openalex_abstract(value: Any) -> str | None:
@@ -325,7 +337,7 @@ def _native_source_entry(provider: str, record: Mapping[str, Any]) -> SourceEntr
             authors=_authors(authors),
             abstract=_openalex_abstract(record.get("abstract_inverted_index")),
             doi=_doi(record.get("doi") or ids.get("doi")),
-            arxiv_id=_text(ids.get("arxiv")),
+            arxiv_id=_arxiv_id(ids.get("arxiv")),
             publication_date=publication_date,
             year=_year(record, publication_date),
             venue_name=_text(source.get("display_name")),
@@ -412,7 +424,7 @@ def _source_entry(provider: str, record: Mapping[str, Any]) -> SourceEntry:
     arxiv_id = _text(record.get("arxiv_id") or record.get("arxivId") or content.get("arxiv_id"))
     return SourceEntry(
         provider=provider,
-        external_id=str(external_id),
+        external_id=str(external_id).lower() if provider == "crossref" else str(external_id),
         title=title,
         authors=_authors(record.get("authors") or record.get("author") or content.get("authors") or content.get("author")),
         abstract=_text(content.get("abstract") or record.get("abstract")),
@@ -420,21 +432,87 @@ def _source_entry(provider: str, record: Mapping[str, Any]) -> SourceEntry:
         arxiv_id=arxiv_id,
         publication_date=publication_date,
         year=_year(record, publication_date),
-        venue_name=_text(record.get("venue") or record.get("venue_name") or content.get("venue")),
+        venue_name=_text(
+            record.get("venue")
+            or record.get("venue_name")
+            or record.get("container-title")
+            or content.get("venue")
+        ),
         landing_url=_text(record.get("landing_url") or record.get("url") or record.get("URL") or record.get("html_url")),
         metadata={key: value for key, value in record.items() if key not in {"content", "authors"}},
     )
 
 
 def _access_records(provider: str, payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    if provider != "unpaywall":
-        return _records(payload)
-    best = payload.get("best_oa_location")
-    locations = _items(payload.get("oa_locations"))
-    if not isinstance(best, Mapping):
-        return locations
-    best_url = best.get("url_for_pdf") or best.get("url")
-    return [best, *(location for location in locations if (location.get("url_for_pdf") or location.get("url")) != best_url)]
+    records = _records(payload)
+    if records:
+        return records
+    if provider == "unpaywall":
+        best = payload.get("best_oa_location")
+        locations = _items(payload.get("oa_locations"))
+        if not isinstance(best, Mapping):
+            return locations
+        best_url = best.get("url_for_pdf") or best.get("url")
+        return [best, *(location for location in locations if (location.get("url_for_pdf") or location.get("url")) != best_url)]
+    if provider == "openalex":
+        best = payload.get("best_oa_location")
+        locations = [best, *_items(payload.get("locations"))] if isinstance(best, Mapping) else _items(payload.get("locations"))
+        output = []
+        seen_urls = set()
+        for location in locations:
+            url = location.get("pdf_url") or location.get("landing_page_url")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            source = location.get("source") if isinstance(location.get("source"), Mapping) else {}
+            output.append(
+                {
+                    "candidate_id": location.get("id") or url,
+                    "url": url,
+                    "landing_url": location.get("landing_page_url"),
+                    "host": source.get("display_name"),
+                    "version": location.get("version"),
+                    "license": location.get("license"),
+                }
+            )
+        return output
+    if provider == "europe_pmc":
+        output = []
+        for record in _provider_records(provider, payload):
+            urls = record.get("fullTextUrlList")
+            locations = _items(urls.get("fullTextUrl")) if isinstance(urls, Mapping) else []
+            for location in locations:
+                output.append(
+                    {
+                        "candidate_id": location.get("url"),
+                        "url": location.get("url"),
+                        "landing_url": f"https://europepmc.org/article/{record.get('source')}/{record.get('id')}",
+                        "host": location.get("site"),
+                        "version": "published",
+                    }
+                )
+        return output
+    if provider == "arxiv":
+        return [
+            {
+                "candidate_id": record["id"],
+                "url": str(record["id"]).replace("/abs/", "/pdf/"),
+                "landing_url": record["id"],
+                "host": "arxiv.org",
+                "version": "preprint",
+            }
+            for record in _provider_records(provider, payload)
+        ]
+    return []
+
+
+def _verification_evidence(provider: str, payload: Mapping[str, Any]) -> tuple[str, ...]:
+    if payload.get("evidence") is not None:
+        return tuple(str(item) for item in payload["evidence"])
+    return tuple(
+        _source_entry(provider, record).external_id
+        for record in _provider_records(provider, payload)
+    )
 
 
 def _publication_version(value: Any) -> PublicationVersion:
@@ -517,12 +595,25 @@ class BuiltinProvider:
     def verify(self, identity_candidate: IdentityCandidate, evidence: Sequence[SourceEntry]) -> VerificationResult:
         self._require(ProviderRole.METADATA_VERIFIER, ProviderCapability.METADATA)
         payload = self._request("verify", {"doi": identity_candidate.doi, "arxiv_id": identity_candidate.arxiv_id, "title": identity_candidate.title})
-        status = VerificationStatus(str(payload.get("status", "single_source")))
-        return VerificationResult(identity_candidate, status, self.provider, tuple(str(item) for item in payload.get("evidence", ())))
+        status_value = str(payload.get("status", "single_source"))
+        status = (
+            VerificationStatus(status_value)
+            if status_value in {item.value for item in VerificationStatus}
+            else VerificationStatus.SINGLE_SOURCE
+        )
+        return VerificationResult(identity_candidate, status, self.provider, _verification_evidence(self.provider, payload))
 
     def resolve(self, paper: Paper, policy: AccessPolicy) -> list[AccessLocationCandidate]:
         self._require(ProviderRole.OA_RESOLVER, ProviderCapability.OA_LOCATIONS)
-        payload = self._request("resolve", {"paper_id": paper.paper_id, "doi": paper.doi, "purpose": policy.purpose})
+        payload = self._request(
+            "resolve",
+            {
+                "paper_id": paper.paper_id,
+                "doi": paper.doi,
+                "arxiv_id": paper.arxiv_id,
+                "purpose": policy.purpose,
+            },
+        )
         return [
             AccessLocationCandidate(
                 candidate_id=str(

@@ -3,7 +3,7 @@ provider: eda_proceedings
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.providers.builtin:EDAProceedingsAdapter
-artifact_sha256: aceab59f342b9ec92362981fc419be027290b2ef2c1cb451339679437fed0917
+artifact_sha256: f20a516f6df41b45d5cfd20c6e39d6d97919ad9ea53edb22d3339038c45dcc6c
 enabled: true
 builtin: true
 authority: official
