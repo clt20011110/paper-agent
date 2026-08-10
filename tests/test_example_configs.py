@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from paper_agent import cli
@@ -94,10 +95,20 @@ def test_example_configs_doctor_resolves_descriptor_primary_providers(tmp_path) 
         )
 
 
-def test_query_draft_example_compiles_without_writing(tmp_path, capsys) -> None:
+def test_readme_query_plan_command_references_compilable_draft(tmp_path, capsys) -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    command = readme.split(".venv/bin/paper-agent search plan \\", 1)[1].split("\n\n", 1)[0]
+    match = re.search(r"--input\s+([^\s\\]+)", command)
+
+    assert match is not None
+    input_reference = Path(match.group(1))
+    assert input_reference == Path("configs/query_draft.example.yaml")
+    draft_path = ROOT / input_reference
+    assert draft_path.is_file()
+
     assert cli.main([
         "search", "plan",
-        "--input", str(ROOT / "configs" / "query_draft.example.yaml"),
+        "--input", str(draft_path),
         "--output-root", str(tmp_path / "output"),
         "--dry-run",
     ]) == 0

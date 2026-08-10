@@ -49,7 +49,7 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/paper-agent search plan \
-  --input /absolute/path/to/research.yaml \
+  --input configs/query_draft.example.yaml \
   --output-root /absolute/path/to/paper-research
 
 .venv/bin/paper-agent search approve \
