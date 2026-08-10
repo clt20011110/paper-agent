@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -31,7 +32,9 @@ _ROUND_METRICS = (
 
 def search_audit(database_path: Path, crawl_run_id: str) -> dict[str, Any]:
     uri = f"file:{database_path.resolve()}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as connection:
+    # sqlite3.Connection.__exit__ only commits or rolls back; it does not
+    # close the connection.
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         crawl = connection.execute(
             """SELECT c.*, p.content_hash AS plan_hash

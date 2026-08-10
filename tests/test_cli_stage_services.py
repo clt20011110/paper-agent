@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -203,7 +204,7 @@ def test_download_dry_run_does_not_migrate_an_uninitialized_database(
             "--dry-run", "--config", str(config_path), "download", "--paper-id", "paper-1",
         ])
 
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         assert connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
         ).fetchone() is None

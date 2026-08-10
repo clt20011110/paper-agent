@@ -22,7 +22,9 @@ uv run --no-sync pytest --disable-socket --allow-unix-socket \
   --allow-hosts=localhost,127.0.0.1,::1
 uv build --wheel
 uv venv /tmp/paper-agent-wheel
-uv pip install --offline --python /tmp/paper-agent-wheel/bin/python dist/*.whl
+uv export --locked --no-dev --no-emit-project --output-file /tmp/paper-agent-runtime.txt
+uv pip install --python /tmp/paper-agent-wheel/bin/python --requirements /tmp/paper-agent-runtime.txt
+uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python dist/*.whl
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent --version)
 ```
 

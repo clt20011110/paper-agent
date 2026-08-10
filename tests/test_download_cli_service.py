@@ -32,6 +32,13 @@ class Fetcher:
         return HTTPResponse(200, {"Content-Type": "application/pdf"}, _pdf(), url)
 
 
+@pytest.fixture
+def database(tmp_path: Path):
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        yield database
+
+
 def _service(
     tmp_path: Path,
     database: Database,
@@ -88,9 +95,9 @@ def _paper(
     return paper.paper_id
 
 
-def test_no_grant_never_fetches_restricted_candidate(tmp_path: Path) -> None:
-    database = Database(tmp_path / "papers.sqlite3")
-    database.migrate()
+def test_no_grant_never_fetches_restricted_candidate(
+    tmp_path: Path, database: Database,
+) -> None:
     paper_id = _paper(database, access_basis=AccessBasis.PUBLIC_READ_ONLY, license=None)
     fetcher = Fetcher()
 
@@ -105,9 +112,9 @@ def test_no_grant_never_fetches_restricted_candidate(tmp_path: Path) -> None:
     ).fetchone()[0] == 1
 
 
-def test_dry_run_probes_and_validates_without_persisting_or_fetching(tmp_path: Path) -> None:
-    database = Database(tmp_path / "papers.sqlite3")
-    database.migrate()
+def test_dry_run_probes_and_validates_without_persisting_or_fetching(
+    tmp_path: Path, database: Database,
+) -> None:
     paper_id = _paper(database, access_basis=AccessBasis.OPEN_LICENSE, license="CC-BY-4.0")
     fetcher = Fetcher()
 
@@ -124,9 +131,9 @@ def test_dry_run_probes_and_validates_without_persisting_or_fetching(tmp_path: P
     assert not (tmp_path / "output" / "artifacts").exists()
 
 
-def test_repeat_run_reuses_consumed_fetch_request_and_stage2_selection(tmp_path: Path) -> None:
-    database = Database(tmp_path / "papers.sqlite3")
-    database.migrate()
+def test_repeat_run_reuses_consumed_fetch_request_and_stage2_selection(
+    tmp_path: Path, database: Database,
+) -> None:
     paper_id = _paper(database, access_basis=AccessBasis.OPEN_LICENSE, license="CC-BY-4.0")
     database.connection.execute(
         """INSERT INTO pipeline_runs(run_id, stage, status, input_hash, config_hash, implementation_version)
@@ -152,10 +159,8 @@ def test_repeat_run_reuses_consumed_fetch_request_and_stage2_selection(tmp_path:
 
 
 def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, database: Database, monkeypatch
 ) -> None:
-    database = Database(tmp_path / "papers.sqlite3")
-    database.migrate()
     paper_id = _paper(
         database,
         access_basis=AccessBasis.PUBLIC_READ_ONLY,
@@ -214,9 +219,9 @@ def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
     ).fetchone()[0] == 1
 
 
-def test_download_service_uses_injected_clock_for_grant_expiry(tmp_path: Path) -> None:
-    database = Database(tmp_path / "papers.sqlite3")
-    database.migrate()
+def test_download_service_uses_injected_clock_for_grant_expiry(
+    tmp_path: Path, database: Database,
+) -> None:
     paper_id = _paper(
         database, access_basis=AccessBasis.PUBLIC_READ_ONLY, license=None, doi="10.1038/example",
     )

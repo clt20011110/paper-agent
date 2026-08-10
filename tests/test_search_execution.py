@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import closing
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -125,7 +126,7 @@ def test_search_execution_replays_paginated_snapshot_into_sqlite_without_contact
     )
 
     assert (result.fanout.incomplete, len(result.paper_ids)) == (False, 2)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM search_queries WHERE role = 'search'").fetchone()[0] == 2
 
@@ -246,7 +247,7 @@ def test_venue_only_execution_runs_descriptors_without_topic_search(tmp_path) ->
     )
 
     assert (result.status, len(result.paper_ids)) == ("complete", 1)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection:
         assert connection.execute(
             "SELECT DISTINCT role FROM source_runs WHERE crawl_run_id = ?", (crawl_run_id,)
         ).fetchall() == [("venue_primary",)]
