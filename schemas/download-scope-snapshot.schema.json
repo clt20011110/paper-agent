@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.local/schemas/download-scope-snapshot.schema.json",
+  "title": "Download scope snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "snapshot_id",
+    "snapshot_type",
+    "snapshot_hash",
+    "collection_id",
+    "paper_ids",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "snapshot_id": {"type": "string", "minLength": 1},
+    "snapshot_type": {"enum": ["collection", "selection"]},
+    "snapshot_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "collection_id": {"type": ["string", "null"], "minLength": 1},
+    "paper_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"snapshot_type": {"const": "collection"}},
+        "required": ["snapshot_type"]
+      },
+      "then": {
+        "properties": {"collection_id": {"type": "string", "minLength": 1}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"snapshot_type": {"const": "selection"}},
+        "required": ["snapshot_type"]
+      },
+      "then": {
+        "properties": {"collection_id": {"type": "null"}}
+      }
+    }
+  ]
+}

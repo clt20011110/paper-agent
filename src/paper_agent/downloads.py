@@ -42,10 +42,11 @@ from .domain import (
     PublicationVersion,
 )
 from .grants import ActiveGrant, GrantError, GrantStore
+from .schema import validate
 from .storage import Database
 
 
-POLICY_IMPLEMENTATION_VERSION = "download-policy-evaluator-v1"
+POLICY_IMPLEMENTATION_VERSION = "download-policy-evaluator-v2"
 
 
 class DownloadError(ValueError):
@@ -58,6 +59,246 @@ class PolicyError(DownloadError):
 
 class FetchRejected(DownloadError):
     """A fetch request failed its pre-network persisted-state checks."""
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadScopeSnapshot:
+    """An immutable set of repository paper IDs used by a download grant."""
+
+    snapshot_id: str
+    snapshot_type: str
+    snapshot_hash: str
+    collection_id: str | None
+    paper_ids: tuple[str, ...]
+    created_at: str
+
+    @property
+    def core(self) -> dict[str, object]:
+        return {
+            "schema_version": "1",
+            "snapshot_type": self.snapshot_type,
+            "collection_id": self.collection_id,
+            "paper_ids": list(self.paper_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadScopeBinding:
+    """Exact runtime selection facts carried through Stage 3 authorization."""
+
+    collection_id: str | None = None
+    collection_snapshot_hash: str | None = None
+    selection_snapshot_hash: str | None = None
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "collection_id": self.collection_id,
+            "collection_snapshot_hash": self.collection_snapshot_hash,
+            "selection_snapshot_hash": self.selection_snapshot_hash,
+        }
+
+    def authorization_context(
+        self,
+        *,
+        mode: str = "attended",
+        skill_digest: str | None = None,
+        dependency_digest: str | None = None,
+        planner_decision_id: str | None = None,
+    ) -> AuthorizationContext:
+        return AuthorizationContext(
+            mode=mode,
+            skill_digest=skill_digest,
+            dependency_digest=dependency_digest,
+            collection_id=self.collection_id,
+            collection_snapshot_hash=self.collection_snapshot_hash,
+            selection_snapshot_hash=self.selection_snapshot_hash,
+            planner_decision_id=planner_decision_id,
+        )
+
+
+class DownloadScopeSnapshotStore:
+    """Validate snapshots against the repository and prove membership by hash."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def load_file(
+        self,
+        path: str | Path,
+        *,
+        expected_type: str,
+    ) -> DownloadScopeSnapshot:
+        document = json.loads(Path(path).read_text(encoding="utf-8"))
+        snapshot = self._from_document(document, expected_type=expected_type)
+        self._persist(snapshot)
+        return snapshot
+
+    def load_id(
+        self, snapshot_id: str, *, expected_type: str
+    ) -> DownloadScopeSnapshot:
+        row = self.database.connection.execute(
+            "SELECT * FROM download_scope_snapshots WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise DownloadError(f"download scope snapshot not found: {snapshot_id}")
+        snapshot = self._from_row(row)
+        if snapshot.snapshot_type != expected_type:
+            raise DownloadError(
+                f"download scope snapshot type must be {expected_type}"
+            )
+        return snapshot
+
+    def contains(
+        self,
+        snapshot_hash: str,
+        paper_id: str,
+        expected_type: str,
+        expected_collection_id: str | None,
+    ) -> bool:
+        row = self.database.connection.execute(
+            "SELECT * FROM download_scope_snapshots WHERE snapshot_hash = ?",
+            (snapshot_hash,),
+        ).fetchone()
+        try:
+            if row is None:
+                return False
+            snapshot = self._from_row(row)
+        except (DownloadError, TypeError, ValueError):
+            return False
+        return (
+            snapshot.snapshot_type == expected_type
+            and snapshot.collection_id == expected_collection_id
+            and paper_id in snapshot.paper_ids
+        )
+
+    def _from_document(
+        self, document: object, *, expected_type: str | None = None
+    ) -> DownloadScopeSnapshot:
+        validate(document, "download-scope-snapshot.schema.json")
+        if not isinstance(document, Mapping):
+            raise DownloadError("download scope snapshot must be an object")
+        paper_ids = tuple(document["paper_ids"])
+        if paper_ids != tuple(sorted(paper_ids)):
+            raise DownloadError("download scope snapshot paper_ids must be sorted")
+        snapshot = DownloadScopeSnapshot(
+            snapshot_id=str(document["snapshot_id"]),
+            snapshot_type=str(document["snapshot_type"]),
+            snapshot_hash=str(document["snapshot_hash"]),
+            collection_id=document["collection_id"],
+            paper_ids=paper_ids,
+            created_at=str(document["created_at"]),
+        )
+        if expected_type is not None and snapshot.snapshot_type != expected_type:
+            raise DownloadError(
+                f"download scope snapshot type must be {expected_type}"
+            )
+        if snapshot.snapshot_type == "collection" and snapshot.collection_id is None:
+            raise DownloadError("collection snapshot requires collection_id")
+        if snapshot.snapshot_type == "selection" and snapshot.collection_id is not None:
+            raise DownloadError("selection snapshot cannot set collection_id")
+        self._validate_repository(snapshot)
+        return snapshot
+
+    def _from_row(self, row: Mapping[str, Any]) -> DownloadScopeSnapshot:
+        paper_ids = json.loads(row["paper_ids_json"])
+        return self._from_document({
+            "schema_version": "1",
+            "snapshot_id": row["snapshot_id"],
+            "snapshot_type": row["snapshot_type"],
+            "snapshot_hash": row["snapshot_hash"],
+            "collection_id": row["collection_id"],
+            "paper_ids": paper_ids,
+            "created_at": row["created_at"],
+        })
+
+    def _validate_repository(self, snapshot: DownloadScopeSnapshot) -> None:
+        if content_hash(snapshot.core) != snapshot.snapshot_hash:
+            raise DownloadError("download scope snapshot hash has drifted")
+        placeholders = ",".join("?" for _ in snapshot.paper_ids)
+        rows = self.database.connection.execute(
+            f"SELECT paper_id FROM papers WHERE paper_id IN ({placeholders})",
+            snapshot.paper_ids,
+        ).fetchall()
+        if {str(row["paper_id"]) for row in rows} != set(snapshot.paper_ids):
+            raise DownloadError("download scope snapshot contains an unknown paper")
+        if snapshot.collection_id is not None:
+            collection = self.database.connection.execute(
+                "SELECT 1 FROM collections WHERE collection_id = ?",
+                (snapshot.collection_id,),
+            ).fetchone()
+            if collection is None:
+                raise DownloadError("download scope snapshot collection does not exist")
+            members = self.database.connection.execute(
+                f"""SELECT paper_id FROM paper_collections
+                    WHERE collection_id = ? AND paper_id IN ({placeholders})
+                      AND membership_status != 'not_member'""",
+                (snapshot.collection_id, *snapshot.paper_ids),
+            ).fetchall()
+            if {str(row["paper_id"]) for row in members} != set(snapshot.paper_ids):
+                raise DownloadError(
+                    "download scope snapshot contains a paper outside its collection"
+                )
+
+    def _persist(self, snapshot: DownloadScopeSnapshot) -> None:
+        with self.database.transaction() as connection:
+            by_id = connection.execute(
+                "SELECT * FROM download_scope_snapshots WHERE snapshot_id = ?",
+                (snapshot.snapshot_id,),
+            ).fetchone()
+            by_hash = connection.execute(
+                "SELECT * FROM download_scope_snapshots WHERE snapshot_hash = ?",
+                (snapshot.snapshot_hash,),
+            ).fetchone()
+            for existing in (by_id, by_hash):
+                if existing is not None:
+                    if self._from_row(existing) != snapshot:
+                        raise DownloadError(
+                            "download scope snapshot conflicts with persisted content"
+                        )
+                    return
+            connection.execute(
+                """INSERT INTO download_scope_snapshots(
+                       snapshot_id, snapshot_type, snapshot_hash, collection_id,
+                       paper_ids_json, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    snapshot.snapshot_id,
+                    snapshot.snapshot_type,
+                    snapshot.snapshot_hash,
+                    snapshot.collection_id,
+                    _json(snapshot.paper_ids),
+                    snapshot.created_at,
+                ),
+            )
+
+
+def build_download_scope_snapshot(
+    snapshot_type: str,
+    paper_ids: Iterable[str],
+    *,
+    created_at: str,
+    collection_id: str | None = None,
+    snapshot_id: str | None = None,
+) -> dict[str, object]:
+    """Build a canonical hash-bound snapshot document for review or persistence."""
+
+    ordered = tuple(sorted(paper_ids))
+    core = {
+        "schema_version": "1",
+        "snapshot_type": snapshot_type,
+        "collection_id": collection_id,
+        "paper_ids": list(ordered),
+    }
+    snapshot_hash = content_hash(core)
+    document = {
+        **core,
+        "snapshot_id": snapshot_id or f"download-{snapshot_type}-{snapshot_hash[:16]}",
+        "snapshot_hash": snapshot_hash,
+        "created_at": created_at,
+    }
+    validate(document, "download-scope-snapshot.schema.json")
+    return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,7 +485,7 @@ class DownloadService:
         policy: DownloadAccessPolicy,
         provider_terms: Mapping[str, ProviderTerms],
         fetcher: Callable[[str], HTTPResponse],
-        scope_membership: Callable[[str, str], bool] | None = None,
+        scope_membership: Callable[[str, str, str, str | None], bool] | None = None,
         clock: Callable[[], datetime] | None = None,
         provider_fetchers: Mapping[str, Callable[[str], HTTPResponse]] | None = None,
     ) -> None:
@@ -369,6 +610,9 @@ class DownloadService:
         skill_digest: str,
         dependency_digest: str,
         reserved_paper_ids: Iterable[str] = (),
+        collection_id: str | None = None,
+        collection_snapshot_hash: str | None = None,
+        selection_snapshot_hash: str | None = None,
     ) -> ActiveGrant:
         """Persist one exact browser-queue capacity claim before exposing its CSV."""
 
@@ -384,15 +628,23 @@ class DownloadService:
                 skill_digest=skill_digest,
                 dependency_digest=dependency_digest,
                 reserved_paper_ids=reserved_paper_ids,
+                collection_id=collection_id,
+                collection_snapshot_hash=collection_snapshot_hash,
+                selection_snapshot_hash=selection_snapshot_hash,
             )
             expected = (
                 candidate.candidate_id,
                 run_id,
                 queue_path,
                 queue_item_hash,
+                collection_id,
+                collection_snapshot_hash,
+                selection_snapshot_hash,
             )
             existing = connection.execute(
-                """SELECT candidate_id, run_id, queue_path, queue_item_hash
+                """SELECT candidate_id, run_id, queue_path, queue_item_hash,
+                          collection_id, collection_snapshot_hash,
+                          selection_snapshot_hash
                    FROM authorized_download_queue_reservations
                    WHERE authorization_grant_id = ? AND paper_id = ?""",
                 (grant_id, candidate.paper_id),
@@ -406,8 +658,9 @@ class DownloadService:
             connection.execute(
                 """INSERT INTO authorized_download_queue_reservations(
                        authorization_grant_id, paper_id, candidate_id, run_id,
-                       queue_path, queue_item_hash, reserved_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       queue_path, queue_item_hash, reserved_at, collection_id,
+                       collection_snapshot_hash, selection_snapshot_hash
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     grant_id,
                     candidate.paper_id,
@@ -416,6 +669,9 @@ class DownloadService:
                     queue_path,
                     queue_item_hash,
                     _iso(at),
+                    collection_id,
+                    collection_snapshot_hash,
+                    selection_snapshot_hash,
                 ),
             )
             return active
@@ -449,16 +705,29 @@ class DownloadService:
         paper_id: str,
         queue_path: str,
         queue_item_hash: str,
+        collection_id: str | None = None,
+        collection_snapshot_hash: str | None = None,
+        selection_snapshot_hash: str | None = None,
     ) -> AccessLocationCandidate:
         row = self.database.connection.execute(
-            """SELECT candidate_id, run_id, queue_path, queue_item_hash
+            """SELECT candidate_id, run_id, queue_path, queue_item_hash,
+                      collection_id, collection_snapshot_hash,
+                      selection_snapshot_hash
                FROM authorized_download_queue_reservations
                WHERE authorization_grant_id = ? AND paper_id = ?""",
             (grant_id, paper_id),
         ).fetchone()
-        expected = (run_id, queue_path, queue_item_hash)
+        expected = (
+            run_id,
+            queue_path,
+            queue_item_hash,
+            collection_id,
+            collection_snapshot_hash,
+            selection_snapshot_hash,
+        )
         if row is None or tuple(row[key] for key in (
-            "run_id", "queue_path", "queue_item_hash"
+            "run_id", "queue_path", "queue_item_hash", "collection_id",
+            "collection_snapshot_hash", "selection_snapshot_hash",
         )) != expected:
             raise FetchRejected(
                 "authorized queue row has no matching durable reservation"
@@ -1196,7 +1465,12 @@ class DownloadService:
             has_selection = True
             if (
                 self.scope_membership is None
-                or not self.scope_membership(scope["collection_snapshot_hash"], candidate.paper_id)
+                or not self.scope_membership(
+                    scope["collection_snapshot_hash"],
+                    candidate.paper_id,
+                    "collection",
+                    collection_id,
+                )
             ):
                 raise GrantError("paper is outside the frozen collection snapshot")
         if scope["selection_snapshot_hash"]:
@@ -1204,7 +1478,10 @@ class DownloadService:
             if selection_snapshot_hash != scope["selection_snapshot_hash"]:
                 raise GrantError("download grant selection snapshot does not match")
             if self.scope_membership is None or not self.scope_membership(
-                scope["selection_snapshot_hash"], candidate.paper_id
+                scope["selection_snapshot_hash"],
+                candidate.paper_id,
+                "selection",
+                None,
             ):
                 raise GrantError("paper is outside the frozen selection snapshot")
         if not has_selection:

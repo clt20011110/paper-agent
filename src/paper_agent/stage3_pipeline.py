@@ -163,6 +163,7 @@ class Stage3Pipeline:
     resolver_order: tuple[str, ...] = DEFAULT_RESOLVER_ORDER
     authorized: AuthorizedSkillOptions = AuthorizedSkillOptions()
     public_authorization_grant_id: str | None = None
+    public_authorization_context: AuthorizationContext | None = None
 
     def __post_init__(self) -> None:
         if not self.purpose or not self.now or not self.run_id:
@@ -357,15 +358,28 @@ class Stage3Pipeline:
         ))
 
     def _public_context(self) -> ProbeContext:
+        authorization = self.public_authorization_context or AuthorizationContext()
         return ProbeContext(
             self.purpose,
             self.now,
             authorization_grant_id=self.public_authorization_grant_id,
+            mode=authorization.mode,
+            skill_digest=authorization.skill_digest,
+            dependency_digest=authorization.dependency_digest,
+            collection_id=authorization.collection_id,
+            collection_snapshot_hash=authorization.collection_snapshot_hash,
+            selection_snapshot_hash=authorization.selection_snapshot_hash,
             run_id=self.run_id,
         )
 
     def _public_fetch_context(self) -> FetchContext:
-        return FetchContext(self.run_id, self.now)
+        return FetchContext(
+            self.run_id,
+            self.now,
+            self.public_authorization_context
+            if self.public_authorization_grant_id is not None
+            else None,
+        )
 
     def _probe(self, candidate: AccessLocationCandidate, *, provider: str | None, context: ProbeContext) -> Stage3Attempt:
         try:

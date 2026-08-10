@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+import json
 from pathlib import Path
 
 import pytest
 
+import paper_agent.downloads as downloads_module
 from paper_agent.artifacts import ArtifactStore
 from paper_agent.domain import (
     AccessBasis,
@@ -19,10 +21,12 @@ from paper_agent.downloads import (
     AuthorizationContext,
     DownloadAccessPolicy,
     DownloadError,
+    DownloadScopeSnapshotStore,
     DownloadService,
     FetchRejected,
     HTTPResponse,
     ProviderTerms,
+    build_download_scope_snapshot,
 )
 from paper_agent.grants import GrantStore
 from paper_agent.storage import Database
@@ -310,6 +314,46 @@ def test_probe_persists_candidate_decision_and_all_request_binding_hashes(
     )
 
 
+def test_policy_implementation_upgrade_revokes_ready_request_and_issues_new_fence(
+    database: Database,
+    tmp_path: Path,
+    policy: DownloadAccessPolicy,
+    monkeypatch,
+) -> None:
+    downloads = service(
+        database, tmp_path, policy, FakeFetcher(), provider_terms=terms()
+    )
+    monkeypatch.setattr(
+        downloads_module,
+        "POLICY_IMPLEMENTATION_VERSION",
+        "download-policy-evaluator-v1",
+    )
+    legacy = downloads.probe(
+        candidate(), purpose="internal_analysis", provider="public_http", now=NOW
+    ).fetch_request
+    assert legacy is not None
+
+    monkeypatch.setattr(
+        downloads_module,
+        "POLICY_IMPLEMENTATION_VERSION",
+        "download-policy-evaluator-v2",
+    )
+    current = downloads.probe(
+        candidate(), purpose="internal_analysis", provider="public_http", now=NOW
+    ).fetch_request
+    assert current is not None
+
+    assert current.request_id != legacy.request_id
+    assert current.fencing_token == legacy.fencing_token + 1
+    rows = database.connection.execute(
+        "SELECT request_id, status FROM fetch_requests ORDER BY fencing_token"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        (legacy.request_id, "revoked"),
+        (current.request_id, "ready"),
+    ]
+
+
 def test_candidate_identity_and_url_host_are_immutable(
     database: Database, tmp_path: Path, policy: DownloadAccessPolicy
 ) -> None:
@@ -532,7 +576,10 @@ def test_selection_snapshot_grant_requires_proven_candidate_membership(
         policy,
         FakeFetcher(),
         provider_terms=terms(),
-        scope_membership=lambda snapshot, paper: (snapshot, paper) == (HASH, "paper-1"),
+        scope_membership=lambda snapshot, paper, snapshot_type, collection: (
+            (snapshot, paper, snapshot_type, collection)
+            == (HASH, "paper-1", "selection", None)
+        ),
     ).probe(
         location,
         purpose="internal_analysis",
@@ -556,7 +603,7 @@ def test_every_declared_selection_scope_must_cover_the_candidate(
         policy,
         FakeFetcher(),
         provider_terms=terms(),
-        scope_membership=lambda _snapshot, _paper: False,
+        scope_membership=lambda _snapshot, _paper, _type, _collection: False,
     )
 
     decision = downloads.probe(
@@ -570,6 +617,102 @@ def test_every_declared_selection_scope_must_cover_the_candidate(
 
     assert decision.status is FetchDecisionStatus.NEEDS_GRANT
     assert decision.reason_code == "download_grant_invalid"
+
+
+@pytest.mark.parametrize(
+    ("snapshot_type", "runtime_collection_id", "expected_status"),
+    (
+        ("collection", "collection-1", FetchDecisionStatus.ALLOW),
+        ("collection", "collection-2", FetchDecisionStatus.NEEDS_GRANT),
+        ("selection", "collection-1", FetchDecisionStatus.NEEDS_GRANT),
+    ),
+)
+def test_collection_snapshot_only_grant_binds_type_and_runtime_collection(
+    database: Database,
+    tmp_path: Path,
+    policy: DownloadAccessPolicy,
+    snapshot_type: str,
+    runtime_collection_id: str,
+    expected_status: FetchDecisionStatus,
+) -> None:
+    database.connection.execute(
+        """INSERT INTO collections(collection_id, name, collection_type)
+           VALUES ('collection-1', 'Collection 1', 'seed_set')"""
+    )
+    database.connection.execute(
+        """INSERT INTO paper_collections(
+               paper_id, collection_id, membership_status
+           ) VALUES ('paper-1', 'collection-1', 'official_confirmed')"""
+    )
+    database.connection.commit()
+    document = build_download_scope_snapshot(
+        snapshot_type,
+        ["paper-1"],
+        collection_id="collection-1" if snapshot_type == "collection" else None,
+        created_at=NOW,
+    )
+    snapshot_path = tmp_path / f"{snapshot_type}-snapshot.json"
+    snapshot_path.write_text(json.dumps(document), encoding="utf-8")
+    snapshot_store = DownloadScopeSnapshotStore(database)
+    snapshot = snapshot_store.load_file(
+        snapshot_path, expected_type=snapshot_type
+    )
+    grants = GrantStore(database)
+    draft = grants.create_draft(
+        grant_id="collection-snapshot-grant",
+        kind="download",
+        actions=["download", "store"],
+        purpose="internal_analysis",
+        mode="attended",
+        scope={
+            "paper_ids": [],
+            "artifact_hashes": [],
+            "collection_ids": [],
+            "collection_snapshot_hash": snapshot.snapshot_hash,
+            "selection_snapshot_hash": None,
+            "domains": ["example.test"],
+            "provider": "public_http",
+            "model": None,
+            "data_categories": ["full_text"],
+        },
+        max_papers=1,
+        expires_at="2026-08-10T00:10:00Z",
+    )
+    grants.approve(draft, draft["content_hash"], approved_by="owner", approved_at=NOW)
+    decision = service(
+        database,
+        tmp_path,
+        policy,
+        FakeFetcher(),
+        provider_terms=terms(),
+        scope_membership=snapshot_store.contains,
+    ).probe(
+        candidate(access_basis=AccessBasis.USER_SUBSCRIPTION, license=None),
+        purpose="internal_analysis",
+        provider="public_http",
+        now=NOW,
+        authorization_grant_id="collection-snapshot-grant",
+        collection_id=runtime_collection_id,
+        collection_snapshot_hash=snapshot.snapshot_hash,
+    )
+
+    assert decision.status is expected_status
+
+
+@pytest.mark.parametrize(
+    ("snapshot_type", "collection_id"),
+    (("collection", None), ("selection", "collection-1")),
+)
+def test_download_scope_snapshot_schema_binds_type_to_collection_id(
+    snapshot_type: str, collection_id: str | None
+) -> None:
+    with pytest.raises(ValueError):
+        build_download_scope_snapshot(
+            snapshot_type,
+            ["paper-1"],
+            collection_id=collection_id,
+            created_at=NOW,
+        )
 
 
 def test_fetch_reproves_runtime_skill_and_dependency_digests(

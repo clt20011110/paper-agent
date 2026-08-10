@@ -160,10 +160,48 @@ search audit 和已 pin plan path/hash 的 config 启动独立单阶段 Report w
 paper-agent --config /absolute/path/to/research.yaml download \
   --database /absolute/path/to/papers.sqlite3 \
   --filter-run-id <stage2-run-id> --grant-id <download-grant-id> \
+  --selection-snapshot /absolute/path/to/download-selection-snapshot.json \
   --authorized-skill-queue /absolute/path/to/authorized-queue.csv \
   --authorized-skill-output /absolute/path/to/authorized-output \
   --authorized-skill-root /absolute/path/to/download-authorized-papers
 ```
+
+当 grant 使用 `collection_snapshot_hash` 或 `selection_snapshot_hash` 时，download 命令必须提供
+与该哈希一致的 `--collection-snapshot` / `--selection-snapshot`。快照采用
+`download-scope-snapshot.schema.json`，其按 `snapshot_type`、`collection_id` 和排序后的
+`paper_ids` 重算 `snapshot_hash`；首次成功校验后写入 SQLite，恢复时可改用
+`--collection-snapshot-id` / `--selection-snapshot-id`。collection scope 还要传入或由快照提供
+同一个 `--collection-id`。运行、授权队列 reservation 和 fetch request 都绑定这些值，快照漂移
+或 grant 撤销会在浏览器/网络副作用前拒绝继续。
+
+可用内置 builder 生成规范快照；它以 RFC 8785 canonical JSON 对
+`schema_version`、`snapshot_type`、`collection_id` 和排序后的 `paper_ids` 求 SHA-256，
+`snapshot_id` 与 `created_at` 不进入 membership hash：
+
+```sh
+python3 - <<'PY'
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+
+from paper_agent.downloads import build_download_scope_snapshot
+
+snapshot = build_download_scope_snapshot(
+    "selection",
+    ["paper-1", "paper-2"],
+    created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+)
+Path("download-selection-snapshot.json").write_text(
+    json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+print(snapshot["snapshot_hash"])
+PY
+```
+
+构建 collection snapshot 时把第一个参数改为 `"collection"`，并传入
+`collection_id="<已存在的 collection ID>"`。CLI 加载时还会确认每个 paper ID 存在，且
+collection snapshot 的全部论文在该 collection 中仍有非 `not_member` membership。
 
 JSON 中的 `authorized_queue_path` 才是交给 `$download-authorized-papers` 的输入；该 skill
 只通过用户可见、已登录的浏览器会话处理它。CAPTCHA、403、429 或登录修复会停止受影响队列，

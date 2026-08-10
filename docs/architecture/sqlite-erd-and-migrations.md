@@ -51,6 +51,7 @@ erDiagram
 | `report_claims`, `claim_evidence`, `comparison_groups`, `claim_relations` | claim 使用稳定 UUIDv5；证据引用 paper/run/locator；comparison key 是跨 run 稳定的规范条件；lineage 只允许 `same/refined/split/merged/superseded/retired`。 |
 | `provider_registrations` | 绑定 distribution、精确 version、entry point、manifest、内容 digest、审计和信任状态。漂移不更新原记录，而是失效旧注册。 |
 | `authorization_grants` | grant 的 canonical content hash、detached approval、撤销事件、时间、action/purpose/scope、artifact/lineage/model/skill digest；YAML defaults 不进入运行时授权。 |
+| `download_scope_snapshots` | 下载 collection/selection 的排序 paper IDs、内容哈希和可恢复 snapshot ID；membership 校验从 SQLite 重建并重算哈希。 |
 | `manual_queue` | 有类型、去重 key、关联 paper/run、原因、状态与人工处理结果；任何不能安全自动完成的条目都入队而非丢弃。 |
 | `schema_migrations` | `version` 主键、已应用时间、迁移名称和应用方；只追加。 |
 

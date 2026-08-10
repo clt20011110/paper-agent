@@ -10,14 +10,27 @@ from types import SimpleNamespace
 
 import pytest
 
-from paper_agent.domain import AccessBasis, FilterStatus, Paper, PaperSource, PublicationVersion
+from paper_agent.domain import (
+    AccessBasis,
+    DownloadStatus,
+    FilterStatus,
+    Paper,
+    PaperSource,
+    PublicationVersion,
+)
 from paper_agent.download_cli_service import (
     AuthorizedSkillHandoffOptions,
     Stage3DownloadService,
     load_provider_terms,
 )
 from paper_agent.download_providers import DEFAULT_PROVIDER_ORDER, DEFAULT_RESOLVER_ORDER
-from paper_agent.downloads import HTTPResponse, ProviderTerms
+from paper_agent.downloads import (
+    DownloadScopeBinding,
+    DownloadScopeSnapshotStore,
+    HTTPResponse,
+    ProviderTerms,
+    build_download_scope_snapshot,
+)
 from paper_agent.grants import GrantError
 from paper_agent.repository import PaperRepository
 from paper_agent.storage import Database
@@ -51,6 +64,7 @@ def _service(
     authorized: bool = False,
     clock=None,
     planner=None,
+    scope_membership=None,
 ) -> Stage3DownloadService:
     return Stage3DownloadService(
         database,
@@ -69,6 +83,7 @@ def _service(
         fetcher=fetcher,
         clock=clock or (lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))),
         authorized_luna_planner=planner,
+        scope_membership=scope_membership,
     )
 
 
@@ -404,7 +419,7 @@ def test_terminal_no_pdf_result_completes_and_resumes_without_refetch(
     assert database.connection.execute(
         "SELECT implementation_version FROM pipeline_runs WHERE run_id = ?",
         (first.run_id,),
-    ).fetchone()[0] == "stage3-cli-v3"
+    ).fetchone()[0] == "stage3-cli-v4"
     assert database.connection.execute(
         "SELECT COUNT(*) FROM download_attempts WHERE run_id = ?",
         (first.run_id,),
@@ -1008,6 +1023,303 @@ def test_authorized_queue_rejects_unproven_selection_snapshot_membership(
     assert not options.queue_path.exists()
 
 
+def test_snapshot_scoped_queue_persists_context_and_resumes_by_snapshot_id(
+    tmp_path: Path, database: Database, monkeypatch
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/example",
+        url="https://www.nature.com/articles/example.pdf",
+    )
+    database.connection.execute(
+        """INSERT INTO collections(collection_id, name, collection_type)
+           VALUES ('collection-1', 'Frozen collection', 'seed_set')"""
+    )
+    database.connection.execute(
+        """INSERT INTO paper_collections(
+               paper_id, collection_id, membership_status
+           ) VALUES (?, 'collection-1', 'official_confirmed')""",
+        (paper_id,),
+    )
+    database.connection.commit()
+    snapshot_store = DownloadScopeSnapshotStore(database)
+    collection_path = tmp_path / "collection-snapshot.json"
+    selection_path = tmp_path / "selection-snapshot.json"
+    collection_document = build_download_scope_snapshot(
+        "collection",
+        [paper_id],
+        collection_id="collection-1",
+        created_at=NOW,
+        snapshot_id="collection-snapshot-1",
+    )
+    selection_document = build_download_scope_snapshot(
+        "selection",
+        [paper_id],
+        created_at=NOW,
+        snapshot_id="selection-snapshot-1",
+    )
+    collection_path.write_text(json.dumps(collection_document), encoding="utf-8")
+    selection_path.write_text(json.dumps(selection_document), encoding="utf-8")
+    collection = snapshot_store.load_file(
+        collection_path, expected_type="collection"
+    )
+    selection = snapshot_store.load_file(
+        selection_path, expected_type="selection"
+    )
+    binding = DownloadScopeBinding(
+        collection_id="collection-1",
+        collection_snapshot_hash=collection.snapshot_hash,
+        selection_snapshot_hash=selection.snapshot_hash,
+    )
+    _approved_authorized_grant(
+        database,
+        None,
+        domain="www.nature.com",
+        collection_id="collection-1",
+        collection_snapshot_hash=collection.snapshot_hash,
+        selection_snapshot_hash=selection.snapshot_hash,
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+    service = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        authorized=True,
+        planner=FakeAuthorizedLunaPlanner(calls=[]),
+        scope_membership=snapshot_store.contains,
+    )
+    service.provider_terms.update(_nature_terms())
+
+    waiting = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+        authorization_scope=binding,
+    )
+
+    assert waiting.status == "manual_required"
+    reservation = database.connection.execute(
+        """SELECT collection_id, collection_snapshot_hash,
+                  selection_snapshot_hash
+           FROM authorized_download_queue_reservations"""
+    ).fetchone()
+    assert tuple(reservation) == (
+        "collection-1",
+        collection.snapshot_hash,
+        selection.snapshot_hash,
+    )
+    run_hash = database.connection.execute(
+        "SELECT input_hash FROM pipeline_runs WHERE run_id = ?",
+        (waiting.run_id,),
+    ).fetchone()[0]
+    assert run_hash
+    with pytest.raises(ValueError, match="different frozen inputs"):
+        service.run(
+            paper_ids=[paper_id],
+            authorization_grant_id="download-grant",
+            authorized_skill=options,
+            authorization_scope=DownloadScopeBinding(
+                selection_snapshot_hash=selection.snapshot_hash
+            ),
+            run_id=waiting.run_id,
+        )
+    _stage_authorized_article(options.output_dir)
+
+    resumed_store = DownloadScopeSnapshotStore(database)
+    resumed_collection = resumed_store.load_id(
+        "collection-snapshot-1", expected_type="collection"
+    )
+    resumed_selection = resumed_store.load_id(
+        "selection-snapshot-1", expected_type="selection"
+    )
+    resumed_service = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        authorized=True,
+        planner=FakeAuthorizedLunaPlanner(calls=[]),
+        scope_membership=resumed_store.contains,
+    )
+    resumed_service.provider_terms.update(_nature_terms())
+    resumed = resumed_service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+        authorization_scope=DownloadScopeBinding(
+            collection_id=resumed_collection.collection_id,
+            collection_snapshot_hash=resumed_collection.snapshot_hash,
+            selection_snapshot_hash=resumed_selection.snapshot_hash,
+        ),
+    )
+
+    assert resumed.run_id == waiting.run_id
+    assert resumed.status == "complete"
+    assert resumed.run is not None
+    assert resumed.run.for_paper(paper_id).status is DownloadStatus.DOWNLOADED
+
+
+@pytest.mark.parametrize("failure", ["snapshot_drift", "grant_revoked"])
+def test_snapshot_scoped_queue_refuses_drift_or_revocation_before_resume_fetch(
+    tmp_path: Path, database: Database, monkeypatch, failure: str
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/example",
+        url="https://www.nature.com/articles/example.pdf",
+    )
+    _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/other",
+        paper_id="paper-other",
+        url="https://www.nature.com/articles/other.pdf",
+    )
+    store = DownloadScopeSnapshotStore(database)
+    path = tmp_path / "selection.json"
+    document = build_download_scope_snapshot(
+        "selection", [paper_id], created_at=NOW, snapshot_id="selection-1"
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
+    snapshot = store.load_file(path, expected_type="selection")
+    _approved_authorized_grant(
+        database,
+        None,
+        domain="www.nature.com",
+        selection_snapshot_hash=snapshot.snapshot_hash,
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+    planner = FakeAuthorizedLunaPlanner(calls=[])
+    fetcher = Fetcher()
+    service = _service(
+        tmp_path,
+        database,
+        fetcher,
+        authorized=True,
+        planner=planner,
+        scope_membership=store.contains,
+    )
+    service.provider_terms.update(_nature_terms())
+    binding = DownloadScopeBinding(selection_snapshot_hash=snapshot.snapshot_hash)
+    waiting = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+        authorization_scope=binding,
+    )
+    assert waiting.status == "manual_required"
+    _stage_authorized_article(options.output_dir)
+    if failure == "snapshot_drift":
+        database.connection.execute(
+            """UPDATE download_scope_snapshots SET paper_ids_json = '["paper-other"]'
+               WHERE snapshot_id = 'selection-1'"""
+        )
+        database.connection.commit()
+    else:
+        from paper_agent.grants import GrantStore
+
+        GrantStore(database).revoke(
+            "download-grant",
+            actor="owner",
+            event_at="2026-08-10T00:01:00Z",
+        )
+
+    rejected = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+        authorization_scope=binding,
+    )
+
+    assert rejected.status == "manual_required"
+    assert fetcher.calls == []
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM download_attempts WHERE provider = 'authorized_skill'"
+    ).fetchone()[0] == 0
+
+
+def test_selection_snapshot_queue_still_enforces_cumulative_max_papers(
+    tmp_path: Path, database: Database, monkeypatch
+) -> None:
+    paper_a = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/a",
+        paper_id="paper-a",
+        url="https://www.nature.com/articles/a.pdf",
+    )
+    paper_b = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/b",
+        paper_id="paper-b",
+        url="https://www.nature.com/articles/b.pdf",
+    )
+    store = DownloadScopeSnapshotStore(database)
+    snapshot_path = tmp_path / "selection.json"
+    document = build_download_scope_snapshot(
+        "selection", [paper_a, paper_b], created_at=NOW
+    )
+    snapshot_path.write_text(json.dumps(document), encoding="utf-8")
+    snapshot = store.load_file(snapshot_path, expected_type="selection")
+    _approved_authorized_grant(
+        database,
+        None,
+        domain="www.nature.com",
+        max_papers=1,
+        selection_snapshot_hash=snapshot.snapshot_hash,
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+    service = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        authorized=True,
+        planner=FakeAuthorizedLunaPlanner(calls=[]),
+        scope_membership=store.contains,
+    )
+    service.provider_terms.update(_nature_terms())
+
+    result = service.run(
+        paper_ids=[paper_b, paper_a],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+        authorization_scope=DownloadScopeBinding(
+            selection_snapshot_hash=snapshot.snapshot_hash
+        ),
+    )
+
+    assert result.status == "manual_required"
+    assert [
+        row["paper_id"]
+        for row in database.connection.execute(
+            """SELECT paper_id FROM authorized_download_queue_reservations
+               ORDER BY paper_id"""
+        )
+    ] == [paper_a]
+
+
 def test_download_service_uses_injected_clock_for_grant_expiry(
     tmp_path: Path, database: Database, monkeypatch,
 ) -> None:
@@ -1138,6 +1450,8 @@ def _approved_authorized_grant(
     *,
     domain: str = "publisher.example",
     max_papers: int = 1,
+    collection_id: str | None = None,
+    collection_snapshot_hash: str | None = None,
     selection_snapshot_hash: str | None = None,
     provider: str = "authorized_skill",
 ) -> None:
@@ -1156,8 +1470,9 @@ def _approved_authorized_grant(
                 if isinstance(paper_id, str)
                 else list(paper_id or ())
             ),
-            "artifact_hashes": [], "collection_ids": [],
-            "collection_snapshot_hash": None,
+            "artifact_hashes": [],
+            "collection_ids": [collection_id] if collection_id else [],
+            "collection_snapshot_hash": collection_snapshot_hash,
             "selection_snapshot_hash": selection_snapshot_hash,
             "domains": [domain], "provider": provider,
             "model": None, "data_categories": ["full_text"],

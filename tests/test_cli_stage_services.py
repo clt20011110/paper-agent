@@ -10,6 +10,10 @@ import pytest
 import yaml
 
 from paper_agent import cli
+from paper_agent.downloads import (
+    DownloadScopeBinding,
+    build_download_scope_snapshot,
+)
 from paper_agent.report_input_service import ReportInputRequest
 from paper_agent.storage import Database
 
@@ -287,6 +291,7 @@ def test_download_cli_wires_explicit_authorized_skill_handoff(
                 run=None,
                 planned_decisions=(),
                 authorized_queue_path=options["authorized_skill"].queue_path,
+                authorization_scope=options["authorization_scope"],
             )
 
     monkeypatch.setattr(cli, "Stage3DownloadService", FakeService)
@@ -516,7 +521,7 @@ def test_download_dry_run_does_not_migrate_an_uninitialized_database(
     assert not missing_path.exists()
 
 
-def test_download_dry_run_uses_a_disposable_database_clone(
+def test_download_dry_run_loads_snapshot_only_in_disposable_database_clone(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     config_document = yaml.safe_load(
@@ -532,6 +537,11 @@ def test_download_dry_run_uses_a_disposable_database_clone(
     config_document["storage"]["sqlite_path"] = str(database_path)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config_document, sort_keys=False), encoding="utf-8")
+    snapshot_path = tmp_path / "selection-snapshot.json"
+    snapshot = build_download_scope_snapshot(
+        "selection", ["paper-1"], created_at="2026-08-10T00:00:00Z"
+    )
+    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
     before = database_path.read_bytes()
     sidecars = tuple(
         database_path.with_name(f"{database_path.name}-{suffix}")
@@ -540,14 +550,15 @@ def test_download_dry_run_uses_a_disposable_database_clone(
     before_sidecars = {
         path: path.read_bytes() if path.exists() else None for path in sidecars
     }
-    captured: dict[str, Path] = {}
+    captured: dict[str, object] = {}
 
     class FakeService:
         def __init__(self, database, _config, **options):
             captured["database"] = database.path
             captured["artifact_root"] = options["artifact_root"]
 
-        def run(self, **_options):
+        def run(self, **options):
+            captured["authorization_scope"] = options["authorization_scope"]
             return SimpleNamespace(
                 run_id="stage3-dry",
                 paper_ids=("paper-1",),
@@ -556,17 +567,65 @@ def test_download_dry_run_uses_a_disposable_database_clone(
                 run=None,
                 planned_decisions=(),
                 authorized_queue_path=None,
+                authorization_scope=options["authorization_scope"],
             )
 
     monkeypatch.setattr(cli, "Stage3DownloadService", FakeService)
     assert cli.main([
-        "--dry-run", "--config", str(config_path), "download", "--paper-id", "paper-1",
+        "--dry-run", "--config", str(config_path), "download",
+        "--paper-id", "paper-1", "--selection-snapshot", str(snapshot_path),
     ]) == 0
     assert _payload(capsys)["status"] == "validated"
     assert captured["database"] != database_path
+    assert captured["authorization_scope"] == DownloadScopeBinding(
+        selection_snapshot_hash=snapshot["snapshot_hash"]
+    )
     assert not captured["database"].exists()
     assert not captured["artifact_root"].exists()
     assert database_path.read_bytes() == before
     assert {
         path: path.read_bytes() if path.exists() else None for path in sidecars
     } == before_sidecars
+
+
+def test_download_dry_run_rejects_active_wal_without_touching_sidecars(
+    tmp_path: Path,
+) -> None:
+    config_document = yaml.safe_load(
+        (ROOT / "configs" / "abstract_focus.yaml").read_text(encoding="utf-8")
+    )
+    database_path = tmp_path / "papers.sqlite3"
+    database = Database(database_path)
+    try:
+        database.migrate()
+        database.connection.execute(
+            "INSERT INTO papers(paper_id, title) VALUES ('paper-1', 'Paper')"
+        )
+        database.connection.commit()
+        wal_path = database_path.with_name(f"{database_path.name}-wal")
+        shm_path = database_path.with_name(f"{database_path.name}-shm")
+        assert wal_path.stat().st_size > 0
+        config_document["storage"]["sqlite_path"] = str(database_path)
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(config_document, sort_keys=False), encoding="utf-8"
+        )
+        before = {
+            path: path.read_bytes() for path in (database_path, wal_path, shm_path)
+        }
+
+        with pytest.raises(ValueError, match="quiescent database"):
+            cli.main([
+                "--dry-run",
+                "--config",
+                str(config_path),
+                "download",
+                "--paper-id",
+                "paper-1",
+            ])
+
+        assert {
+            path: path.read_bytes() for path in (database_path, wal_path, shm_path)
+        } == before
+    finally:
+        database.close()

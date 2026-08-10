@@ -31,6 +31,7 @@ from .download_cli_service import (
     Stage3DownloadService,
     load_provider_terms,
 )
+from .downloads import DownloadScopeBinding, DownloadScopeSnapshotStore
 from .domain import CitationEdgeType
 from .exchange import (
     export_csv,
@@ -354,6 +355,13 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     download.add_argument("--filter-run-id")
     download.add_argument("--include-needs-review", action="store_true")
     download.add_argument("--grant-id")
+    download.add_argument("--collection-id")
+    collection_snapshot = download.add_mutually_exclusive_group()
+    collection_snapshot.add_argument("--collection-snapshot", type=Path)
+    collection_snapshot.add_argument("--collection-snapshot-id")
+    selection_snapshot = download.add_mutually_exclusive_group()
+    selection_snapshot.add_argument("--selection-snapshot", type=Path)
+    selection_snapshot.add_argument("--selection-snapshot-id")
     download.add_argument("--provider-terms", type=Path)
     download.add_argument("--authorized-skill-queue", type=Path)
     download.add_argument("--authorized-skill-output", type=Path)
@@ -855,6 +863,7 @@ def _download(args: argparse.Namespace) -> dict[str, Any]:
             if result.authorized_queue_path is not None
             else None
         ),
+        "authorization_scope": result.authorization_scope.to_dict(),
         "run_id": result.run_id,
         "status": result.status,
     }
@@ -868,12 +877,15 @@ def _run_download_service(
     terms: Mapping[str, Any] | None,
     authorized_skill: AuthorizedSkillHandoffOptions | None,
 ) -> Stage3DownloadResult:
+    snapshot_store = DownloadScopeSnapshotStore(database)
+    authorization_scope = _download_scope_binding(args, snapshot_store)
     service = Stage3DownloadService(
         database,
         config,
         config_root=args.config.parent,
         artifact_root=artifact_root,
         provider_terms=terms,
+        scope_membership=snapshot_store.contains,
     )
     return service.run(
         paper_ids=args.paper_id,
@@ -883,22 +895,66 @@ def _run_download_service(
         run_id=args.run_id,
         dry_run=args.dry_run,
         authorized_skill=authorized_skill,
+        authorization_scope=authorization_scope,
+    )
+
+
+def _download_scope_binding(
+    args: argparse.Namespace, snapshot_store: DownloadScopeSnapshotStore
+) -> DownloadScopeBinding:
+    collection = None
+    if args.collection_snapshot is not None:
+        collection = snapshot_store.load_file(
+            args.collection_snapshot, expected_type="collection"
+        )
+    elif args.collection_snapshot_id is not None:
+        collection = snapshot_store.load_id(
+            args.collection_snapshot_id, expected_type="collection"
+        )
+    selection = None
+    if args.selection_snapshot is not None:
+        selection = snapshot_store.load_file(
+            args.selection_snapshot, expected_type="selection"
+        )
+    elif args.selection_snapshot_id is not None:
+        selection = snapshot_store.load_id(
+            args.selection_snapshot_id, expected_type="selection"
+        )
+    if (
+        collection is not None
+        and args.collection_id is not None
+        and args.collection_id != collection.collection_id
+    ):
+        raise ValueError("--collection-id does not match the collection snapshot")
+    return DownloadScopeBinding(
+        collection_id=(
+            args.collection_id
+            if args.collection_id is not None
+            else collection.collection_id if collection is not None else None
+        ),
+        collection_snapshot_hash=(
+            collection.snapshot_hash if collection is not None else None
+        ),
+        selection_snapshot_hash=(
+            selection.snapshot_hash if selection is not None else None
+        ),
     )
 
 
 def _backup_for_download_dry_run(source_path: Path, destination: Database) -> None:
     """Copy a consistent source snapshot without touching a quiescent WAL database."""
     wal_path = source_path.with_name(f"{source_path.name}-wal")
-    if not wal_path.exists() or wal_path.stat().st_size == 0:
-        uri = f"{source_path.resolve().as_uri()}?mode=ro&immutable=1"
-        source = sqlite3.connect(uri, uri=True)
-        try:
-            source.backup(destination.connection)
-        finally:
-            source.close()
-        return
-    with Database(source_path, read_only=True) as source:
-        source.connection.backup(destination.connection)
+    if wal_path.exists() and wal_path.stat().st_size > 0:
+        raise ValueError(
+            "download dry-run requires a quiescent database; close active writers "
+            "and checkpoint the WAL first"
+        )
+    uri = f"{source_path.resolve().as_uri()}?mode=ro&immutable=1"
+    source = sqlite3.connect(uri, uri=True)
+    try:
+        source.backup(destination.connection)
+    finally:
+        source.close()
 
 
 def _analyze(args: argparse.Namespace) -> dict[str, Any]:

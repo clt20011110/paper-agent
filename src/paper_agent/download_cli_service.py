@@ -44,6 +44,7 @@ from .download_providers import (
 )
 from .downloads import (
     DownloadAccessPolicy,
+    DownloadScopeBinding,
     DownloadService,
     FetchRejected,
     HTTPResponse,
@@ -71,7 +72,7 @@ from .stage3_metadata_lookup import (
 from .storage import Database
 
 
-IMPLEMENTATION_VERSION = "stage3-cli-v3"
+IMPLEMENTATION_VERSION = "stage3-cli-v4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,7 @@ class Stage3DownloadResult:
     run: Stage3RunResult | None = None
     planned_decisions: tuple[tuple[str, str, str], ...] = ()
     authorized_queue_path: Path | None = None
+    authorization_scope: DownloadScopeBinding = DownloadScopeBinding()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,7 @@ class Stage3DownloadService:
         metadata_transport: PublicMetadataTransport | None = None,
         clock: Callable[[], datetime] | None = None,
         authorized_luna_planner: LunaPlanner | None = None,
+        scope_membership: Callable[[str, str, str, str | None], bool] | None = None,
     ) -> None:
         self.database = database
         self.config_root = Path(config_root)
@@ -127,6 +130,7 @@ class Stage3DownloadService:
         self.fetcher = fetcher
         self.clock = _trusted_clock(clock)
         self.authorized_luna_planner = authorized_luna_planner
+        self.scope_membership = scope_membership
         self.download_config = _download_config(config)
         _require_frozen_routing(self.download_config)
         self.lookup = lookup or _configured_metadata_lookup(
@@ -177,6 +181,7 @@ class Stage3DownloadService:
         run_id: str | None = None,
         dry_run: bool = False,
         authorized_skill: AuthorizedSkillHandoffOptions | None = None,
+        authorization_scope: DownloadScopeBinding = DownloadScopeBinding(),
     ) -> Stage3DownloadResult:
         """Run or safely validate the frozen public-download chain.
 
@@ -198,6 +203,7 @@ class Stage3DownloadService:
             "filter_run_id": filter_run_id,
             "include_needs_review": include_needs_review,
             "authorization_grant_id": authorization_grant_id,
+            "authorization_scope": authorization_scope.to_dict(),
             "download_config": self.download_config,
             "authorized_handoff": _authorized_handoff_identity(authorized_skill),
         }
@@ -211,6 +217,7 @@ class Stage3DownloadService:
             policy,
             self.provider_terms,
             self.fetcher,
+            scope_membership=self.scope_membership,
             clock=self.clock,
         )
         providers = default_download_provider_registry(service)
@@ -229,10 +236,12 @@ class Stage3DownloadService:
                 run_id=resolved_run_id,
                 authorization_grant_id=authorization_grant_id,
                 authorized_skill=authorized_skill,
+                authorization_scope=authorization_scope,
             )
             return Stage3DownloadResult(
                 resolved_run_id, selected_ids, "validated", True,
                 planned_decisions=decisions,
+                authorization_scope=authorization_scope,
             )
 
         runs = RunStore(self.database)
@@ -282,6 +291,7 @@ class Stage3DownloadService:
                 run_id=resolved_run_id,
                 manual_queue=manual_queue,
                 public_authorization_grant_id=authorization_grant_id,
+                public_authorization_context=authorization_scope.authorization_context(),
             )
             result = granted_public_pipeline.run(
                 papers,
@@ -301,6 +311,7 @@ class Stage3DownloadService:
             now=timestamp,
             authorization_grant_id=authorization_grant_id,
             options=authorized_skill,
+            authorization_scope=authorization_scope,
         )
         if handoff is not None:
             service.provider_fetchers["authorized_skill"] = handoff.queue.fetch_response
@@ -320,6 +331,9 @@ class Stage3DownloadService:
                     runtime=handoff.runtime,
                     grant_store=GrantStore(self.database),
                     authorization_grant_id=authorization_grant_id,
+                    collection_id=authorization_scope.collection_id,
+                    collection_snapshot_hash=authorization_scope.collection_snapshot_hash,
+                    selection_snapshot_hash=authorization_scope.selection_snapshot_hash,
                     planner=(
                         _DurableAuthorizedLunaPlanner(
                             Stage3LunaDecisionStore(
@@ -360,6 +374,7 @@ class Stage3DownloadService:
             False,
             result,
             authorized_queue_path=(handoff.queue.csv_path if handoff else None),
+            authorization_scope=authorization_scope,
         )
 
     def _authorized_handoff(
@@ -372,6 +387,7 @@ class Stage3DownloadService:
         now: str,
         authorization_grant_id: str | None,
         options: AuthorizedSkillHandoffOptions | None,
+        authorization_scope: DownloadScopeBinding,
     ) -> _AuthorizedHandoff | None:
         configured = self.download_config.get("authorized_skill", {})
         if not isinstance(configured, Mapping) or not configured.get("enabled"):
@@ -403,6 +419,7 @@ class Stage3DownloadService:
             now=now,
             skill_digest=ready.installed_content_sha256,
             dependency_digest=ready.dependency_lock_sha256,
+            authorization_scope=authorization_scope,
         )
         if not plan.items:
             return None
@@ -419,6 +436,7 @@ class Stage3DownloadService:
                 now=now,
                 skill_digest=ready.installed_content_sha256,
                 dependency_digest=ready.dependency_lock_sha256,
+                authorization_scope=authorization_scope,
             )
             _reserve_queue_plan(
                 service,
@@ -486,6 +504,7 @@ class Stage3DownloadService:
         run_id: str,
         authorization_grant_id: str | None,
         authorized_skill: AuthorizedSkillHandoffOptions | None,
+        authorization_scope: DownloadScopeBinding,
     ) -> tuple[tuple[str, str, str], ...]:
         """Exercise exact probe/grant validation and roll back every database change."""
         decisions: list[tuple[str, str, str]] = []
@@ -506,6 +525,9 @@ class Stage3DownloadService:
                     for candidate in candidates:
                         attempt = providers.probe(candidate, ProbeContext(
                             purpose, now, authorization_grant_id=authorization_grant_id,
+                            collection_id=authorization_scope.collection_id,
+                            collection_snapshot_hash=authorization_scope.collection_snapshot_hash,
+                            selection_snapshot_hash=authorization_scope.selection_snapshot_hash,
                         ))
                         decisions.append((item.paper.paper_id, attempt.provider, attempt.decision.status.value))
                         if attempt.decision.status in {
@@ -525,6 +547,7 @@ class Stage3DownloadService:
                     authorization_grant_id=authorization_grant_id,
                     options=authorized_skill,
                     decisions=decisions,
+                    authorization_scope=authorization_scope,
                 )
                 raise _RollbackDryRun
         except _RollbackDryRun:
@@ -542,6 +565,7 @@ class Stage3DownloadService:
         authorization_grant_id: str | None,
         options: AuthorizedSkillHandoffOptions | None,
         decisions: list[tuple[str, str, str]],
+        authorization_scope: DownloadScopeBinding,
     ) -> None:
         configured = self.download_config.get("authorized_skill", {})
         if (
@@ -591,6 +615,7 @@ class Stage3DownloadService:
             now=now,
             skill_digest=ready.installed_content_sha256,
             dependency_digest=ready.dependency_lock_sha256,
+            authorization_scope=authorization_scope,
         )
         planned = {item.paper_id for item in plan.items}
         decisions.extend(
@@ -614,6 +639,7 @@ class Stage3DownloadService:
                 now=now,
                 skill_digest=ready.installed_content_sha256,
                 dependency_digest=ready.dependency_lock_sha256,
+                authorization_scope=authorization_scope,
             )
 
 
@@ -632,6 +658,7 @@ class _AuthorizedHandoff:
 class _AuthorizedQueuePlan:
     items: tuple[SkillQueueItem, ...]
     candidate_ids: tuple[str, ...]
+    authorization_scope: DownloadScopeBinding
 
 
 @dataclass(frozen=True, slots=True)
@@ -930,6 +957,7 @@ def _queue_items(
     now: str,
     skill_digest: str,
     dependency_digest: str,
+    authorization_scope: DownloadScopeBinding,
 ) -> _AuthorizedQueuePlan:
     """Freeze only unresolved, publisher-bound, exactly authorized candidates."""
 
@@ -970,6 +998,9 @@ def _queue_items(
                     skill_digest=skill_digest,
                     dependency_digest=dependency_digest,
                     reserved_paper_ids=reserved_paper_ids,
+                    collection_id=authorization_scope.collection_id,
+                    collection_snapshot_hash=authorization_scope.collection_snapshot_hash,
+                    selection_snapshot_hash=authorization_scope.selection_snapshot_hash,
                 )
             except (FetchRejected, GrantError):
                 continue
@@ -985,7 +1016,9 @@ def _queue_items(
             reserved_paper_ids.add(item.paper.paper_id)
             candidate_ids.append(candidate.candidate_id)
             break
-    return _AuthorizedQueuePlan(tuple(items), tuple(candidate_ids))
+    return _AuthorizedQueuePlan(
+        tuple(items), tuple(candidate_ids), authorization_scope
+    )
 
 
 def _validate_frozen_queue(
@@ -1000,6 +1033,7 @@ def _validate_frozen_queue(
     now: str,
     skill_digest: str,
     dependency_digest: str,
+    authorization_scope: DownloadScopeBinding,
 ) -> _AuthorizedQueuePlan:
     """Reprove every immutable row before a resumed browser handoff is exposed."""
 
@@ -1018,13 +1052,16 @@ def _validate_frozen_queue(
             raise AuthorizedSkillAdapterError(
                 "authorized queue does not match the selected papers"
             )
-        item_hash = _queue_item_hash(item)
+        item_hash = _queue_item_hash(item, authorization_scope)
         candidate = service.load_reserved_handoff_candidate(
             authorization_grant_id,
             run_id=run_id,
             paper_id=item.paper_id,
             queue_path=resolved_queue_path,
             queue_item_hash=item_hash,
+            collection_id=authorization_scope.collection_id,
+            collection_snapshot_hash=authorization_scope.collection_snapshot_hash,
+            selection_snapshot_hash=authorization_scope.selection_snapshot_hash,
         )
         if candidate.url != item.url:
             raise AuthorizedSkillAdapterError(
@@ -1040,13 +1077,18 @@ def _validate_frozen_queue(
             skill_digest=skill_digest,
             dependency_digest=dependency_digest,
             reserved_paper_ids=reserved_paper_ids,
+            collection_id=authorization_scope.collection_id,
+            collection_snapshot_hash=authorization_scope.collection_snapshot_hash,
+            selection_snapshot_hash=authorization_scope.selection_snapshot_hash,
         )
         reserved_paper_ids.add(item.paper_id)
         expected.append(
             SkillQueueItem(item.paper_id, item.doi, item.url, paper.title)
         )
         candidate_ids.append(candidate.candidate_id)
-    return _AuthorizedQueuePlan(tuple(expected), tuple(candidate_ids))
+    return _AuthorizedQueuePlan(
+        tuple(expected), tuple(candidate_ids), authorization_scope
+    )
 
 
 def _reserve_queue_plan(
@@ -1075,7 +1117,7 @@ def _reserve_queue_plan(
                 candidate,
                 run_id=run_id,
                 queue_path=resolved_queue_path,
-                queue_item_hash=_queue_item_hash(item),
+                queue_item_hash=_queue_item_hash(item, plan.authorization_scope),
                 purpose=purpose,
                 provider="authorized_skill",
                 mode="attended",
@@ -1083,16 +1125,22 @@ def _reserve_queue_plan(
                 skill_digest=skill_digest,
                 dependency_digest=dependency_digest,
                 reserved_paper_ids=reserved_paper_ids,
+                collection_id=plan.authorization_scope.collection_id,
+                collection_snapshot_hash=plan.authorization_scope.collection_snapshot_hash,
+                selection_snapshot_hash=plan.authorization_scope.selection_snapshot_hash,
             )
             reserved_paper_ids.add(item.paper_id)
 
 
-def _queue_item_hash(item: SkillQueueItem) -> str:
+def _queue_item_hash(
+    item: SkillQueueItem, authorization_scope: DownloadScopeBinding
+) -> str:
     return content_hash({
         "paper_id": item.paper_id,
         "doi": item.doi,
         "url": item.url,
         "title": item.title,
+        "authorization_scope": authorization_scope.to_dict(),
     })
 
 

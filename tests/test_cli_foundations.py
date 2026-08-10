@@ -12,6 +12,10 @@ from paper_agent.authorized_skill_runtime import load_audit_record
 from paper_agent.config import ConfigError
 from paper_agent.doctor import DoctorCheck, SystemDoctorReport
 from paper_agent.domain import SourceEntry
+from paper_agent.downloads import (
+    DownloadScopeSnapshotStore,
+    build_download_scope_snapshot,
+)
 from paper_agent.exchange import export_csv, export_jsonl
 from paper_agent.grants import GrantError
 from paper_agent.repository import PaperRepository
@@ -127,6 +131,36 @@ def test_download_grant_uses_only_defaults_and_create_dry_run_has_no_writes(
             "--config", str(config), "--dry-run",
         ])
 
+
+def test_download_cli_resolves_hash_bound_snapshot_path_and_persisted_id(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "papers.sqlite3"
+    snapshot_path = tmp_path / "selection.json"
+    document = build_download_scope_snapshot(
+        "selection", ["paper-1"], created_at=NOW, snapshot_id="selection-1"
+    )
+    snapshot_path.write_text(json.dumps(document), encoding="utf-8")
+    with Database(database_path) as database:
+        database.migrate()
+        database.connection.execute(
+            "INSERT INTO papers(paper_id, title) VALUES ('paper-1', 'Paper')"
+        )
+        database.connection.commit()
+        from_path = cli.build_parser().parse_args([
+            "download", "--selection-snapshot", str(snapshot_path)
+        ])
+        store = DownloadScopeSnapshotStore(database)
+        path_binding = cli._download_scope_binding(from_path, store)
+        from_id = cli.build_parser().parse_args([
+            "download", "--selection-snapshot-id", "selection-1"
+        ])
+        id_binding = cli._download_scope_binding(
+            from_id, DownloadScopeSnapshotStore(database)
+        )
+
+    assert path_binding == id_binding
+    assert path_binding.selection_snapshot_hash == document["snapshot_hash"]
 
 def test_grant_approve_dry_run_uses_full_semantic_validation(
     tmp_path: Path, capsys
