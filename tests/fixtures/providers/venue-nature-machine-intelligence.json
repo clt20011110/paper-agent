@@ -1,0 +1,20 @@
+{
+  "fixture_venue_id": "nature_machine_intelligence",
+  "entries": [
+    {
+      "stable_id": "10.1038/s42256-024-00001-1",
+      "title": "Nature Machine Intelligence 2024 Fixture",
+      "authors": ["Ada Lovelace", "Grace Hopper"],
+      "abstract": "Deterministic Nature Machine Intelligence evidence.",
+      "doi": "10.1038/s42256-024-00001-1",
+      "publication_date": "2024-02-12",
+      "venue": "Nature Machine Intelligence",
+      "venue_id": "nature_machine_intelligence",
+      "issn": "2522-5839",
+      "article_type": "article",
+      "landing_url": "https://www.nature.com/articles/s42256-024-00001-1"
+    }
+  ],
+  "next_cursor": "nature_machine_intelligence:page-2",
+  "raw_response_artifact_hash": "fixture-nature-machine-intelligence-2024"
+}

@@ -1,0 +1,29 @@
+{
+  "fixture_venue_id": "iclr",
+  "notes": [
+    {
+      "id": "iclr-2024-openreview-0001",
+      "content": {
+        "title": {"value": "ICLR 2024 Acceptance Fixture"},
+        "authors": {"value": ["Ada Lovelace", "Grace Hopper"]},
+        "abstract": {"value": "Deterministic accepted OpenReview evidence."},
+        "venue": {"value": "ICLR 2024 Conference"}
+      },
+      "venue": "ICLR 2024 Conference",
+      "venue_id": "iclr",
+      "published": "2024-05-07"
+    },
+    {
+      "id": "iclr-2024-rejected-0001",
+      "content": {
+        "title": {"value": "Rejected control record"},
+        "decision": {"value": "Reject"}
+      },
+      "decision": "Reject",
+      "venue_id": "iclr",
+      "published": "2024-05-07"
+    }
+  ],
+  "next_cursor": "iclr:page-2",
+  "raw_response_artifact_hash": "fixture-iclr-2024"
+}

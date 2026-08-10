@@ -1,0 +1,17 @@
+{
+  "fixture_venue_id": "icml",
+  "entries": [
+    {
+      "stable_id": "icml-2024-v235-0001",
+      "title": "ICML 2024 Acceptance Fixture",
+      "authors": ["Ada Lovelace", "Grace Hopper"],
+      "abstract": "Deterministic PMLR volume evidence.",
+      "publication_date": "2024-07-23",
+      "venue": "Proceedings of Machine Learning Research 235",
+      "venue_id": "icml",
+      "landing_url": "https://proceedings.mlr.press/v235/icml-2024-v235-0001.html"
+    }
+  ],
+  "next_cursor": "icml:page-2",
+  "raw_response_artifact_hash": "fixture-icml-2024"
+}

@@ -2,10 +2,10 @@ schema_version: "1"
 venue_id: nature_chemistry
 primary_provider: springer_nature
 test_window: {start: 2024-01-01, end: 2024-12-31}
-fixture_path: tests/fixtures/providers/official-page-1.json
-fixture_sha256: e6c4e50362ffb7cafb49a5addcdc2b0bfee5253886a1d8de2a37232069e2d2a9
-expected_stable_ids: [official-001]
-required_fields: [stable_id, metadata, abstract]
-required_capabilities: [stable_id, metadata, abstract]
+fixture_path: tests/fixtures/providers/venue-nature-chemistry.json
+fixture_sha256: 71147b4dd8973bd179aa012aa3913d69138f185bad93d14331bccf360558ff33
+expected_stable_ids: [10.1038/s41557-024-00002-2]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}]
 journal: {slug: nchem, issns: [1755-4330, 1755-4349], article_types: [article, review, analysis]}

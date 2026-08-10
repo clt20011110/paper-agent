@@ -1,0 +1,20 @@
+{
+  "fixture_venue_id": "science",
+  "entries": [
+    {
+      "stable_id": "10.1126/science.abc0009",
+      "title": "Science 2024 Acceptance Fixture",
+      "authors": ["Ada Lovelace", "Grace Hopper"],
+      "abstract": "Deterministic AAAS Science evidence.",
+      "doi": "10.1126/science.abc0009",
+      "publication_date": "2024-10-11",
+      "venue": "Science",
+      "venue_id": "science",
+      "issn": "0036-8075",
+      "article_type": "article",
+      "landing_url": "https://www.science.org/doi/10.1126/science.abc0009"
+    }
+  ],
+  "next_cursor": "science:page-2",
+  "raw_response_artifact_hash": "fixture-science-2024"
+}

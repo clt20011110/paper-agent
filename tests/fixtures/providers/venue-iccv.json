@@ -1,0 +1,26 @@
+{
+  "fixture_venue_id": "iccv",
+  "main": [
+    {
+      "stable_id": "iccv-2023-main-0001",
+      "title": "ICCV 2023 Main-Track Fixture",
+      "authors": ["Ada Lovelace", "Grace Hopper"],
+      "abstract": "Deterministic CVF ICCV proceedings evidence.",
+      "publication_date": "2023-10-03",
+      "venue": "ICCV 2023",
+      "venue_id": "iccv",
+      "landing_url": "https://openaccess.thecvf.com/content/ICCV2023/html/iccv-2023-main-0001.html"
+    }
+  ],
+  "workshop": [
+    {
+      "stable_id": "iccv-2023-workshop-control",
+      "title": "Workshop exclusion control",
+      "publication_date": "2023-10-02",
+      "venue": "ICCV 2023 Workshop",
+      "venue_id": "iccv"
+    }
+  ],
+  "next_cursor": "iccv:page-2",
+  "raw_response_artifact_hash": "fixture-iccv-2023"
+}

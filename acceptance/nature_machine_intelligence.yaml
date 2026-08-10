@@ -2,10 +2,10 @@ schema_version: "1"
 venue_id: nature_machine_intelligence
 primary_provider: springer_nature
 test_window: {start: 2024-01-01, end: 2024-12-31}
-fixture_path: tests/fixtures/providers/official-page-1.json
-fixture_sha256: e6c4e50362ffb7cafb49a5addcdc2b0bfee5253886a1d8de2a37232069e2d2a9
-expected_stable_ids: [official-001]
-required_fields: [stable_id, metadata, abstract]
-required_capabilities: [stable_id, metadata, abstract]
+fixture_path: tests/fixtures/providers/venue-nature-machine-intelligence.json
+fixture_sha256: ecec190d93f8e9f38e5a0441debb7dbf136788c50f3f2b0159ea04473d2b3642
+expected_stable_ids: [10.1038/s42256-024-00001-1]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}]
 journal: {slug: natmachintell, issns: [2522-5839], article_types: [article, review, analysis]}

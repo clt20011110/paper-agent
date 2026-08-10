@@ -2,10 +2,10 @@ schema_version: "1"
 venue_id: tcad
 primary_provider: ieee_xplore
 test_window: {start: 2024-01-01, end: 2024-12-31}
-fixture_path: tests/fixtures/providers/official-page-1.json
-fixture_sha256: e6c4e50362ffb7cafb49a5addcdc2b0bfee5253886a1d8de2a37232069e2d2a9
-expected_stable_ids: [official-001]
-required_fields: [stable_id, metadata, abstract]
-required_capabilities: [stable_id, metadata, abstract]
+fixture_path: tests/fixtures/providers/venue-tcad.json
+fixture_sha256: d08098f831eca53e5222168f0d743e209c7af42188703ec41923c4a08e9ac7ae
+expected_stable_ids: [tcad-2024-0001]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
 journal: {slug: ieee-tcad, issns: [0278-0070], article_types: [journal_article]}

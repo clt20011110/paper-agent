@@ -2,10 +2,10 @@ schema_version: "1"
 venue_id: nature_biotechnology
 primary_provider: springer_nature
 test_window: {start: 2024-01-01, end: 2024-12-31}
-fixture_path: tests/fixtures/providers/official-page-1.json
-fixture_sha256: e6c4e50362ffb7cafb49a5addcdc2b0bfee5253886a1d8de2a37232069e2d2a9
-expected_stable_ids: [official-001]
-required_fields: [stable_id, metadata, abstract]
-required_capabilities: [stable_id, metadata, abstract]
+fixture_path: tests/fixtures/providers/venue-nature-biotechnology.json
+fixture_sha256: 1368f91df1013750c23b451a713aa0805e87fe2737b8f4573f236e87823bb8d5
+expected_stable_ids: [10.1038/s41587-024-00006-6]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}]
 journal: {slug: nbt, issns: [1087-0156, 1546-1696], article_types: [article, review, analysis]}

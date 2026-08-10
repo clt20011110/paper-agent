@@ -1,0 +1,17 @@
+{
+  "fixture_venue_id": "ijcai",
+  "entries": [
+    {
+      "stable_id": "ijcai-2024-0001",
+      "title": "IJCAI 2024 Acceptance Fixture",
+      "authors": ["Ada Lovelace", "Grace Hopper"],
+      "abstract": "Deterministic IJCAI proceedings evidence.",
+      "publication_date": "2024-08-05",
+      "venue": "IJCAI 2024",
+      "venue_id": "ijcai",
+      "landing_url": "https://www.ijcai.org/proceedings/2024/1"
+    }
+  ],
+  "next_cursor": "ijcai:page-2",
+  "raw_response_artifact_hash": "fixture-ijcai-2024"
+}

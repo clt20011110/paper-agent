@@ -2,10 +2,10 @@ schema_version: "1"
 venue_id: nature_biomedical_engineering
 primary_provider: springer_nature
 test_window: {start: 2024-01-01, end: 2024-12-31}
-fixture_path: tests/fixtures/providers/official-page-1.json
-fixture_sha256: e6c4e50362ffb7cafb49a5addcdc2b0bfee5253886a1d8de2a37232069e2d2a9
-expected_stable_ids: [official-001]
-required_fields: [stable_id, metadata, abstract]
-required_capabilities: [stable_id, metadata, abstract]
+fixture_path: tests/fixtures/providers/venue-nature-biomedical-engineering.json
+fixture_sha256: 0cd7896042273173ca52d10b156c92d50bdf708c92e8b8b7a33c17d55eeff592
+expected_stable_ids: [10.1038/s41551-024-00007-7]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}]
 journal: {slug: natbiomedeng, issns: [2157-846X], article_types: [article, review, analysis]}

@@ -1,0 +1,20 @@
+{
+  "fixture_venue_id": "nature_biotechnology",
+  "entries": [
+    {
+      "stable_id": "10.1038/s41587-024-00006-6",
+      "title": "Nature Biotechnology 2024 Fixture",
+      "authors": ["Ada Lovelace", "Grace Hopper"],
+      "abstract": "Deterministic Nature Biotechnology evidence.",
+      "doi": "10.1038/s41587-024-00006-6",
+      "publication_date": "2024-07-15",
+      "venue": "Nature Biotechnology",
+      "venue_id": "nature_biotechnology",
+      "issn": "1087-0156",
+      "article_type": "article",
+      "landing_url": "https://www.nature.com/articles/s41587-024-00006-6"
+    }
+  ],
+  "next_cursor": "nature_biotechnology:page-2",
+  "raw_response_artifact_hash": "fixture-nature-biotechnology-2024"
+}

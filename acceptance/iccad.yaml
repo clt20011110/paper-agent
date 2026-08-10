@@ -2,9 +2,9 @@ schema_version: "1"
 venue_id: iccad
 primary_provider: eda_proceedings
 test_window: {start: 2024-01-01, end: 2024-12-31}
-fixture_path: tests/fixtures/providers/official-page-1.json
-fixture_sha256: e6c4e50362ffb7cafb49a5addcdc2b0bfee5253886a1d8de2a37232069e2d2a9
-expected_stable_ids: [official-001]
-required_fields: [stable_id, metadata]
-required_capabilities: [stable_id, metadata]
+fixture_path: tests/fixtures/providers/venue-iccad.json
+fixture_sha256: d5902c369b202acd9a0dddbdea6ca38af3dd49c214c7a96cd6007066cf56f67e
+expected_stable_ids: [iccad-2024-ieee-0001, iccad-2024-acm-0002]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

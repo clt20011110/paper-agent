@@ -2,9 +2,9 @@ schema_version: "1"
 venue_id: neurips
 primary_provider: neurips_proceedings
 test_window: {start: 2024-01-01, end: 2024-12-31}
-fixture_path: tests/fixtures/providers/official-page-1.json
-fixture_sha256: e6c4e50362ffb7cafb49a5addcdc2b0bfee5253886a1d8de2a37232069e2d2a9
-expected_stable_ids: [official-001]
-required_fields: [stable_id, metadata, abstract]
-required_capabilities: [stable_id, metadata, abstract]
+fixture_path: tests/fixtures/providers/venue-neurips.json
+fixture_sha256: 21582a4bc6442dd281e259735d8e32e2d921760567c6f9bb5497e980276058df
+expected_stable_ids: [neurips-2024-0001]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: openreview, role: search}, {provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

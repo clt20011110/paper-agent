@@ -1,0 +1,18 @@
+{
+  "fixture_venue_id": "tcad",
+  "entries": [
+    {
+      "stable_id": "tcad-2024-0001",
+      "title": "TCAD 2024 Acceptance Fixture",
+      "authors": ["Ada Lovelace", "Grace Hopper"],
+      "abstract": "Deterministic IEEE publication-number evidence.",
+      "doi": "10.1109/TCAD.2024.000001",
+      "publication_date": "2024-04-15",
+      "venue": "IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems",
+      "venue_id": "tcad",
+      "landing_url": "https://ieeexplore.ieee.org/document/10000001"
+    }
+  ],
+  "next_cursor": "tcad:page-2",
+  "raw_response_artifact_hash": "fixture-tcad-2024"
+}

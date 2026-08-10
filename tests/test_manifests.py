@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 
 from paper_agent.manifests import load_catalog
-from paper_agent.providers.builtin import FixtureTransport, create_builtin
-from paper_agent.providers.api import CrawlWindow
+from paper_agent.providers.builtin import BUILTIN_CLASSES, FixtureTransport, create_builtin
+from paper_agent.providers.api import CrawlWindow, VenueDescriptor
 from paper_agent.schema import validate
 
 
@@ -58,11 +58,23 @@ FALLBACKS = {
 }
 
 
+def _fixture_venue_ids(value: object) -> list[str]:
+    if isinstance(value, dict):
+        return [
+            *([str(value["venue_id"])] if "venue_id" in value else []),
+            *(venue_id for item in value.values() for venue_id in _fixture_venue_ids(item)),
+        ]
+    if isinstance(value, list):
+        return [venue_id for item in value for venue_id in _fixture_venue_ids(item)]
+    return []
+
+
 def test_built_in_manifests_are_schema_valid_and_unique() -> None:
     catalog = load_catalog(ROOT)
     assert set(catalog.venues) == set(PRIMARY)
     assert set(catalog.acceptances) == set(PRIMARY)
     assert len(catalog.providers) == 25
+    assert len({acceptance["fixture_path"] for acceptance in catalog.acceptances.values()}) == 20
     for path in (ROOT / "providers").glob("*.yaml"):
         validate(catalog.providers[path.stem], "provider-manifest.schema.json")
     for path in (ROOT / "venues").glob("*.yaml"):
@@ -105,28 +117,149 @@ def test_enabled_builtin_entry_points_and_artifacts_are_loadable() -> None:
 
 def test_every_venue_acceptance_fixture_runs_through_its_declared_adapter() -> None:
     catalog = load_catalog(ROOT)
-    fixture_payload = json.loads((ROOT / "tests/fixtures/providers/official-page-1.json").read_text())
-    responses = {
-        f"{provider}:discover:first": fixture_payload
-        for provider in set(PRIMARY.values())
-    }
-    responses["openreview:resolve_invitation:first"] = {
-        "invitation": "ICLR.cc/2025/Conference/-/Decision",
-        "api_version": "v2",
-    }
-    responses["pmlr:resolve_volume:first"] = {"official_url": "https://proceedings.mlr.press/v235/"}
-    transport = FixtureTransport(responses)
-
     for venue_id in sorted(PRIMARY):
+        acceptance = catalog.acceptance(venue_id)
+        fixture_payload = json.loads((ROOT / acceptance["fixture_path"]).read_text())
         descriptor = catalog.runtime_venue(venue_id)
+        provider = descriptor.provider
+        responses = {f"{provider}:discover:first": fixture_payload}
+        if provider == "openreview":
+            responses["openreview:resolve_invitation:first"] = {
+                "invitation": "ICLR.cc/2024/Conference/-/Decision",
+                "api_version": "v2",
+            }
+        if provider == "pmlr":
+            responses["pmlr:resolve_volume:first"] = {
+                "official_url": "https://proceedings.mlr.press/v235/"
+            }
+        transport = FixtureTransport(responses)
+        start = acceptance["test_window"]["start"]
+        end = acceptance["test_window"]["end"]
+        window = CrawlWindow(date_from=start, date_to=end, year=int(start[:4]))
         batch = create_builtin(descriptor.provider, transport).discover(
             descriptor,
-            CrawlWindow(year=2025),
+            window,
         )
-        acceptance = catalog.acceptance(venue_id)
+
+        assert fixture_payload["fixture_venue_id"] == venue_id
+        assert set(_fixture_venue_ids(fixture_payload)) == {venue_id}
         assert [entry.external_id for entry in batch.entries] == acceptance["expected_stable_ids"]
-        assert batch.entries[0].metadata["official_membership"] is True
-        assert batch.entries[0].metadata["venue_id"] == venue_id
+        assert batch.next_cursor == f"{venue_id}:page-2"
+        for entry in batch.entries:
+            assert entry.metadata["official_membership"] is True
+            assert entry.metadata["venue_id"] == venue_id
+            assert entry.title
+            if "abstract" in acceptance["required_fields"]:
+                assert entry.abstract
+            if "date_filter" in acceptance["required_fields"]:
+                assert entry.publication_date is not None
+                assert start <= entry.publication_date <= end
+
+        discover_call = next(call for call in transport.calls if call[1] == "discover")
+        assert discover_call[2]["venue_id"] == venue_id
+        assert discover_call[2]["date_from"] == start
+        assert discover_call[2]["date_to"] == end
+        assert discover_call[2]["year"] == int(start[:4])
+
+        final_page = create_builtin(descriptor.provider, transport).discover(
+            descriptor,
+            window,
+            batch.next_cursor,
+        )
+        assert final_page.entries == ()
+        assert final_page.next_cursor is None
+
+
+def test_platform_native_acceptance_shapes_select_only_expected_records() -> None:
+    catalog = load_catalog(ROOT)
+
+    expected_metadata = {
+        "aaai": ("ojs_issue_id", "aaai-2024-issue-1"),
+        "cvpr": ("cvf_track", "main"),
+        "iccv": ("cvf_track", "main"),
+    }
+    for venue_id, (key, value) in expected_metadata.items():
+        acceptance = catalog.acceptance(venue_id)
+        payload = json.loads((ROOT / acceptance["fixture_path"]).read_text())
+        descriptor = catalog.runtime_venue(venue_id)
+        batch = create_builtin(
+            descriptor.provider,
+            FixtureTransport({f"{descriptor.provider}:discover:first": payload}),
+        ).discover(descriptor, CrawlWindow(year=int(acceptance["test_window"]["start"][:4])))
+        assert batch.entries[0].metadata[key] == value
+
+    for venue_id in ("dac", "iccad"):
+        acceptance = catalog.acceptance(venue_id)
+        payload = json.loads((ROOT / acceptance["fixture_path"]).read_text())
+        descriptor = catalog.runtime_venue(venue_id)
+        batch = create_builtin(
+            descriptor.provider,
+            FixtureTransport({f"{descriptor.provider}:discover:first": payload}),
+        ).discover(descriptor, CrawlWindow(year=2024))
+        assert [entry.metadata["upstream"] for entry in batch.entries] == ["ieee_xplore", "acm_dl"]
+
+    iclr = catalog.acceptance("iclr")
+    payload = json.loads((ROOT / iclr["fixture_path"]).read_text())
+    descriptor = catalog.runtime_venue("iclr")
+    transport = FixtureTransport(
+        {
+            "openreview:resolve_invitation:first": {
+                "invitation": "ICLR.cc/2024/Conference/-/Decision",
+                "api_version": "v2",
+            },
+            "openreview:discover:first": payload,
+        }
+    )
+    batch = create_builtin("openreview", transport).discover(descriptor, CrawlWindow(year=2024))
+    assert [entry.external_id for entry in batch.entries] == ["iclr-2024-openreview-0001"]
+
+
+def test_same_platform_venues_are_yaml_descriptors_not_python_registrations() -> None:
+    catalog = load_catalog(ROOT)
+    shared_platforms = (
+        ("cvpr", "iccv"),
+        ("dac", "iccad"),
+        (
+            "nature_machine_intelligence",
+            "nature_chemistry",
+            "nature_computational_science",
+            "nature_communications",
+            "nature_catalysis",
+            "nature_biotechnology",
+            "nature_biomedical_engineering",
+        ),
+    )
+    for venues in shared_platforms:
+        assert len({catalog.venue(venue_id)["primary_provider"] for venue_id in venues}) == 1
+        assert not set(venues).intersection(BUILTIN_CLASSES)
+
+    descriptor = VenueDescriptor(
+        1,
+        "nature_methods",
+        "springer_nature",
+        "springer_nature",
+        {
+            "journal_slug": "nmeth",
+            "issns": ["1548-7091", "1548-7105"],
+            "article_types": ["article"],
+        },
+    )
+    payload = {
+        "entries": [
+            {
+                "stable_id": "10.1038/s41592-024-00001-1",
+                "title": "YAML-only venue fixture",
+                "abstract": "No venue-specific Python adapter is needed.",
+                "publication_date": "2024-01-15",
+                "venue_id": "nature_methods",
+            }
+        ]
+    }
+    batch = create_builtin(
+        "springer_nature",
+        FixtureTransport({"springer_nature:discover:first": payload}),
+    ).discover(descriptor, CrawlWindow(year=2024))
+    assert batch.entries[0].metadata["venue_id"] == "nature_methods"
 
 
 def test_frozen_journal_identifiers_and_venue_constraints() -> None:
