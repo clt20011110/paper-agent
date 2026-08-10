@@ -48,31 +48,21 @@ license_aliases:
 compatible_licenses:
   personal_research:
     - cc0-1.0
-    - cc-by
     - cc-by-4.0
-    - cc-by-sa
     - cc-by-sa-4.0
-    - cc-by-nc
     - cc-by-nc-4.0
-    - cc-by-nc-sa
     - cc-by-nc-sa-4.0
     - public-domain
   internal_analysis:
     - cc0-1.0
-    - cc-by
     - cc-by-4.0
-    - cc-by-sa
     - cc-by-sa-4.0
-    - cc-by-nc
     - cc-by-nc-4.0
-    - cc-by-nc-sa
     - cc-by-nc-sa-4.0
     - public-domain
   redistribution:
     - cc0-1.0
-    - cc-by
     - cc-by-4.0
-    - cc-by-sa
     - cc-by-sa-4.0
     - public-domain
 

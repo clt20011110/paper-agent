@@ -245,6 +245,16 @@ def test_policy_classifies_every_publication_version(policy: DownloadAccessPolic
     assert outcomes == {version: FetchDecisionStatus.ALLOW for version in PublicationVersion}
 
 
+def test_unversioned_creative_commons_label_is_not_promoted_to_a_compatible_license(
+    policy: DownloadAccessPolicy,
+) -> None:
+    outcome = policy.decide(
+        candidate(license="CC-BY"), "internal_analysis", terms(), has_grant=False
+    )
+
+    assert outcome.status is FetchDecisionStatus.NEEDS_GRANT
+
+
 def test_probe_persists_candidate_decision_and_all_request_binding_hashes(
     database: Database, tmp_path: Path, policy: DownloadAccessPolicy
 ) -> None:
