@@ -173,6 +173,7 @@ class Stage3Pipeline:
         papers: Sequence[Stage3Paper],
         *,
         completed: Mapping[str, Stage3PaperResult] | None = None,
+        checkpoint: Callable[[Stage3PaperResult], None] | None = None,
     ) -> Stage3RunResult:
         """Process paper inputs in caller order, skipping explicit checkpoints."""
 
@@ -186,7 +187,10 @@ class Stage3Pipeline:
             if existing is not None:
                 output.append(replace(existing, resumed=True))
                 continue
-            output.append(self._run_paper(item, skill_state))
+            result = self._run_paper(item, skill_state)
+            if checkpoint is not None:
+                checkpoint(result)
+            output.append(result)
         return Stage3RunResult(tuple(output))
 
     def _run_paper(
@@ -195,6 +199,8 @@ class Stage3Pipeline:
         candidates = self._resolve(item)
         attempts: list[Stage3Attempt] = []
         authorized_candidates: list[tuple[AccessLocationCandidate, Stage3Attempt]] = []
+        fetch_results: list[DownloadResult] = []
+        manual_required = False
         denied_candidates = 0
         for candidate in candidates:
             public = self._probe(candidate, provider=None, context=self._public_context())
@@ -204,12 +210,15 @@ class Stage3Pipeline:
                 continue
             result = self._fetch_if_allowed(candidate, public, self._public_fetch_context())
             if result is not None:
+                fetch_results.append(result)
                 fetch_attempt = _download_attempt(candidate, public.provider, result)
                 attempts.append(fetch_attempt)
                 if result.status is DownloadStatus.DOWNLOADED:
                     return Stage3PaperResult(item.paper.paper_id, result.status, "downloaded", tuple(attempts), result)
                 if result.status is DownloadStatus.AUTH_REQUIRED:
                     authorized_candidates.append((candidate, fetch_attempt))
+                elif result.status is DownloadStatus.MANUAL_REQUIRED:
+                    manual_required = True
             elif public.status in {
                 FetchDecisionStatus.NEEDS_GRANT.value,
                 FetchDecisionStatus.MANUAL.value,
@@ -223,14 +232,27 @@ class Stage3Pipeline:
                 assert skill_state is not None
                 skill_attempt = self._authorized_attempt(candidate, public, skill_state)
                 attempts.append(skill_attempt)
+                if skill_attempt.status != FetchDecisionStatus.ALLOW.value:
+                    manual_required = True
+                    continue
                 skill_result = self._fetch_if_allowed(
                     candidate, skill_attempt,
                     self._skill_fetch_context(skill_state, skill_attempt.planner_decision_id),
                 )
                 if skill_result is not None:
+                    fetch_results.append(skill_result)
                     attempts.append(_download_attempt(candidate, "authorized_skill", skill_result))
                     if skill_result.status is DownloadStatus.DOWNLOADED:
                         return Stage3PaperResult(item.paper.paper_id, skill_result.status, "downloaded", tuple(attempts), skill_result)
+                    if skill_result.status in {
+                        DownloadStatus.AUTH_REQUIRED,
+                        DownloadStatus.MANUAL_REQUIRED,
+                    }:
+                        manual_required = True
+                else:
+                    manual_required = True
+        elif authorized_candidates:
+            manual_required = True
 
         if candidates and denied_candidates == len(candidates):
             return Stage3PaperResult(
@@ -238,6 +260,25 @@ class Stage3Pipeline:
                 DownloadStatus.FAILED_TERMINAL,
                 "all_access_locations_denied",
                 tuple(attempts),
+            )
+        if not manual_required and fetch_results:
+            result = _final_fetch_result(fetch_results)
+            if (
+                denied_candidates
+                and result.status is DownloadStatus.NOT_AVAILABLE
+            ):
+                return Stage3PaperResult(
+                    item.paper.paper_id,
+                    DownloadStatus.FAILED_TERMINAL,
+                    "access_location_denied",
+                    tuple(attempts),
+                )
+            return Stage3PaperResult(
+                item.paper.paper_id,
+                result.status,
+                result.error_code or result.status.value,
+                tuple(attempts),
+                result,
             )
         reason = "no_access_location_candidates" if not candidates else "manual_queue_required"
         attempts.append(Stage3Attempt(None, "manual", FetchDecisionStatus.MANUAL.value, reason))
@@ -426,6 +467,18 @@ class _SkillState:
 
 def _download_attempt(candidate: AccessLocationCandidate, provider: str, result: DownloadResult) -> Stage3Attempt:
     return Stage3Attempt(candidate.candidate_id, provider, "fetch", result.error_code or result.status.value, result.status)
+
+
+def _final_fetch_result(results: Sequence[DownloadResult]) -> DownloadResult:
+    priority = (
+        DownloadStatus.FAILED_RETRYABLE,
+        DownloadStatus.FAILED_TERMINAL,
+        DownloadStatus.NOT_AVAILABLE,
+        DownloadStatus.AUTH_REQUIRED,
+        DownloadStatus.MANUAL_REQUIRED,
+        DownloadStatus.PENDING,
+    )
+    return next(result for status in priority for result in results if result.status is status)
 
 
 def _reason(error: Exception) -> str:

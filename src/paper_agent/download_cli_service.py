@@ -62,6 +62,9 @@ from .stage3_metadata_lookup import (
 from .storage import Database
 
 
+IMPLEMENTATION_VERSION = "stage3-cli-v2"
+
+
 @dataclass(frozen=True, slots=True)
 class Stage3DownloadResult:
     run_id: str
@@ -82,6 +85,13 @@ class AuthorizedSkillHandoffOptions:
     skill_roots: tuple[Path, ...]
     original_zip: Path | None = None
     audit_manifest: Path | None = None
+
+
+_TERMINAL_DOWNLOAD_STATUSES = frozenset({
+    DownloadStatus.DOWNLOADED,
+    DownloadStatus.NOT_AVAILABLE,
+    DownloadStatus.FAILED_TERMINAL,
+})
 
 
 class Stage3DownloadService:
@@ -121,12 +131,14 @@ class Stage3DownloadService:
         *,
         paper_ids: Sequence[str] = (),
         filter_run_id: str | None = None,
+        include_needs_review: bool = False,
     ) -> tuple[Stage3Paper, ...]:
-        """Select explicit IDs, or the latest relevant/needs-review Stage 2 rows."""
+        """Select explicit IDs or Stage 2 rows approved for downstream work."""
         selected = _selected_ids(
             self.database,
             paper_ids=paper_ids,
             filter_run_id=filter_run_id,
+            include_needs_review=include_needs_review,
         )
         repository = PaperRepository(self.database)
         papers: list[Stage3Paper] = []
@@ -151,6 +163,7 @@ class Stage3DownloadService:
         *,
         paper_ids: Sequence[str] = (),
         filter_run_id: str | None = None,
+        include_needs_review: bool = False,
         authorization_grant_id: str | None = None,
         run_id: str | None = None,
         dry_run: bool = False,
@@ -163,13 +176,18 @@ class Stage3DownloadService:
         """
         timestamp = _timestamp(self.clock())
         papers = _normalize_source_timestamps(
-            self.select_papers(paper_ids=paper_ids, filter_run_id=filter_run_id)
+            self.select_papers(
+                paper_ids=paper_ids,
+                filter_run_id=filter_run_id,
+                include_needs_review=include_needs_review,
+            )
         )
         selected_ids = tuple(item.paper.paper_id for item in papers)
         policy = DownloadAccessPolicy.load(_policy_path(self.config_root, self.download_config))
         identity = {
             "paper_ids": selected_ids,
             "filter_run_id": filter_run_id,
+            "include_needs_review": include_needs_review,
             "authorization_grant_id": authorization_grant_id,
             "download_config": self.download_config,
         }
@@ -224,7 +242,7 @@ class Stage3DownloadService:
             stage="stage-3-download",
             input_hash=input_hash,
             config_hash=config_hash,
-            implementation_version="stage3-cli-v1",
+            implementation_version=IMPLEMENTATION_VERSION,
         )
         if run.status is RunStatus.DRAFT:
             runs.transition(resolved_run_id, RunStatus.APPROVED, at=timestamp)
@@ -259,19 +277,23 @@ class Stage3DownloadService:
             public_authorization_grant_id=authorization_grant_id,
         )
         result = pipeline.run(
-            papers, completed=_completed_downloads(self.database, resolved_run_id)
+            papers,
+            completed=_resume_checkpoints(self.database, resolved_run_id),
+            checkpoint=lambda item: _save_checkpoint(
+                self.database, resolved_run_id, item, timestamp
+            ),
+        )
+        complete = all(
+            item.status in _TERMINAL_DOWNLOAD_STATUSES for item in result.papers
         )
         if run.status is RunStatus.RUNNING:
-            status = (
-                RunStatus.COMPLETE
-                if all(item.status.value == "downloaded" for item in result.papers)
-                else RunStatus.INCOMPLETE
-            )
+            status = RunStatus.COMPLETE if complete else RunStatus.INCOMPLETE
             runs.transition(resolved_run_id, status, at=timestamp)
+        public_status = _stage3_result_status(result)
         return Stage3DownloadResult(
             resolved_run_id,
             selected_ids,
-            "complete" if all(item.status.value == "downloaded" for item in result.papers) else "incomplete",
+            public_status,
             False,
             result,
             authorized_queue_path=(handoff.queue.csv_path if handoff else None),
@@ -504,26 +526,40 @@ def _selected_ids(
     *,
     paper_ids: Sequence[str],
     filter_run_id: str | None,
+    include_needs_review: bool,
 ) -> tuple[str, ...]:
     explicit = tuple(sorted(set(paper_ids)))
     if explicit:
         if filter_run_id is not None:
             raise ValueError("paper_ids and filter_run_id are mutually exclusive")
         return explicit
-    statuses = tuple(status.value for status in (FilterStatus.RELEVANT, FilterStatus.NEEDS_REVIEW))
+    statuses = (FilterStatus.RELEVANT.value,)
+    if include_needs_review:
+        statuses += (FilterStatus.NEEDS_REVIEW.value,)
+    placeholders = ", ".join("?" for _ in statuses)
     if filter_run_id is not None:
+        run = database.connection.execute(
+            "SELECT stage, status FROM pipeline_runs WHERE run_id = ?",
+            (filter_run_id,),
+        ).fetchone()
+        if run is None or tuple(run) != ("stage-2", "complete"):
+            raise ValueError("filter_run_id must name a complete Stage 2 run")
         rows = database.connection.execute(
-            """SELECT paper_id FROM filter_decisions
-               WHERE run_id = ? AND status IN (?, ?) ORDER BY paper_id""",
+            f"""SELECT paper_id FROM filter_decisions
+                WHERE run_id = ? AND status IN ({placeholders}) ORDER BY paper_id""",
             (filter_run_id, *statuses),
         ).fetchall()
     else:
         rows = database.connection.execute(
-            """SELECT decision.paper_id FROM filter_decisions AS decision
-               WHERE decision.status IN (?, ?)
+            f"""SELECT decision.paper_id FROM filter_decisions AS decision
+               JOIN pipeline_runs AS run ON run.run_id = decision.run_id
+               WHERE decision.status IN ({placeholders})
+                 AND run.stage = 'stage-2' AND run.status = 'complete'
                  AND decision.rowid = (
                    SELECT latest.rowid FROM filter_decisions AS latest
+                   JOIN pipeline_runs AS latest_run ON latest_run.run_id = latest.run_id
                    WHERE latest.paper_id = decision.paper_id
+                     AND latest_run.stage = 'stage-2' AND latest_run.status = 'complete'
                    ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1
                  )
                ORDER BY decision.paper_id""",
@@ -531,7 +567,7 @@ def _selected_ids(
         ).fetchall()
     selected = tuple(str(row["paper_id"]) for row in rows)
     if not selected:
-        raise ValueError("no relevant or needs_review Stage 2 papers were selected")
+        raise ValueError("no Stage 2 papers were selected for Stage 3")
     return selected
 
 
@@ -573,10 +609,10 @@ def _queue_items(
     return tuple(items)
 
 
-def _completed_downloads(
+def _resume_checkpoints(
     database: Database, run_id: str
 ) -> dict[str, Stage3PaperResult]:
-    """Resume only successful immutable fetches; failures stay retryable."""
+    """Resume immutable downloads and terminal no-PDF outcomes."""
     rows = database.connection.execute(
         """SELECT da.fetch_request_id, da.provider, da.authorization_grant_id,
                   da.attempted_at, dc.paper_id, dc.url, da.artifact_id, a.sha256
@@ -606,7 +642,61 @@ def _completed_downloads(
         completed[paper_id] = Stage3PaperResult(
             paper_id, DownloadStatus.DOWNLOADED, "downloaded", (), result
         )
+    terminal = database.connection.execute(
+        """SELECT paper_id, status, reason_code FROM stage3_paper_results
+           WHERE run_id = ? AND status IN ('not_available', 'failed_terminal')
+           ORDER BY paper_id""",
+        (run_id,),
+    ).fetchall()
+    for row in terminal:
+        paper_id = str(row["paper_id"])
+        completed.setdefault(
+            paper_id,
+            Stage3PaperResult(
+                paper_id,
+                DownloadStatus(str(row["status"])),
+                str(row["reason_code"]),
+                (),
+            ),
+        )
     return completed
+
+
+def _save_checkpoint(
+    database: Database,
+    run_id: str,
+    result: Stage3PaperResult,
+    updated_at: str,
+) -> None:
+    with database.transaction() as connection:
+        connection.execute(
+            """INSERT INTO stage3_paper_results(
+                   run_id, paper_id, status, reason_code, updated_at
+               ) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(run_id, paper_id) DO UPDATE SET
+                   status = excluded.status,
+                   reason_code = excluded.reason_code,
+                   updated_at = excluded.updated_at
+               WHERE stage3_paper_results.status NOT IN (
+                   'downloaded', 'not_available', 'failed_terminal'
+               )""",
+            (
+                run_id,
+                result.paper_id,
+                result.status.value,
+                result.reason_code,
+                updated_at,
+            ),
+        )
+
+
+def _stage3_result_status(result: Stage3RunResult) -> str:
+    statuses = {item.status for item in result.papers}
+    if statuses <= _TERMINAL_DOWNLOAD_STATUSES:
+        return "complete"
+    if statuses & {DownloadStatus.AUTH_REQUIRED, DownloadStatus.MANUAL_REQUIRED}:
+        return "manual_required"
+    return "incomplete"
 
 
 def _normalize_source_timestamps(

@@ -1,6 +1,6 @@
 # 状态机与恢复语义
 
-状态：Phase 0 设计合同，尚未实现。所有转换均写入 run/event 记录；任何未列出的状态转换均拒绝。
+状态：已实现并持续由测试验证。所有转换均写入 run/event 记录；任何未列出的状态转换均拒绝。
 
 ## 检索与引用扩展
 
@@ -39,17 +39,23 @@ stateDiagram-v2
   candidate_resolved --> deny: terminal policy decision
   needs_grant --> candidate_resolved: valid grant, re-probe
   allow --> downloaded: fetch + file validation
+  allow --> not_available: source confirms no PDF
+  allow --> failed_terminal: non-retryable fetch failure
   allow --> failed_retryable
   failed_retryable --> allow: retry under same valid request/lease
   downloaded --> full_pdf: extraction coverage passes + processing allow/grant
   downloaded --> abstract_only: extraction fails or full text unauthorized
   relevant --> abstract_only: no usable PDF, metadata/abstract allowed
+  not_available --> abstract_only: usable abstract/metadata exists
+  failed_terminal --> abstract_only: usable abstract/metadata exists
   full_pdf --> analyzed
   abstract_only --> analyzed
   downloaded --> manual_required: authorization/extraction action required
 ```
 
 `probe` has no body-download side effect. A `needs_grant` decision never calls fetch. Fetch requires an unexpired, persisted `FetchRequest` matching candidate, policy, purpose, grant and current fencing token. Invalid PDF/HTML error pages never become `downloaded`. Full text sent to Luna requires an artifact-processing allow decision or exact artifact-scoped processing grant; otherwise the only permitted downgrade is separately authorized `abstract_only`, or `analysis_not_authorized/manual_required`.
+
+Stage 3 只有在每篇论文均为 `downloaded`、`not_available` 或 `failed_terminal` 时才把 run 标为 `complete`；这三个终态会在同一冻结实现版本下跳过重复请求。`failed_retryable` 会重试，`auth_required/manual_required` 保持未完成并等待授权或人工处理。无 PDF 的终态只表示下载阶段已确定，不代表已有全文；Stage 4 仍须按实际 abstract/metadata 证据降级。
 
 ## 报告发布
 
@@ -74,6 +80,6 @@ Only the coordinator renders `REPORT.md` from `REPORT_DOCUMENT` AST and sidecar 
 
 - Each work item has `pending/running/complete/failed_retryable/failed_terminal/manual_required`-equivalent persisted state plus attempt, lease expiry and fencing token.
 - A worker may resume only expired/retryable work from the same frozen snapshot. It cannot change a plan, grant, model revision, prompt/schema or artifact input mid-run.
-- Retrying is bounded and recorded. A failure never becomes `irrelevant`, `downloaded`, `analyzed` or `complete` by default.
+- Retrying is bounded and recorded. A paper failure never becomes `irrelevant`, `downloaded` or `analyzed` by default；只有协调层确认每篇论文都达到不可变终态后，Stage 3 run 才可标为 `complete`。
 - Same run/stage/paper/output kind plus the same content hash is idempotent. The same key with a different hash is a conflict/manual item, not last-write-wins.
 - Coordinator-only merge accepts current shard epoch; late epochs are rejected. Coverage checks identify exactly which papers/artifacts to reissue.

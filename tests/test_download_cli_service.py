@@ -108,11 +108,15 @@ def _paper(
     access_basis: AccessBasis,
     license: str | None,
     doi: str | None = None,
+    paper_id: str = "paper-1",
+    abstract: str | None = None,
 ) -> str:
     repository = PaperRepository(database)
-    paper = repository.save_paper(Paper("paper-1", "One", doi=doi))
+    paper = repository.save_paper(
+        Paper(paper_id, f"Title {paper_id}", doi=doi, abstract=abstract)
+    )
     repository.upsert_source(PaperSource(
-        "source-1", paper.paper_id, "publisher", "one",
+        f"source-{paper_id}", paper.paper_id, "publisher", paper_id,
         landing_url="https://publisher.example/paper",
         pdf_url="https://publisher.example/paper.pdf",
         publication_version=PublicationVersion.PUBLISHED,
@@ -121,6 +125,64 @@ def _paper(
         host_type="official",
     ))
     return paper.paper_id
+
+
+def test_filter_selection_defaults_to_relevant_and_requires_explicit_review_opt_in(
+    tmp_path: Path, database: Database,
+) -> None:
+    relevant = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+        paper_id="paper-relevant",
+    )
+    review = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+        paper_id="paper-review",
+    )
+    database.connection.execute(
+        """INSERT INTO pipeline_runs(
+               run_id, stage, status, input_hash, config_hash, implementation_version
+           ) VALUES ('stage2-run', 'stage-2', 'complete', 'input', 'config', 'test')"""
+    )
+    database.connection.executemany(
+        """INSERT INTO filter_decisions(
+               filter_decision_id, run_id, paper_id, status, threshold_version,
+               reason, input_hash, implementation_version
+           ) VALUES (?, 'stage2-run', ?, ?, 'v1', 'selected', 'input', 'test')""",
+        (
+            ("decision-relevant", relevant, FilterStatus.RELEVANT.value),
+            ("decision-review", review, FilterStatus.NEEDS_REVIEW.value),
+        ),
+    )
+    database.connection.commit()
+    service = _service(tmp_path, database, Fetcher(), terms=_terms())
+
+    selected = service.select_papers(filter_run_id="stage2-run")
+    expanded = service.select_papers(
+        filter_run_id="stage2-run", include_needs_review=True
+    )
+
+    assert [item.paper.paper_id for item in selected] == [relevant]
+    assert [item.paper.paper_id for item in expanded] == [relevant, review]
+
+
+def test_filter_selection_rejects_non_complete_or_non_stage2_run(
+    tmp_path: Path, database: Database,
+) -> None:
+    database.connection.execute(
+        """INSERT INTO pipeline_runs(
+               run_id, stage, status, input_hash, config_hash, implementation_version
+           ) VALUES ('wrong-run', 'search', 'complete', 'input', 'config', 'test')"""
+    )
+    database.connection.commit()
+
+    with pytest.raises(ValueError, match="complete Stage 2"):
+        _service(tmp_path, database, Fetcher()).select_papers(
+            filter_run_id="wrong-run"
+        )
 
 
 def test_no_grant_never_fetches_restricted_candidate(
@@ -133,7 +195,7 @@ def test_no_grant_never_fetches_restricted_candidate(
         paper_ids=[paper_id]
     )
 
-    assert result.status == "incomplete"
+    assert result.status == "manual_required"
     assert fetcher.calls == []
     assert database.connection.execute(
         "SELECT COUNT(*) FROM manual_queue WHERE queue_type = 'download'"
@@ -165,7 +227,7 @@ def test_repeat_run_reuses_consumed_fetch_request_and_stage2_selection(
     paper_id = _paper(database, access_basis=AccessBasis.OPEN_LICENSE, license="CC-BY-4.0")
     database.connection.execute(
         """INSERT INTO pipeline_runs(run_id, stage, status, input_hash, config_hash, implementation_version)
-           VALUES ('stage2-run', 'stage-2-filter', 'complete', 'input', 'config', 'test')"""
+           VALUES ('stage2-run', 'stage-2', 'complete', 'input', 'config', 'test')"""
     )
     database.connection.execute(
         """INSERT INTO filter_decisions(
@@ -184,6 +246,100 @@ def test_repeat_run_reuses_consumed_fetch_request_and_stage2_selection(
     assert first.status == second.status == "complete"
     assert first.run_id == second.run_id
     assert fetcher.calls == ["https://publisher.example/paper.pdf"]
+
+
+@pytest.mark.parametrize(
+    ("http_status", "paper_status"),
+    (
+        (404, "not_available"),
+        (400, "failed_terminal"),
+    ),
+)
+def test_terminal_no_pdf_result_completes_and_resumes_without_refetch(
+    tmp_path: Path,
+    database: Database,
+    http_status: int,
+    paper_status: str,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+        abstract="Public abstract",
+    )
+
+    class TerminalFetcher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, url: str) -> HTTPResponse:
+            self.calls += 1
+            return HTTPResponse(http_status, {"Content-Type": "text/plain"}, b"", url)
+
+    fetcher = TerminalFetcher()
+    service = _service(tmp_path, database, fetcher, terms=_terms())
+
+    first = service.run(paper_ids=[paper_id])
+    second = service.run(paper_ids=[paper_id])
+
+    assert first.status == second.status == "complete"
+    assert first.run is not None and second.run is not None
+    assert first.run.for_paper(paper_id).status.value == paper_status
+    assert second.run.for_paper(paper_id).status.value == paper_status
+    assert second.run.for_paper(paper_id).resumed is True
+    assert fetcher.calls == 1
+    checkpoint = database.connection.execute(
+        """SELECT status, reason_code FROM stage3_paper_results
+           WHERE run_id = ? AND paper_id = ?""",
+        (first.run_id, paper_id),
+    ).fetchone()
+    assert checkpoint["status"] == paper_status
+    assert database.connection.execute(
+        "SELECT status FROM pipeline_runs WHERE run_id = ?", (first.run_id,)
+    ).fetchone()[0] == "complete"
+    assert database.connection.execute(
+        "SELECT implementation_version FROM pipeline_runs WHERE run_id = ?",
+        (first.run_id,),
+    ).fetchone()[0] == "stage3-cli-v2"
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM download_attempts WHERE run_id = ?",
+        (first.run_id,),
+    ).fetchone()[0] == 1
+
+
+def test_retryable_pdf_failure_is_retried_in_same_run(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+    )
+
+    class RetryFetcher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, url: str) -> HTTPResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return HTTPResponse(503, {}, b"", url)
+            return HTTPResponse(
+                200, {"Content-Type": "application/pdf"}, _pdf(), url
+            )
+
+    fetcher = RetryFetcher()
+    service = _service(tmp_path, database, fetcher, terms=_terms())
+
+    first = service.run(paper_ids=[paper_id])
+    second = service.run(paper_ids=[paper_id])
+
+    assert first.status == "incomplete"
+    assert second.status == "complete"
+    assert second.run is not None
+    assert second.run.for_paper(paper_id).status.value == "downloaded"
+    assert second.run.for_paper(paper_id).resumed is False
+    assert fetcher.calls == 2
 
 
 def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
@@ -234,7 +390,7 @@ def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
         authorized_skill=options,
     )
 
-    assert waiting.status == "incomplete"
+    assert waiting.status == "manual_required"
     assert len(planner.calls) == 1
     assert options.queue_path.is_file()
     assert "10.1038/example" in options.queue_path.read_text(encoding="utf-8")
@@ -309,7 +465,7 @@ def test_authorized_luna_manual_decision_is_durable(tmp_path: Path, database: Da
         paper_ids=[paper_id], authorization_grant_id="download-grant", authorized_skill=options,
     )
 
-    assert first.status == second.status == "incomplete"
+    assert first.status == second.status == "manual_required"
     assert len(planner.calls) == 1
     decision = database.connection.execute(
         "SELECT status, selected, reason_code FROM stage3_luna_decisions"

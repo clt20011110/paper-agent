@@ -1,6 +1,6 @@
 # SQLite ERD 与迁移设计
 
-状态：Phase 0 设计合同，尚未实现。SQLite 是单节点的唯一事实源；JSONL、CSV、旧 JSON/YAML 仅用于导入导出。
+状态：已实现并由版本化迁移维护。SQLite 是单节点的唯一事实源；JSONL、CSV、旧 JSON/YAML 仅用于导入导出。
 
 ```mermaid
 erDiagram
@@ -17,6 +17,8 @@ erDiagram
   PAPERS ||--o{ FILTER_DECISIONS : decided
   PAPERS ||--o{ DOWNLOAD_CANDIDATES : resolves
   DOWNLOAD_CANDIDATES ||--o{ DOWNLOAD_ATTEMPTS : attempts
+  PIPELINE_RUNS ||--o{ STAGE3_PAPER_RESULTS : checkpoints
+  PAPERS ||--o{ STAGE3_PAPER_RESULTS : summarizes
   PAPERS ||--o{ ANALYSIS_RUNS : analyzed
   ARTIFACTS ||--o{ ANALYSIS_RUNS : input
   REPORT_PLANS ||--o{ REPORT_RUNS : drives
@@ -44,6 +46,7 @@ erDiagram
 | `citation_edges` | `UNIQUE(source_paper_id, target_paper_id, edge_type, provider, observed_at)`；方向由 `source_paper_id -> target_paper_id` 固定。 |
 | `screening_events`, `filter_decisions` | 绑定 `run_id + paper_id`、输入/配置/模型/prompt/schema hash、理由、最终状态；同一阶段重放不产生第二个完成结果。 |
 | `download_candidates`, `download_attempts` | candidate 按 URL/版本独立保存；attempt 引用 candidate、FetchRequest、provider、grant 和分类结果。fetch 只能消费持久化且未过期的请求。 |
+| `stage3_paper_results` | migration 19 引入的逐论文聚合 checkpoint；`UNIQUE(run_id, paper_id)`，保存闭集状态、原因和更新时间。`downloaded/not_available/failed_terminal` 为同一冻结 run 的可恢复终态。 |
 | `analysis_runs`, `report_runs` | 绑定输入快照/artifact 或 lineage hash、模型 profile、prompt/schema hash、状态和产物路径；报告目录不可变。 |
 | `report_claims`, `claim_evidence`, `comparison_groups`, `claim_relations` | claim 使用稳定 UUIDv5；证据引用 paper/run/locator；comparison key 是跨 run 稳定的规范条件；lineage 只允许 `same/refined/split/merged/superseded/retired`。 |
 | `provider_registrations` | 绑定 distribution、精确 version、entry point、manifest、内容 digest、审计和信任状态。漂移不更新原记录，而是失效旧注册。 |

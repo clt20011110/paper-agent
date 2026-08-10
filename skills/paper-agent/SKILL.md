@@ -19,7 +19,7 @@ paper-agent import-seeds
 paper-agent crawl
 paper-agent filter
 paper-agent grant create | approve | revoke
-paper-agent download [authorized handoff paths]
+paper-agent download [--include-needs-review] [authorized handoff paths]
 paper-agent analyze
 paper-agent report prepare-inputs --crawl-run-id <ID> --filter-run-id <ID> --stage4-run-id <ID> --recent-cutoff <YYYY-MM-DD> --created-at <ISO-8601> --database <DB> --artifact-root <DIR> --output-root <DIR>
 paper-agent report --plan-only
@@ -33,6 +33,9 @@ paper-agent export
 paper-agent migrate-config
 paper-agent benchmark-stage2
 ```
+
+Stage 3 的 `not_available/failed_terminal` 表示候选已得到确定的无 PDF 结论，可由 Stage 4
+按实际摘要或元数据降级；`failed_retryable/auth_required/manual_required` 不计为完成。
 
 Use `--config`, `--run-id`, and `--dry-run` where the command exposes them.
 Commands emit one structured JSON result; preserve its `run_id`, status, event

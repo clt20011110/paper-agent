@@ -130,6 +130,8 @@ step。`run --help` 只列命令参数；manifest 字段合同如下，未列字
 
 `download` 默认只走公开来源。只有配置已启用授权 skill、有效 download grant 已批准，且下列
 三个 handoff 参数同时给出时，CLI 才会生成审计过的浏览器队列；它不会自行登录或驱动浏览器：
+按 Stage 2 run 选择时默认只处理 `relevant`；只有用户显式传入 `--include-needs-review`
+才会把人工复核队列一并送入 Stage 3。
 
 ```sh
 paper-agent --config /absolute/path/to/research.yaml download \

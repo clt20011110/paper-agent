@@ -295,6 +295,7 @@ def test_download_cli_wires_explicit_authorized_skill_handoff(
         "download",
         "--config", str(config_path),
         "--paper-id", "paper-1",
+        "--include-needs-review",
         "--authorized-skill-queue", str(queue),
         "--authorized-skill-output", str(tmp_path / "handoff-output"),
         "--authorized-skill-root", str(tmp_path / "skills"),
@@ -304,6 +305,7 @@ def test_download_cli_wires_explicit_authorized_skill_handoff(
     assert result["authorized_queue_path"] == str(queue)
     assert result["event_code"] == "download.incomplete"
     options = captured["authorized_skill"]
+    assert captured["include_needs_review"] is True
     assert options.queue_path == queue
     assert options.skill_roots == (tmp_path / "skills",)
     assert "now" not in captured

@@ -62,6 +62,12 @@ paper-agent search plan \
 `incomplete` 记录只有在原 processing policy hash 可核验一致时才可继续。policy、prompt、schema
 或输入发生漂移时必须建立新 run，不能借数据库升级覆盖原审计身份。
 
+Migration 19 增加 `stage3_paper_results`，供 `stage3-cli-v2` 保存逐论文聚合状态并恢复
+`downloaded/not_available/failed_terminal` 终态。迁移不会从旧 `download_attempts` 回填
+`not_available/failed_terminal`，因为单个 URL 的失败不能安全代表整篇论文所有候选均已耗尽。
+升级后默认选择会创建新的 v2 run；显式要求复用冻结为 v1 的 run ID 会因输入或实现版本不匹配
+而拒绝。旧的已下载 artifact 仍可作为只读 Stage 4 输入。
+
 ## 选择示例
 
 `example_config.yaml` 是跨会议、期刊和 arXiv 的完整示例，报告默认开启。`configs/abstract_focus.yaml`、`configs/journal_smoke.yaml` 和 `configs/smoke_supported.yaml` 保留其原有的窄范围 smoke 场景，并关闭报告生成。每一个示例都要求先生成并批准 QueryPlan；`content_hash: null` 表示它只是初始模板，不能用于无人值守执行。

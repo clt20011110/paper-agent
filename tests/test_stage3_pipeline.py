@@ -63,6 +63,8 @@ class Provider:
     probes: list[tuple[str, str]]
     fetches: list[FetchRequest]
     fetch_error: Exception | None = None
+    fetch_status: DownloadStatus = DownloadStatus.DOWNLOADED
+    fetch_statuses: dict[str, DownloadStatus] | None = None
 
     def probe(self, value, _context: ProbeContext) -> FetchDecision:
         self.probes.append((self.name, value.candidate_id))
@@ -72,7 +74,22 @@ class Provider:
         self.fetches.append(value)
         if self.fetch_error is not None:
             raise self.fetch_error
-        return DownloadResult(value.request_id, "paper-1", DownloadStatus.DOWNLOADED, self.name)
+        status = (
+            self.fetch_statuses.get(value.candidate_id, self.fetch_status)
+            if self.fetch_statuses is not None
+            else self.fetch_status
+        )
+        return DownloadResult(
+            value.request_id,
+            "paper-1",
+            status,
+            self.name,
+            error_code=(
+                None
+                if status is DownloadStatus.DOWNLOADED
+                else status.value
+            ),
+        )
 
 
 @dataclass
@@ -181,6 +198,86 @@ def test_policy_deny_is_terminal_and_never_escalates_to_the_authorized_skill() -
     assert result.status is DownloadStatus.FAILED_TERMINAL
     assert result.reason_code == "all_access_locations_denied"
     assert skill.probes == []
+
+
+def test_denied_location_and_missing_location_aggregate_to_terminal_failure() -> None:
+    denied = candidate("denied", "publisher")
+    missing = candidate("missing", "arxiv")
+    resolver_registry = ResolverRegistry((
+        ResolverDescriptor("publisher", Resolver("publisher", (denied,))),
+        ResolverDescriptor("arxiv", Resolver("arxiv", (missing,))),
+    ))
+    provider = Provider(
+        "public_direct",
+        {
+            "denied": FetchDecision(
+                "denied", FetchDecisionStatus.DENY, "policy_denied", "policy-v1"
+            ),
+            "missing": FetchDecision(
+                "missing",
+                FetchDecisionStatus.ALLOW,
+                "open",
+                "policy-v1",
+                request("missing", "public_direct"),
+            ),
+        },
+        [],
+        [],
+        fetch_status=DownloadStatus.NOT_AVAILABLE,
+    )
+    registry = DownloadProviderRegistry((
+        descriptor("public_direct", provider, lambda _value: True),
+    ))
+    manual_queue = ManualQueue([])
+
+    result = pipeline(
+        resolvers=resolver_registry,
+        providers=registry,
+        manual_queue=manual_queue,
+    ).run((Stage3Paper(Paper("paper-1", "One")),)).for_paper("paper-1")
+
+    assert result.status is DownloadStatus.FAILED_TERMINAL
+    assert result.reason_code == "access_location_denied"
+    assert manual_queue.calls == []
+
+
+def test_missing_location_does_not_prevent_later_candidate_download() -> None:
+    missing = candidate("missing", "publisher")
+    available = candidate("available", "arxiv")
+    resolver_registry = ResolverRegistry((
+        ResolverDescriptor("publisher", Resolver("publisher", (missing,))),
+        ResolverDescriptor("arxiv", Resolver("arxiv", (available,))),
+    ))
+    provider = Provider(
+        "public_direct",
+        {
+            item.candidate_id: FetchDecision(
+                item.candidate_id,
+                FetchDecisionStatus.ALLOW,
+                "open",
+                "policy-v1",
+                request(item.candidate_id, "public_direct"),
+            )
+            for item in (missing, available)
+        },
+        [],
+        [],
+        fetch_statuses={
+            "missing": DownloadStatus.NOT_AVAILABLE,
+            "available": DownloadStatus.DOWNLOADED,
+        },
+    )
+    registry = DownloadProviderRegistry((
+        descriptor("public_direct", provider, lambda _value: True),
+    ))
+
+    result = pipeline(
+        resolvers=resolver_registry,
+        providers=registry,
+    ).run((Stage3Paper(Paper("paper-1", "One")),)).for_paper("paper-1")
+
+    assert result.status is DownloadStatus.DOWNLOADED
+    assert [item.candidate_id for item in provider.fetches] == ["missing", "available"]
 
 
 def test_all_public_locations_are_tried_before_authorized_browser_fallback() -> None:

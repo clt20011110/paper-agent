@@ -330,6 +330,7 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     download.add_argument("--artifact-root", type=Path)
     download.add_argument("--paper-id", action="append", default=[])
     download.add_argument("--filter-run-id")
+    download.add_argument("--include-needs-review", action="store_true")
     download.add_argument("--grant-id")
     download.add_argument("--provider-terms", type=Path)
     download.add_argument("--authorized-skill-queue", type=Path)
@@ -848,6 +849,7 @@ def _run_download_service(
     return service.run(
         paper_ids=args.paper_id,
         filter_run_id=args.filter_run_id,
+        include_needs_review=args.include_needs_review,
         authorization_grant_id=args.grant_id,
         run_id=args.run_id,
         dry_run=args.dry_run,

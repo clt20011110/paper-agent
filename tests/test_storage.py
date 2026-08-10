@@ -11,8 +11,8 @@ def test_migrate_new_database_and_is_idempotent(tmp_path) -> None:
     with Database(tmp_path / "papers.sqlite3") as database:
         applied = database.migrate(applied_by="test")
 
-        assert [migration.version for migration in applied] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
-        assert database.current_version() == 18
+        assert [migration.version for migration in applied] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        assert database.current_version() == 19
         assert database.migrate() == ()
         assert database.connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'report_sol_invocations'"
@@ -46,6 +46,7 @@ def test_dry_run_does_not_create_schema(tmp_path) -> None:
             "analysis_dispatches",
             "stage3_luna_decisions",
             "stage2_adjudicator_retries",
+            "stage3_paper_results",
         ]
         assert database.current_version() == 0
 
@@ -100,6 +101,50 @@ def test_constraints_and_foreign_keys_are_enforced(tmp_path) -> None:
                 "VALUES ('paper-1', 'collection-1', 'included')"
             )
         database.connection.rollback()
+
+
+def test_stage3_paper_result_constraints_are_enforced(tmp_path) -> None:
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        database.connection.executemany(
+            "INSERT INTO papers(paper_id, title) VALUES (?, ?)",
+            (("paper-1", "One"), ("paper-2", "Two")),
+        )
+        database.connection.execute(
+            """INSERT INTO pipeline_runs(
+                   run_id, stage, status, input_hash, config_hash,
+                   implementation_version
+               ) VALUES ('stage3-run', 'stage-3-download', 'running',
+                         'input', 'config', 'stage3-cli-v2')"""
+        )
+        statement = """INSERT INTO stage3_paper_results(
+                           run_id, paper_id, status, reason_code, updated_at
+                       ) VALUES (?, ?, ?, ?, ?)"""
+        valid = ("stage3-run", "paper-1", "not_available", "http_404", "now")
+        database.connection.execute(statement, valid)
+
+        with pytest.raises(sqlite3.IntegrityError):
+            database.connection.execute(statement, valid)
+        with pytest.raises(sqlite3.IntegrityError):
+            database.connection.execute(
+                statement,
+                ("stage3-run", "paper-2", "invented", "bad_status", "now"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            database.connection.execute(
+                statement,
+                ("stage3-run", "paper-2", "not_available", "  ", "now"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            database.connection.execute(
+                statement,
+                ("missing-run", "paper-2", "not_available", "http_404", "now"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            database.connection.execute(
+                statement,
+                ("stage3-run", "missing-paper", "not_available", "http_404", "now"),
+            )
 
 
 def test_transaction_rolls_back_on_error(tmp_path) -> None:
