@@ -37,7 +37,8 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
   console version、包数据载入与 SQLite migration 验证；这证明打包内容可用，不证明任何外部
   provider 或生产 `doctor` gate 已通过。
 - [ ] 检查 wheel 中的 migrations、schemas、providers、venues、acceptance、policies、prompts、
-  registries 等运行时数据；配置模板与 Codex skill 必须随同一 release 明确分发。
+  registries 等运行时数据；每个 acceptance manifest 的主 fixture 和全部原生传输 route fixture
+  必须存在且摘要匹配。配置模板与 Codex skill 必须随同一 release 明确分发。
 
 ## 人工生产门禁
 

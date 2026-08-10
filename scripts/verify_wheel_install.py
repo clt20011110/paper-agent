@@ -16,12 +16,15 @@ from paper_agent.artifacts import ArtifactStore
 from paper_agent.authorized_skill_runtime import audit_manifest_path
 from paper_agent.codex_exec import prompt_directory
 from paper_agent.domain import QuerySpec
-from paper_agent.manifests import load_catalog
+from paper_agent.manifests import load_catalog, manifest_directory
 from paper_agent.processing import ArtifactProcessingPolicy, ProcessingGate
 from paper_agent.providers.builtin import FixtureTransport, create_builtin
 from paper_agent.report_artifacts import audit_rubric_hash
 from paper_agent.schema import schema_directory
 from paper_agent.storage import Database
+
+
+EXPECTED_SCHEMA_VERSION = 19
 
 
 def main() -> None:
@@ -36,6 +39,13 @@ def main() -> None:
     assert completed.returncode in {0, 1}
     diagnosis = json.loads(completed.stdout)
     catalog = load_catalog()
+    manifest_root = manifest_directory().resolve()
+    for acceptance in catalog.acceptances.values():
+        for route in acceptance.get("transport_fixture_routes", ()):
+            fixture = (manifest_root / route["path"]).resolve()
+            fixture.relative_to(manifest_root)
+            assert fixture.is_file()
+            assert sha256(fixture.read_bytes()).hexdigest() == route["sha256"]
     provider = create_builtin(
         "crossref",
         FixtureTransport(
@@ -69,7 +79,7 @@ def main() -> None:
         root = Path(directory)
         with Database(root / "wheel.sqlite3") as database:
             database.migrate()
-            assert database.current_version() >= 16
+            assert database.current_version() == EXPECTED_SCHEMA_VERSION
             policy_path = (
                 Path(sysconfig.get_path("data"))
                 / "share"

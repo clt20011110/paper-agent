@@ -71,6 +71,12 @@ Use the narrowest CLI command that satisfies the request. Preserve the same data
 
 For a new typed workflow, inspect `paper-agent run --help`, then prepare the manifest using the per-stage field contract and FileRef schema in the repository README. Run `paper-agent --dry-run run --workflow <WORKFLOW.json> --workflow-run-id <ID>` before executing. A stop signal requests a checkpoint only at a stage boundary; never report the in-flight stage as cancelled before its structured result is returned.
 
+A schema-version-2 workflow may bind Search → Filter → Download → Analyze with
+`from_step` references. End that dynamic chain at Analyze. The ReportPlan requires exact
+post-analysis corpus membership, so prepare report inputs, compile and approve the plan,
+pin its path/hash in a new config, and run Report as a separate single-stage workflow.
+Never append a guessed pre-crawl ReportPlan to the dynamic manifest.
+
 For Stage 2, require a passed local release bundle and oMLX models. Never use a test fake, cloud fallback, unapproved model revision, or raw uncalibrated thresholds in production.
 
 For Stage 3, exhaust public and authorized open-access providers first. Before a browser handoff, show the approved grant scope, domain allowlist, `max_papers`, expiry, and attended/unattended mode. The CLI can prepare an audited handoff only when `--authorized-skill-queue`, `--authorized-skill-output`, and at least one `--authorized-skill-root` are supplied together (with the approved `--grant-id` and enabled configuration). Read `authorized_queue_path` from the structured result, then invoke `$download-authorized-papers` only for that queue and only through the user's authorized visible browser session. The CLI does not operate the browser. Never request, inspect, copy, or log passwords, cookies, tokens, CAPTCHA contents, or session material. Stop the affected queue on login repair, CAPTCHA, 403, or 429 while allowing unrelated papers to continue.

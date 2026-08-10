@@ -39,7 +39,7 @@ paper_agent = ["storage/migrations/*.sql"]
 "share/paper-agent/policies" = ["policies/*.yaml"]
 "share/paper-agent/prompts" = ["prompts/*.md"]
 "share/paper-agent/registries" = ["registries/*.yaml"]
-"share/paper-agent/tests/fixtures/providers" = ["tests/fixtures/providers/*.json"]
+"share/paper-agent/tests/fixtures/providers" = ["tests/fixtures/providers/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
