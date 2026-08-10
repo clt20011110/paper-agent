@@ -227,6 +227,13 @@ class ReportInputService:
             (crawl_run_id,),
         ).fetchall()
         user_seeds = {str(row["paper_id"]) for row in seed_rows}
+        library_rows = self.database.connection.execute(
+            """SELECT DISTINCT paper_id FROM crawl_paper_snapshot_sources
+               WHERE crawl_run_id = ? AND provider = 'user_library'
+                 AND descriptor_key = 'library'""",
+            (crawl_run_id,),
+        ).fetchall()
+        user_seeds.update(str(row["paper_id"]) for row in library_rows)
         scope = query_plan.get("scope")
         if isinstance(scope, Mapping):
             planned_seeds = scope.get("user_seeds", ())
@@ -617,8 +624,9 @@ class ReportInputService:
         for path, payload in documents.items():
             if path.exists() and path.read_bytes() != payload:
                 raise ReportInputError(f"report input is immutable: {path.name}")
+        missing = tuple(path for path in documents if not path.exists())
         for path, payload in documents.items():
-            if save_bundle and not path.exists():
+            if save_bundle and path in missing:
                 _atomic_write(path, payload)
         return ReportInputResult(
             bundle_id,
@@ -627,7 +635,7 @@ class ReportInputService:
             audit_path,
             corpus,
             audit,
-            save_bundle,
+            save_bundle and bool(missing),
         )
 
 

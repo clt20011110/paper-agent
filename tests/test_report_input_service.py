@@ -396,11 +396,37 @@ def test_existing_bundle_files_are_immutable(tmp_path: Path) -> None:
     database, _, service = _fixture(tmp_path)
     try:
         first = service.build(_request())
-        assert service.build(_request()).bundle_id == first.bundle_id
+        repeated = service.build(_request())
+        assert repeated.bundle_id == first.bundle_id
+        assert repeated.saved is False
         first.corpus_snapshot_path.write_text("{}", encoding="utf-8")
 
         with pytest.raises(ReportInputError, match="immutable"):
             service.build(_request())
+    finally:
+        database.close()
+
+
+def test_library_snapshot_source_sets_foundational_category_without_citation_seed(
+    tmp_path: Path,
+) -> None:
+    database, _, service = _fixture(tmp_path)
+    try:
+        database.connection.execute(
+            "DELETE FROM search_round_seeds WHERE paper_id = 'p1'"
+        )
+        database.connection.execute(
+            """INSERT INTO crawl_paper_snapshot_sources(
+                   crawl_run_id, paper_id, provider, descriptor_key
+               ) VALUES ('crawl-1', 'p1', 'user_library', 'library')"""
+        )
+        database.connection.commit()
+
+        result = service.build(_request())
+        papers = {paper["paper_id"]: paper for paper in result.corpus_snapshot["papers"]}
+
+        assert papers["p1"]["source_category"] == "user_library"
+        assert papers["p1"]["foundational"] is True
     finally:
         database.close()
 
