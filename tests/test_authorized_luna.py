@@ -13,6 +13,8 @@ from paper_agent.stage3_pipeline import LunaPlannerInput
 class FakeInvoker:
     candidate_id: str = "candidate-1"
     calls: list[object] | None = None
+    actual_model: str | None = "gpt-5.6-luna"
+    actual_profile: str | None = "stage3_authorized_luna"
 
     def invoke(self, request):
         assert self.calls is not None
@@ -30,7 +32,7 @@ class FakeInvoker:
             "invoke-1", "stage3_authorized_luna", "gpt-5.6-luna", "low",
             "authorized-browser-result.schema.json", "a" * 64, request.input_hash,
             "authorized-browser.md", "b" * 64, "c" * 64, None, 1,
-            "gpt-5.6-luna", "stage3_authorized_luna",
+            self.actual_model, self.actual_profile,
         )
         return CodexExecResult(output, metadata)
 
@@ -61,4 +63,29 @@ def test_planner_rejects_candidate_substitution() -> None:
     planner = AuthorizedLunaPlanner(FakeInvoker(candidate_id="other", calls=[]))
 
     with pytest.raises(ValueError, match="binding mismatch"):
+        planner(LunaPlannerInput("candidate-1", "paper-1", None, "manual", "reason"))
+
+
+@pytest.mark.parametrize(
+    ("actual_model", "actual_profile"),
+    (
+        (None, "stage3_authorized_luna"),
+        ("gpt-5.6-sol", "stage3_authorized_luna"),
+        ("gpt-5.6-luna", None),
+        ("gpt-5.6-luna", "stage4_analysis_luna"),
+    ),
+)
+def test_planner_requires_exact_actual_luna_metadata(
+    actual_model: str | None,
+    actual_profile: str | None,
+) -> None:
+    planner = AuthorizedLunaPlanner(
+        FakeInvoker(
+            calls=[],
+            actual_model=actual_model,
+            actual_profile=actual_profile,
+        )
+    )
+
+    with pytest.raises(ValueError, match="frozen authorized-download profile"):
         planner(LunaPlannerInput("candidate-1", "paper-1", None, "manual", "reason"))

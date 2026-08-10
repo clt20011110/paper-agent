@@ -45,6 +45,17 @@ class AuthorizedLunaPlanner:
             prompt_name="authorized-browser.md",
             input_hash=sha256(payload.encode("utf-8")).hexdigest(),
         ))
+        metadata = result.metadata
+        if (
+            metadata.profile != "stage3_authorized_luna"
+            or metadata.model != "gpt-5.6-luna"
+            or metadata.reasoning_effort != "low"
+            or metadata.actual_model != "gpt-5.6-luna"
+            or metadata.actual_profile != "stage3_authorized_luna"
+        ):
+            raise ValueError(
+                "Luna invocation metadata does not match the frozen authorized-download profile"
+            )
         output = result.output
         if output["candidate_id"] != control.candidate_id:
             raise ValueError("Luna planner candidate binding mismatch")
@@ -59,5 +70,5 @@ class AuthorizedLunaPlanner:
             page_state=str(output["page_state"]),
             next_action=str(output["next_action"]),
             reason_code=str(output["reason_code"]),
-            invocation_metadata=asdict(result.metadata),
+            invocation_metadata=asdict(metadata),
         )
