@@ -21,6 +21,7 @@ paper-agent filter
 paper-agent grant create | approve | revoke
 paper-agent download [authorized handoff paths]
 paper-agent analyze
+paper-agent report prepare-inputs --crawl-run-id <ID> --filter-run-id <ID> --stage4-run-id <ID> --recent-cutoff <YYYY-MM-DD> --created-at <ISO-8601> --database <DB> --artifact-root <DIR> --output-root <DIR>
 paper-agent report --plan-only
 paper-agent report approve --plan <REPORT_PLAN.json> --hash <sha256> --approved-by <operator> --corpus-snapshot <CORPUS_SNAPSHOT.json> --search-audit <SEARCH_AUDIT.json> --output-root <DIR>
 paper-agent report --plan <REPORT_PLAN.json> --database <DB> --output-root <DIR>

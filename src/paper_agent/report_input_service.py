@@ -59,6 +59,7 @@ class ReportInputResult:
     search_audit_path: Path
     corpus_snapshot: Mapping[str, Any]
     search_audit: Mapping[str, Any]
+    saved: bool
 
 
 class ReportInputService:
@@ -74,7 +75,9 @@ class ReportInputService:
         self.artifact_store = artifact_store
         self.output_root = Path(output_root)
 
-    def build(self, request: ReportInputRequest) -> ReportInputResult:
+    def build(
+        self, request: ReportInputRequest, *, save_bundle: bool = True
+    ) -> ReportInputResult:
         self._require_run(request.filter_run_id, "stage-2", ("complete",))
         stage4_run = self._require_run(
             request.stage4_run_id, "stage4", ("complete", "incomplete", "failed")
@@ -128,7 +131,7 @@ class ReportInputService:
             required_providers=self._required_providers(query_plan),
             created_at=request.created_at,
         )
-        return self._write(corpus, audit_pack)
+        return self._write(corpus, audit_pack, save_bundle=save_bundle)
 
     def _require_run(
         self, run_id: str, stage: str, statuses: tuple[str, ...]
@@ -591,7 +594,11 @@ class ReportInputService:
         return tuple(sorted(set(values)))
 
     def _write(
-        self, corpus: Mapping[str, Any], audit: Mapping[str, Any]
+        self,
+        corpus: Mapping[str, Any],
+        audit: Mapping[str, Any],
+        *,
+        save_bundle: bool,
     ) -> ReportInputResult:
         bundle_hash = content_hash(
             {
@@ -611,7 +618,7 @@ class ReportInputService:
             if path.exists() and path.read_bytes() != payload:
                 raise ReportInputError(f"report input is immutable: {path.name}")
         for path, payload in documents.items():
-            if not path.exists():
+            if save_bundle and not path.exists():
                 _atomic_write(path, payload)
         return ReportInputResult(
             bundle_id,
@@ -620,6 +627,7 @@ class ReportInputService:
             audit_path,
             corpus,
             audit,
+            save_bundle,
         )
 
 

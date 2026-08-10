@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from paper_agent import cli
+from paper_agent.report_input_service import ReportInputRequest
 from paper_agent.storage import Database
 
 
@@ -126,6 +127,69 @@ def test_disabled_report_cli_skips_before_opening_any_inputs(
     assert result["status"] == "complete"
     assert result["skipped"] is True
     assert not (tmp_path / "missing.sqlite3").exists()
+
+
+def test_report_prepare_inputs_cli_is_read_only_in_dry_run(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    database_path = tmp_path / "papers.sqlite3"
+    with Database(database_path) as database:
+        database.migrate()
+    captured = {}
+
+    class FakeService:
+        def __init__(self, database, artifact_store, output_root):
+            captured.update({
+                "database": database,
+                "artifact_root": artifact_store.root,
+                "output_root": output_root,
+            })
+
+        def build(self, request, *, save_bundle):
+            captured.update({"request": request, "save_bundle": save_bundle})
+            return SimpleNamespace(
+                bundle_id="report-input-fixture",
+                directory=tmp_path / "output" / "reports" / "inputs" / "report-input-fixture",
+                corpus_snapshot_path=tmp_path / "output" / "CORPUS_SNAPSHOT.json",
+                search_audit_path=tmp_path / "output" / "SEARCH_AUDIT.json",
+                corpus_snapshot={"snapshot_hash": "a" * 64},
+                search_audit={"pack_hash": "b" * 64},
+                saved=save_bundle,
+            )
+
+    monkeypatch.setattr(cli, "ReportInputService", FakeService)
+    output_root = tmp_path / "output"
+    assert cli.main([
+        "--dry-run",
+        "report",
+        "prepare-inputs",
+        "--database", str(database_path),
+        "--artifact-root", str(tmp_path / "store"),
+        "--output-root", str(output_root),
+        "--crawl-run-id", "crawl-1",
+        "--filter-run-id", "filter-1",
+        "--stage4-run-id", "stage4-1",
+        "--recent-cutoff", "2024-01-01",
+        "--created-at", "2026-08-11T00:00:00Z",
+        "--include-needs-review",
+    ]) == 0
+
+    result = _payload(capsys)
+    assert result["command"] == "report.prepare-inputs"
+    assert result["status"] == "validated"
+    assert result["write_performed"] is False
+    assert captured["database"].read_only is True
+    assert captured["artifact_root"] == tmp_path / "store"
+    assert captured["output_root"] == output_root
+    assert captured["request"] == ReportInputRequest(
+        crawl_run_id="crawl-1",
+        filter_run_id="filter-1",
+        stage4_run_id="stage4-1",
+        recent_cutoff="2024-01-01",
+        created_at="2026-08-11T00:00:00Z",
+        include_needs_review=True,
+    )
+    assert captured["save_bundle"] is False
 
 
 def test_report_plan_and_approval_use_resources_from_config(

@@ -30,6 +30,7 @@ REQUIRED_SKILL_COMMANDS = (
     "paper-agent grant create | approve | revoke",
     "paper-agent download",
     "paper-agent analyze",
+    "paper-agent report prepare-inputs",
     "paper-agent report --plan-only",
     "paper-agent report approve --plan <REPORT_PLAN.json> --hash <sha256>",
     "paper-agent report --plan <REPORT_PLAN.json>",

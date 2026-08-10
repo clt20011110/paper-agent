@@ -361,6 +361,19 @@ def test_builds_canonical_inputs_from_persisted_data_and_keeps_missing_papers(
         database.close()
 
 
+def test_dry_run_builds_and_validates_without_writing_bundle(tmp_path: Path) -> None:
+    database, _, service = _fixture(tmp_path)
+    try:
+        result = service.build(_request(), save_bundle=False)
+
+        assert result.saved is False
+        assert not result.directory.exists()
+        assert result.corpus_snapshot["snapshot_hash"]
+        assert result.search_audit["pack_hash"]
+    finally:
+        database.close()
+
+
 def test_needs_review_membership_is_explicit_and_changes_the_immutable_bundle(
     tmp_path: Path,
 ) -> None:

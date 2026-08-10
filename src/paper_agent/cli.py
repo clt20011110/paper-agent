@@ -58,6 +58,7 @@ from .report_cli_service import (
 )
 from .report_config import ReportRuntimeConfig
 from .report_execution_service import ReportExecutionService
+from .report_input_service import ReportInputRequest, ReportInputService
 from .report_plan import ReportPlanBundle
 from .repository import PaperRepository
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
@@ -266,6 +267,19 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
         "--execution-mode", choices=("attended", "unattended"), default="attended"
     )
     report_commands = report.add_subparsers(dest="report_command")
+    report_inputs = report_commands.add_parser(
+        "prepare-inputs",
+        help="freeze Stage 4b inputs from persisted Stage 1, 2, and 4 runs",
+    )
+    report_inputs.add_argument("--database", type=Path)
+    report_inputs.add_argument("--artifact-root", type=Path)
+    report_inputs.add_argument("--output-root", type=Path)
+    report_inputs.add_argument("--crawl-run-id", required=True)
+    report_inputs.add_argument("--filter-run-id", required=True)
+    report_inputs.add_argument("--stage4-run-id", required=True)
+    report_inputs.add_argument("--recent-cutoff", required=True)
+    report_inputs.add_argument("--created-at", required=True)
+    report_inputs.add_argument("--include-needs-review", action="store_true")
     report_approve = report_commands.add_parser(
         "approve", help="approve and persist a frozen ReportPlan bundle"
     )
@@ -494,7 +508,9 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
     config = load_config(args.config) if args.config else None
     runtime = _report_runtime_config(config, args.config)
     generation_requested = (
-        args.report_command == "approve" or args.plan_only or args.plan is not None
+        args.report_command in {"approve", "prepare-inputs"}
+        or args.plan_only
+        or args.plan is not None
     )
     if generation_requested and not runtime.enabled:
         return {
@@ -503,6 +519,8 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
             "skipped": True,
             "status": "complete",
         }
+    if args.report_command == "prepare-inputs":
+        return _report_prepare_inputs(args, config=config)
     if args.report_command == "approve":
         approved_at = args.approved_at or datetime.now(UTC).isoformat().replace(
             "+00:00", "Z"
@@ -574,8 +592,49 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
     if args.plan is not None:
         return _report_execute(args, config=config, runtime=runtime)
     raise CliUsageError(
-        "report requires --plan-only, approve, --plan, or --diff-from"
+        "report requires prepare-inputs, --plan-only, approve, --plan, or --diff-from"
     )
+
+
+def _report_prepare_inputs(
+    args: argparse.Namespace, *, config: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    database_path = _database_path(args.database, config, args.config)
+    if not database_path.is_file():
+        raise FileNotFoundError(f"database does not exist: {database_path}")
+    output_root = args.output_root or _configured_output_root(config, args.config)
+    if output_root is None:
+        raise ConfigError(
+            "report prepare-inputs requires --output-root or a v2 --config"
+        )
+    with Database(database_path, read_only=True) as database:
+        result = ReportInputService(
+            database,
+            ArtifactStore(args.artifact_root or output_root),
+            output_root,
+        ).build(
+            ReportInputRequest(
+                crawl_run_id=args.crawl_run_id,
+                filter_run_id=args.filter_run_id,
+                stage4_run_id=args.stage4_run_id,
+                recent_cutoff=args.recent_cutoff,
+                created_at=args.created_at,
+                include_needs_review=args.include_needs_review,
+            ),
+            save_bundle=not args.dry_run,
+        )
+    return {
+        "bundle_id": result.bundle_id,
+        "command": "report.prepare-inputs",
+        "corpus_snapshot_hash": result.corpus_snapshot["snapshot_hash"],
+        "corpus_snapshot_path": str(result.corpus_snapshot_path),
+        "directory": str(result.directory),
+        "dry_run": args.dry_run,
+        "search_audit_hash": result.search_audit["pack_hash"],
+        "search_audit_path": str(result.search_audit_path),
+        "status": "validated" if args.dry_run else "complete",
+        "write_performed": result.saved,
+    }
 
 
 def _report_execute(

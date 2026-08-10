@@ -149,6 +149,13 @@ JSON 中的 `authorized_queue_path` 才是交给 `$download-authorized-papers` �
 输出根；`--processing-grant` 的格式是 `小写十六进制_ARTIFACT_SHA256=GRANT_ID`。
 
 ```sh
+paper-agent report prepare-inputs \
+  --database /absolute/path/to/papers.sqlite3 \
+  --artifact-root /absolute/path/to/artifacts \
+  --output-root /absolute/path/to/reports \
+  --crawl-run-id <crawl-run-id> --filter-run-id <stage2-run-id> \
+  --stage4-run-id <stage4-run-id> --recent-cutoff 2024-01-01 \
+  --created-at 2026-08-10T00:00:00Z
 paper-agent report --plan-only --draft /absolute/path/to/REPORT_DRAFT.json \
   --corpus-snapshot /absolute/path/to/CORPUS_SNAPSHOT.json \
   --search-audit /absolute/path/to/SEARCH_AUDIT.json \
