@@ -120,8 +120,8 @@ def validate_source_batch(batch: SourceBatch) -> SourceBatch:
         raise ValueError("source batches require source_run_id and query_hash")
     if batch.status.value == "failed" and not batch.error:
         raise ValueError("failed source batches require an error")
-    if batch.status.value != "failed" and batch.error:
-        raise ValueError("only failed source batches may carry an error")
+    if batch.status.value == "success" and batch.error:
+        raise ValueError("successful source batches may not carry an error")
     return batch
 
 
@@ -130,8 +130,8 @@ def validate_citation_batch(batch: CitationBatch) -> CitationBatch:
         raise ValueError("citation batches require source_run_id and query_hash")
     if batch.status.value == "failed" and not batch.error:
         raise ValueError("failed citation batches require an error")
-    if batch.status.value != "failed" and batch.error:
-        raise ValueError("only failed citation batches may carry an error")
+    if batch.status.value == "success" and batch.error:
+        raise ValueError("successful citation batches may not carry an error")
     return batch
 
 

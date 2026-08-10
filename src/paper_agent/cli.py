@@ -402,6 +402,7 @@ def _provider_specs(value: Any, root: Path, *, venue_ids: Sequence[str]) -> list
             "terms_url": manifest["terms"].get("url"),
             "independence_group": manifest["independence_group"],
             "upstream_families": manifest["upstream_families"],
+            "upstream_policies": manifest.get("upstream_policies", {}),
             "mode": "api",
             "credentials_required": authentication["required"],
             "credentials_present": credentials_present,

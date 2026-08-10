@@ -558,14 +558,24 @@ class BuiltinProvider:
     def _batch(self, payload: Mapping[str, Any], source_run_id: str, query_hash: str) -> SourceBatch:
         native_status = str(payload.get("status", "success"))
         status = EnvelopeStatus.SUCCESS if native_status == "ok" else EnvelopeStatus(native_status)
+        error = _text(payload.get("error"))
+        if status is EnvelopeStatus.PARTIAL and not error:
+            reasons = payload.get("incomplete_reasons")
+            if isinstance(reasons, (list, tuple)):
+                error = "; ".join(str(reason) for reason in reasons if reason)
         batch = SourceBatch(
             source_run_id=source_run_id,
             query_hash=query_hash,
             entries=tuple(_source_entry(self.provider, record) for record in _provider_records(self.provider, payload)),
             next_cursor=_next_cursor(self.provider, payload),
             status=status,
-            error=_text(payload.get("error")),
+            error=error,
             raw_response_artifact_hash=_text(payload.get("raw_response_artifact_hash")),
+            request_audit=tuple(
+                dict(record)
+                for record in payload.get("_request_audit", ())
+                if isinstance(record, Mapping)
+            ),
         )
         return validate_source_batch(batch)
 
@@ -694,6 +704,11 @@ class BuiltinProvider:
             EnvelopeStatus(str(payload.get("status", "success"))),
             _text(payload.get("error")),
             _text(payload.get("raw_response_artifact_hash")),
+            tuple(
+                dict(record)
+                for record in payload.get("_request_audit", ())
+                if isinstance(record, Mapping)
+            ),
         )
         return validate_citation_batch(batch)
 
@@ -754,6 +769,7 @@ class OpenReviewAdapter(VenueBuiltinAdapter):
 
     def discover(self, descriptor: VenueDescriptor, window: CrawlWindow, cursor: str | None = None) -> SourceBatch:
         parameters = dict(descriptor.parameters)
+        resolution_audit: tuple[Mapping[str, Any], ...] = ()
         if "invitation" not in parameters:
             if not parameters.get("venue_group") or window.year is None:
                 raise ValueError("openreview descriptors require venue_group and a year")
@@ -767,6 +783,14 @@ class OpenReviewAdapter(VenueBuiltinAdapter):
             )
             parameters["invitation"] = str(resolved["invitation"])
             parameters["api_version"] = str(resolved["api_version"])
+            parameters["accepted_venue_ids"] = tuple(
+                str(value) for value in resolved.get("accepted_venue_ids", ())
+            )
+            resolution_audit = tuple(
+                dict(record)
+                for record in resolved.get("_request_audit", ())
+                if isinstance(record, Mapping)
+            )
         runtime = VenueDescriptor(
             descriptor.schema_version,
             descriptor.venue_id,
@@ -774,14 +798,19 @@ class OpenReviewAdapter(VenueBuiltinAdapter):
             descriptor.adapter,
             parameters,
         )
-        return super().discover(runtime, window, cursor)
+        batch = super().discover(runtime, window, cursor)
+        return replace(batch, request_audit=(*resolution_audit, *batch.request_audit))
 
     def _shape_discovery_payload(
         self, payload: Mapping[str, Any], descriptor: VenueDescriptor
     ) -> Mapping[str, Any]:
         if not descriptor.parameters.get("accepted_decision_required", True):
             return payload
-        accepted = [record for record in _provider_records(self.provider, payload) if _openreview_accepted(record)]
+        accepted = [
+            record
+            for record in _provider_records(self.provider, payload)
+            if _openreview_accepted(record, descriptor.parameters.get("accepted_venue_ids", ()))
+        ]
         return {**payload, "entries": accepted, "notes": None}
 
 
@@ -936,6 +965,7 @@ class NeurIPSProceedingsAdapter(VenueBuiltinAdapter):
 class PMLRAdapter(VenueBuiltinAdapter):
     def discover(self, descriptor: VenueDescriptor, window: CrawlWindow, cursor: str | None = None) -> SourceBatch:
         parameters = dict(descriptor.parameters)
+        resolution_audit: tuple[Mapping[str, Any], ...] = ()
         if "volume_id" not in parameters:
             volume_url = parameters.get("volume_url")
             if not volume_url and window.year is not None:
@@ -944,11 +974,17 @@ class PMLRAdapter(VenueBuiltinAdapter):
                     {"series": parameters.get("series"), "year": window.year},
                 )
                 volume_url = resolved.get("official_url")
+                resolution_audit = tuple(
+                    dict(record)
+                    for record in resolved.get("_request_audit", ())
+                    if isinstance(record, Mapping)
+                )
             match = re.search(r"/v(\d+)(?:/|$)", str(volume_url or ""))
             if not match:
                 raise ValueError("pmlr descriptors require volume_id or an official volume_url")
             parameters["volume_id"] = f"v{match.group(1)}"
-        return super().discover(VenueDescriptor(descriptor.schema_version, descriptor.venue_id, descriptor.provider, descriptor.adapter, parameters), window, cursor)
+        batch = super().discover(VenueDescriptor(descriptor.schema_version, descriptor.venue_id, descriptor.provider, descriptor.adapter, parameters), window, cursor)
+        return replace(batch, request_audit=(*resolution_audit, *batch.request_audit))
 
 
 class ACLAnthologyAdapter(VenueBuiltinAdapter):
@@ -994,15 +1030,19 @@ class UnpaywallProvider(BuiltinProvider):
     pass
 
 
-def _openreview_accepted(record: Mapping[str, Any]) -> bool:
+def _openreview_accepted(record: Mapping[str, Any], accepted_venue_ids: Sequence[Any] = ()) -> bool:
     content = record.get("content") if isinstance(record.get("content"), Mapping) else {}
     decision = _text(record.get("decision") or content.get("decision"))
-    venue = _text(record.get("venue") or content.get("venue"))
-    evidence = " ".join(item.casefold() for item in (decision, venue) if item)
-    if any(term in evidence for term in ("reject", "withdraw", "desk reject")):
+    venue_id = _text(record.get("venueid") or content.get("venueid"))
+    exact_ids = {str(value) for value in accepted_venue_ids}
+    if venue_id and exact_ids:
+        return venue_id in exact_ids
+    if not decision:
         return False
-    accepted_label = any(term in evidence for term in ("accept", "oral", "spotlight", "poster", "conference"))
-    return accepted_label or bool(venue and "submitted" not in venue.casefold())
+    normalized = " ".join(decision.casefold().split())
+    if any(term in normalized for term in ("reject", "withdraw", "desk reject")):
+        return False
+    return bool(re.search(r"\b(?:accept(?:ed|ance)?|oral|spotlight|poster)\b", normalized))
 
 
 BUILTIN_CLASSES: Mapping[str, type[BuiltinProvider]] = {

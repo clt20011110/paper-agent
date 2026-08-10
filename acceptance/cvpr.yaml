@@ -1,10 +1,13 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: cvpr
 primary_provider: cvf_open_access
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-cvpr.json
 fixture_sha256: 4abdbc64a70bb4df948d5a7e7d9770decf27d912ba0c10fbc431588296395f2d
 expected_stable_ids: [cvpr-2024-main-0001]
-required_fields: [stable_id, metadata, abstract, date_filter]
-required_capabilities: [stable_id, metadata, abstract, date_filter]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-cvf.html, sha256: 7ddea3e5fb86d98ebd71ff5b6ac19536299e53e34f397d15ff1ca7cafaae7f43, content_type: text/html, url_contains: openaccess.thecvf.com/CVPR2024}
+transport_expected_stable_ids: [/content/CVPR2024/html/Lovelace_Vision_Systems_CVPR_2024_paper.html, /content/CVPR2024/html/Turing_Parallel_Vision_CVPR_2024_paper.html]
+required_fields: [stable_id, metadata, date_filter]
+required_capabilities: [stable_id, metadata, date_filter]
 fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

@@ -3,12 +3,12 @@ provider: aaai_ojs
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.providers.builtin:AAAIOJSAdapter
-artifact_sha256: 7980cc0abcef14372e8fa04206e4dbde01adbb744523cf670f28b8e2aa27d988
+artifact_sha256: 4a37ff0396ff2dcbc01057138968a41979c2c2a53e7dd12ece2a60da24697bd6
 enabled: true
 builtin: true
 authority: official
 roles: [venue_primary]
-capabilities: [stable_id, metadata, abstract, date_filter, full_text]
+capabilities: [stable_id, metadata, date_filter]
 authentication: {required: false}
 rate_limit: {global_qps: 0.5, max_concurrency: 1, cache_ttl_seconds: 3600}
 terms: {data_use: permitted, url: https://ojs.aaai.org/}

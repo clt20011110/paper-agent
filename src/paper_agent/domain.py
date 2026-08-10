@@ -399,6 +399,7 @@ class SourceBatch(Model):
     status: EnvelopeStatus
     error: str | None = None
     raw_response_artifact_hash: str | None = None
+    request_audit: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +425,7 @@ class CitationBatch(Model):
     status: EnvelopeStatus
     error: str | None = None
     raw_response_artifact_hash: str | None = None
+    request_audit: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

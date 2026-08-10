@@ -1,9 +1,19 @@
+from dataclasses import replace
+from email.message import Message
+from hashlib import sha256
 from importlib import import_module
 import json
 from pathlib import Path
 
+from paper_agent.http_transport import ControlledHTTPTransport
 from paper_agent.manifests import load_catalog
-from paper_agent.providers.builtin import BUILTIN_CLASSES, FixtureTransport, create_builtin
+from paper_agent.provider_runtime import ProviderRuntime, policy_from_manifest
+from paper_agent.providers.builtin import (
+    BUILTIN_CLASSES,
+    FixtureTransport,
+    create_builtin,
+    manifest_from_document,
+)
 from paper_agent.providers.api import CrawlWindow, VenueDescriptor
 from paper_agent.schema import validate
 
@@ -69,6 +79,90 @@ def _fixture_venue_ids(value: object) -> list[str]:
     return []
 
 
+class _NativeFixtureResponse:
+    def __init__(self, body: bytes, content_type: str) -> None:
+        self.body = body
+        self.headers = Message()
+        self.headers["Content-Type"] = content_type
+
+    def read(self) -> bytes:
+        return self.body
+
+    def __enter__(self) -> "_NativeFixtureResponse":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+class _AcceptanceFixtureOpener:
+    def __init__(self, routes: list[dict[str, str]]) -> None:
+        self.routes = routes
+        self.used: set[str] = set()
+        for route in routes:
+            body = (ROOT / route["path"]).read_bytes()
+            assert sha256(body).hexdigest() == route["sha256"]
+
+    def __call__(self, request, timeout: float) -> _NativeFixtureResponse:
+        matches = [route for route in self.routes if route["url_contains"] in request.full_url]
+        assert matches, f"no acceptance fixture route for {request.full_url}"
+        route = max(matches, key=lambda value: len(value["url_contains"]))
+        self.used.add(route["url_contains"])
+        return _NativeFixtureResponse((ROOT / route["path"]).read_bytes(), route["content_type"])
+
+
+def _acceptance_runtime(provider: str, provider_document: dict[str, object]):
+    provider_manifest = manifest_from_document(provider_document)
+    base_policy = replace(
+        policy_from_manifest(provider_manifest, terms_accepted=True, robots_allowed=True),
+        queries_per_second=None,
+        retry_attempts=1,
+        jitter_seconds=0,
+    )
+    policies = {provider: base_policy}
+    environment = {
+        name: f"{provider}-fixture-secret"
+        for name in provider_manifest.credential_policy.environment_variables
+    }
+    upstream_policies = provider_document.get("upstream_policies", {})
+    assert isinstance(upstream_policies, dict)
+    for upstream, document in upstream_policies.items():
+        assert isinstance(upstream, str)
+        assert isinstance(document, dict)
+        authentication = document.get("authentication", {})
+        assert isinstance(authentication, dict)
+        credential_names = []
+        if isinstance(authentication.get("credential_env"), str):
+            credential_names.append(authentication["credential_env"])
+        credential_envs = authentication.get("credential_envs", {})
+        assert isinstance(credential_envs, dict)
+        credential_names.extend(str(value) for value in credential_envs.values())
+        policy_provider = f"{provider}:{upstream}"
+        policies[policy_provider] = replace(
+            base_policy,
+            provider=policy_provider,
+            credentials_required=bool(authentication.get("required", False)),
+            credential_environment_variables=tuple(credential_names),
+        )
+        environment.update(
+            {name: f"{policy_provider}-fixture-secret" for name in credential_names}
+        )
+    return ProviderRuntime(policies), environment, provider_manifest
+
+
+def _assert_native_contract(entry, contract: str, year: int) -> None:
+    if contract == "stable_id":
+        assert entry.external_id
+    elif contract == "metadata":
+        assert entry.title and entry.metadata
+    elif contract == "abstract":
+        assert entry.abstract
+    elif contract == "date_filter":
+        assert entry.publication_date and entry.year == year
+    else:
+        raise AssertionError(f"native acceptance has no evidence check for {contract!r}")
+
+
 def test_built_in_manifests_are_schema_valid_and_unique() -> None:
     catalog = load_catalog(ROOT)
     assert set(catalog.venues) == set(PRIMARY)
@@ -127,6 +221,7 @@ def test_every_venue_acceptance_fixture_runs_through_its_declared_adapter() -> N
             responses["openreview:resolve_invitation:first"] = {
                 "invitation": "ICLR.cc/2024/Conference/-/Decision",
                 "api_version": "v2",
+                "accepted_venue_ids": ["ICLR.cc/2024/Conference"],
             }
         if provider == "pmlr":
             responses["pmlr:resolve_volume:first"] = {
@@ -170,6 +265,45 @@ def test_every_venue_acceptance_fixture_runs_through_its_declared_adapter() -> N
         assert final_page.next_cursor is None
 
 
+def test_every_venue_acceptance_runs_through_its_native_http_transport() -> None:
+    catalog = load_catalog(ROOT)
+    for venue_id in sorted(PRIMARY):
+        acceptance = catalog.acceptance(venue_id)
+        descriptor = catalog.runtime_venue(venue_id)
+        provider_document = catalog.provider(descriptor.provider)
+        runtime, environment, provider_manifest = _acceptance_runtime(
+            descriptor.provider, provider_document
+        )
+        routes = acceptance["transport_fixture_routes"]
+        opener = _AcceptanceFixtureOpener(routes)
+        transport = ControlledHTTPTransport(
+            "operator@example.test",
+            opener=opener,
+            runtime=runtime,
+            environment=environment,
+        )
+        start = acceptance["test_window"]["start"]
+        end = acceptance["test_window"]["end"]
+        year = int(start[:4])
+
+        batch = create_builtin(descriptor.provider, transport, provider_manifest).discover(
+            descriptor,
+            CrawlWindow(date_from=start, date_to=end, year=year),
+        )
+
+        assert batch.status.value == "success"
+        assert [entry.external_id for entry in batch.entries] == acceptance["transport_expected_stable_ids"]
+        assert opener.used == {route["url_contains"] for route in routes}
+        assert batch.raw_response_artifact_hash
+        for entry in batch.entries:
+            assert entry.metadata["official_membership"] is True
+            assert entry.metadata["venue_id"] == venue_id
+            for contract in set(acceptance["required_fields"]) | set(
+                acceptance["required_capabilities"]
+            ):
+                _assert_native_contract(entry, contract, year)
+
+
 def test_platform_native_acceptance_shapes_select_only_expected_records() -> None:
     catalog = load_catalog(ROOT)
 
@@ -206,6 +340,7 @@ def test_platform_native_acceptance_shapes_select_only_expected_records() -> Non
             "openreview:resolve_invitation:first": {
                 "invitation": "ICLR.cc/2024/Conference/-/Decision",
                 "api_version": "v2",
+                "accepted_venue_ids": ["ICLR.cc/2024/Conference"],
             },
             "openreview:discover:first": payload,
         }
@@ -280,8 +415,13 @@ def test_frozen_journal_identifiers_and_venue_constraints() -> None:
         journal = catalog.acceptance(venue_id)["journal"]
         assert journal["slug"] == slug
         assert journal["issns"] == issns
+        assert catalog.runtime_venue(venue_id).parameters == catalog.venue(venue_id)["provider_params"]
     assert catalog.venue("iclr")["provider_params"]["accepted_decision_required"]
     assert catalog.venue("acl")["provider_params"]["collections"] == ["main", "findings", "workshop"]
+    acl_snapshot = catalog.venue("acl")["provider_params"]["snapshot_version"]
+    assert acl_snapshot == "1941968b51805719b418a0b0919e335662cdd172"
+    acl_fixture = json.loads((ROOT / catalog.acceptance("acl")["fixture_path"]).read_text())
+    assert acl_fixture["entries"][0]["snapshot_version"] == acl_snapshot
     assert catalog.venue("cvpr")["provider_params"]["exclude_workshops"]
     assert catalog.venue("iccv")["provider_params"]["exclude_workshops"]
     for venue_id in ("dac", "iccad"):

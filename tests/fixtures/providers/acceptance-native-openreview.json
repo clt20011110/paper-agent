@@ -1,0 +1,16 @@
+{
+  "count": 1,
+  "notes": [
+    {
+      "id": "openreview-note-1",
+      "pdate": 1711929600000,
+      "content": {
+        "title": {"value": "Efficient Review Models"},
+        "authors": {"value": ["Ada Lovelace", "Grace Hopper"]},
+        "abstract": {"value": "OpenReview abstract."},
+        "venueid": {"value": "ICLR.cc/2024/Conference"},
+        "venue": {"value": "ICLR 2024 Conference"}
+      }
+    }
+  ]
+}

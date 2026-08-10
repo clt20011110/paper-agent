@@ -1,10 +1,15 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: acl
 primary_provider: acl_anthology
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-acl.json
-fixture_sha256: 21b3b0d90d70dfbbb7b8f2a30d30fd99dbc684dc3ab367f048e870fee19fa7e5
+fixture_sha256: 53cd531db6b0ef7efdc84dad8f08b523d4052da12ad80ee3675c738217a2f2b9
 expected_stable_ids: [2024.acl-long.1]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-acl.xml, sha256: 6fd01127413eabcc1fedf186859b35d5f46f112dc160a038639874d06e1c679f, content_type: application/xml, url_contains: /data/xml/2024.acl.xml}
+  - {path: tests/fixtures/providers/acceptance-native-acl-findings.xml, sha256: 3103bcd2af4ed0a1ce4c2a1c494836f78b93bdbacca5d48b49b34166d63a207d, content_type: application/xml, url_contains: /data/xml/2024.findings.xml}
+  - {path: tests/fixtures/providers/acceptance-native-acl-workshop.xml, sha256: 42bf7e3fa5ed94d909298b1fc10e7fe930592e63115eadc512cfd7f9555f19b7, content_type: application/xml, url_contains: /data/xml/2024.nlpws.xml}
+transport_expected_stable_ids: [2024.acl-long.1, 2024.findings-acl.2, 2024.nlpws-1.3]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

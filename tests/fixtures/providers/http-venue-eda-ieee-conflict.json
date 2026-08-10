@@ -1,0 +1,16 @@
+{
+  "totalfound": 1,
+  "articles": [
+    {
+      "article_number": "107001",
+      "title": "Scalable Chip Design",
+      "authors": {"authors": [{"full_name": "Ada Lovelace"}]},
+      "abstract": "Synthetic IEEE metadata for conflict testing.",
+      "doi": "10.1109/test.dac.2024.00001",
+      "publication_date": "2024-06-24",
+      "publication_year": 2024,
+      "publication_title": "Synthetic DAC fixture",
+      "abstract_url": "https://ieeexplore.ieee.org/document/107001"
+    }
+  ]
+}

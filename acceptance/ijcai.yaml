@@ -1,10 +1,13 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: ijcai
 primary_provider: ijcai_proceedings
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-ijcai.json
 fixture_sha256: b052b0bca277bbd498ff094982c29daf1b1917b63f344d8672832fe6e0db7aee
 expected_stable_ids: [ijcai-2024-0001]
-required_fields: [stable_id, metadata, abstract, date_filter]
-required_capabilities: [stable_id, metadata, abstract, date_filter]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-ijcai.html, sha256: 9916f0cbd1642ecd2be2f0bc859950a5c918a44377d0a5cc4a466467b814b266, content_type: text/html, url_contains: www.ijcai.org/proceedings/2024/}
+transport_expected_stable_ids: [IJCAI-2024-1, IJCAI-2024-2]
+required_fields: [stable_id, metadata]
+required_capabilities: [stable_id, metadata]
 fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

@@ -7,6 +7,7 @@
         "title": {"value": "ICLR 2024 Acceptance Fixture"},
         "authors": {"value": ["Ada Lovelace", "Grace Hopper"]},
         "abstract": {"value": "Deterministic accepted OpenReview evidence."},
+        "venueid": {"value": "ICLR.cc/2024/Conference"},
         "venue": {"value": "ICLR 2024 Conference"}
       },
       "venue": "ICLR 2024 Conference",

@@ -1,0 +1,13 @@
+{
+  "result": [{"total": "1", "start": "1", "pageLength": "100"}],
+  "records": [{
+    "doi": "10.1038/s41557-024-00002-2",
+    "title": "Nature Chemistry native metadata",
+    "abstract": "Springer Nature Chemistry metadata abstract.",
+    "publicationDate": "2024-03-18",
+    "publicationName": "Nature Chemistry",
+    "contentType": "Article",
+    "creators": [{"creator": "Ada Lovelace"}],
+    "url": [{"value": "https://www.nature.com/articles/s41557-024-00002-2"}]
+  }]
+}

@@ -54,6 +54,7 @@ def _batch(
     status: EnvelopeStatus = EnvelopeStatus.SUCCESS,
     entries: tuple[SourceEntry, ...] = (),
     error: str | None = None,
+    request_audit: tuple[dict[str, object], ...] = (),
 ) -> SourceBatch:
     return SourceBatch(
         source_run_id=f"crawl-1:{provider}",
@@ -63,6 +64,7 @@ def _batch(
         status=status,
         error=error,
         raw_response_artifact_hash=f"{provider}-response-hash",
+        request_audit=request_audit,
     )
 
 
@@ -143,13 +145,30 @@ def test_required_provider_failure_marks_crawl_incomplete(tmp_path) -> None:
 def test_query_audit_replays_exact_actual_request(tmp_path) -> None:
     database, coordinator = _coordinator(tmp_path)
     try:
-        batch = _batch("openalex")
+        request_audit = (
+            {
+                "provider": "openalex",
+                "url": "https://api.openalex.org/works?cursor=cursor-1",
+                "query_hash": "native-hash",
+                "cursor": "cursor-1",
+                "api_version": "works-api-v1",
+                "requested_at": NOW,
+                "completed_at": NOW,
+                "status": "success",
+                "response_sha256": "openalex-response-hash",
+            },
+        )
+        batch = _batch("openalex", request_audit=request_audit)
         _record(coordinator, "openalex", batch, cursor="cursor-1")
         _record(coordinator, "openalex", batch, cursor="cursor-1")
 
         row = database.connection.execute("SELECT * FROM search_queries").fetchone()
         assert database.connection.execute("SELECT COUNT(*) FROM search_queries").fetchone()[0] == 1
-        assert json.loads(row["provider_params_json"]) == {"cursor": "cursor-1", "search": "paper agents"}
+        assert json.loads(row["provider_params_json"]) == {
+            "cursor": "cursor-1",
+            "search": "paper agents",
+            "request_audit": list(request_audit),
+        }
         assert (row["query_hash"], row["response_hash"], row["cursor"], row["returned_count"]) == (
             "openalex-query-hash",
             "openalex-response-hash",

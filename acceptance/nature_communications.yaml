@@ -1,10 +1,13 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: nature_communications
 primary_provider: springer_nature
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-nature-communications.json
 fixture_sha256: 633aa5154cbc1c830bd4ec8d2b3b573b9e53e2fb55152ae9d34da9cd8becd3b5
 expected_stable_ids: [10.1038/s41467-024-00004-4]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/acceptance-native-nature-communications.json, sha256: a7673cd92c5aa5fdb837c944c6c55433573c517da5436e5accf5daa31d878cae, content_type: application/json, url_contains: api.springernature.com/metadata/v1/articles}
+transport_expected_stable_ids: [10.1038/s41467-024-00004-4]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}]

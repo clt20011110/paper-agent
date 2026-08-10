@@ -1,10 +1,13 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: nature_computational_science
 primary_provider: springer_nature
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-nature-computational-science.json
 fixture_sha256: 32b3016df0a7729f5d7728a1c4dc1373b42fb4bdf8d4636b82848a81dfeb6405
 expected_stable_ids: [10.1038/s43588-024-00003-3]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/acceptance-native-nature-computational-science.json, sha256: 9387f9a9b4d17e9bdc6a76ec6813fbcf3b659fb89a9274acc794d89a526f36b7, content_type: application/json, url_contains: api.springernature.com/metadata/v1/articles}
+transport_expected_stable_ids: [10.1038/s43588-024-00003-3]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}]

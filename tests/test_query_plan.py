@@ -164,3 +164,38 @@ def test_runtime_drift_is_rejected_for_frozen_provider_and_budget() -> None:
     changed_policy = dict(runtime[0], rate_limit={**runtime[0]["rate_limit"], "global_qps": 2})
     with pytest.raises(QueryPlanDriftError, match="rate_limit"):
         assert_runtime_matches(approved, [changed_policy])
+
+
+def test_restricted_provider_terms_approval_is_frozen_into_plan() -> None:
+    document = draft()
+    document["terms_approvals"] = [
+        {"provider": "openalex", "terms_url": "https://example.test/terms"}
+    ]
+    specification = {
+        **provider(),
+        "data_use": "restricted",
+        "terms_url": "https://example.test/terms",
+    }
+
+    plan = compile_query_plan(document, providers=[specification])
+
+    assert plan["execution"]["terms_approvals"] == document["terms_approvals"]
+    validate(plan, "query-plan.schema.json")
+
+
+def test_terms_approval_rejects_manifest_url_or_upstream_drift() -> None:
+    upstream_policy = {
+        "authentication": {"required": False},
+        "rate_limit": {"global_qps": 1, "max_concurrency": 1, "cache_ttl_seconds": 60},
+        "terms": {"data_use": "restricted", "url": "https://example.test/acm-terms"},
+    }
+    document = draft()
+    document["terms_approvals"] = [
+        {"provider": "openalex:acm_dl", "terms_url": "https://example.test/acm-terms"}
+    ]
+    specification = {**provider(), "upstream_policies": {"acm_dl": upstream_policy}}
+    assert compile_query_plan(document, providers=[specification])["execution"]["terms_approvals"]
+
+    document["terms_approvals"][0]["terms_url"] = "https://example.test/wrong"
+    with pytest.raises(QueryPlanError, match="does not match"):
+        compile_query_plan(document, providers=[specification])

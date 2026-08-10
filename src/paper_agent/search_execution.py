@@ -20,7 +20,7 @@ from .approved_snapshot import (
     MetadataSnapshotTransport,
     ProviderTransportRouter,
 )
-from .provider_runtime import ProviderRuntime, policy_from_manifest
+from .provider_runtime import ProviderRuntime, ProviderRuntimePolicy, policy_from_manifest
 from .providers.api import CrawlWindow, SeedInput
 from .providers.builtin import create_builtin, manifest_from_document
 from .query_plan import (
@@ -84,6 +84,7 @@ def resolve_runtime_providers(
                 "terms_url": manifest["terms"].get("url"),
                 "independence_group": manifest["independence_group"],
                 "upstream_families": manifest["upstream_families"],
+                "upstream_policies": manifest.get("upstream_policies", {}),
                 "mode": mode,
                 "snapshot_hash": snapshot_hash,
                 "manifest_trusted": manifest["builtin"],
@@ -123,14 +124,40 @@ def execute_search_plan(
     if any(provider["mode"] == "bulk_snapshot" for provider in active):
         raise QueryPlanDriftError("bulk snapshots need a provider-specific reader")
 
+    terms_approvals = {
+        str(item["provider"]): str(item["terms_url"])
+        for item in plan["execution"].get("terms_approvals", ())
+    }
     policies = {
         str(provider["provider"]): policy_from_manifest(
             manifest_from_document(installed.provider(str(provider["provider"]))),
-            terms_accepted=provider["data_use"] == "permitted",
+            terms_accepted=(
+                provider["data_use"] == "permitted"
+                or terms_approvals.get(str(provider["provider"])) == provider["terms_url"]
+            ),
             robots_allowed=True,
         )
         for provider in active
     }
+    for provider in active:
+        root_name = str(provider["provider"])
+        for upstream, document in provider.get("upstream_policies", {}).items():
+            name = f"{root_name}:{upstream}"
+            authentication = document["authentication"]
+            rate_limit = document["rate_limit"]
+            credential_names = _credential_environment_variables(authentication)
+            policies[name] = ProviderRuntimePolicy(
+                name,
+                queries_per_second=float(rate_limit["global_qps"]),
+                max_concurrency=int(rate_limit["max_concurrency"]),
+                cache_ttl_seconds=int(rate_limit["cache_ttl_seconds"]),
+                credentials_required=bool(authentication["required"]),
+                credential_environment_variables=credential_names,
+                terms_accepted=(
+                    document["terms"]["data_use"] == "permitted"
+                    or terms_approvals.get(name) == document["terms"]["url"]
+                ),
+            )
     provider_runtime = ProviderRuntime(policies)
 
     if transport is None:

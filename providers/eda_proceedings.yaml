@@ -3,14 +3,31 @@ provider: eda_proceedings
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.providers.builtin:EDAProceedingsAdapter
-artifact_sha256: 7980cc0abcef14372e8fa04206e4dbde01adbb744523cf670f28b8e2aa27d988
+artifact_sha256: 4a37ff0396ff2dcbc01057138968a41979c2c2a53e7dd12ece2a60da24697bd6
 enabled: true
 builtin: true
 authority: official
 roles: [venue_primary]
-capabilities: [stable_id, metadata, abstract, date_filter]
+capabilities: [stable_id, metadata]
 authentication: {required: false}
 rate_limit: {global_qps: 0.5, max_concurrency: 1, cache_ttl_seconds: 3600}
-terms: {data_use: restricted, url: https://www.ieee.org/site-terms-conditions.html}
+terms: {data_use: permitted}
 independence_group: eda_official
 upstream_families: [ieee, acm]
+upstream_policies:
+  dac_program:
+    authentication: {required: false}
+    rate_limit: {global_qps: 0.5, max_concurrency: 1, cache_ttl_seconds: 3600}
+    terms: {data_use: unknown, url: https://www.dac.com/}
+  iccad_program:
+    authentication: {required: false}
+    rate_limit: {global_qps: 0.5, max_concurrency: 1, cache_ttl_seconds: 3600}
+    terms: {data_use: unknown, url: https://www.iccad.com/}
+  ieee_xplore:
+    authentication: {required: true, credential_env: IEEE_XPLORE_API_KEY}
+    rate_limit: {global_qps: 1, max_concurrency: 1, cache_ttl_seconds: 3600}
+    terms: {data_use: restricted, url: https://www.ieee.org/site-terms-conditions.html}
+  acm_dl:
+    authentication: {required: false}
+    rate_limit: {global_qps: 0.25, max_concurrency: 1, cache_ttl_seconds: 3600}
+    terms: {data_use: restricted, url: https://www.acm.org/publications/policies/terms-of-use}

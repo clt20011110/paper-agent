@@ -1,10 +1,14 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: icml
 primary_provider: pmlr
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-icml.json
 fixture_sha256: 4e574f2d2979f0d15ee56af22099b13ce83ac247796cbc4b7fc50a42fdd50caf
 expected_stable_ids: [icml-2024-v235-0001]
-required_fields: [stable_id, metadata, abstract, date_filter]
-required_capabilities: [stable_id, metadata, abstract, date_filter]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-pmlr-volume.html, sha256: f0df5557a47b96ffea7da80c2b126c32201563135ad55df82b24a10ca437026a, content_type: text/html, url_contains: "https://proceedings.mlr.press/v235/"}
+  - {path: tests/fixtures/providers/http-venue-pmlr-index.html, sha256: 2c38d83fec1f047f2adaaa31478842af2ff9dacce6df6609757bd6fbcb7d5863, content_type: text/html, url_contains: "https://proceedings.mlr.press/"}
+transport_expected_stable_ids: [v235/lovelace24a, v235/turing24a]
+required_fields: [stable_id, metadata, date_filter]
+required_capabilities: [stable_id, metadata, date_filter]
 fallbacks: [{provider: openreview, role: search}, {provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

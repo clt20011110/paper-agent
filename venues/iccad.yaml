@@ -3,5 +3,37 @@ venue_id: iccad
 name: IEEE/ACM International Conference on Computer-Aided Design
 venue_type: conference
 primary_provider: eda_proceedings
-provider_params: {series: ICCAD, sources: [ieee_xplore, acm_dl], upstreams: [ieee_xplore, acm_dl], resolve_platforms_by_year: true, deduplicate_by: doi}
+provider_params:
+  series: ICCAD
+  sources: [ieee_xplore, acm_dl]
+  upstreams: [ieee_xplore, acm_dl]
+  resolve_platforms_by_year: true
+  deduplicate_by: doi
+  official_routes_by_year:
+    2022:
+      route_kind: ieee_xplore_publication
+      publication_number: 10068856
+      evidence_url: https://ieeexplore.ieee.org/xpl/conhome/10068856/proceeding
+    2023:
+      route_kind: ieee_xplore_publication
+      publication_number: 10323590
+      evidence_url: https://ieeexplore.ieee.org/xpl/conhome/10323590/proceeding
+    2024:
+      route_kind: iccad_accepted_html
+      url: https://2024.iccad.com/accepted-papers/
+    2025:
+      route_kind: ieee_xplore_publication
+      publication_number: 11240608
+      evidence_url: https://ieeexplore.ieee.org/xpl/conhome/11240608/proceeding
+  upstream_routes_by_year:
+    2022:
+      ieee_xplore: {publication_number: 10068856, required: false}
+      acm_dl: {proceedings_doi: "10.1145/3508352", required: true}
+    2023:
+      ieee_xplore: {publication_number: 10323590, required: true}
+    2024:
+      ieee_xplore: {publication_number: 11126043, required: false}
+      acm_dl: {proceedings_doi: "10.1145/3676536", required: true}
+    2025:
+      ieee_xplore: {publication_number: 11240608, required: true}
 official_url: https://www.iccad.com/

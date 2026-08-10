@@ -1,0 +1,16 @@
+{
+  "totalfound": 1,
+  "articles": [
+    {
+      "article_number": "108001",
+      "title": "Timing-Aware Design",
+      "authors": {"authors": [{"full_name": "Ada Lovelace"}]},
+      "abstract": "IEEE ICCAD metadata abstract.",
+      "doi": "10.1109/ICCAD.2024.00001",
+      "publication_date": "2024-10-28",
+      "publication_year": 2024,
+      "publication_title": "2024 IEEE/ACM International Conference on Computer-Aided Design (ICCAD)",
+      "abstract_url": "https://ieeexplore.ieee.org/document/108001"
+    }
+  ]
+}

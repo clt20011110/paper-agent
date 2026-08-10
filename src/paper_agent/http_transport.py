@@ -7,11 +7,13 @@ landing-page or PDF URL returned by a provider.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+import gzip
 from hashlib import sha256
 import json
 import os
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -21,6 +23,7 @@ from paper_agent.provider_runtime import (
     BulkSnapshot,
     ProviderRequestError,
     ProviderRuntime,
+    ProviderRuntimePolicy,
     RetryableProviderError,
     policy_from_manifest,
 )
@@ -38,6 +41,33 @@ _METADATA_PROVIDERS = (
     "unpaywall",
 )
 _S2_FIELDS = "paperId,title,abstract,authors,year,venue,externalIds,publicationDate,url"
+
+
+class DelegatedOperationResult(Protocol):
+    payload: Mapping[str, Any]
+    bodies: tuple[bytes, ...]
+
+
+DelegatedFetch = Callable[[str, str, str | None], "CachedResponse"]
+DelegateExecutor = Callable[[str, str, Mapping[str, Any], DelegatedFetch], DelegatedOperationResult]
+
+
+@dataclass(frozen=True, slots=True)
+class HTTPProviderDelegate:
+    """One independently registered family of HTTP provider operations."""
+
+    providers: tuple[str, ...]
+    execute: DelegateExecutor
+
+
+def _default_http_delegates() -> tuple[HTTPProviderDelegate, ...]:
+    from paper_agent.journal_transport import execute_journal_operation, journal_provider_names
+    from paper_agent.venue_transport import execute_venue_operation, venue_provider_names
+
+    return (
+        HTTPProviderDelegate(venue_provider_names(), execute_venue_operation),
+        HTTPProviderDelegate(journal_provider_names(), execute_journal_operation),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,11 +142,15 @@ class ControlledHTTPTransport:
     opener: Opener = urlopen
     runtime: ProviderRuntime | None = None
     environment: Mapping[str, str] | None = None
+    accepted_terms: Mapping[str, str] | None = None
+    delegates: tuple[HTTPProviderDelegate, ...] | None = None
     _cache: dict[str, CachedResponse] = field(default_factory=dict, init=False)
     _credential_envs: dict[str, dict[str, str]] = field(default_factory=dict, init=False)
     last_request_url: str | None = field(default=None, init=False)
     last_response_sha256: str | None = field(default=None, init=False)
     last_response_body: bytes | None = field(default=None, init=False, repr=False)
+    request_audit: list[dict[str, Any]] = field(default_factory=list, init=False)
+    request_snapshots: list[bytes] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.contact.strip():
@@ -125,6 +159,12 @@ class ControlledHTTPTransport:
             raise ValueError("timeout_seconds must be positive")
         if self.user_agent is None:
             self.user_agent = f"paper-agent/2.0 ({self.contact})"
+        if self.delegates is None:
+            self.delegates = _default_http_delegates()
+        delegated = [provider for delegate in self.delegates for provider in delegate.providers]
+        provider_names = (*_METADATA_PROVIDERS, *delegated)
+        if len(provider_names) != len(set(provider_names)):
+            raise ValueError("HTTP provider delegates contain duplicate provider names")
         if self.runtime is None:
             # Importing here keeps the runtime independent of built-in adapters
             # and makes manifest policy the single source of truth.
@@ -135,25 +175,44 @@ class ControlledHTTPTransport:
             root = manifests.manifest_directory()
             documents = {
                 provider: yaml.safe_load((root / "providers" / f"{provider}.yaml").read_text(encoding="utf-8"))
-                for provider in _METADATA_PROVIDERS
+                for provider in provider_names
             }
             self._credential_envs = {
                 provider: _credential_environment_variables(document)
                 for provider, document in documents.items()
             }
+            upstream_documents = {
+                f"{provider}:{upstream}": policy
+                for provider, document in documents.items()
+                for upstream, policy in document.get("upstream_policies", {}).items()
+            }
+            self._credential_envs.update(
+                {
+                    provider: _credential_environment_variables(document)
+                    for provider, document in upstream_documents.items()
+                }
+            )
 
             self.runtime = ProviderRuntime(
                 {
                     provider: replace(
                         policy_from_manifest(
                             load_builtin_manifest(provider),
-                            terms_accepted=document["terms"].get("data_use") == "permitted",
+                            terms_accepted=_terms_are_accepted(
+                                provider, document["terms"], self.accepted_terms
+                            ),
                             robots_allowed=True,
                         ),
                         credentials_required=bool(document["authentication"].get("required", False)),
                         credential_environment_variables=tuple(self._credential_envs[provider].values()),
                     )
                     for provider, document in documents.items()
+                }
+                | {
+                    provider: _runtime_policy_from_document(
+                        provider, document, self.accepted_terms
+                    )
+                    for provider, document in upstream_documents.items()
                 }
             )
         else:
@@ -162,8 +221,9 @@ class ControlledHTTPTransport:
             self._credential_envs = self._load_credential_environment_variables()
 
     def __call__(self, provider: str, operation: str, parameters: Mapping[str, Any]) -> Mapping[str, Any]:
-        if provider not in _METADATA_PROVIDERS:
+        if provider not in self._provider_names():
             raise ValueError(f"no public HTTP mapping for {provider}:{operation}")
+        audit_start = len(self.request_audit)
         payload, bodies = self._operation(provider, operation, parameters)
         self.last_response_body = b"".join(bodies)
         self.last_response_sha256 = sha256(self.last_response_body).hexdigest()
@@ -174,11 +234,23 @@ class ControlledHTTPTransport:
             response["provider_status"] = "ok"
             response["status"] = "success"
         response["raw_response_artifact_hash"] = self.last_response_sha256
+        response["_request_audit"] = tuple(dict(item) for item in self.request_audit[audit_start:])
         return response
 
     def _operation(
         self, provider: str, operation: str, parameters: Mapping[str, Any]
     ) -> tuple[Mapping[str, Any], tuple[bytes, ...]]:
+        delegate = self._delegate_for(provider)
+        if delegate is not None:
+            result = delegate.execute(
+                provider,
+                operation,
+                parameters,
+                lambda url, api_version, policy_provider=None: self._fetch(
+                    policy_provider or provider, url, api_version=api_version
+                ),
+            )
+            return result.payload, result.bodies
         if provider == "pubmed" and operation in {"search", "enrich", "verify"}:
             return self._pubmed(operation, parameters)
         if provider == "openalex" and operation == "references":
@@ -385,25 +457,59 @@ class ControlledHTTPTransport:
             raise ProviderRequestError("openalex: citations response must be an object")
         return citations, (work_response.body, citations_response.body)
 
-    def _fetch(self, provider: str, url: str) -> CachedResponse:
+    def _fetch(self, provider: str, url: str, *, api_version: str | None = None) -> CachedResponse:
         credentials = self._credentials(provider)
         request_url = _with_request_credentials(provider, url, credentials)
         audit_url = _redacted_url(request_url, credentials)
         self.last_request_url = audit_url
+        version = api_version or _api_version(provider)
+        query_hash = sha256(audit_url.encode("utf-8")).hexdigest()
+        request_record: dict[str, Any] = {
+            "provider": provider,
+            "url": audit_url,
+            "query_hash": query_hash,
+            "cursor": _request_cursor(request_url),
+            "api_version": version,
+            "requested_at": datetime.now(UTC).isoformat(),
+            "status": "running",
+        }
+        self.request_audit.append(request_record)
         assert self.runtime is not None
-        return self.runtime.request(
-            provider,
-            query_hash=sha256(audit_url.encode("utf-8")).hexdigest(),
-            cursor=_request_cursor(request_url),
-            api_version=_api_version(provider),
-            send=lambda: self._read(request_url, provider, credentials),
-            environment=self.environment,
-        )  # type: ignore[return-value]
+        try:
+            response = self.runtime.request(
+                provider,
+                query_hash=query_hash,
+                cursor=request_record["cursor"],
+                api_version=version,
+                send=lambda: self._read(request_url, provider, credentials),
+                environment=self.environment,
+            )
+        except Exception as error:
+            request_record.update(
+                status="failed",
+                error=str(error),
+                completed_at=datetime.now(UTC).isoformat(),
+            )
+            raise
+        request_record.update(
+            status="success",
+            response_sha256=sha256(response.body).hexdigest(),
+            content_type=response.content_type,
+            completed_at=datetime.now(UTC).isoformat(),
+        )
+        self.request_snapshots.append(response.body)
+        return response  # type: ignore[return-value]
 
     def _read(self, url: str, provider: str, credentials: Mapping[str, str]) -> CachedResponse:
-        headers = {"Accept": "application/json, application/xml;q=0.9", "User-Agent": str(self.user_agent)}
+        headers = {
+            "Accept": "application/json, application/xml;q=0.9, text/html;q=0.8",
+            "Accept-Encoding": "gzip",
+            "User-Agent": str(self.user_agent),
+        }
         if provider == "semantic_scholar" and credentials.get("api_key"):
             headers["x-api-key"] = credentials["api_key"]
+        if provider == "cell_press" and credentials.get("api_key"):
+            headers["X-ELS-APIKey"] = credentials["api_key"]
         cached = self._cache.get(url)
         if cached and cached.etag:
             headers["If-None-Match"] = cached.etag
@@ -412,8 +518,11 @@ class ControlledHTTPTransport:
         request = Request(url, headers=headers)
         try:
             with self.opener(request, timeout=self.timeout_seconds) as response:
+                body = response.read()
+                if response.headers.get("Content-Encoding", "").casefold() == "gzip":
+                    body = gzip.decompress(body)
                 response_value = CachedResponse(
-                    response.read(),
+                    body,
                     response.headers.get("ETag"),
                     response.headers.get("Last-Modified"),
                     response.headers.get("Content-Type", ""),
@@ -430,6 +539,10 @@ class ControlledHTTPTransport:
     def _raise_http_error(self, error: HTTPError, url: str) -> None:
         retry_after = _retry_after(error.headers.get("Retry-After"))
         message = f"HTTP {error.code} for {url}"
+        if error.code == 403:
+            evidence = error.read(10000).lower()
+            if b"challenge" in evidence or b"cloudflare" in evidence or b"just a moment" in evidence:
+                raise ProviderRequestError(f"{message}: challenge verification required") from error
         if error.code == 429 or 500 <= error.code < 600:
             raise RetryableProviderError(message, retry_after=retry_after) from error
         raise ProviderRequestError(message, retry_after=retry_after) from error
@@ -449,12 +562,32 @@ class ControlledHTTPTransport:
         import yaml
 
         root = manifests.manifest_directory()
-        return {
-            provider: _credential_environment_variables(
-                yaml.safe_load((root / "providers" / f"{provider}.yaml").read_text(encoding="utf-8"))
-            )
-            for provider in _METADATA_PROVIDERS
+        documents = {
+            provider: yaml.safe_load((root / "providers" / f"{provider}.yaml").read_text(encoding="utf-8"))
+            for provider in self._provider_names()
         }
+        credentials = {
+            provider: _credential_environment_variables(
+                document
+            )
+            for provider, document in documents.items()
+        }
+        credentials.update(
+            {
+                f"{provider}:{upstream}": _credential_environment_variables(policy)
+                for provider, document in documents.items()
+                for upstream, policy in document.get("upstream_policies", {}).items()
+            }
+        )
+        return credentials
+
+    def _provider_names(self) -> tuple[str, ...]:
+        assert self.delegates is not None
+        return (*_METADATA_PROVIDERS, *(provider for delegate in self.delegates for provider in delegate.providers))
+
+    def _delegate_for(self, provider: str) -> HTTPProviderDelegate | None:
+        assert self.delegates is not None
+        return next((delegate for delegate in self.delegates if provider in delegate.providers), None)
 
     def _credentials(self, provider: str) -> dict[str, str]:
         environment = self.environment if self.environment is not None else os.environ
@@ -487,10 +620,35 @@ def _credential_environment_variables(document: object) -> dict[str, str]:
     return values
 
 
+def _terms_are_accepted(
+    provider: str, terms: Mapping[str, Any], accepted_terms: Mapping[str, str] | None
+) -> bool:
+    return terms.get("data_use") == "permitted" or bool(
+        accepted_terms and accepted_terms.get(provider) == terms.get("url")
+    )
+
+
+def _runtime_policy_from_document(
+    provider: str, document: Mapping[str, Any], accepted_terms: Mapping[str, str] | None
+) -> ProviderRuntimePolicy:
+    rate_limit = document["rate_limit"]
+    credentials = tuple(_credential_environment_variables(document).values())
+    return ProviderRuntimePolicy(
+        provider,
+        queries_per_second=float(rate_limit["global_qps"]),
+        max_concurrency=int(rate_limit["max_concurrency"]),
+        cache_ttl_seconds=int(rate_limit["cache_ttl_seconds"]),
+        credentials_required=bool(document["authentication"]["required"]),
+        credential_environment_variables=credentials,
+        terms_accepted=_terms_are_accepted(provider, document["terms"], accepted_terms),
+    )
+
+
 def _with_request_credentials(provider: str, url: str, credentials: Mapping[str, str]) -> str:
     if provider == "semantic_scholar":
         return url
-    query = dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
     if provider == "openalex" and credentials.get("api_key"):
         query["api_key"] = credentials["api_key"]
     if provider == "pubmed":
@@ -499,7 +657,12 @@ def _with_request_credentials(provider: str, url: str, credentials: Mapping[str,
                 query[name] = credentials[name]
     if provider == "unpaywall" and credentials.get("email"):
         query["email"] = credentials["email"]
-    parts = urlsplit(url)
+    if provider == "ieee_xplore" and credentials.get("api_key"):
+        query["apikey"] = credentials["api_key"]
+    if provider == "springer_nature" and credentials.get("api_key"):
+        query["api_key"] = credentials["api_key"]
+    if provider.endswith(":ieee_xplore") and credentials.get("api_key"):
+        query["apikey"] = credentials["api_key"]
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 

@@ -21,6 +21,20 @@
     "rate_limit": {"type": "object", "additionalProperties": false, "required": ["global_qps", "max_concurrency", "cache_ttl_seconds"], "properties": {"global_qps": {"type": "number", "exclusiveMinimum": 0}, "max_concurrency": {"type": "integer", "minimum": 1}, "cache_ttl_seconds": {"type": "integer", "minimum": 0}}},
     "terms": {"type": "object", "additionalProperties": false, "required": ["data_use"], "properties": {"data_use": {"enum": ["permitted", "restricted", "unknown"]}, "url": {"type": "string", "format": "uri"}}},
     "independence_group": {"type": "string", "minLength": 1},
-    "upstream_families": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+    "upstream_families": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "upstream_policies": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_-]*$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["authentication", "rate_limit", "terms"],
+        "properties": {
+          "authentication": {"type": "object", "additionalProperties": false, "required": ["required"], "properties": {"required": {"type": "boolean"}, "credential_env": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}, "credential_envs": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}, "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"}}}},
+          "rate_limit": {"type": "object", "additionalProperties": false, "required": ["global_qps", "max_concurrency", "cache_ttl_seconds"], "properties": {"global_qps": {"type": "number", "exclusiveMinimum": 0}, "max_concurrency": {"type": "integer", "minimum": 1}, "cache_ttl_seconds": {"type": "integer", "minimum": 0}}},
+          "terms": {"type": "object", "additionalProperties": false, "required": ["data_use", "url"], "properties": {"data_use": {"enum": ["permitted", "restricted", "unknown"]}, "url": {"type": "string", "format": "uri"}}}
+        }
+      }
+    }
   }
 }

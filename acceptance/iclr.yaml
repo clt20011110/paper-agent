@@ -1,10 +1,14 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: iclr
 primary_provider: openreview
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-iclr.json
-fixture_sha256: 10ad936d8c7c5bc33590ab5290059334bce6d2479f7616d7cac8799562357e9e
+fixture_sha256: 6caae7c463e648753a8f8367a5978998c1936f50250fbab5550f659f50d4c782
 expected_stable_ids: [iclr-2024-openreview-0001]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-openreview-group.json, sha256: 17eb0bd9e98c0c2bf47f8db062cf16097dac5feffee36bd6579f1fa268a82639, content_type: application/json, url_contains: api2.openreview.net/groups}
+  - {path: tests/fixtures/providers/acceptance-native-openreview.json, sha256: f6bbfeb15b6260cc7b2dcc66c520f5db7e1c321ae4605746425c28323d2c90b4, content_type: application/json, url_contains: api2.openreview.net/notes}
+transport_expected_stable_ids: [openreview-note-1]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: arxiv, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

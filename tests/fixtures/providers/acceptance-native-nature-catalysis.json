@@ -1,0 +1,13 @@
+{
+  "result": [{"total": "1", "start": "1", "pageLength": "100"}],
+  "records": [{
+    "doi": "10.1038/s41929-024-00005-5",
+    "title": "Nature Catalysis native metadata",
+    "abstract": "Springer Nature Catalysis metadata abstract.",
+    "publicationDate": "2024-06-10",
+    "publicationName": "Nature Catalysis",
+    "contentType": "Article",
+    "creators": [{"creator": "Ada Lovelace"}],
+    "url": [{"value": "https://www.nature.com/articles/s41929-024-00005-5"}]
+  }]
+}

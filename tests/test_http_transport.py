@@ -9,7 +9,7 @@ import pytest
 
 from paper_agent.http_transport import ControlledHTTPTransport
 from paper_agent.domain import QuerySpec, SourceEntry
-from paper_agent.provider_runtime import ProviderRuntime, ProviderRuntimePolicy, RetryableProviderError
+from paper_agent.provider_runtime import ProviderRequestError, ProviderRuntime, ProviderRuntimePolicy, RetryableProviderError
 from paper_agent.providers.api import IdentityCandidate
 from paper_agent.providers.builtin import create_builtin
 
@@ -87,6 +87,21 @@ def test_retry_after_is_exposed_for_rate_limits() -> None:
     with pytest.raises(RetryableProviderError) as error:
         transport("crossref", "search", {"query": "x", "page_size": 1})
     assert error.value.retry_after == 3
+
+
+def test_cloudflare_403_is_classified_as_external_challenge() -> None:
+    def opener(request, timeout):
+        raise HTTPError(
+            request.full_url,
+            403,
+            "forbidden",
+            Message(),
+            BytesIO(b"<title>Just a moment...</title> Cloudflare challenge"),
+        )
+
+    transport = ControlledHTTPTransport("https://example.test/contact", opener=opener)
+    with pytest.raises(ProviderRequestError, match="challenge verification required"):
+        transport("crossref", "search", {"query": "x", "page_size": 1})
 
 
 def test_xml_metadata_response_is_decoded() -> None:

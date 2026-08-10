@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<collection id="2024.nlpws">
+  <volume id="1">
+    <meta><booktitle>Proceedings of the NLP Workshop</booktitle><month>August</month><year>2024</year><venue>nlpws</venue><venue>ws</venue></meta>
+    <paper id="3"><title>Workshop Paper</title><url>2024.nlpws-1.3</url></paper>
+  </volume>
+</collection>

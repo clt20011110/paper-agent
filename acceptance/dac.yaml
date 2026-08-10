@@ -1,10 +1,15 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: dac
 primary_provider: eda_proceedings
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-dac.json
 fixture_sha256: d02550e725c95d97cbfb8d17f4a638e8443652690d0b0df41ca653907e8487a9
 expected_stable_ids: [dac-2024-ieee-0001, dac-2024-acm-0002]
-required_fields: [stable_id, metadata, abstract, date_filter]
-required_capabilities: [stable_id, metadata, abstract, date_filter]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-dac.html, sha256: 3fb0be9e3505bbec71cf7b610bb9e24b4c520e291aaba8835c19deaff30b6914, content_type: text/html, url_contains: 61dac.conference-program.com/search-program/}
+  - {path: tests/fixtures/providers/http-venue-eda-ieee.json, sha256: b870c3e4aa201c10fb0eeba05a58de7b867a64171fa2deea75a2a719a4c0058c, content_type: application/json, url_contains: ieeexploreapi.ieee.org/api/v1/search/articles}
+  - {path: tests/fixtures/providers/http-venue-eda-acm.html, sha256: e561702eb357a52ae95a0ff3bf37cef002f4e0c2ef612239a70352200a7889e0, content_type: text/html, url_contains: dl.acm.org/doi/proceedings/10.1145/3649329}
+transport_expected_stable_ids: [DAC-2024-RESEARCH1860, DAC-2024-RESEARCH1861]
+required_fields: [stable_id, metadata]
+required_capabilities: [stable_id, metadata]
 fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

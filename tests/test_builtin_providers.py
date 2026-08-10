@@ -48,9 +48,9 @@ def adapter(provider: str, response: dict | None = None):
     [
         ("neurips_proceedings", NeurIPSProceedingsAdapter, {}),
         ("pmlr", PMLRAdapter, {"volume_id": "v235"}),
-        ("openreview", OpenReviewAdapter, {"api_version": "v2", "invitation": "ICLR.cc/2025/Conference/-/Decision"}),
+        ("openreview", OpenReviewAdapter, {"api_version": "v2", "invitation": "ICLR.cc/2025/Conference/-/Decision", "accepted_decision_required": False}),
         ("aaai_ojs", AAAIOJSAdapter, {"issue_ids": [1, 2]}),
-        ("acl_anthology", ACLAnthologyAdapter, {"snapshot_version": "2025-01-01", "track": "main"}),
+        ("acl_anthology", ACLAnthologyAdapter, {"snapshot_version": "1941968b51805719b418a0b0919e335662cdd172", "track": "main"}),
         ("cvf_open_access", CVFOpenAccessAdapter, {"track": "main"}),
         ("ijcai_proceedings", IJCAIAdapter, {}),
         ("eda_proceedings", EDAProceedingsAdapter, {"upstreams": ["ieee", "acm"]}),
@@ -75,7 +75,7 @@ def test_openreview_uses_dynamic_invitation_and_v1_v2_payloads(version: str, fix
     payload = fixture(fixture_name)
     transport = FixtureTransport({"openreview:discover:first": payload})
     instance = OpenReviewAdapter("openreview", transport)
-    descriptor = VenueDescriptor(1, "iclr", "openreview", "openreview", {"api_version": version, "invitation": "ICLR.cc/2025/Conference/-/Decision"})
+    descriptor = VenueDescriptor(1, "iclr", "openreview", "openreview", {"api_version": version, "invitation": "ICLR.cc/2025/Conference/-/Decision", "accepted_decision_required": False})
     assert instance.discover(descriptor, CrawlWindow(year=2025), None).entries[0].external_id == expected
     assert transport.calls[0][2]["invitation"].endswith("Decision")
 
@@ -83,8 +83,9 @@ def test_openreview_uses_dynamic_invitation_and_v1_v2_payloads(version: str, fix
 def test_openreview_resolves_invitation_from_group_and_excludes_rejected_records() -> None:
     payload = {
         "notes": [
-            {"id": "accepted", "title": "Accepted", "venue": "ICLR 2025 Conference"},
+            {"id": "accepted", "title": "Accepted", "content": {"venueid": {"value": "ICLR.cc/2025/Conference"}}},
             {"id": "rejected", "title": "Rejected", "decision": "Reject"},
+            {"id": "submission", "title": "Submission", "venue": "ICLR 2025 Conference Submission"},
         ]
     }
     transport = FixtureTransport(
@@ -92,6 +93,7 @@ def test_openreview_resolves_invitation_from_group_and_excludes_rejected_records
             "openreview:resolve_invitation:first": {
                 "invitation": "ICLR.cc/2025/Conference/-/Decision",
                 "api_version": "v2",
+                "accepted_venue_ids": ["ICLR.cc/2025/Conference"],
             },
             "openreview:discover:first": payload,
         }
@@ -107,6 +109,33 @@ def test_openreview_resolves_invitation_from_group_and_excludes_rejected_records
 
     assert [entry.external_id for entry in batch.entries] == ["accepted"]
     assert transport.calls[0][1] == "resolve_invitation"
+
+
+def test_openreview_acceptance_requires_exact_venue_id_or_accept_decision() -> None:
+    payload = {
+        "notes": [
+            {"id": "exact", "title": "Exact", "content": {"venueid": {"value": "ICLR.cc/2025/Conference"}}},
+            {"id": "decision", "title": "Decision", "decision": "Accept (Poster)"},
+            {"id": "submission", "title": "Submission", "venue": "ICLR 2025 Conference Submission"},
+            {"id": "other", "title": "Other", "content": {"venueid": {"value": "ICLR.cc/2025/Conference/Submission"}}},
+        ]
+    }
+    descriptor = VenueDescriptor(
+        1,
+        "iclr",
+        "openreview",
+        "openreview",
+        {
+            "api_version": "v2",
+            "invitation": "ICLR.cc/2025/Conference/-/Submission",
+            "accepted_venue_ids": ["ICLR.cc/2025/Conference"],
+        },
+    )
+    batch = OpenReviewAdapter("openreview", FixtureTransport({"openreview:discover:first": payload})).discover(
+        descriptor, CrawlWindow(year=2025)
+    )
+
+    assert [entry.external_id for entry in batch.entries] == ["exact", "decision"]
 
 
 def test_cursor_and_window_mapping_are_transport_visible() -> None:

@@ -8,7 +8,7 @@ import pytest
 
 from paper_agent.http_transport import ApprovedMetadataSnapshot, ApprovedSnapshotTransport
 from paper_agent.provider_runtime import ProviderRuntime, ProviderRuntimePolicy, SnapshotDriftError
-from paper_agent.smoke import SmokeEvidence, run_crossref_smoke, write_smoke_evidence
+from paper_agent.smoke import SmokeEvidence, run_crossref_smoke, run_venue_smoke, write_smoke_evidence
 
 
 def test_smoke_evidence_writer_omits_volatile_result_content(tmp_path) -> None:
@@ -46,6 +46,49 @@ def test_crossref_smoke_maps_minimum_fields_and_persists_raw_snapshot(monkeypatc
     assert evidence.snapshot_file == "crossref-response.json"
     assert evidence.snapshot_bytes == len(response_body)
     assert '"snapshot_file": "crossref-response.json"' in evidence_path.read_text()
+
+
+def test_venue_smoke_persists_each_native_request_and_audit(monkeypatch, tmp_path) -> None:
+    import paper_agent.smoke as smoke
+
+    response_body = b"<html>official metadata</html>"
+    response_hash = sha256(response_body).hexdigest()
+
+    class Transport:
+        request_snapshots = [response_body]
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, provider, operation, parameters):
+            return {
+                "entries": [{"external_id": "NeurIPS-2024-one", "title": "One", "year": 2024}],
+                "raw_response_artifact_hash": response_hash,
+                "_request_audit": [
+                    {
+                        "provider": provider,
+                        "url": "https://proceedings.neurips.cc/paper_files/paper/2024",
+                        "query_hash": "query-hash",
+                        "cursor": None,
+                        "api_version": "neurips-proceedings-html-v1",
+                        "requested_at": "2026-08-10T00:00:00+00:00",
+                        "completed_at": "2026-08-10T00:00:01+00:00",
+                        "status": "success",
+                        "response_sha256": response_hash,
+                        "content_type": "text/html",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(smoke, "ControlledHTTPTransport", Transport)
+    evidence = run_venue_smoke(
+        "neurips", 2024, "operator@example.test", tmp_path
+    )
+
+    assert evidence.mapped_entries == 1
+    assert evidence.snapshot_files == ("neurips-2024-response-01.bin",)
+    assert (tmp_path / evidence.snapshot_files[0]).read_bytes() == response_body
+    assert '"request_audit"' in (tmp_path / "neurips-2024-evidence.json").read_text()
 
 
 def test_approved_json_snapshot_replays_without_network() -> None:

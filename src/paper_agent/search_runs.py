@@ -116,6 +116,9 @@ class SearchRunCoordinator:
             raise ValueError("source run is already bound to a different provider request")
 
         query_id = _query_id(source_run_id, batch.query_hash, page, cursor)
+        recorded_params = dict(provider_params)
+        if batch.request_audit:
+            recorded_params["request_audit"] = [dict(record) for record in batch.request_audit]
         with self.database.transaction() as connection:
             if source is None:
                 connection.execute(
@@ -172,7 +175,7 @@ class SearchRunCoordinator:
                     query_compiler_version,
                     role,
                     query_text,
-                    _json(provider_params),
+                    _json(recorded_params),
                     alias_group,
                     _json(filters or {}),
                     page,

@@ -1,10 +1,13 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: nature_chemistry
 primary_provider: springer_nature
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-nature-chemistry.json
 fixture_sha256: 71147b4dd8973bd179aa012aa3913d69138f185bad93d14331bccf360558ff33
 expected_stable_ids: [10.1038/s41557-024-00002-2]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/acceptance-native-nature-chemistry.json, sha256: b86390436b3ea7d37e177651ab528fbe746813f6dcae8ee495aa1aa68eb6a66e, content_type: application/json, url_contains: api.springernature.com/metadata/v1/articles}
+transport_expected_stable_ids: [10.1038/s41557-024-00002-2]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}]

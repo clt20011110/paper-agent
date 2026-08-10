@@ -40,6 +40,7 @@ _RUNTIME_PROVIDER_FIELDS = (
     "terms_url",
     "independence_group",
     "upstream_families",
+    "upstream_policies",
     "resolved",
     "resolution_reason",
     "mode",
@@ -78,6 +79,7 @@ def compile_query_plan(
         _compile_provider(spec, variants, scope, page_size=_page_size(source), requirements=requirements)
         for spec in provider_specs
     ]
+    _validate_terms_approvals(compiled_providers, requirements)
     _validate_resolution(compiled_providers, requirements)
 
     plan = {
@@ -138,6 +140,7 @@ def compile_runtime_providers(
         )
         for specification in provider_specs
     )
+    _validate_terms_approvals(providers, requirements)
     _validate_resolution(providers, requirements)
     return providers
 
@@ -320,6 +323,7 @@ def _compile_provider(
         "upstream_families": sorted(
             str(value) for value in specification.get("upstream_families", (provider,))
         ),
+        "upstream_policies": deepcopy(dict(specification.get("upstream_policies", {}))),
         "resolved": resolved,
         "resolution_reason": reason,
         "mode": mode,
@@ -332,11 +336,45 @@ def _compile_provider(
 
 def _requirements(document: Mapping[str, Any]) -> dict[str, Any]:
     execution = document.get("execution", document)
+    approvals = execution.get("terms_approvals", ())
+    if not isinstance(approvals, (list, tuple)) or any(not isinstance(item, Mapping) for item in approvals):
+        raise QueryPlanError("terms_approvals must be provider/terms_url objects")
+    normalized_approvals = sorted(
+        (
+            {"provider": str(item.get("provider") or ""), "terms_url": str(item.get("terms_url") or "")}
+            for item in approvals
+        ),
+        key=lambda item: (item["provider"], item["terms_url"]),
+    )
+    if any(not item["provider"] or not item["terms_url"] for item in normalized_approvals):
+        raise QueryPlanError("terms approvals require provider and terms_url")
+    if len({item["provider"] for item in normalized_approvals}) != len(normalized_approvals):
+        raise QueryPlanError("terms approvals must name each provider at most once")
     return {
         "provider_policy": str(execution.get("provider_policy", "all_resolved")),
         "required_roles": sorted(str(role) for role in execution.get("required_roles", ("search",))),
         "required_providers": sorted(str(provider) for provider in execution.get("required_providers", ())),
+        "terms_approvals": normalized_approvals,
     }
+
+
+def _validate_terms_approvals(
+    providers: Sequence[Mapping[str, Any]], requirements: Mapping[str, Any]
+) -> None:
+    available = {str(provider["provider"]): provider for provider in providers}
+    for approval in requirements["terms_approvals"]:
+        name = str(approval["provider"])
+        root_name = name.split(":", 1)[0]
+        if root_name not in available:
+            raise QueryPlanError(f"terms approval names unavailable provider {name}")
+        root = available[root_name]
+        if name == root_name:
+            expected_url = root.get("terms_url")
+        else:
+            upstream = root.get("upstream_policies", {}).get(name.split(":", 1)[1], {})
+            expected_url = upstream.get("terms", {}).get("url") if isinstance(upstream, Mapping) else None
+        if approval["terms_url"] != expected_url:
+            raise QueryPlanError(f"terms approval URL for {name} does not match the frozen manifest")
 
 
 def _page_size(document: Mapping[str, Any]) -> int:

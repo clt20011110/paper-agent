@@ -1,0 +1,26 @@
+{
+  "count": 3,
+  "notes": [
+    {
+      "id": "openreview-note-1",
+      "pdate": 1711929600000,
+      "content": {
+        "title": {"value": "Efficient Review Models"},
+        "authors": {"value": ["Ada Lovelace", "Grace Hopper"]},
+        "abstract": {"value": "OpenReview abstract."},
+        "venueid": {"value": "ICLR.cc/2024/Conference"},
+        "venue": {"value": "ICLR 2024 Conference"}
+      }
+    },
+    {
+      "id": "openreview-note-2",
+      "cdate": 1693526400000,
+      "content": {
+        "title": {"value": "Second Accepted Paper"},
+        "authors": {"value": ["Alan Turing"]},
+        "venueid": {"value": "ICLR.cc/2024/Conference"},
+        "venue": {"value": "ICLR 2024 Poster"}
+      }
+    }
+  ]
+}

@@ -1,10 +1,13 @@
-schema_version: "1"
+schema_version: "2"
 venue_id: cell
 primary_provider: cell_press
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-cell.json
 fixture_sha256: af9fa9fcc3c007b9d60f561ef49cf72a531b96725ffb802492d21b11cd7e749b
 expected_stable_ids: [10.1016/j.cell.2024.00008]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/cell-elsevier-native.json, sha256: ef79f4ceac5d69a7f6137bb0ee21476a7829da5c629a27ed4c2420c71768bf6f, content_type: application/json, url_contains: api.elsevier.com/content/metadata/article}
+transport_expected_stable_ids: [S0092867424000080]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
 fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
