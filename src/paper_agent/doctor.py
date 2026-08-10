@@ -173,8 +173,11 @@ class SystemDoctor:
 
     def _disk(self) -> DoctorCheck:
         target = self.paths.database_path or self.paths.repository_root
+        probe = target
+        while not probe.exists() and probe.parent != probe:
+            probe = probe.parent
         try:
-            available = self.disk_usage(target if target.exists() else target.parent).free
+            available = self.disk_usage(probe).free
         except OSError as error:
             return DoctorCheck("disk", "blocker", True, str(error), True)
         status: CheckStatus = "pass" if available >= self.paths.minimum_free_bytes else "warning"

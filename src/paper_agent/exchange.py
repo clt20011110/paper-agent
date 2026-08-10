@@ -23,6 +23,17 @@ class ImportReport:
     unmigrated: tuple[str, ...] = ()
 
 
+def validate_export(repository: PaperRepository) -> dict[str, int]:
+    """Materialize every canonical export value without writing a destination."""
+    papers, sources, memberships = _export_values(repository)
+    return {
+        "papers": len(papers),
+        "sources": len(sources),
+        "memberships": len(memberships),
+        "jsonl_rows": len(papers) + len(sources) + len(memberships),
+    }
+
+
 def export_jsonl(repository: PaperRepository, path: str | Path) -> int:
     """Export canonical papers, provider sources, and collection memberships."""
     destination = Path(path)

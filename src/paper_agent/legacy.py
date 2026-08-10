@@ -153,6 +153,7 @@ def migrate_legacy_yaml(path: Path, schema_root: Path | None = None) -> Migratio
 
 def write_migrated(report: MigrationReport, path: Path) -> None:
     """Write the converted v2 document selected by a dry-run report."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         yaml.safe_dump(report.converted_config, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -401,6 +402,7 @@ def _download() -> dict[str, Any]:
             "grant_defaults": {
                 "source_zip_sha256": None,
                 "installed_content_sha256": None,
+                "dependency_lock_sha256": None,
                 "allowed_domains": [],
                 "paper_ids": [],
                 "collection_snapshot_hash": None,

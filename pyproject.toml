@@ -23,7 +23,7 @@ dev = [
 ]
 
 [project.scripts]
-paper-agent = "paper_agent.cli:main"
+paper-agent = "paper_agent.cli:entrypoint"
 
 [tool.setuptools.packages.find]
 where = ["src"]

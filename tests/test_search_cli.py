@@ -96,6 +96,34 @@ def _plan(tmp_path, capsys) -> tuple[dict[str, object], str]:
     return output, output["draft_path"]
 
 
+def test_search_plan_and_approval_dry_runs_validate_without_writes(
+    tmp_path, capsys
+) -> None:
+    input_path = tmp_path / "search.yaml"
+    input_path.write_text(json.dumps(_draft()), encoding="utf-8")
+    dry_root = tmp_path / "dry-output"
+    assert main([
+        "search", "plan", "--input", str(input_path),
+        "--output-root", str(dry_root), "--dry-run",
+    ]) == 0
+    planned = json.loads(capsys.readouterr().out)
+    assert planned["status"] == "validated"
+    assert planned["write_performed"] is False
+    assert not dry_root.exists()
+
+    created, draft_path = _plan(tmp_path, capsys)
+    assert main([
+        "search", "approve", "--plan", draft_path,
+        "--hash", str(created["plan_hash"]), "--approved-by", "owner",
+        "--approved-at", "2026-08-09T01:00:00Z", "--dry-run",
+    ]) == 0
+    approved = json.loads(capsys.readouterr().out)
+    assert approved["status"] == "validated"
+    assert approved["write_performed"] is False
+    assert not Path(approved["approved_path"]).exists()
+    assert not Path(approved["latest_path"]).exists()
+
+
 def _inject_test_screener(monkeypatch) -> None:
     from paper_agent.search_execution import execute_search_plan as execute
 

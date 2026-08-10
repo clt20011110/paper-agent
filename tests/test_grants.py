@@ -5,7 +5,13 @@ import json
 import pytest
 
 from paper_agent.approval import approved_content_hash
-from paper_agent.grants import GrantError, GrantStore
+from paper_agent.grants import (
+    GrantError,
+    GrantStore,
+    create_grant_draft,
+    validate_grant_approval,
+    validate_grant_revocation,
+)
 from paper_agent.storage import Database
 
 
@@ -61,6 +67,43 @@ def approved(grants: GrantStore, **changes: object) -> dict[str, object]:
     )
 
 
+def test_pure_grant_validation_apis_need_no_database() -> None:
+    draft = create_grant_draft(
+        grant_id="pure-grant",
+        kind="remote_model_processing",
+        actions=["remote_model_processing"],
+        purpose="internal_analysis",
+        mode="attended",
+        scope=scope(
+            collection_ids=[],
+            collection_snapshot_hash=None,
+            selection_snapshot_hash=None,
+            domains=[],
+        ),
+        max_papers=1,
+        expires_at=FUTURE,
+    )
+
+    approved_document = validate_grant_approval(
+        draft,
+        draft["content_hash"],
+        approved_by="owner",
+        approved_at=NOW,
+    )
+    event = validate_grant_revocation(
+        approved_document,
+        actor="owner",
+        event_at=NOW,
+    )
+
+    assert approved_document["status"] == "approved"
+    assert event == {
+        "actor": "owner",
+        "event_at": NOW,
+        "event_json": {"reason": "revoked_by_user"},
+    }
+
+
 def test_approved_grant_is_schema_valid_and_immutable(grants: GrantStore) -> None:
     document = approved(grants)
     loaded = grants.load("grant-1", kind="remote_model_processing")
@@ -70,6 +113,155 @@ def test_approved_grant_is_schema_valid_and_immutable(grants: GrantStore) -> Non
         "SELECT event_type, actor FROM authorization_grant_events WHERE grant_id = 'grant-1'"
     ).fetchall()
     assert [tuple(event) for event in events] == [("approved", "owner")]
+
+
+def test_identical_approval_retry_is_idempotent_but_changed_approval_conflicts(
+    grants: GrantStore,
+) -> None:
+    draft = grants.create_draft(
+        grant_id="approval-retry",
+        kind="remote_model_processing",
+        actions=["remote_model_processing"],
+        purpose="internal_analysis",
+        mode="attended",
+        scope=scope(
+            collection_ids=[],
+            collection_snapshot_hash=None,
+            selection_snapshot_hash=None,
+            domains=[],
+        ),
+        max_papers=1,
+        expires_at=FUTURE,
+    )
+    first = grants.approve(
+        draft, draft["content_hash"], approved_by="owner", approved_at=NOW
+    )
+    second = grants.approve(
+        draft, draft["content_hash"], approved_by="owner", approved_at=NOW
+    )
+
+    assert second == first
+    assert grants.database.connection.execute(
+        "SELECT COUNT(*) FROM authorization_grant_events "
+        "WHERE grant_id = 'approval-retry' AND event_type = 'approved'"
+    ).fetchone()[0] == 1
+    with pytest.raises(GrantError, match="conflicts with existing grant"):
+        grants.approve(
+            draft,
+            draft["content_hash"],
+            approved_by="different-owner",
+            approved_at=NOW,
+        )
+
+
+def test_identical_revocation_retry_is_idempotent_but_changed_event_conflicts(
+    grants: GrantStore,
+) -> None:
+    approved(grants)
+    grants.revoke("grant-1", actor="owner", event_at=NOW)
+    grants.revoke("grant-1", actor="owner", event_at=NOW)
+
+    preview = grants.validate_revoke("grant-1", actor="owner", event_at=NOW)
+    assert preview["already_applied"] is True
+    assert grants.database.connection.execute(
+        "SELECT COUNT(*) FROM authorization_grant_events "
+        "WHERE grant_id = 'grant-1' AND event_type = 'revoked'"
+    ).fetchone()[0] == 1
+    with pytest.raises(GrantError, match="conflicts with existing event"):
+        grants.revoke("grant-1", actor="different-owner", event_at=NOW)
+
+
+@pytest.mark.parametrize(
+    ("approved_by", "approved_at", "message"),
+    [
+        ("", NOW, "approved_by"),
+        (" owner ", NOW, "approved_by"),
+        ("owner", "not-a-time", "approved_at"),
+        ("owner", "2026-08-09T20:00:00+08:00", "approved_at"),
+    ],
+)
+def test_approval_requires_actor_and_rfc3339_utc(
+    grants: GrantStore, approved_by: str, approved_at: str, message: str
+) -> None:
+    draft = grants.create_draft(
+        kind="remote_model_processing",
+        actions=["remote_model_processing"],
+        purpose="internal_analysis",
+        mode="attended",
+        scope=scope(
+            collection_ids=[],
+            collection_snapshot_hash=None,
+            selection_snapshot_hash=None,
+            domains=[],
+        ),
+        max_papers=1,
+        expires_at=FUTURE,
+    )
+
+    with pytest.raises(GrantError, match=message):
+        validate_grant_approval(
+            draft,
+            draft["content_hash"],
+            approved_by=approved_by,
+            approved_at=approved_at,
+        )
+
+
+def test_approval_must_precede_expiry_and_revocation_cannot_precede_approval(
+    grants: GrantStore,
+) -> None:
+    draft = grants.create_draft(
+        kind="remote_model_processing",
+        actions=["remote_model_processing"],
+        purpose="internal_analysis",
+        mode="attended",
+        scope=scope(
+            collection_ids=[],
+            collection_snapshot_hash=None,
+            selection_snapshot_hash=None,
+            domains=[],
+        ),
+        max_papers=1,
+        expires_at=FUTURE,
+    )
+    with pytest.raises(GrantError, match="expires_at must be after approved_at"):
+        validate_grant_approval(
+            draft,
+            draft["content_hash"],
+            approved_by="owner",
+            approved_at=FUTURE,
+        )
+
+    approved_document = validate_grant_approval(
+        draft,
+        draft["content_hash"],
+        approved_by="owner",
+        approved_at=NOW,
+    )
+    with pytest.raises(GrantError, match="cannot precede"):
+        validate_grant_revocation(
+            approved_document,
+            actor="owner",
+            event_at="2026-08-09T11:59:59Z",
+        )
+
+
+@pytest.mark.parametrize(
+    ("actor", "event_at", "message"),
+    [
+        ("", NOW, "actor"),
+        (" owner ", NOW, "actor"),
+        ("owner", "not-a-time", "event_at"),
+        ("owner", "2026-08-09T20:00:00+08:00", "event_at"),
+    ],
+)
+def test_revocation_requires_actor_and_rfc3339_utc(
+    grants: GrantStore, actor: str, event_at: str, message: str
+) -> None:
+    approved(grants)
+
+    with pytest.raises(GrantError, match=message):
+        grants.validate_revoke("grant-1", actor=actor, event_at=event_at)
 
 
 def test_tampering_content_or_approval_is_rejected(grants: GrantStore) -> None:
@@ -181,6 +373,8 @@ def test_unattended_mode_requires_an_explicit_frozen_allowance(grants: GrantStor
         scope=scope(provider=None, model=None, artifact_hashes=[]),
         max_papers=1,
         expires_at=FUTURE,
+        skill_digest=HASH,
+        dependency_digest=OTHER_HASH,
     )
     approved_document = grants.approve(
         draft, draft["content_hash"], approved_by="owner", approved_at=NOW
@@ -188,6 +382,105 @@ def test_unattended_mode_requires_an_explicit_frozen_allowance(grants: GrantStor
 
     assert approved_document["allow_unattended"] is True
     assert grants.load("grant-unattended").document["allow_unattended"] is True
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"actions": ["download"]}, "download and store"),
+        ({"scope_changes": {"domains": []}}, "domain scope"),
+        (
+            {
+                "scope_changes": {"provider": None},
+                "skill_digest": None,
+                "dependency_digest": None,
+            },
+            "skill and dependency digests",
+        ),
+    ],
+)
+def test_download_draft_requires_an_operationally_exact_scope(
+    changes: dict[str, object], message: str
+) -> None:
+    changes = dict(changes)
+    scope_changes = changes.pop("scope_changes", {})
+    scope_values: dict[str, object] = {
+        "artifact_hashes": [],
+        "provider": "public_http",
+        "model": None,
+    }
+    scope_values.update(scope_changes)  # type: ignore[arg-type]
+    values: dict[str, object] = {
+        "kind": "download",
+        "actions": ["download", "store"],
+        "purpose": "personal_research",
+        "mode": "attended",
+        "scope": scope(**scope_values),
+        "max_papers": 1,
+        "expires_at": FUTURE,
+    }
+    values.update(changes)
+
+    with pytest.raises(GrantError, match=message):
+        create_grant_draft(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("scope_changes", "lineage_hash", "message"),
+    [
+        ({"artifact_hashes": []}, None, "artifact hashes"),
+        ({"provider": None}, None, "provider codex_cli"),
+        ({"model": None}, None, "frozen Luna or Sol"),
+        ({"data_categories": []}, None, "data categories"),
+        (
+            {"model": "gpt-5.6-sol", "data_categories": ["analysis"]},
+            None,
+            "lineage hash",
+        ),
+    ],
+)
+def test_remote_draft_requires_exact_artifact_target_and_lineage(
+    scope_changes: dict[str, object], lineage_hash: str | None, message: str
+) -> None:
+    scope_values: dict[str, object] = {
+        "collection_ids": [],
+        "collection_snapshot_hash": None,
+        "selection_snapshot_hash": None,
+        "domains": [],
+    }
+    scope_values.update(scope_changes)
+    with pytest.raises(GrantError, match=message):
+        create_grant_draft(
+            kind="remote_model_processing",
+            actions=["remote_model_processing"],
+            purpose="internal_analysis",
+            mode="attended",
+            scope=scope(**scope_values),
+            max_papers=1,
+            expires_at=FUTURE,
+            lineage_hash=lineage_hash,
+        )
+
+
+def test_browser_data_sharing_binds_target_category_and_skill_digests() -> None:
+    draft = create_grant_draft(
+        kind="browser_data_sharing",
+        actions=["browser_data_sharing"],
+        purpose="personal_research",
+        mode="attended",
+        scope=scope(
+            artifact_hashes=[],
+            provider="codex_cli",
+            model="gpt-5.6-luna",
+            data_categories=["full_text"],
+        ),
+        max_papers=1,
+        expires_at=FUTURE,
+        skill_digest=HASH,
+        dependency_digest=OTHER_HASH,
+    )
+
+    assert draft["kind"] == "browser_data_sharing"
 
 
 def test_yaml_defaults_cannot_expand_approved_scope(grants: GrantStore) -> None:
@@ -287,14 +580,14 @@ def test_active_grant_checks_the_actual_requested_paper_set(grants: GrantStore) 
         mode="attended",
         scope=scope(
             paper_ids=["paper-1", "paper-2"],
-            artifact_hashes=[],
+            artifact_hashes=[HASH],
             collection_ids=[],
             collection_snapshot_hash=None,
             selection_snapshot_hash=None,
             domains=[],
-            provider=None,
-            model=None,
-            data_categories=[],
+            provider="codex_cli",
+            model="gpt-5.6-luna",
+            data_categories=["full_text"],
         ),
         max_papers=2,
         expires_at=FUTURE,
@@ -309,6 +602,10 @@ def test_active_grant_checks_the_actual_requested_paper_set(grants: GrantStore) 
         mode="attended",
         now=NOW,
         paper_ids=("paper-2", "paper-1", "paper-1"),
+        artifact_hash=HASH,
+        provider="codex_cli",
+        model="gpt-5.6-luna",
+        data_category="full_text",
     )
     assert active.grant_id == "multi-paper-grant"
 

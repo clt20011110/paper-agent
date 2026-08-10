@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .canonical import canonical_json, content_hash
+from .domain import SourceBatch
 from .manifests import load_catalog
 from .providers.api import SeedInput
 from .providers.builtin import FixtureTransport, create_builtin, manifest_from_document
@@ -42,6 +43,7 @@ def import_seeds(
     if not inputs:
         raise ValueError("import-seeds requires at least one --seed or --input")
     frozen_inputs = tuple(inputs)
+    manifest, batch = _validated_seed_batch(frozen_inputs)
     input_hash = content_hash(
         [
             {"kind": item.kind, "value": item.value, "source_name": item.source_name}
@@ -50,14 +52,6 @@ def import_seeds(
     )
     resolved_run_id = run_id or f"seed-import-{input_hash[:16]}"
     timestamp = observed_at or datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    catalog = load_catalog()
-    manifest = catalog.provider("user_library")
-    provider = create_builtin(
-        "user_library",
-        FixtureTransport({}),
-        manifest_from_document(manifest),
-    )
-
     with Database(database_path) as database:
         database.migrate()
         runs = RunStore(database)
@@ -71,7 +65,6 @@ def import_seeds(
         if run.status is RunStatus.DRAFT:
             runs.transition(resolved_run_id, RunStatus.APPROVED, at=timestamp)
             runs.transition(resolved_run_id, RunStatus.RUNNING, at=timestamp)
-        batch = provider.import_seeds(frozen_inputs)
         coordinator = MetadataCoordinator(
             PaperRepository(database),
             {"user_library": ProviderTrust.from_manifest(manifest)},
@@ -82,6 +75,26 @@ def import_seeds(
 
     paper_ids = tuple(sorted(paper.paper_id for paper in papers))
     return SeedImportResult(resolved_run_id, len(frozen_inputs), len(paper_ids), paper_ids)
+
+
+def validate_seed_inputs(inputs: Sequence[SeedInput]) -> None:
+    """Run the exact parser/provider contract without creating pipeline storage."""
+    if not inputs:
+        raise ValueError("import-seeds requires at least one --seed or --input")
+    _validated_seed_batch(tuple(inputs))
+
+
+def _validated_seed_batch(
+    inputs: tuple[SeedInput, ...],
+) -> tuple[Mapping[str, Any], SourceBatch]:
+    catalog = load_catalog()
+    manifest = catalog.provider("user_library")
+    provider = create_builtin(
+        "user_library",
+        FixtureTransport({}),
+        manifest_from_document(manifest),
+    )
+    return manifest, provider.import_seeds(inputs)
 
 
 def _inputs_from_file(path: Path) -> tuple[SeedInput, ...]:

@@ -931,6 +931,7 @@ download:
     grant_defaults:  # 仅供 grant create --kind download 生成 draft，download 运行时禁止读取这些字段扩权
       source_zip_sha256: null
       installed_content_sha256: null
+      dependency_lock_sha256: null
       allowed_domains: []
       paper_ids: []
       collection_snapshot_hash: null

@@ -24,12 +24,20 @@ class Migration:
 class Database:
     """A single-node SQLite database with versioned SQL migrations."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, read_only: bool = False) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.path, isolation_level="DEFERRED")
+        self.read_only = read_only
+        if read_only:
+            uri = f"{self.path.resolve().as_uri()}?mode=ro"
+            self.connection = sqlite3.connect(
+                uri, uri=True, isolation_level="DEFERRED"
+            )
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.connection = sqlite3.connect(self.path, isolation_level="DEFERRED")
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA journal_mode=WAL")
+        if not read_only:
+            self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.execute("PRAGMA busy_timeout=5000")
 
@@ -89,6 +97,8 @@ class Database:
         )
         if dry_run:
             return pending
+        if self.read_only and pending:
+            raise sqlite3.OperationalError("cannot apply migrations through a read-only database")
 
         for migration in pending:
             with self.transaction() as connection:

@@ -46,6 +46,28 @@ def test_dry_run_does_not_create_schema(tmp_path) -> None:
         assert database.current_version() == 0
 
 
+def test_read_only_database_never_creates_or_mutates_storage(tmp_path) -> None:
+    missing = tmp_path / "missing" / "papers.sqlite3"
+    with pytest.raises(sqlite3.OperationalError):
+        Database(missing, read_only=True)
+    assert not missing.parent.exists()
+
+    path = tmp_path / "papers.sqlite3"
+    with Database(path) as database:
+        database.migrate()
+        database.connection.execute(
+            "INSERT INTO papers(paper_id, title) VALUES ('paper-1', 'Paper')"
+        )
+        database.connection.commit()
+
+    with Database(path, read_only=True) as database:
+        assert database.connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            database.connection.execute(
+                "INSERT INTO papers(paper_id, title) VALUES ('paper-2', 'No write')"
+            )
+
+
 def test_sqlite_pragmas_enable_wal_foreign_keys_and_busy_timeout(tmp_path) -> None:
     with Database(tmp_path / "papers.sqlite3") as database:
         assert database.connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"

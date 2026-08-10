@@ -2,6 +2,8 @@ import json
 from contextlib import closing
 import sqlite3
 
+import pytest
+
 from paper_agent.cli import main
 
 
@@ -79,3 +81,18 @@ def test_import_seeds_dry_run_does_not_create_database(tmp_path, capsys) -> None
     ) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "validated"
     assert not database.exists()
+
+
+def test_import_seeds_dry_run_uses_the_real_bibliography_parser(tmp_path) -> None:
+    invalid = tmp_path / "invalid.bib"
+    invalid.write_text("@article{broken,author={No Title}}", encoding="utf-8")
+    database = tmp_path / "nested" / "papers.sqlite3"
+    command = [
+        "import-seeds", "--database", str(database), "--input", str(invalid)
+    ]
+
+    with pytest.raises(ValueError, match="requires title"):
+        main([*command, "--dry-run"])
+    with pytest.raises(ValueError, match="requires title"):
+        main(command)
+    assert not database.parent.exists()

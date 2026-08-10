@@ -88,6 +88,35 @@ def test_default_doctor_is_offline_and_reports_optional_uninitialized_database(t
     assert not (tmp_path / "papers.sqlite").exists()
 
 
+def test_disk_check_uses_nearest_existing_ancestor_for_nested_database(tmp_path: Path) -> None:
+    database_path = tmp_path / "missing" / "nested" / "papers.sqlite"
+    probes: list[Path] = []
+    doctor = SystemDoctor(
+        _paths(tmp_path, database_path=database_path),
+        disk_usage=lambda path: (
+            probes.append(Path(path))
+            or type("Disk", (), {"free": 2_000_000_000})()
+        ),
+    )
+
+    check = doctor._disk()
+
+    assert check.status == "pass"
+    assert probes == [tmp_path]
+    assert not database_path.parent.exists()
+
+
+def test_disk_check_preserves_real_disk_usage_errors(tmp_path: Path) -> None:
+    def unavailable(_path: str | Path):
+        raise OSError("filesystem probe failed")
+
+    check = SystemDoctor(_paths(tmp_path), disk_usage=unavailable)._disk()
+
+    assert check.status == "blocker"
+    assert check.required
+    assert check.detail == "filesystem probe failed"
+
+
 def test_database_version_is_checked_read_only(tmp_path: Path) -> None:
     database = tmp_path / "papers.sqlite"
     connection = sqlite3.connect(database)
@@ -138,7 +167,7 @@ download:
   policy_matrix: policies/download-access-v1.yaml
   require_access_basis: true
   treat_unknown_license_as_open: false
-  authorized_skill: {enabled: false, skill_name: download-authorized-papers, authorization_grant_id: null, data_sharing_grant_id: null, profile: stage3_authorized_luna, codex_model: gpt-5.6-luna, reasoning_effort: low, grant_defaults: {source_zip_sha256: null, installed_content_sha256: null, allowed_domains: [], paper_ids: [], collection_snapshot_hash: null, selection_snapshot_hash: null, max_papers: null, actions: [], purpose: x, mode: attended, allow_unattended: false, authorization_expires_at: null}}
+  authorized_skill: {enabled: false, skill_name: download-authorized-papers, authorization_grant_id: null, data_sharing_grant_id: null, profile: stage3_authorized_luna, codex_model: gpt-5.6-luna, reasoning_effort: low, grant_defaults: {source_zip_sha256: null, installed_content_sha256: null, dependency_lock_sha256: null, allowed_domains: [], paper_ids: [], collection_snapshot_hash: null, selection_snapshot_hash: null, max_papers: null, actions: [], purpose: x, mode: attended, allow_unattended: false, authorization_expires_at: null}}
 analysis: {profile: stage4_analysis_luna, provider: codex_exec, model: gpt-5.6-luna, reasoning_effort: medium, sandbox: read_only, network: false, output_schema: paper-analysis.schema.json, workers: 1, allow_abstract_only: true, remote_model_processing: {policy_matrix: policies/artifact-processing-v1.yaml, processing_grant_id: null}}
 summary:
   enabled: false

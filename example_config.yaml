@@ -152,6 +152,7 @@ download:
     grant_defaults:
       source_zip_sha256: null
       installed_content_sha256: null
+      dependency_lock_sha256: null
       allowed_domains: []
       paper_ids: []
       collection_snapshot_hash: null
