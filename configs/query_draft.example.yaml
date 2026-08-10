@@ -1,0 +1,51 @@
+# QueryPlan draft input for `paper-agent search plan`.
+# Replace the research scope and the three Stage 2 hashes with values from the
+# approved local release before production use.
+created_at: "2026-08-10T00:00:00Z"
+research:
+  objective: "Map a focused research field"
+  audience: "researchers"
+  primary_question: "Which approaches are supported by the available evidence?"
+  subquestions:
+    - {id: sq-methods, question: "Which method families are represented?"}
+scope:
+  date_from: "2020-01-01"
+  date_to: "2026-08-10"
+  venues: []
+  fields: [computer science]
+  languages: [en]
+  document_types: [article, proceedings-article]
+  user_seeds: ["doi:10.1000/replace-with-authorized-seed"]
+inclusion:
+  criteria: ["directly addresses the primary question"]
+  exclusion_criteria: ["editorial, correction, retraction, or unrelated work"]
+query_variants:
+  - id: q-methods
+    subquestion_id: sq-methods
+    alias_group: core-topic
+    raw_query: "replace with the reviewed search query"
+    synonyms: []
+providers: [user_library]
+filter:
+  profile: stage2_local_release
+  config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+  thresholds_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+  seed_selector_version: relevant_topk_by_subquestion_v1
+  seed_selector_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+  round_state_machine_version: search-stage2-rounds-v1
+citation_snowball:
+  enabled: false
+  directions: [references, citations]
+  max_depth: 0
+  max_rounds: 0
+  max_per_seed_per_source: 20
+budgets:
+  max_requests: 100
+  max_candidates: 1000
+  max_seconds: 300
+  saturation:
+    min_unique_included_yield: 0.05
+    consecutive_low_yield_rounds: 2
+provider_policy: all_resolved
+required_roles: [library]
+required_providers: [user_library]

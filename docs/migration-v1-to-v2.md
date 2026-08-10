@@ -4,19 +4,31 @@ v2 是唯一可执行的配置格式。它把检索计划、下载授权、模�
 
 ## 先做只读迁移
 
-迁移逻辑在 `paper_agent.legacy.migrate_legacy_yaml`：它读取旧 YAML，返回 `MigrationReport`，但不会写入文件。报告包含 `converted_config`、字段映射、警告和无法自动表示的字段。确认结果后，才调用 `paper_agent.legacy.write_migrated` 写入一个新路径。
+先通过受支持的 CLI 查看迁移结果。它读取旧 YAML 并输出结构化 JSON，但不写入文件：
 
-```python
-from pathlib import Path
-
-from paper_agent.legacy import migrate_legacy_yaml, write_migrated
-
-report = migrate_legacy_yaml(Path("old.yaml"))
-print(report.field_mappings)
-print(report.warnings)
-print(report.unmigrated)
-write_migrated(report, Path("new-v2.yaml"))
+```sh
+paper-agent migrate-config --input /absolute/path/to/old.yaml
 ```
+
+检查 JSON 中的 `field_mappings`、`warnings` 和 `unmigrated`。迁移不猜测关键词、旧正则的
+细节、下载超时或模型选择；所有 `unmigrated` 都必须由操作者处理。确认后才写入**新路径**：
+
+```sh
+paper-agent migrate-config \
+  --input /absolute/path/to/old.yaml \
+  --write /absolute/path/to/new-v2.yaml
+
+paper-agent --config /absolute/path/to/new-v2.yaml doctor
+cp configs/query_draft.example.yaml /absolute/path/to/query-draft.yaml
+# 编译前审阅 query-draft.yaml，并替换其中的 Stage 2 hashes。
+paper-agent search plan \
+  --input /absolute/path/to/query-draft.yaml \
+  --output-root /absolute/path/to/paper-research
+```
+
+保留原 YAML 和输出 JSON 作为迁移审计记录。不要覆盖旧文件，也不要把 `content_hash: null`
+模板直接用于无人值守运行；必须检查并批准新生成的 QueryPlan。`paper_agent.legacy` API 是供
+集成代码使用的等价接口，不是日常运维入口。
 
 迁移后的文档会经过 `config-v2.schema.json` 验证。请逐项处理 `unmigrated`；迁移不会猜测关键词、旧的正则匹配细节、下载超时，或把旧的模型选择照搬到 v2。
 
@@ -41,6 +53,14 @@ write_migrated(report, Path("new-v2.yaml"))
 - Stage 4b 报告固定为 `stage4b_summary_sol`、`gpt-5.6-sol` 和 high reasoning。派生材料需要独立 lineage-scoped grant，且必须有冻结并批准的报告计划。
 
 服务凭据只通过示例中列出的环境变量名称提供，例如 `CROSSREF_MAILTO`、`SEMANTIC_SCHOLAR_API_KEY`、`OPENALEX_API_KEY`、`NCBI_API_KEY`、`NCBI_EMAIL` 和 `UNPAYWALL_EMAIL`。不要把值写入 YAML、报告、SQLite 导出或版本库。
+
+## 数据库升级与 Stage 4 恢复
+
+升级前先按运维文档备份 SQLite 与 artifact 目录。migration 16 会为 Stage 4 建立一次性付费调用
+账本；旧库中状态为 `failed` 或 `running`、且无法证明调用未发生的分析会保守迁移为
+`failed_terminal`，不会在 `resume` 时重新调用 Codex。旧的完整结果仍可只读恢复；旧的
+`incomplete` 记录只有在原 processing policy hash 可核验一致时才可继续。policy、prompt、schema
+或输入发生漂移时必须建立新 run，不能借数据库升级覆盖原审计身份。
 
 ## 选择示例
 

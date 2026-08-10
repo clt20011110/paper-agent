@@ -1,6 +1,8 @@
 from pathlib import Path
 
+from paper_agent import cli
 from paper_agent.config import load_config
+from paper_agent.download_cli_service import _policy_path as download_policy_path
 
 
 ROOT = Path(__file__).parents[1]
@@ -53,3 +55,31 @@ def test_example_configs_reference_shipped_descriptors_and_contracts() -> None:
         ]
 
         assert all((ROOT / reference).is_file() for reference in references)
+
+
+def test_query_draft_example_compiles_without_writing(tmp_path, capsys) -> None:
+    assert cli.main([
+        "search", "plan",
+        "--input", str(ROOT / "configs" / "query_draft.example.yaml"),
+        "--output-root", str(tmp_path / "output"),
+        "--dry-run",
+    ]) == 0
+    assert '"status":"validated"' in capsys.readouterr().out
+    assert not (tmp_path / "output").exists()
+
+
+def test_relocated_config_resolves_shipped_processing_policies(tmp_path) -> None:
+    source = ROOT / "configs" / "smoke_supported.yaml"
+    relocated = tmp_path / "research.yaml"
+    relocated.write_bytes(source.read_bytes())
+    config = load_config(relocated)
+
+    assert download_policy_path(tmp_path, config["download"]) == (
+        ROOT / "policies" / "download-access-v1.yaml"
+    )
+    assert cli._analysis_policy_path(config, relocated) == (
+        ROOT / "policies" / "artifact-processing-v1.yaml"
+    )
+    assert cli._report_policy_path(config, relocated) == (
+        ROOT / "policies" / "artifact-processing-v1.yaml"
+    )

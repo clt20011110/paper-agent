@@ -7,11 +7,44 @@ description: Orchestrate the installed paper-agent CLI for auditable literature 
 
 Use the `paper-agent` console entry point as the only business implementation. Collect intent, obtain explicit approvals, invoke the CLI, and explain its structured results. Never import or run code under `.opencode`, duplicate crawler/model/database logic in this skill, or edit SQLite directly.
 
+## Command contract
+
+Before invoking a command, run its `--help` form from the installed version. The
+supported workflow surface is:
+
+```text
+paper-agent doctor
+paper-agent search plan | approve | run | expand-citations | audit
+paper-agent import-seeds
+paper-agent crawl
+paper-agent filter
+paper-agent grant create | approve | revoke
+paper-agent download [authorized handoff paths]
+paper-agent analyze
+paper-agent report --plan-only
+paper-agent report approve --plan <REPORT_PLAN.json> --hash <sha256> --approved-by <operator> --corpus-snapshot <CORPUS_SNAPSHOT.json> --search-audit <SEARCH_AUDIT.json> --output-root <DIR>
+paper-agent report --plan <REPORT_PLAN.json> --database <DB> --output-root <DIR>
+paper-agent report --diff-from <previous_report_run_id> --report-run-id <current_report_run_id> --output-root <DIR>
+paper-agent verify-report
+paper-agent run --workflow <WORKFLOW.json>
+paper-agent resume --workflow <WORKFLOW.json>
+paper-agent export
+paper-agent migrate-config
+paper-agent benchmark-stage2
+```
+
+Use `--config`, `--run-id`, and `--dry-run` where the command exposes them.
+Commands emit one structured JSON result; preserve its `run_id`, status, event
+code, and artifact paths in the task response. Do not emulate a missing CLI
+command with Python imports, SQLite edits, shell pipelines, or a second
+implementation. If a required command is unavailable or its help conflicts
+with this contract, stop and report the installed version as a product gate.
+
 ## Locate and inspect the CLI
 
 1. Prefer the active environment's `paper-agent` executable. In a source checkout, prefer `.venv/bin/paper-agent` when present.
 2. Run `paper-agent --help` and the relevant subcommand `--help` before constructing commands. Do not assume options that the installed version does not expose.
-3. Run `paper-agent doctor` before a new production campaign or when runtime state may have changed.
+3. Run `paper-agent doctor` before a new production campaign or when runtime state may have changed. Use `--production-ready` only when checking a real production run; it may correctly fail in an offline rehearsal.
 4. Treat doctor failures as explicit gates. Do not invent credentials, model releases, approvals, grants, or provider access.
 
 ## Plan a campaign
@@ -30,24 +63,26 @@ Use `--dry-run` before provider calls. A dry run is validation, not evidence tha
 
 ## Execute and resume
 
-Use the narrowest CLI command that satisfies the request. Preserve the same database and explicit `--run-id` where the CLI supports it. Prefer `resume` for an interrupted immutable run; do not create a new run merely to bypass drift or a failed gate.
+Use the narrowest CLI command that satisfies the request. Preserve the same database and explicit `--run-id` where the CLI supports it. Prefer `paper-agent resume` for an interrupted immutable run; do not create a new run merely to bypass drift or a failed gate. `resume` must include the original `--workflow <WORKFLOW.json>` as well as its workflow run ID; it cannot recover a workflow from a bare `--run-id`. The manifest is typed JSON, not argv: every FileRef is a relative `path` plus a lowercase SHA-256, and any config/plan/release/selection/policy/report-input drift requires a new approved manifest. If a global `--config` is supplied, it must name the same file as the manifest config FileRef.
+
+For a new typed workflow, inspect `paper-agent run --help`, then prepare the manifest using the per-stage field contract and FileRef schema in the repository README. Run `paper-agent --dry-run run --workflow <WORKFLOW.json> --workflow-run-id <ID>` before executing. A stop signal requests a checkpoint only at a stage boundary; never report the in-flight stage as cancelled before its structured result is returned.
 
 For Stage 2, require a passed local release bundle and oMLX models. Never use a test fake, cloud fallback, unapproved model revision, or raw uncalibrated thresholds in production.
 
-For Stage 3, exhaust public and authorized open-access providers first. If the CLI emits an attended publisher handoff, explain the target papers and batch size. Invoke `$download-authorized-papers` only for that audited handoff and only through the user's authorized visible browser session. Never request, inspect, copy, or log passwords, cookies, tokens, CAPTCHA contents, or session material. Stop the affected queue on login repair, CAPTCHA, 403, or 429 while allowing unrelated papers to continue.
+For Stage 3, exhaust public and authorized open-access providers first. Before a browser handoff, show the approved grant scope, domain allowlist, `max_papers`, expiry, and attended/unattended mode. The CLI can prepare an audited handoff only when `--authorized-skill-queue`, `--authorized-skill-output`, and at least one `--authorized-skill-root` are supplied together (with the approved `--grant-id` and enabled configuration). Read `authorized_queue_path` from the structured result, then invoke `$download-authorized-papers` only for that queue and only through the user's authorized visible browser session. The CLI does not operate the browser. Never request, inspect, copy, or log passwords, cookies, tokens, CAPTCHA contents, or session material. Stop the affected queue on login repair, CAPTCHA, 403, or 429 while allowing unrelated papers to continue.
 
 For Stage 4 and Stage 4b, explain that `network=false` does not keep model payloads local. Require exact `remote_model_processing` policy allowance or approved artifact/model grants before sending full text or its restricted derivatives. Keep Stage 4 on `gpt-5.6-luna` and Stage 4b on `gpt-5.6-sol`; never upgrade, downgrade, or fall back silently.
 
 ## Generate a review
 
-Run report planning first and show:
+Run `paper-agent report --plan-only` first and show:
 
 - frozen corpus and search-flow limitations;
 - paper input scopes (`full_pdf`, `abstract_only`, `metadata_only`, or missing);
 - semantic reduce-tree call/token estimate, including two audits and at most one repair;
 - all incomplete sources and authorization-based evidence downgrades.
 
-Require explicit ReportPlan hash approval before Sol calls. Publish only when the deterministic verifier and the final independent Sol audit both pass with zero blocker and major findings. If repair is needed, allow one typed repair pass followed by full re-verification and a fresh audit. Do not patch rendered Markdown directly.
+Require `paper-agent report approve --plan ... --hash ... --approved-by ... --corpus-snapshot ... --search-audit ... --output-root ...` before Sol calls. Execute with `report --plan <REPORT_PLAN.json> --database <DB> --output-root <DIR>` plus either `--policy` or a matching v2 `--config` that resolves the summary policy. Pass artifact-scoped grants only as `--processing-grant ARTIFACT_SHA256=GRANT_ID`, where the digest is 64 lowercase hexadecimal characters (or use the equivalent frozen mapping file). Publish only when `paper-agent verify-report` and the final independent Sol audit both pass with zero blocker and major findings. If repair is needed, allow one typed repair pass followed by full re-verification and a fresh audit. Do not patch rendered Markdown directly. For an incremental request, use `report --diff-from <previous> --report-run-id <current> --output-root <DIR>` instead of comparing rendered Markdown by hand.
 
 ## Deliver results
 

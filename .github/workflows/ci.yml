@@ -24,10 +24,30 @@ jobs:
       - uses: astral-sh/setup-uv@v9
         with:
           enable-cache: true
-      - name: Install locked test environment
+      - name: Bootstrap locked test environment
         run: uv sync --locked --extra dev
       - name: Run tests with external network disabled
         run: uv run --no-sync pytest --disable-socket --allow-unix-socket --allow-hosts=localhost,127.0.0.1,::1
+
+  offline-workflow-contract:
+    name: Offline workflow and skill contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+      - name: Bootstrap locked test environment
+        run: uv sync --locked --extra dev
+      - name: Run fixture workflow and command contract without external network
+        run: >-
+          uv run --no-sync pytest --disable-socket --allow-unix-socket
+          --allow-hosts=localhost,127.0.0.1,::1
+          tests/test_search_cli.py tests/test_cli_foundations.py
+          tests/test_workflow.py tests/test_phase7_productization.py
 
   wheel-install:
     name: Build and verify wheel
@@ -38,15 +58,18 @@ jobs:
         with:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@v9
+      - name: Bootstrap and cache locked dependencies
+        run: uv sync --locked --extra dev
       - name: Build wheel
         run: uv build --wheel
-      - name: Install wheel into an isolated environment
+      - name: Install the built wheel offline into an isolated environment
         run: |
-          python -m venv "${{ runner.temp }}/paper-agent-wheel"
-          "${{ runner.temp }}/paper-agent-wheel/bin/python" -m pip install dist/*.whl
+          uv venv "${{ runner.temp }}/paper-agent-wheel"
+          uv pip install --offline --python "${{ runner.temp }}/paper-agent-wheel/bin/python" dist/*.whl
       - name: Verify installed runtime outside the source tree
         working-directory: ${{ runner.temp }}
         run: |
           mkdir -p wheel-verification
           cd wheel-verification
+          "${{ runner.temp }}/paper-agent-wheel/bin/paper-agent" --version
           "${{ runner.temp }}/paper-agent-wheel/bin/python" -I "$GITHUB_WORKSPACE/scripts/verify_wheel_install.py"
