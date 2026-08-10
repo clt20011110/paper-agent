@@ -43,6 +43,7 @@ ADJUDICATION_USER_TEMPLATE = (
     "Query version: {query_version}\nQuery: {query}\nPaper ID: {paper_id}\n{document}"
 )
 _FAILURES = (Stage2BackendError, StructuredOutputError, TimeoutError, OSError, ValueError)
+_RETRYABLE_ADJUDICATOR_FAILURES = (Stage2BackendError, TimeoutError, OSError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +273,9 @@ class Stage2Decision:
     adjudicator_probability: float | None = None
     rationale: str | None = None
     adjudicated: bool = False
+    adjudicator_attempt_count: int = 0
+    adjudicator_retry_reason: str | None = None
+    adjudicator_retry_outcome: str | None = None
     resumed: bool = False
 
 
@@ -485,33 +489,37 @@ class Stage2Pipeline:
             {"role": "system", "content": ADJUDICATION_SYSTEM_PROMPT},
             {"role": "user", "content": self._adjudication_prompt(paper)},
         ))
-        try:
-            response = self.adjudicator.adjudicate(request)
-        except _FAILURES:
+        retry_reason: str | None = None
+        for attempt_count in (1, 2):
+            try:
+                response = self.adjudicator.adjudicate(request)
+            except StructuredOutputError:
+                failure_reason = "adjudicator_schema_failure"
+            except _RETRYABLE_ADJUDICATOR_FAILURES:
+                failure_reason = "adjudicator_backend_failure"
+            else:
+                if self._valid_adjudication(response, paper.paper_id):
+                    break
+                failure_reason = "adjudicator_schema_failure"
+            if attempt_count == 1:
+                retry_reason = failure_reason
+                continue
             return Stage2Decision(
                 paper_id=paper.paper_id,
                 status=FilterStatus.NEEDS_REVIEW,
-                reason_code="adjudicator_backend_failure",
+                reason_code=failure_reason,
                 input_hash=input_hash,
                 route=CascadeRoute.NEEDS_REVIEW,
                 reranker_score=reranker_score,
                 reranker_probability=reranker_probability,
                 adjudicator_probability=self._failure_probability(),
                 adjudicated=True,
-            )
-        if not self._valid_adjudication(response, paper.paper_id):
-            return Stage2Decision(
-                paper_id=paper.paper_id,
-                status=FilterStatus.NEEDS_REVIEW,
-                reason_code="adjudicator_schema_failure",
-                input_hash=input_hash,
-                route=CascadeRoute.NEEDS_REVIEW,
-                reranker_score=reranker_score,
-                reranker_probability=reranker_probability,
-                adjudicator_probability=self._failure_probability(),
-                adjudicated=True,
+                adjudicator_attempt_count=attempt_count,
+                adjudicator_retry_reason=retry_reason,
+                adjudicator_retry_outcome="failed",
             )
         structured_route = CascadeRoute(response.decision)
+        retry_outcome = "succeeded" if retry_reason is not None else None
         adjudicator_probability = None
         route = structured_route
         conflict = False
@@ -531,6 +539,9 @@ class Stage2Pipeline:
                     adjudicator_score=response.score,
                     adjudicator_probability=self._failure_probability(),
                     adjudicated=True,
+                    adjudicator_attempt_count=attempt_count,
+                    adjudicator_retry_reason=retry_reason,
+                    adjudicator_retry_outcome=retry_outcome,
                 )
             threshold = binding.threshold
             if adjudicator_probability <= threshold.low:
@@ -557,6 +568,9 @@ class Stage2Pipeline:
             adjudicator_probability=adjudicator_probability,
             rationale=rationale,
             adjudicated=True,
+            adjudicator_attempt_count=attempt_count,
+            adjudicator_retry_reason=retry_reason,
+            adjudicator_retry_outcome=retry_outcome,
         )
 
     def _adjudication_prompt(self, paper: Stage2Paper) -> str:
@@ -638,7 +652,8 @@ class Stage2Pipeline:
 
     def _load_completed(self, run_id: str) -> dict[tuple[str, str], Stage2Decision]:
         rows = self.database.connection.execute(
-            """SELECT paper_id, status, score, reason, input_hash FROM filter_decisions
+            """SELECT paper_id, status, score, reason, input_hash, adjudicator_attempt_count,
+                      adjudicator_retry_reason, adjudicator_retry_outcome FROM filter_decisions
                WHERE run_id = ? ORDER BY created_at, filter_decision_id""",
             (run_id,),
         ).fetchall()
@@ -657,6 +672,9 @@ class Stage2Pipeline:
                 adjudicator_probability=detail.get("adjudicator_probability"),
                 rationale=detail.get("rationale"),
                 adjudicated=bool(detail.get("adjudicated")),
+                adjudicator_attempt_count=int(row["adjudicator_attempt_count"]),
+                adjudicator_retry_reason=row["adjudicator_retry_reason"],
+                adjudicator_retry_outcome=row["adjudicator_retry_outcome"],
                 resumed=True,
             )
         return completed
@@ -675,6 +693,9 @@ class Stage2Pipeline:
                     "model": model_id,
                     "revision": model_revision,
                     "adjudicated": decision.adjudicated,
+                    "adjudicator_attempt_count": decision.adjudicator_attempt_count,
+                    "adjudicator_retry_reason": decision.adjudicator_retry_reason,
+                    "adjudicator_retry_outcome": decision.adjudicator_retry_outcome,
                     "prompt_version": self.profile.prompt_version,
                     "schema_version": self.profile.schema_version,
                     "base_runtime_config_hash": self.profile.base_runtime_config_hash,
@@ -708,14 +729,17 @@ class Stage2Pipeline:
                 connection.execute(
                     """INSERT INTO filter_decisions(
                         filter_decision_id, run_id, paper_id, status, score, threshold_version, reason,
-                        input_hash, implementation_version, model_id, model_revision, prompt_hash, schema_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        input_hash, implementation_version, model_id, model_revision, prompt_hash, schema_hash,
+                        adjudicator_attempt_count, adjudicator_retry_reason, adjudicator_retry_outcome
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(run_id, paper_id) DO NOTHING""",
                     (
                         decision_id, run_id, decision.paper_id, decision.status.value,
                         self._decision_probability(decision),
                         self.profile.threshold_version, detail, decision.input_hash, self.implementation_version,
                         provenance["model"], provenance["revision"], self.profile.prompt_hash, self.profile.schema_hash,
+                        decision.adjudicator_attempt_count, decision.adjudicator_retry_reason,
+                        decision.adjudicator_retry_outcome,
                     ),
                 )
                 connection.execute(

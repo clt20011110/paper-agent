@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import Sequence
 
 import pytest
@@ -13,6 +14,7 @@ from paper_agent.stage2_backends import (
     RerankInput,
     RerankScore,
     Stage2BackendError,
+    StructuredOutputError,
     ThresholdArtifact,
 )
 from paper_agent.stage2_pipeline import Stage2Paper, Stage2Pipeline, Stage2Profile
@@ -56,6 +58,20 @@ class FakeAdjudicator:
     def adjudicate(self, request: AdjudicationInput) -> AdjudicationDecision:
         self.requests.append(request)
         return self.decisions[request.paper_id]
+
+
+@dataclass
+class SequencedAdjudicator:
+    outcomes: dict[str, list[AdjudicationDecision | Exception]]
+    backend_name: str = "sequenced_adjudicator"
+    requests: list[AdjudicationInput] = field(default_factory=list)
+
+    def adjudicate(self, request: AdjudicationInput) -> AdjudicationDecision:
+        self.requests.append(request)
+        outcome = self.outcomes[request.paper_id].pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 def _profile() -> Stage2Profile:
@@ -231,4 +247,73 @@ def test_stage2_invalid_adjudication_is_needs_review_with_a_standard_reason(tmp_
     gray = next(item for item in summary.decisions if item.paper_id == "gray")
     assert gray.status is FilterStatus.NEEDS_REVIEW
     assert gray.reason_code == "adjudicator_schema_failure"
+    database.close()
+
+
+def test_stage2_retries_one_structured_output_failure_and_persists_telemetry(tmp_path) -> None:
+    database = _database(tmp_path)
+    reranker = FakeReranker({"low": -2.0, "high": 3.0, "gray": 0.0, "missing": 3.0})
+    adjudicator = SequencedAdjudicator({
+        "gray": [
+            StructuredOutputError("invalid schema"),
+            AdjudicationDecision("gray", "relevant", 0.8, ("topic_match",), "kept", ("abstract",)),
+        ],
+        "missing": [
+            AdjudicationDecision("missing", "relevant", 0.8, ("title_only",), "kept", ("title",)),
+        ],
+    })
+
+    summary = Stage2Pipeline(database, reranker, adjudicator, _profile()).run(
+        "retry-success", _papers()
+    )
+
+    gray = next(decision for decision in summary.decisions if decision.paper_id == "gray")
+    assert gray.status is FilterStatus.RELEVANT
+    assert gray.adjudicator_attempt_count == 2
+    assert gray.adjudicator_retry_reason == "adjudicator_schema_failure"
+    assert gray.adjudicator_retry_outcome == "succeeded"
+    assert sum(request.paper_id == "gray" for request in adjudicator.requests) == 2
+    row = database.connection.execute(
+        """SELECT status, adjudicator_attempt_count, adjudicator_retry_reason,
+                  adjudicator_retry_outcome, reason
+           FROM filter_decisions WHERE run_id = ? AND paper_id = 'gray'""",
+        ("retry-success",),
+    ).fetchone()
+    assert tuple(row[:4]) == ("relevant", 2, "adjudicator_schema_failure", "succeeded")
+    assert json.loads(row["reason"])["adjudicator_retry_outcome"] == "succeeded"
+    database.close()
+
+
+def test_stage2_persists_terminal_retry_failure_and_resume_does_not_recall_qwen(tmp_path) -> None:
+    database = _database(tmp_path)
+    reranker = FakeReranker({"low": -2.0, "high": 3.0, "gray": 0.0, "missing": 3.0})
+    adjudicator = SequencedAdjudicator({
+        "gray": [Stage2BackendError("temporary"), StructuredOutputError("still invalid")],
+        "missing": [
+            AdjudicationDecision("missing", "relevant", 0.8, ("title_only",), "kept", ("title",)),
+        ],
+    })
+    pipeline = Stage2Pipeline(database, reranker, adjudicator, _profile())
+
+    first = pipeline.run("retry-terminal", _papers())
+
+    gray = next(decision for decision in first.decisions if decision.paper_id == "gray")
+    assert gray.status is FilterStatus.NEEDS_REVIEW
+    assert gray.reason_code == "adjudicator_schema_failure"
+    assert gray.adjudicator_attempt_count == 2
+    assert gray.adjudicator_retry_reason == "adjudicator_backend_failure"
+    assert gray.adjudicator_retry_outcome == "failed"
+    calls = len(adjudicator.requests)
+
+    resumed = pipeline.run("retry-terminal", _papers())
+
+    assert len(adjudicator.requests) == calls
+    assert all(decision.resumed for decision in resumed.decisions)
+    row = database.connection.execute(
+        """SELECT status, adjudicator_attempt_count, adjudicator_retry_reason,
+                  adjudicator_retry_outcome
+           FROM filter_decisions WHERE run_id = ? AND paper_id = 'gray'""",
+        ("retry-terminal",),
+    ).fetchone()
+    assert tuple(row) == ("needs_review", 2, "adjudicator_backend_failure", "failed")
     database.close()
