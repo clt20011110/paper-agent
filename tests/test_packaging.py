@@ -5,6 +5,7 @@ from pathlib import Path
 import tomllib
 
 import paper_agent.analysis as analysis_module
+from paper_agent import __version__
 from paper_agent.analysis import ANALYSIS_PROMPT, PaperAnalysisCoordinator
 from paper_agent.artifacts import ArtifactStore
 from paper_agent.cli import doctor
@@ -12,6 +13,12 @@ from paper_agent.domain import QuerySpec
 from paper_agent.manifests import load_catalog
 from paper_agent.processing import ArtifactProcessingPolicy, ProcessingGate
 from paper_agent.providers.builtin import FixtureTransport, create_builtin
+from paper_agent.resources import (
+    example_config_paths,
+    paper_agent_skill_directory,
+    release_asset_root,
+    stage2_model_lock_paths,
+)
 from paper_agent.storage import Database
 
 
@@ -52,6 +59,33 @@ def test_console_script_uses_the_structured_error_boundary() -> None:
     )
 
     assert project["project"]["scripts"]["paper-agent"] == "paper_agent.cli:entrypoint"
+
+
+def test_release_assets_use_one_versioned_source_and_wheel_layout() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = project["tool"]["setuptools"]["data-files"]
+    installed_root = f"share/paper-agent/{__version__}"
+
+    assert project["project"]["version"] == __version__
+    assert data_files[installed_root] == ["example_config.yaml"]
+    assert data_files[f"{installed_root}/configs"] == ["configs/*.yaml"]
+    assert data_files[f"{installed_root}/configs/stage2/models"] == [
+        "configs/stage2/models/*.json"
+    ]
+    assert data_files[f"{installed_root}/skills/paper-agent"] == [
+        "skills/paper-agent/SKILL.md"
+    ]
+    assert data_files[f"{installed_root}/skills/paper-agent/agents"] == [
+        "skills/paper-agent/agents/*.yaml"
+    ]
+
+    assert release_asset_root() == ROOT
+    assert all(path.is_file() for path in stage2_model_lock_paths())
+    assert all(path.is_file() for path in example_config_paths())
+    assert (paper_agent_skill_directory() / "SKILL.md").is_file()
+    assert (
+        paper_agent_skill_directory() / "agents" / "openai.yaml"
+    ).is_file()
 
 
 def test_stage4_coordinator_uses_the_runtime_prompt_locator(

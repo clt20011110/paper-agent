@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import paper_agent.resources as resources_module
+from paper_agent import __version__
 from paper_agent.canonical import content_hash
 from paper_agent.doctor import DoctorCheck, DoctorPaths, SystemDoctor, SystemDoctorReport
 from paper_agent.grants import GrantStore
@@ -91,6 +93,35 @@ def test_default_doctor_is_offline_and_reports_optional_uninitialized_database(t
     assert report.ready
     assert not report.production_ready
     assert not (tmp_path / "papers.sqlite").exists()
+
+
+def test_installed_doctor_defaults_to_versioned_packaged_model_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = tmp_path / "installed"
+    asset_root = data_root / "share" / "paper-agent" / __version__
+    installed_locks = (
+        asset_root
+        / "configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json",
+        asset_root
+        / "configs/stage2/models/qwen3.5-9b-8bit.lock.json",
+    )
+    for source, installed in zip(_paths(tmp_path).model_lock_paths, installed_locks):
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        installed.write_bytes(source.read_bytes())
+    monkeypatch.setattr(resources_module, "_source_checkout_root", lambda: None)
+    monkeypatch.setattr(
+        resources_module.sysconfig,
+        "get_path",
+        lambda name: str(data_root) if name == "data" else None,
+    )
+
+    paths = DoctorPaths.defaults()
+    check = SystemDoctor(paths)._model_locks(None, None)
+
+    assert paths.repository_root == asset_root
+    assert paths.model_lock_paths == installed_locks
+    assert check.status == "pass"
 
 
 def test_disk_check_uses_nearest_existing_ancestor_for_nested_database(tmp_path: Path) -> None:

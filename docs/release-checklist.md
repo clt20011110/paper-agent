@@ -38,7 +38,11 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
   provider 或生产 `doctor` gate 已通过。
 - [ ] 检查 wheel 中的 migrations、schemas、providers、venues、acceptance、policies、prompts、
   registries 等运行时数据；每个 acceptance manifest 的主 fixture 和全部原生传输 route fixture
-  必须存在且摘要匹配。配置模板与 Codex skill 必须随同一 release 明确分发。
+  必须存在且摘要匹配。
+- [ ] 从隔离 wheel 环境调用 `paper_agent.resources.release_asset_root()`；路径必须以当前版本结尾，
+  其中 Stage 2 model locks、全部示例 config、`skills/paper-agent/SKILL.md` 和 agent metadata 必须存在。
+  隔离环境的普通 `paper-agent doctor` 必须返回成功，且 `stage2_model_locks=pass`；不允许仅接受
+  非零退出码后跳过该检查。实际把 config 和 skill 从该路径复制到临时目标，确认无需源码 checkout。
 
 ## 人工生产门禁
 
@@ -54,6 +58,7 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
 ## 发布与回滚
 
 - [ ] 记录 source commit、wheel SHA-256、测试/CI run、人工 smoke evidence、已知限制和升级说明。
-- [ ] 仅在上述证据齐全后打 tag、上传 wheel/skill/templates，并创建 release note。
+- [ ] 仅在上述证据齐全后打 tag、上传已内含版本化 skill/templates/model-lock assets 的 wheel，并创建
+  release note；发布记录须写明 `release_asset_root` 的版本路径和 wheel SHA-256。
 - [ ] 保留上一稳定 wheel、模板、数据库备份和迁移说明。回滚应用版本不会倒改 SQLite 或不可变
   artifacts；若 schema/manifest 已漂移，按迁移和恢复流程建立新 run。

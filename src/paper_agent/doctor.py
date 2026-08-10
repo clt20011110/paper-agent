@@ -31,6 +31,7 @@ from .canonical import content_hash
 from .grants import GrantError, GrantStore
 from .manifests import ManifestCatalog, ManifestError, load_catalog
 from .providers.plugins import distribution_digest
+from .resources import release_asset_root, stage2_model_lock_paths
 from .schema import SchemaValidationError, validate
 from .stage2_backends import ModelLock, load_model_lock
 from .stage2_search import ReleasedStage2, Stage2ReleaseError, load_stage2_release
@@ -117,13 +118,10 @@ class DoctorPaths:
 
     @classmethod
     def defaults(cls, repository_root: Path | None = None) -> "DoctorPaths":
-        root = repository_root or Path(__file__).resolve().parents[2]
+        root = repository_root or release_asset_root()
         return cls(
             repository_root=root,
-            model_lock_paths=(
-                root / "configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json",
-                root / "configs/stage2/models/qwen3.5-9b-8bit.lock.json",
-            ),
+            model_lock_paths=stage2_model_lock_paths(root),
         )
 
 

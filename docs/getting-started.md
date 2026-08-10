@@ -15,30 +15,50 @@ python3 -m venv .venv
 .venv/bin/paper-agent --help
 ```
 
-从源码 checkout 安装会保留 `example_config.yaml`、`configs/` 和
-`skills/paper-agent/`。若只安装 wheel，请另外取得同一 release 的配置模板和
-Codex skill；不要从另一个版本的仓库混用 YAML、prompt、schema 或 policy。
+也可以在空目录中安装同一 release 的 wheel：
 
-安装 Codex skill 时，将整个 `skills/paper-agent/` 目录复制或链接到个人 Codex
-skills 目录。skill 只调用已安装的 `paper-agent`，不携带第二套实现。
+```sh
+python3 -m venv .venv
+.venv/bin/pip install /absolute/path/to/paper_agent-2.0.0a0-py3-none-any.whl
+```
+
+源码和 wheel 都通过同一个只读 locator 暴露与包版本绑定的模板、Stage 2 model locks
+和 Codex skill。源码态返回 checkout 根目录；wheel 态返回
+`<venv>/share/paper-agent/<paper-agent-version>`。先记录准确路径：
+
+```sh
+ASSET_ROOT="$(.venv/bin/python -c \
+  'from paper_agent.resources import release_asset_root; print(release_asset_root())')"
+test -f "$ASSET_ROOT/configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json"
+test -f "$ASSET_ROOT/configs/stage2/models/qwen3.5-9b-8bit.lock.json"
+```
+
+安装 Codex skill 时，将整个版本绑定目录复制到个人 Codex skills 目录。下面的目标路径
+必须替换成当前 Codex 安装实际使用的位置；skill 只调用已安装的 `paper-agent`，不携带
+第二套实现：
+
+```sh
+cp -R "$ASSET_ROOT/skills/paper-agent" \
+  /absolute/path/to/codex-home/skills/paper-agent
+```
 
 ## 2. 选择配置并运行 doctor
 
-从窄范围模板开始，复制到自己的受保护项目目录；不要原地修改仓库示例。不要只复制一个
-YAML：模板还引用同一 release 的 venue/provider manifests、schema、prompt、policy 和 registry。
-源码 release 可把下面的只读运行时资源一并复制；wheel 用户应从同一 release artifact 取得
-等价模板/资源包。
+从窄范围模板开始，复制到自己的受保护项目目录；不要原地修改安装资源。wheel 已把
+venue/provider manifests、schema、prompt、policy 和 registry 安装到同一 Python 环境。运行时
+locator 在源码态读取 checkout，在 wheel 态读取当前 Python 环境中的冻结版本；无需把这些只读目录
+复制进项目，也不要从另一个 release 混入资源。
 
 ```sh
 mkdir -p /absolute/path/to/paper-research
-cp configs/smoke_supported.yaml /absolute/path/to/paper-research/research.yaml
-cp -R acceptance policies prompts providers registries schemas venues \
-  /absolute/path/to/paper-research/
+cp "$ASSET_ROOT/configs/smoke_supported.yaml" \
+  /absolute/path/to/paper-research/research.yaml
 .venv/bin/paper-agent --config /absolute/path/to/paper-research/research.yaml doctor
 ```
 
-配置中的输出、SQLite、模型验收产物等相对路径以 `research.yaml` 所在目录为根；上述只读
-资源必须保持相同目录关系。也可以把配置留在完整 checkout 中，只把 output/database 路径改成
+配置中的输出、SQLite、provider snapshot 和模型验收产物等可变路径仍以 `research.yaml` 所在目录
+为根。核心只读 manifests/schema/prompt/policy 由安装 locator 提供，Stage 2 默认 model locks 则由
+上述版本化 asset root 提供。也可以把配置留在完整 checkout 中，只把 output/database 路径改成
 绝对项目路径。
 
 普通 `doctor` 可以在未安装模型、未配置账号或没有批准计划时报告 warning/blocker。
