@@ -1,3 +1,5 @@
+import base64
+from hashlib import sha256
 import json
 from contextlib import closing
 from pathlib import Path
@@ -7,8 +9,10 @@ from types import SimpleNamespace
 import pytest
 
 from paper_agent.approval import ApprovalError
+from paper_agent.approved_snapshot import frozen_parameters_hash
 from paper_agent.cli import main
 from paper_agent.query_plan import QueryPlanDriftError
+from paper_agent.query_compilers import compile_queries
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +86,66 @@ def _plan(tmp_path, capsys) -> tuple[dict[str, object], str]:
     assert main(["search", "plan", "--input", str(input_path), "--output-root", str(tmp_path / "output")]) == 0
     output = json.loads(capsys.readouterr().out)
     return output, output["draft_path"]
+
+
+def test_search_run_cli_replays_an_approved_snapshot_without_contact(tmp_path, capsys) -> None:
+    document = _draft()
+    query = compile_queries("crossref", document["query_variants"], document["scope"])[0]
+    parameters = {**query.parameters, "cursor": None}
+    body = b'{"status":"ok","message":{"items":[{"DOI":"10.1/snapshot","title":["Snapshot"]}]}}'
+    bundle = {
+        "schema_version": "1",
+        "provider": "crossref",
+        "responses": [
+            {
+                "operation": "search",
+                "parameters_hash": frozen_parameters_hash(parameters),
+                "cursor": None,
+                "content_type": "application/json",
+                "body_base64": base64.b64encode(body).decode("ascii"),
+                "body_sha256": sha256(body).hexdigest(),
+            }
+        ],
+    }
+    snapshot = tmp_path / "crossref.snapshot.json"
+    snapshot.write_text(json.dumps(bundle, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    document["providers"] = [{"provider": "crossref", "mode": "snapshot", "snapshot_hash": sha256(snapshot.read_bytes()).hexdigest()}]
+    document["required_providers"] = ["crossref"]
+    input_path = tmp_path / "search.yaml"
+    input_path.write_text(json.dumps(document), encoding="utf-8")
+
+    assert main(["search", "plan", "--input", str(input_path), "--output-root", str(tmp_path / "output")]) == 0
+    draft_result = json.loads(capsys.readouterr().out)
+    assert main(
+        [
+            "search",
+            "approve",
+            "--plan",
+            draft_result["draft_path"],
+            "--hash",
+            draft_result["plan_hash"],
+            "--approved-by",
+            "owner",
+            "--approved-at",
+            "2026-08-09T01:00:00Z",
+        ]
+    ) == 0
+    approved = json.loads(capsys.readouterr().out)
+
+    assert main(
+        [
+            "search",
+            "run",
+            "--plan",
+            approved["approved_path"],
+            "--database",
+            str(tmp_path / "snapshot.sqlite3"),
+            "--snapshot",
+            f"crossref={snapshot}",
+        ]
+    ) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert (result["provider_invocation"], result["paper_count"]) == ("completed", 1)
 
 
 def test_search_plan_approval_run_and_history_are_frozen(tmp_path, capsys, monkeypatch) -> None:

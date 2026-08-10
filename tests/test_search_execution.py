@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -8,8 +9,10 @@ import sqlite3
 import pytest
 
 from paper_agent.cli import _provider_specs
+from paper_agent.approved_snapshot import frozen_parameters_hash
 from paper_agent.query_plan import QueryPlanDriftError, approve_query_plan, compile_query_plan
 from paper_agent.providers.builtin import FixtureTransport
+from paper_agent.query_compilers import compile_queries
 from paper_agent.search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 
 from test_query_plan import draft
@@ -57,6 +60,120 @@ def test_snapshot_runtime_requires_the_exact_approved_file(tmp_path, monkeypatch
     snapshot.write_bytes(b'{"message":{"items":[{"changed":true}]}}')
     with pytest.raises(QueryPlanDriftError, match="snapshot_hash"):
         resolve_runtime_providers(plan, snapshot_paths={"crossref": snapshot})
+
+
+def _snapshot_bundle(path: Path, provider: str, responses: list[tuple[str, dict, bytes, str]]) -> str:
+    document = {
+        "schema_version": "1",
+        "provider": provider,
+        "responses": [
+            {
+                "operation": operation,
+                "parameters_hash": frozen_parameters_hash(parameters),
+                "cursor": parameters.get("cursor"),
+                "content_type": content_type,
+                "body_base64": base64.b64encode(body).decode("ascii"),
+                "body_sha256": sha256(body).hexdigest(),
+            }
+            for operation, parameters, body, content_type in responses
+        ],
+    }
+    path.write_text(json.dumps(document, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    return sha256(path.read_bytes()).hexdigest()
+
+
+def _crossref_parameters() -> dict:
+    query = compile_queries("crossref", draft()["query_variants"], draft()["scope"])[0]
+    return dict(query.parameters)
+
+
+def test_search_execution_replays_paginated_snapshot_into_sqlite_without_contact(tmp_path, monkeypatch) -> None:
+    first_parameters = {**_crossref_parameters(), "cursor": None}
+    second_parameters = {**_crossref_parameters(), "cursor": "page-2"}
+    first = b'{"status":"ok","message":{"next-cursor":"page-2","items":[{"DOI":"10.1/first","title":["First"]}]}}'
+    second = b'{"status":"ok","message":{"items":[{"DOI":"10.1/second","title":["Second"]}]}}'
+    bundle = tmp_path / "crossref.snapshot.json"
+    digest = _snapshot_bundle(
+        bundle,
+        "crossref",
+        [("search", first_parameters, first, "application/json"), ("search", second_parameters, second, "application/json")],
+    )
+    plan = _approved("crossref", monkeypatch, mode="snapshot", snapshot_hash=digest)
+    database = tmp_path / "papers.sqlite3"
+
+    result, _, _ = execute_search_plan(plan, database, snapshot_paths={"crossref": bundle})
+
+    assert (result.fanout.incomplete, len(result.paper_ids)) == (False, 2)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM search_queries WHERE role = 'search'").fetchone()[0] == 2
+
+
+def test_snapshot_bundle_drift_and_missing_page_are_rejected_without_transport_fallback(tmp_path, monkeypatch) -> None:
+    first_parameters = {**_crossref_parameters(), "cursor": None}
+    first = b'{"status":"ok","message":{"next-cursor":"page-2","items":[{"DOI":"10.1/first","title":["First"]}]}}'
+    bundle = tmp_path / "crossref.snapshot.json"
+    digest = _snapshot_bundle(bundle, "crossref", [("search", first_parameters, first, "application/json")])
+    plan = _approved("crossref", monkeypatch, mode="snapshot", snapshot_hash=digest)
+    fallback_calls = []
+
+    def fallback(*args):
+        fallback_calls.append(args)
+        raise AssertionError("snapshot request must not fall back to API transport")
+
+    result, _, _ = execute_search_plan(
+        plan,
+        tmp_path / "missing-page.sqlite3",
+        snapshot_paths={"crossref": bundle},
+        transport=fallback,
+    )
+    assert result.status == "incomplete"
+    assert fallback_calls == []
+
+    bundle.write_bytes(bundle.read_bytes() + b"\n")
+    with pytest.raises(QueryPlanDriftError, match="snapshot_hash"):
+        execute_search_plan(plan, tmp_path / "drift.sqlite3", snapshot_paths={"crossref": bundle})
+
+
+def test_snapshot_and_api_providers_use_their_respective_transports(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENALEX_API_KEY", "test-key")
+    parameters = {**_crossref_parameters(), "cursor": None}
+    body = b'{"status":"ok","message":{"items":[{"DOI":"10.1/snapshot","title":["Snapshot"]}]}}'
+    bundle = tmp_path / "crossref.snapshot.json"
+    digest = _snapshot_bundle(bundle, "crossref", [("search", parameters, body, "application/json")])
+    document = draft()
+    document["providers"] = ["crossref", "openalex"]
+    document["required_providers"] = ["crossref", "openalex"]
+    specs = _provider_specs(
+        [
+            {"provider": "crossref", "mode": "snapshot", "snapshot_hash": digest},
+            "openalex",
+        ],
+        ROOT,
+        venue_ids=(),
+    )
+    plan = compile_query_plan(document, providers=specs)
+    plan = approve_query_plan(plan, plan["plan_hash"], approved_by="owner", approved_at=NOW)
+    fallback_calls = []
+
+    def api_transport(provider, operation, parameters):
+        fallback_calls.append((provider, operation, parameters))
+        assert provider == "openalex"
+        return {
+            "results": [
+                {"id": "https://openalex.org/W1", "title": "API", "authorships": [], "publication_year": 2024}
+            ]
+        }
+
+    result, _, _ = execute_search_plan(
+        plan,
+        tmp_path / "mixed.sqlite3",
+        snapshot_paths={"crossref": bundle},
+        transport=api_transport,
+    )
+    assert (result.fanout.incomplete, len(result.paper_ids)) == (False, 2)
+    assert fallback_calls[0][:2] == ("openalex", "search")
+    assert {call[0] for call in fallback_calls} == {"openalex"}
 
 
 @pytest.mark.parametrize(

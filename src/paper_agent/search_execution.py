@@ -14,6 +14,12 @@ from uuid import NAMESPACE_URL, uuid5
 from .canonical import content_hash
 from .http_transport import ControlledHTTPTransport
 from .manifests import ManifestCatalog, load_catalog
+from .approved_snapshot import (
+    MetadataSnapshotBundle,
+    MetadataSnapshotError,
+    MetadataSnapshotTransport,
+    ProviderTransportRouter,
+)
 from .provider_runtime import ProviderRuntime, policy_from_manifest
 from .providers.api import CrawlWindow, SeedInput
 from .providers.builtin import create_builtin, manifest_from_document
@@ -113,26 +119,47 @@ def execute_search_plan(
         snapshot_paths=snapshot_paths,
     )
     active = tuple(provider for provider in runtime if provider["resolved"])
-    if any(provider["mode"] not in {"api", "local"} for provider in active):
-        raise QueryPlanDriftError("snapshot providers require a registered snapshot reader")
+    if any(provider["mode"] == "bulk_snapshot" for provider in active):
+        raise QueryPlanDriftError("bulk snapshots need a provider-specific reader")
+
+    policies = {
+        str(provider["provider"]): policy_from_manifest(
+            manifest_from_document(installed.provider(str(provider["provider"]))),
+            terms_accepted=provider["data_use"] == "permitted",
+            robots_allowed=True,
+        )
+        for provider in active
+    }
+    provider_runtime = ProviderRuntime(policies)
 
     if transport is None:
         operator_contact = contact or ""
-        if not operator_contact and any(provider["provider"] != "user_library" for provider in active):
+        needs_http = any(provider["mode"] == "api" and provider["provider"] != "user_library" for provider in active)
+        if not operator_contact and needs_http:
             raise ValueError("search execution requires --contact or PAPER_AGENT_CONTACT")
-        policies = {
-            str(provider["provider"]): policy_from_manifest(
-                manifest_from_document(installed.provider(str(provider["provider"]))),
-                terms_accepted=provider["data_use"] == "permitted",
-                robots_allowed=True,
-            )
-            for provider in active
-        }
-        transport = ControlledHTTPTransport(
-            operator_contact or "local-library",
-            runtime=ProviderRuntime(policies),
-            environment=environment,
+        transport = (
+            ControlledHTTPTransport(operator_contact, runtime=provider_runtime, environment=environment)
+            if needs_http
+            else _no_network_transport
         )
+
+    snapshot_transports = {}
+    paths = snapshot_paths or {}
+    for provider in active:
+        if provider["mode"] != "snapshot":
+            continue
+        name = str(provider["provider"])
+        try:
+            bundle = MetadataSnapshotBundle.load(paths[name], str(provider["snapshot_hash"]))
+        except KeyError as error:
+            raise QueryPlanDriftError(f"snapshot provider {name} has no approved bundle path") from error
+        except MetadataSnapshotError as error:
+            raise QueryPlanDriftError(f"snapshot provider {name}: {error}") from error
+        if bundle.provider != name:
+            raise QueryPlanDriftError(f"snapshot bundle provider {bundle.provider} does not match {name}")
+        snapshot_transports[name] = MetadataSnapshotTransport(bundle, provider_runtime, environment)
+    if snapshot_transports:
+        transport = ProviderTransportRouter(snapshot_transports, transport)
 
     clients = {
         str(provider["provider"]): create_builtin(
@@ -244,3 +271,7 @@ def _snapshot_hash(provider: str, mode: str, paths: Mapping[str, Path]) -> str |
         return None
     path = paths.get(provider)
     return sha256(path.read_bytes()).hexdigest() if path else None
+
+
+def _no_network_transport(provider: str, operation: str, parameters: Mapping[str, Any]) -> Mapping[str, Any]:
+    raise QueryPlanDriftError(f"{provider}:{operation} has no API transport in snapshot-only execution")
