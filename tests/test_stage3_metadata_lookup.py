@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 import pytest
 
+from paper_agent.canonical import content_hash
 from paper_agent.domain import DownloadStatus, Paper
 from paper_agent.download_cli_service import Stage3DownloadService
 from paper_agent.download_providers import (
@@ -16,7 +17,13 @@ from paper_agent.download_providers import (
 )
 from paper_agent.provider_runtime import ProviderRequestError
 from paper_agent.repository import PaperRepository
-from paper_agent.stage3_metadata_lookup import Stage3MetadataLookup, default_metadata_lookup_registry
+from paper_agent.stage3_metadata_lookup import (
+    CONTROLLED_HTTP_TRANSPORT_IMPLEMENTATION_VERSION,
+    MetadataLookupDescriptor,
+    MetadataLookupRegistry,
+    Stage3MetadataLookup,
+    default_metadata_lookup_registry,
+)
 from paper_agent.storage import Database
 
 
@@ -24,9 +31,13 @@ NOW = datetime(2026, 8, 10, tzinfo=UTC)
 
 
 class FixtureMetadataTransport:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, version: str = "fixture-transport-v1") -> None:
         self.fail = fail
+        self.version = version
         self.calls: list[tuple[str, str, Mapping[str, Any]]] = []
+
+    def canonical_identity(self) -> Mapping[str, Any]:
+        return {"implementation_version": self.version}
 
     def __call__(self, provider: str, operation: str, parameters: Mapping[str, Any]) -> Mapping[str, Any]:
         self.calls.append((provider, operation, dict(parameters)))
@@ -130,6 +141,149 @@ def test_lookup_retains_raw_evidence_hash_and_retrieval_time_for_resolver_candid
 
     assert candidates[0].raw_evidence_hash == "europe-pmc-response-sha256"
     assert candidates[0].retrieved_at == "2026-08-10T00:00:00Z"
+
+
+def test_lookup_identity_comes_from_the_actual_registry_contract() -> None:
+    def parameters(paper: Paper) -> Mapping[str, Any] | None:
+        return {"doi": paper.doi} if paper.doi else None
+
+    search = MetadataLookupRegistry((MetadataLookupDescriptor(
+        "europe_pmc",
+        "europe_pmc",
+        "search",
+        "fixture-parameters-v1",
+        {"paper_field": "doi", "parameter": "doi", "missing": "skip"},
+        parameters,
+    ),))
+    resolve = MetadataLookupRegistry((MetadataLookupDescriptor(
+        "europe_pmc",
+        "europe_pmc",
+        "resolve",
+        "fixture-parameters-v1",
+        {"paper_field": "doi", "parameter": "doi", "missing": "skip"},
+        parameters,
+    ),))
+    transport = FixtureMetadataTransport()
+    first = Stage3MetadataLookup(transport, lambda: NOW, search)
+    second = Stage3MetadataLookup(transport, lambda: NOW, resolve)
+
+    assert content_hash(first.canonical_identity()) != content_hash(
+        second.canonical_identity()
+    )
+    assert first.canonical_identity()["registry"]["descriptors"][0][
+        "operation"
+    ] == "search"
+
+
+def test_default_metadata_transport_has_a_stable_implementation_identity(
+    tmp_path: Path, database: Database,
+) -> None:
+    service = Stage3DownloadService(
+        database,
+        _config(metadata_lookup=True),
+        config_root=Path(__file__).parents[1],
+        artifact_root=tmp_path / "output",
+        clock=lambda: NOW,
+    )
+
+    assert service.lookup is not None
+    assert service.lookup.canonical_identity()["transport"] == {
+        "implementation_version": CONTROLLED_HTTP_TRANSPORT_IMPLEMENTATION_VERSION
+    }
+
+
+def test_injected_metadata_transport_requires_identity_before_network(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _save_paper(database)
+
+    class AnonymousTransport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, provider, operation, parameters):
+            self.calls += 1
+            return {}
+
+    transport = AnonymousTransport()
+    service = Stage3DownloadService(
+        database,
+        _config(metadata_lookup=True),
+        config_root=Path(__file__).parents[1],
+        artifact_root=tmp_path / "output",
+        metadata_transport=transport,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(ValueError, match="transport must expose canonical_identity"):
+        service.run(paper_ids=[paper_id], run_id="anonymous-transport")
+
+    assert transport.calls == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0] == 0
+
+
+def test_metadata_transport_version_drift_refuses_resume_before_network(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _save_paper(database)
+    original = FixtureMetadataTransport(version="fixture-transport-v1")
+    _service(tmp_path, database, original, metadata_lookup=True).run(
+        paper_ids=[paper_id], run_id="transport-drift"
+    )
+    drifted = FixtureMetadataTransport(version="fixture-transport-v2")
+
+    with pytest.raises(ValueError, match="different frozen inputs"):
+        _service(tmp_path, database, drifted, metadata_lookup=True).run(
+            paper_ids=[paper_id], run_id="transport-drift"
+        )
+
+    assert drifted.calls == []
+
+
+def test_stage3_snapshot_binds_the_injected_lookup_registry_and_dry_run_writes_nothing(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _save_paper(database)
+
+    def parameters(paper: Paper) -> Mapping[str, Any] | None:
+        return {"doi": paper.doi} if paper.doi else None
+
+    def service(operation: str, transport: FixtureMetadataTransport):
+        registry = MetadataLookupRegistry((MetadataLookupDescriptor(
+            "europe_pmc",
+            "europe_pmc",
+            operation,
+            "fixture-parameters-v1",
+            {"paper_field": "doi", "parameter": "doi", "missing": "skip"},
+            parameters,
+        ),))
+        return Stage3DownloadService(
+            database,
+            _config(metadata_lookup=True),
+            config_root=Path(__file__).parents[1],
+            artifact_root=tmp_path / "output",
+            lookup=Stage3MetadataLookup(transport, lambda: NOW, registry),
+            clock=lambda: NOW,
+        )
+
+    search_transport = FixtureMetadataTransport()
+    resolve_transport = FixtureMetadataTransport()
+    search = service("search", search_transport).run(
+        paper_ids=[paper_id], run_id="lookup-search", dry_run=True
+    )
+    resolve = service("resolve", resolve_transport).run(
+        paper_ids=[paper_id], run_id="lookup-resolve", dry_run=True
+    )
+
+    assert search.resolver_snapshot is not None
+    assert resolve.resolver_snapshot is not None
+    assert search.resolver_snapshot.snapshot_hash != resolve.resolver_snapshot.snapshot_hash
+    assert search_transport.calls[0][1] == "search"
+    assert resolve_transport.calls[0][1] == "resolve"
+    assert database.connection.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0] == 0
+    assert not (tmp_path / "output" / "artifacts").exists()
 
 
 def test_absent_metadata_configuration_keeps_existing_manual_queue_semantics(

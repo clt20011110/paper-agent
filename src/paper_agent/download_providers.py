@@ -11,7 +11,8 @@ addition does not require editing a central conditional chain.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 import re
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
@@ -77,6 +78,17 @@ class DownloadProviderError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class ResolverSnapshot:
+    """Canonical identity for the exact ordered resolver registry in one run."""
+
+    document: Mapping[str, Any]
+    snapshot_hash: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return deepcopy(dict(self.document))
+
+
+@dataclass(frozen=True, slots=True)
 class ResolverEvidence:
     """Metadata response retained by the coordinator, never a fetched PDF body."""
 
@@ -90,6 +102,11 @@ class MetadataResolverTransport(Protocol):
     """A metadata-only lookup boundary for remote OA catalogues."""
 
     def __call__(self, resolver: str, paper: Paper) -> ResolverEvidence | None: ...
+
+    def canonical_identity(self) -> Mapping[str, Any]:
+        """Return the versioned registry contract used to produce lookups."""
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,7 +417,8 @@ class MatchedArxivResolver:
 class ResolverDescriptor:
     name: str
     resolver: AccessResolver
-    enabled: Callable[[ResolverContext], bool] = lambda _context: True
+    implementation_version: str = "resolver-v1"
+    candidate_config: Mapping[str, Any] = field(default_factory=dict)
 
 
 class ResolverRegistry:
@@ -415,18 +433,83 @@ class ResolverRegistry:
     def names(self) -> tuple[str, ...]:
         return tuple(self._descriptors)
 
+    def descriptor(self, name: str) -> ResolverDescriptor:
+        try:
+            return self._descriptors[name]
+        except KeyError as error:
+            raise DownloadProviderError(f"unknown resolver: {name}") from error
+
     def register(self, descriptor: ResolverDescriptor) -> None:
         if not descriptor.name or descriptor.name != descriptor.resolver.name:
             raise DownloadProviderError("resolver descriptor name must match its resolver")
         if descriptor.name in self._descriptors:
             raise DownloadProviderError(f"duplicate resolver descriptor: {descriptor.name}")
-        self._descriptors[descriptor.name] = descriptor
+        if (
+            not isinstance(descriptor.implementation_version, str)
+            or not descriptor.implementation_version.strip()
+        ):
+            raise DownloadProviderError(
+                "resolver descriptor requires an implementation_version"
+            )
+        if not isinstance(descriptor.candidate_config, Mapping):
+            raise DownloadProviderError("resolver candidate_config must be a mapping")
+        content_hash(descriptor.candidate_config)
+        self._descriptors[descriptor.name] = replace(
+            descriptor,
+            candidate_config=deepcopy(dict(descriptor.candidate_config)),
+        )
+
+    def freeze(
+        self,
+        *,
+        configured_order: Sequence[str],
+        runtime_config: Mapping[str, Mapping[str, Any]],
+        download_config_hash: str,
+    ) -> ResolverSnapshot:
+        """Freeze the registry and settings that affect emitted candidates."""
+
+        if (
+            len(download_config_hash) != 64
+            or any(character not in "0123456789abcdef" for character in download_config_hash)
+        ):
+            raise DownloadProviderError(
+                "resolver snapshot requires a download config SHA-256"
+            )
+        order = tuple(configured_order)
+        if self.names != order:
+            raise DownloadProviderError(
+                "resolver registry does not match the configured frozen order"
+            )
+        if set(runtime_config) != set(order):
+            raise DownloadProviderError(
+                "resolver runtime config must exactly cover the frozen registry"
+            )
+        resolvers: list[dict[str, Any]] = []
+        for name in order:
+            descriptor = self._descriptors[name]
+            current = runtime_config[name]
+            if not isinstance(current, Mapping):
+                raise DownloadProviderError(
+                    f"resolver runtime config must be a mapping: {name}"
+                )
+            resolvers.append({
+                "name": name,
+                "implementation_version": descriptor.implementation_version,
+                "candidate_config": deepcopy(dict(descriptor.candidate_config)),
+                "runtime_config": deepcopy(dict(current)),
+            })
+        document = {
+            "schema_version": "1",
+            "resolver_order": list(order),
+            "download_config_hash": download_config_hash,
+            "resolvers": resolvers,
+        }
+        return ResolverSnapshot(document, content_hash(document))
 
     def resolve(self, context: ResolverContext) -> tuple[AccessLocationCandidate, ...]:
         candidates: list[AccessLocationCandidate] = []
         for descriptor in self._descriptors.values():
-            if descriptor.enabled(context):
-                candidates.extend(descriptor.resolver.resolve(context))
+            candidates.extend(descriptor.resolver.resolve(context))
         return tuple(_dedupe(candidates))
 
 
@@ -581,10 +664,26 @@ class DownloadProviderRegistry:
 def default_resolver_registry() -> ResolverRegistry:
     return ResolverRegistry(
         (
-            ResolverDescriptor("publisher_public", OfficialPublicResolver()),
-            ResolverDescriptor("europe_pmc", EuropePMCOpenAccessResolver()),
-            ResolverDescriptor("unpaywall", UnpaywallOpenAccessResolver()),
-            ResolverDescriptor("arxiv", MatchedArxivResolver()),
+            ResolverDescriptor(
+                "publisher_public",
+                OfficialPublicResolver(),
+                implementation_version="publisher-public-resolver-v1",
+            ),
+            ResolverDescriptor(
+                "europe_pmc",
+                EuropePMCOpenAccessResolver(),
+                implementation_version="europe-pmc-oa-resolver-v1",
+            ),
+            ResolverDescriptor(
+                "unpaywall",
+                UnpaywallOpenAccessResolver(),
+                implementation_version="unpaywall-oa-resolver-v1",
+            ),
+            ResolverDescriptor(
+                "arxiv",
+                MatchedArxivResolver(),
+                implementation_version="matched-arxiv-resolver-v1",
+            ),
         )
     )
 

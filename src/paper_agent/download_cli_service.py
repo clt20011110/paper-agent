@@ -25,7 +25,7 @@ from .authorized_skill_adapter import (
 )
 from .authorized_skill_runtime import AuthorizedSkillRuntime, AuthorizedSkillRuntimeError
 from .authorized_luna import AuthorizedLunaPlanner
-from .canonical import content_hash
+from .canonical import canonical_json, content_hash
 from .domain import (
     DownloadResult,
     DownloadStatus,
@@ -39,6 +39,8 @@ from .download_providers import (
     MetadataResolverTransport,
     ProbeContext,
     ResolverContext,
+    ResolverRegistry,
+    ResolverSnapshot,
     default_download_provider_registry,
     default_resolver_registry,
 )
@@ -65,6 +67,7 @@ from .stage3_pipeline import (
 )
 from .stage3_luna_decisions import Stage3LunaDecisionStore
 from .stage3_metadata_lookup import (
+    CONTROLLED_HTTP_TRANSPORT_IMPLEMENTATION_VERSION,
     PublicMetadataTransport,
     Stage3MetadataLookup,
     default_metadata_lookup_registry,
@@ -72,7 +75,7 @@ from .stage3_metadata_lookup import (
 from .storage import Database
 
 
-IMPLEMENTATION_VERSION = "stage3-cli-v4"
+IMPLEMENTATION_VERSION = "stage3-cli-v5"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +88,7 @@ class Stage3DownloadResult:
     planned_decisions: tuple[tuple[str, str, str], ...] = ()
     authorized_queue_path: Path | None = None
     authorization_scope: DownloadScopeBinding = DownloadScopeBinding()
+    resolver_snapshot: ResolverSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +126,7 @@ class Stage3DownloadService:
         clock: Callable[[], datetime] | None = None,
         authorized_luna_planner: LunaPlanner | None = None,
         scope_membership: Callable[[str, str, str, str | None], bool] | None = None,
+        resolver_registry: ResolverRegistry | None = None,
     ) -> None:
         self.database = database
         self.config_root = Path(config_root)
@@ -131,12 +136,17 @@ class Stage3DownloadService:
         self.clock = _trusted_clock(clock)
         self.authorized_luna_planner = authorized_luna_planner
         self.scope_membership = scope_membership
+        self.resolver_registry = resolver_registry
         self.download_config = _download_config(config)
         _require_frozen_routing(self.download_config)
-        self.lookup = lookup or _configured_metadata_lookup(
-            self.download_config,
-            transport=metadata_transport,
-            clock=self.clock,
+        self.lookup = (
+            lookup
+            if lookup is not None
+            else _configured_metadata_lookup(
+                self.download_config,
+                transport=metadata_transport,
+                clock=self.clock,
+            )
         )
 
     def select_papers(
@@ -198,22 +208,32 @@ class Stage3DownloadService:
         )
         selected_ids = tuple(item.paper.paper_id for item in papers)
         policy = DownloadAccessPolicy.load(_policy_path(self.config_root, self.download_config))
+        resolvers = self.resolver_registry or default_resolver_registry()
+        configured_resolver_order = tuple(self.download_config["resolvers"])
+        resolver_snapshot = resolvers.freeze(
+            configured_order=configured_resolver_order,
+            runtime_config=_resolver_runtime_config(
+                resolvers.names, self.download_config, self.lookup
+            ),
+            download_config_hash=content_hash(self.download_config),
+        )
         identity = {
             "paper_ids": selected_ids,
+            "per_paper_resolver_inputs": _per_paper_resolver_inputs(papers),
             "filter_run_id": filter_run_id,
             "include_needs_review": include_needs_review,
             "authorization_grant_id": authorization_grant_id,
             "authorization_scope": authorization_scope.to_dict(),
-            "download_config": self.download_config,
+            "resolver_snapshot_hash": resolver_snapshot.snapshot_hash,
             "authorized_handoff": _authorized_handoff_identity(authorized_skill),
         }
         input_hash = content_hash(identity)
-        config_hash = content_hash(self.download_config)
+        config_hash = resolver_snapshot.snapshot_hash
         resolved_run_id = run_id or f"stage3-{input_hash[:16]}"
-        resolvers = default_resolver_registry()
+        artifact_store = ArtifactStore(self.artifact_root)
         service = DownloadService(
             self.database,
-            ArtifactStore(self.artifact_root),
+            artifact_store,
             policy,
             self.provider_terms,
             self.fetcher,
@@ -242,16 +262,31 @@ class Stage3DownloadService:
                 resolved_run_id, selected_ids, "validated", True,
                 planned_decisions=decisions,
                 authorization_scope=authorization_scope,
+                resolver_snapshot=resolver_snapshot,
             )
 
         runs = RunStore(self.database)
-        run = runs.create(
-            run_id=resolved_run_id,
-            stage="stage-3-download",
-            input_hash=input_hash,
-            config_hash=config_hash,
-            implementation_version=IMPLEMENTATION_VERSION,
-        )
+        create_run = {
+            "run_id": resolved_run_id,
+            "stage": "stage-3-download",
+            "input_hash": input_hash,
+            "config_hash": config_hash,
+            "implementation_version": IMPLEMENTATION_VERSION,
+        }
+        if runs.get(resolved_run_id) is not None:
+            # Reject resume drift before creating a new global manifest.
+            run = runs.create(**create_run)
+            _persist_resolver_snapshot(
+                self.database, artifact_store, resolver_snapshot
+            )
+        else:
+            # A manifest persistence failure must not leave a draft run behind.
+            artifact_hash = _persist_resolver_snapshot(
+                self.database, artifact_store, resolver_snapshot
+            )
+            if artifact_hash != config_hash:
+                raise ValueError("resolver snapshot artifact does not match config hash")
+            run = runs.create(**create_run)
         if run.status is RunStatus.DRAFT:
             runs.transition(resolved_run_id, RunStatus.APPROVED, at=timestamp)
             run = runs.transition(resolved_run_id, RunStatus.RUNNING, at=timestamp)
@@ -375,6 +410,7 @@ class Stage3DownloadService:
             result,
             authorized_queue_path=(handoff.queue.csv_path if handoff else None),
             authorization_scope=authorization_scope,
+            resolver_snapshot=resolver_snapshot,
         )
 
     def _authorized_handoff(
@@ -800,6 +836,123 @@ def _download_config(config: Mapping[str, Any]) -> Mapping[str, Any]:
     return value
 
 
+def _resolver_runtime_config(
+    resolver_names: Sequence[str],
+    download_config: Mapping[str, Any],
+    lookup: MetadataResolverTransport | None,
+) -> dict[str, Mapping[str, Any]]:
+    configured_lookup = download_config.get("metadata_lookup")
+    lookup_config = (
+        dict(configured_lookup)
+        if isinstance(configured_lookup, Mapping)
+        else {"enabled": False}
+    )
+    lookup_identity: Mapping[str, Any] | None = None
+    if lookup is not None:
+        identity = getattr(lookup, "canonical_identity", None)
+        if not callable(identity):
+            raise ValueError(
+                "metadata resolver transport must expose canonical_identity"
+            )
+        current = identity()
+        if not isinstance(current, Mapping):
+            raise ValueError("metadata resolver canonical_identity must be a mapping")
+        lookup_identity = dict(current)
+        content_hash(lookup_identity)
+    lookup_runtime = {
+        "available": lookup is not None,
+        "configuration": lookup_config,
+        "identity": lookup_identity,
+    }
+    runtime: dict[str, Mapping[str, Any]] = {str(name): {} for name in resolver_names}
+    if "publisher_public" in runtime:
+        runtime["publisher_public"] = {
+            "metadata_lookup": {"available": False}
+        }
+    for name in ("europe_pmc", "unpaywall"):
+        if name in runtime:
+            runtime[name] = {"metadata_lookup": lookup_runtime}
+    if "arxiv" in runtime:
+        runtime["arxiv"] = {
+            "metadata_lookup": lookup_runtime,
+            "matched_arxiv_source": "paper.arxiv_id",
+        }
+    return runtime
+
+
+def _per_paper_resolver_inputs(
+    papers: Sequence[Stage3Paper],
+) -> list[dict[str, Any]]:
+    """Freeze dynamic candidate controls separately from registry configuration."""
+
+    return [
+        {
+            "paper_id": item.paper.paper_id,
+            "doi": item.paper.doi,
+            "arxiv_id": item.paper.arxiv_id,
+            "matched_arxiv": item.matched_arxiv,
+            "include_arxiv_candidates": item.include_arxiv_candidates,
+            "official_sources": [
+                source.to_dict()
+                for source in sorted(
+                    item.official_sources, key=lambda value: value.source_id
+                )
+            ],
+        }
+        for item in sorted(papers, key=lambda value: value.paper.paper_id)
+    ]
+
+
+def _persist_resolver_snapshot(
+    database: Database,
+    artifact_store: ArtifactStore,
+    snapshot: ResolverSnapshot,
+) -> str:
+    payload = canonical_json(snapshot.to_dict())
+    stored = artifact_store.put_bytes(
+        payload,
+        mime_type="application/json",
+        metadata={"kind": "stage3_resolver_snapshot", "schema_version": "1"},
+    )
+    if stored.artifact_hash != snapshot.snapshot_hash:
+        raise ValueError("resolver snapshot artifact hash does not match its identity")
+    artifact_id = "artifact-" + stored.artifact_hash
+    provenance = json.dumps(
+        {"kind": "stage3_resolver_snapshot", "schema_version": "1"},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    expected = (
+        artifact_id,
+        None,
+        "manifest",
+        stored.relative_path,
+        stored.mime_type,
+        stored.size_bytes,
+        stored.artifact_hash,
+        provenance,
+        "available",
+    )
+    with database.transaction() as connection:
+        connection.execute(
+            """INSERT OR IGNORE INTO artifacts(
+                   artifact_id, paper_id, artifact_kind, relative_path, mime_type,
+                   byte_size, sha256, provenance_json, processing_status
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            expected,
+        )
+        row = connection.execute(
+            """SELECT artifact_id, paper_id, artifact_kind, relative_path,
+                      mime_type, byte_size, sha256, provenance_json,
+                      processing_status
+               FROM artifacts WHERE sha256 = ?""",
+            (stored.artifact_hash,),
+        ).fetchone()
+        if row is None or tuple(row) != expected:
+            raise ValueError("resolver snapshot conflicts with persisted artifact metadata")
+    return stored.artifact_hash
+
+
 def _authorized_handoff_identity(
     options: AuthorizedSkillHandoffOptions | None,
 ) -> Mapping[str, object] | None:
@@ -846,16 +999,25 @@ def _configured_metadata_lookup(
         raise ValueError("download metadata lookup requires a positive timeout_seconds")
     if not isinstance(unpaywall_email, str) or "@" not in unpaywall_email:
         raise ValueError("download metadata lookup requires an Unpaywall email")
-    controlled = transport or ControlledHTTPTransport(
-        contact=contact,
-        user_agent=user_agent,
-        timeout_seconds=float(timeout_seconds),
-        environment={"UNPAYWALL_EMAIL": unpaywall_email},
-    )
+    controlled = transport
+    transport_identity: Mapping[str, Any] | None = None
+    if controlled is None:
+        controlled = ControlledHTTPTransport(
+            contact=contact,
+            user_agent=user_agent,
+            timeout_seconds=float(timeout_seconds),
+            environment={"UNPAYWALL_EMAIL": unpaywall_email},
+        )
+        transport_identity = {
+            "implementation_version": (
+                CONTROLLED_HTTP_TRANSPORT_IMPLEMENTATION_VERSION
+            )
+        }
     return Stage3MetadataLookup(
         controlled,
         retrieved_at=clock,
         registry=default_metadata_lookup_registry(),
+        transport_identity=transport_identity,
     )
 
 

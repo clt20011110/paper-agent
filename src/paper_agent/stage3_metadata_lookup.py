@@ -9,13 +9,21 @@ policy-governed provider chain.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from .canonical import content_hash
 from .domain import Paper
 from .download_providers import ResolverEvidence
 from .provider_runtime import ProviderRequestError, RetryableProviderError
+
+
+LOOKUP_IMPLEMENTATION_VERSION = "stage3-metadata-lookup-v1"
+CONTROLLED_HTTP_TRANSPORT_IMPLEMENTATION_VERSION = (
+    "stage3-controlled-http-metadata-transport-v1"
+)
 
 
 class PublicMetadataTransport(Protocol):
@@ -36,6 +44,8 @@ class MetadataLookupDescriptor:
     resolver: str
     provider: str
     operation: str
+    implementation_version: str
+    parameter_contract: Mapping[str, Any]
     parameters: LookupParameters
 
 
@@ -50,10 +60,42 @@ class MetadataLookupRegistry:
     def register(self, descriptor: MetadataLookupDescriptor) -> None:
         if not descriptor.resolver or descriptor.resolver in self._descriptors:
             raise ValueError(f"duplicate or empty metadata resolver: {descriptor.resolver}")
-        self._descriptors[descriptor.resolver] = descriptor
+        if not descriptor.provider or not descriptor.operation:
+            raise ValueError("metadata lookup provider and operation are required")
+        if (
+            not isinstance(descriptor.implementation_version, str)
+            or not descriptor.implementation_version.strip()
+        ):
+            raise ValueError("metadata lookup implementation_version is required")
+        if not isinstance(descriptor.parameter_contract, Mapping):
+            raise ValueError("metadata lookup parameter_contract must be a mapping")
+        content_hash(descriptor.parameter_contract)
+        self._descriptors[descriptor.resolver] = replace(
+            descriptor,
+            parameter_contract=deepcopy(dict(descriptor.parameter_contract)),
+        )
 
     def get(self, resolver: str) -> MetadataLookupDescriptor | None:
         return self._descriptors.get(resolver)
+
+    def canonical_identity(self) -> Mapping[str, Any]:
+        """Describe the actual ordered lookup registry used at runtime."""
+
+        return {
+            "schema_version": "1",
+            "descriptors": [
+                {
+                    "resolver": descriptor.resolver,
+                    "provider": descriptor.provider,
+                    "operation": descriptor.operation,
+                    "implementation_version": descriptor.implementation_version,
+                    "parameter_contract": deepcopy(
+                        dict(descriptor.parameter_contract)
+                    ),
+                }
+                for descriptor in self._descriptors.values()
+            ],
+        }
 
 
 def default_metadata_lookup_registry() -> MetadataLookupRegistry:
@@ -63,9 +105,35 @@ def default_metadata_lookup_registry() -> MetadataLookupRegistry:
     # policy-aware resolvers validate; the generic resolve operation is a
     # lossy candidate envelope intended for the Stage 1 provider adapter.
     return MetadataLookupRegistry((
-        MetadataLookupDescriptor("europe_pmc", "europe_pmc", "search", _doi_parameters),
-        MetadataLookupDescriptor("unpaywall", "unpaywall", "resolve", _doi_parameters),
-        MetadataLookupDescriptor("arxiv", "arxiv", "search", _arxiv_parameters),
+        MetadataLookupDescriptor(
+            "europe_pmc",
+            "europe_pmc",
+            "search",
+            "europe-pmc-doi-parameters-v1",
+            {"paper_field": "doi", "parameter": "doi", "missing": "skip"},
+            _doi_parameters,
+        ),
+        MetadataLookupDescriptor(
+            "unpaywall",
+            "unpaywall",
+            "resolve",
+            "unpaywall-doi-parameters-v1",
+            {"paper_field": "doi", "parameter": "doi", "missing": "skip"},
+            _doi_parameters,
+        ),
+        MetadataLookupDescriptor(
+            "arxiv",
+            "arxiv",
+            "search",
+            "arxiv-id-parameters-v1",
+            {
+                "paper_field": "arxiv_id",
+                "parameter": "query",
+                "template": "id:{value}",
+                "missing": "skip",
+            },
+            _arxiv_parameters,
+        ),
     ))
 
 
@@ -81,6 +149,29 @@ class Stage3MetadataLookup:
     transport: PublicMetadataTransport
     retrieved_at: Callable[[], datetime]
     registry: MetadataLookupRegistry
+    transport_identity: Mapping[str, Any] | None = None
+
+    def canonical_identity(self) -> Mapping[str, Any]:
+        transport_identity = self.transport_identity
+        if transport_identity is None:
+            identity = getattr(self.transport, "canonical_identity", None)
+            if not callable(identity):
+                raise ValueError(
+                    "Stage 3 metadata transport must expose canonical_identity"
+                )
+            transport_identity = identity()
+        if not isinstance(transport_identity, Mapping):
+            raise ValueError(
+                "Stage 3 metadata transport canonical_identity must be a mapping"
+            )
+        frozen_transport_identity = deepcopy(dict(transport_identity))
+        content_hash(frozen_transport_identity)
+        return {
+            "schema_version": "1",
+            "implementation_version": LOOKUP_IMPLEMENTATION_VERSION,
+            "transport": frozen_transport_identity,
+            "registry": self.registry.canonical_identity(),
+        }
 
     def __call__(self, resolver: str, paper: Paper) -> ResolverEvidence | None:
         descriptor = self.registry.get(resolver)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from hashlib import sha256
 import csv
@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from paper_agent.artifacts import ArtifactMetadataConflict, ArtifactStore
+from paper_agent.canonical import canonical_json
 from paper_agent.domain import (
     AccessBasis,
     DownloadStatus,
@@ -23,7 +25,12 @@ from paper_agent.download_cli_service import (
     Stage3DownloadService,
     load_provider_terms,
 )
-from paper_agent.download_providers import DEFAULT_PROVIDER_ORDER, DEFAULT_RESOLVER_ORDER
+from paper_agent.download_providers import (
+    DEFAULT_PROVIDER_ORDER,
+    DEFAULT_RESOLVER_ORDER,
+    ResolverRegistry,
+    default_resolver_registry,
+)
 from paper_agent.downloads import (
     DownloadScopeBinding,
     DownloadScopeSnapshotStore,
@@ -65,6 +72,8 @@ def _service(
     clock=None,
     planner=None,
     scope_membership=None,
+    resolver_registry=None,
+    lookup=None,
 ) -> Stage3DownloadService:
     return Stage3DownloadService(
         database,
@@ -84,6 +93,8 @@ def _service(
         clock=clock or (lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))),
         authorized_luna_planner=planner,
         scope_membership=scope_membership,
+        resolver_registry=resolver_registry,
+        lookup=lookup,
     )
 
 
@@ -127,11 +138,18 @@ def _paper(
     doi: str | None = None,
     paper_id: str = "paper-1",
     abstract: str | None = None,
+    arxiv_id: str | None = None,
     url: str = "https://publisher.example/paper.pdf",
 ) -> str:
     repository = PaperRepository(database)
     paper = repository.save_paper(
-        Paper(paper_id, f"Title {paper_id}", doi=doi, abstract=abstract)
+        Paper(
+            paper_id,
+            f"Title {paper_id}",
+            doi=doi,
+            abstract=abstract,
+            arxiv_id=arxiv_id,
+        )
     )
     repository.upsert_source(PaperSource(
         f"source-{paper_id}", paper.paper_id, "publisher", paper_id,
@@ -335,6 +353,244 @@ def test_repeat_run_reuses_consumed_fetch_request_and_stage2_selection(
     assert fetcher.calls == ["https://publisher.example/paper.pdf"]
 
 
+def test_resolver_snapshot_is_deterministic_persisted_and_reused_on_resume(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+    )
+    service = _service(tmp_path, database, Fetcher(), terms=_terms())
+
+    first = service.run(paper_ids=[paper_id], run_id="resolver-snapshot-run")
+    resumed = service.run(paper_ids=[paper_id], run_id="resolver-snapshot-run")
+
+    assert first.resolver_snapshot is not None
+    assert resumed.resolver_snapshot is not None
+    assert resumed.resolver_snapshot == first.resolver_snapshot
+    snapshot = first.resolver_snapshot
+    document = snapshot.to_dict()
+    assert document["resolver_order"] == list(DEFAULT_RESOLVER_ORDER)
+    assert [entry["name"] for entry in document["resolvers"]] == list(
+        DEFAULT_RESOLVER_ORDER
+    )
+    assert all(entry["implementation_version"] for entry in document["resolvers"])
+    arxiv = next(entry for entry in document["resolvers"] if entry["name"] == "arxiv")
+    assert arxiv["runtime_config"]["metadata_lookup"]["available"] is False
+    assert "include_arxiv_candidates" not in arxiv["runtime_config"]
+    run = database.connection.execute(
+        """SELECT input_hash, config_hash, implementation_version
+           FROM pipeline_runs WHERE run_id = 'resolver-snapshot-run'"""
+    ).fetchone()
+    assert run["config_hash"] == snapshot.snapshot_hash
+    assert run["implementation_version"] == "stage3-cli-v5"
+    artifact = database.connection.execute(
+        """SELECT relative_path, artifact_kind, mime_type, provenance_json
+           FROM artifacts WHERE sha256 = ?""",
+        (snapshot.snapshot_hash,),
+    ).fetchone()
+    assert artifact is not None
+    assert tuple(artifact[key] for key in ("artifact_kind", "mime_type")) == (
+        "manifest",
+        "application/json",
+    )
+    assert json.loads(artifact["provenance_json"])["kind"] == (
+        "stage3_resolver_snapshot"
+    )
+    saved = json.loads(
+        (tmp_path / "output" / artifact["relative_path"]).read_text(encoding="utf-8")
+    )
+    assert saved == document
+
+
+def test_resolver_snapshot_failure_does_not_leave_a_draft_run(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+    )
+    fetcher = Fetcher()
+    service = _service(tmp_path, database, fetcher, terms=_terms())
+    preview = service.run(
+        paper_ids=[paper_id], run_id="resolver-artifact-failure", dry_run=True
+    )
+    assert preview.resolver_snapshot is not None
+    ArtifactStore(tmp_path / "output").put_bytes(
+        canonical_json(preview.resolver_snapshot.to_dict()),
+        mime_type="application/json",
+        metadata={"kind": "different_manifest"},
+    )
+
+    with pytest.raises(ArtifactMetadataConflict):
+        service.run(paper_ids=[paper_id], run_id="resolver-artifact-failure")
+
+    assert database.connection.execute(
+        "SELECT 1 FROM pipeline_runs WHERE run_id = 'resolver-artifact-failure'"
+    ).fetchone() is None
+    assert fetcher.calls == []
+
+
+def test_injected_metadata_lookup_requires_a_canonical_identity(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.UNKNOWN,
+        license=None,
+        doi="10.1000/lookup",
+    )
+    service = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        lookup=lambda _resolver, _paper: None,
+    )
+
+    with pytest.raises(ValueError, match="must expose canonical_identity"):
+        service.run(paper_ids=[paper_id], run_id="unidentified-lookup")
+
+    assert database.connection.execute(
+        "SELECT 1 FROM pipeline_runs WHERE run_id = 'unidentified-lookup'"
+    ).fetchone() is None
+
+
+@pytest.mark.parametrize("drift", ["order", "implementation_version", "config"])
+def test_resolver_snapshot_drift_refuses_existing_run_before_fetch(
+    tmp_path: Path,
+    database: Database,
+    drift: str,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+    )
+    first_fetcher = Fetcher()
+    _service(tmp_path, database, first_fetcher, terms=_terms()).run(
+        paper_ids=[paper_id], run_id="resolver-drift-run"
+    )
+    base = default_resolver_registry()
+    descriptors = [base.descriptor(name) for name in base.names]
+    if drift == "order":
+        descriptors[0], descriptors[1] = descriptors[1], descriptors[0]
+    elif drift == "implementation_version":
+        descriptors[1] = replace(
+            descriptors[1], implementation_version="europe-pmc-oa-resolver-v2"
+        )
+    else:
+        descriptors[1] = replace(
+            descriptors[1], candidate_config={"metadata_lookup": "europe_pmc-v2"}
+        )
+    drifted = ResolverRegistry(tuple(descriptors))
+    drift_fetcher = Fetcher()
+    service = _service(
+        tmp_path,
+        database,
+        drift_fetcher,
+        terms=_terms(),
+        resolver_registry=drifted,
+    )
+
+    expected = (
+        "configured frozen order" if drift == "order" else "different frozen inputs"
+    )
+    with pytest.raises(ValueError, match=expected):
+        service.run(paper_ids=[paper_id], run_id="resolver-drift-run")
+
+    assert drift_fetcher.calls == []
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM artifacts WHERE artifact_kind = 'manifest'"
+    ).fetchone()[0] == 1
+
+
+def test_per_paper_resolver_flag_drift_refuses_resume_before_fetch(
+    tmp_path: Path,
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+    )
+    _service(tmp_path, database, Fetcher(), terms=_terms()).run(
+        paper_ids=[paper_id], run_id="resolver-input-drift-run"
+    )
+    drift_fetcher = Fetcher()
+    service = _service(tmp_path, database, drift_fetcher, terms=_terms())
+    original_select = service.select_papers
+
+    def select_with_arxiv_candidates(**kwargs):
+        return tuple(
+            replace(item, include_arxiv_candidates=True)
+            for item in original_select(**kwargs)
+        )
+
+    monkeypatch.setattr(service, "select_papers", select_with_arxiv_candidates)
+
+    with pytest.raises(ValueError, match="different frozen inputs"):
+        service.run(paper_ids=[paper_id], run_id="resolver-input-drift-run")
+
+    assert drift_fetcher.calls == []
+
+
+def test_selected_paper_arxiv_activation_is_bound_without_monkeypatching(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+        arxiv_id="2608.00001",
+    )
+    first = _service(tmp_path, database, Fetcher(), terms=_terms())
+    selected = first.select_papers(paper_ids=[paper_id])
+    assert selected[0].matched_arxiv is True
+    assert selected[0].include_arxiv_candidates is False
+    first.run(paper_ids=[paper_id], run_id="real-arxiv-activation")
+
+    database.connection.execute(
+        "UPDATE papers SET arxiv_id = NULL WHERE paper_id = ?", (paper_id,)
+    )
+    database.connection.commit()
+    drift_fetcher = Fetcher()
+    resumed = _service(tmp_path, database, drift_fetcher, terms=_terms())
+    assert resumed.select_papers(paper_ids=[paper_id])[0].matched_arxiv is False
+
+    with pytest.raises(ValueError, match="different frozen inputs"):
+        resumed.run(paper_ids=[paper_id], run_id="real-arxiv-activation")
+
+    assert drift_fetcher.calls == []
+
+
+def test_official_source_candidate_drift_refuses_resume_before_fetch(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+    )
+    _service(tmp_path, database, Fetcher(), terms=_terms()).run(
+        paper_ids=[paper_id], run_id="official-source-drift"
+    )
+    database.connection.execute(
+        "UPDATE paper_sources SET pdf_url = ? WHERE source_id = ?",
+        ("https://publisher.example/replaced.pdf", f"source-{paper_id}"),
+    )
+    database.connection.commit()
+    drift_fetcher = Fetcher()
+    resumed = _service(tmp_path, database, drift_fetcher, terms=_terms())
+
+    with pytest.raises(ValueError, match="different frozen inputs"):
+        resumed.run(paper_ids=[paper_id], run_id="official-source-drift")
+
+    assert drift_fetcher.calls == []
+
+
 def test_resumed_download_backfills_missing_stage3_paper_checkpoint(
     tmp_path: Path, database: Database,
 ) -> None:
@@ -419,7 +675,7 @@ def test_terminal_no_pdf_result_completes_and_resumes_without_refetch(
     assert database.connection.execute(
         "SELECT implementation_version FROM pipeline_runs WHERE run_id = ?",
         (first.run_id,),
-    ).fetchone()[0] == "stage3-cli-v4"
+    ).fetchone()[0] == "stage3-cli-v5"
     assert database.connection.execute(
         "SELECT COUNT(*) FROM download_attempts WHERE run_id = ?",
         (first.run_id,),
