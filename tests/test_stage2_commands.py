@@ -89,10 +89,24 @@ def test_filter_database_selects_canonical_papers_and_dry_run_is_read_only(
         release_path=release_path,
         database_path=database_path,
         campaign_id="campaign-1",
+        paper_ids=None,
         release_loader=loader,
     )
     assert result["counts"] == {"needs_review": 1, "relevant": 1}
+    assert result["paper_count"] == 2
     assert result["stage2_run_ids"] == ["stage2-test"]
+
+    empty_preview = filter_database(
+        plan_path=plan_path,
+        release_path=release_path,
+        database_path=database_path,
+        campaign_id="campaign-1",
+        paper_ids=(),
+        dry_run=True,
+        release_loader=loader,
+    )
+    assert empty_preview["paper_count"] == 0
+    assert empty_preview["paper_ids"] == []
 
 
 def _benchmark_files(tmp_path: Path) -> tuple[Path, Path]:

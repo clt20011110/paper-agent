@@ -42,7 +42,7 @@ def filter_database(
     release_path: Path,
     database_path: Path,
     campaign_id: str,
-    paper_ids: Sequence[str] = (),
+    paper_ids: Sequence[str] | None = None,
     dry_run: bool = False,
     release_loader: Callable[[Path, Mapping[str, Any]], ReleasedStage2] = load_stage2_release,
 ) -> dict[str, Any]:
@@ -232,14 +232,20 @@ def measure_stage2_benchmark(
     }
 
 
-def _paper_ids(database: Database, requested: Sequence[str]) -> tuple[str, ...]:
+def _paper_ids(
+    database: Database, requested: Sequence[str] | None
+) -> tuple[str, ...]:
     available = {
         str(row["paper_id"])
         for row in database.connection.execute(
             "SELECT paper_id FROM papers ORDER BY paper_id"
         ).fetchall()
     }
-    selected = tuple(sorted(set(requested))) if requested else tuple(sorted(available))
+    selected = (
+        tuple(sorted(available))
+        if requested is None
+        else tuple(sorted(set(requested)))
+    )
     missing = sorted(set(selected) - available)
     if missing:
         raise ValueError(f"filter papers do not exist: {missing}")
