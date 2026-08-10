@@ -353,6 +353,7 @@ def _native_source_entry(provider: str, record: Mapping[str, Any]) -> SourceEntr
             external_id=str(record["uid"]),
             title=str(record["title"]),
             authors=_authors(record.get("authors")),
+            abstract=_text(record.get("abstract")),
             doi=doi,
             publication_date=publication_date,
             year=_year(record, publication_date),

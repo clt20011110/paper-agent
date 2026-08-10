@@ -327,11 +327,23 @@ class ControlledHTTPTransport:
             raise ProviderRequestError("pubmed: ESummary response must be an object")
         if operation == "verify":
             return self._verification_payload(summary), (search_response.body, summary_response.body)
+        abstract_response = self._fetch(
+            "pubmed",
+            _url(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+                {
+                    "db": "pubmed",
+                    "id": ",".join(ids),
+                    "retmode": "xml",
+                },
+            ),
+        )
+        summary = _merge_pubmed_abstracts(summary, _pubmed_abstracts(abstract_response.body))
         count = int(result.get("count", len(ids)))
         start = int(query["retstart"])
         if start + len(ids) < count:
             summary = {**summary, "next_cursor": str(start + len(ids))}
-        return summary, (search_response.body, summary_response.body)
+        return summary, (search_response.body, summary_response.body, abstract_response.body)
 
     def _openalex_references(self, parameters: Mapping[str, Any]) -> tuple[Mapping[str, Any], tuple[bytes, ...]]:
         work_response = self._fetch("openalex", self._url("openalex", "enrich", parameters))
@@ -637,6 +649,32 @@ def _access_payload(provider: str, payload: Mapping[str, Any]) -> Mapping[str, A
             ]
         }
     return payload
+
+
+def _pubmed_abstracts(body: bytes) -> dict[str, str]:
+    root = ElementTree.fromstring(body)
+    abstracts = {}
+    for article in root.findall("./PubmedArticle"):
+        pmid = article.findtext("./MedlineCitation/PMID")
+        sections = []
+        for section in article.findall("./MedlineCitation/Article/Abstract/AbstractText"):
+            text = " ".join("".join(section.itertext()).split())
+            label = section.attrib.get("Label")
+            sections.append(f"{label}: {text}" if label else text)
+        if pmid and sections:
+            abstracts[pmid] = " ".join(sections)
+    return abstracts
+
+
+def _merge_pubmed_abstracts(summary: Mapping[str, Any], abstracts: Mapping[str, str]) -> dict[str, Any]:
+    result = summary.get("result")
+    if not isinstance(result, Mapping):
+        return dict(summary)
+    merged = {
+        key: ({**record, "abstract": abstracts[key]} if key in abstracts and isinstance(record, Mapping) else record)
+        for key, record in result.items()
+    }
+    return {**summary, "result": merged}
 
 
 def _retry_after(value: str | None) -> float | None:

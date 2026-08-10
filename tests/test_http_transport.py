@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from email.message import Message
 from io import BytesIO
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
 
 from paper_agent.http_transport import ControlledHTTPTransport
+from paper_agent.domain import QuerySpec, SourceEntry
 from paper_agent.provider_runtime import ProviderRuntime, ProviderRuntimePolicy, RetryableProviderError
+from paper_agent.providers.api import IdentityCandidate
+from paper_agent.providers.builtin import create_builtin
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "providers"
 
 
 class Response:
@@ -161,23 +168,99 @@ def test_openalex_references_batch_resolve_candidate_metadata() -> None:
     assert payload["results"][0]["title"] == "Cited"
 
 
-def test_pubmed_search_uses_esearch_then_esummary_without_full_text() -> None:
-    urls: list[str] = []
+def _pubmed_opener(urls: list[str]):
+    summary = (FIXTURES / "pubmed-esummary.json").read_bytes()
+    abstract = (FIXTURES / "pubmed-efetch.xml").read_bytes()
 
     def opener(request, timeout):
         urls.append(request.full_url)
         if "esearch.fcgi" in request.full_url:
-            return Response(b'{"esearchresult":{"count":"1","idlist":["42"]}}', {"Content-Type": "application/json"})
-        return Response(b'{"result":{"uids":["42"],"42":{"uid":"42","title":"Metadata only"}}}', {"Content-Type": "application/json"})
+            return Response(
+                b'{"esearchresult":{"count":"2","idlist":["39900001"]}}',
+                {"Content-Type": "application/json"},
+            )
+        if "esummary.fcgi" in request.full_url:
+            return Response(summary, {"Content-Type": "application/json"})
+        assert "efetch.fcgi" in request.full_url
+        return Response(abstract, {"Content-Type": "application/xml"})
 
-    payload = ControlledHTTPTransport("mailto:operator@example.test", opener=opener)(
-        "pubmed", "search", {"term": "metadata", "retmax": 1}
+    return opener
+
+
+def test_pubmed_search_merges_efetch_abstract_without_fetching_full_text() -> None:
+    urls: list[str] = []
+    transport = ControlledHTTPTransport(
+        "mailto:operator@example.test",
+        opener=_pubmed_opener(urls),
+    )
+
+    batch = create_builtin("pubmed", transport).search(
+        QuerySpec(
+            1,
+            "pubmed-role-contract",
+            "metadata",
+            native_parameters={"db": "pubmed", "term": "metadata", "retmax": 1},
+            native_query_hash="pubmed-native-query",
+        )
     )
 
     assert "esearch.fcgi" in urls[0]
     assert "esummary.fcgi" in urls[1]
-    assert payload["result"]["uids"] == ["42"]
-    assert all("efetch" not in url and ".pdf" not in url for url in urls)
+    assert "efetch.fcgi" in urls[2]
+    assert "retmode=xml" in urls[2]
+    assert "rettype=" not in urls[2]
+    assert len(urls) == 3
+    assert all("eutils.ncbi.nlm.nih.gov/entrez/eutils/" in url for url in urls)
+    assert batch.next_cursor == "1"
+    assert batch.entries[0].abstract == (
+        "BACKGROUND: Graph retrieval needs reliable metadata. "
+        "RESULTS: The method preserves native PubMed abstracts."
+    )
+    assert all("pmc" not in url.casefold() and ".pdf" not in url.casefold() for url in urls)
+
+
+def test_pubmed_enrich_merges_the_same_efetch_metadata() -> None:
+    urls: list[str] = []
+    transport = ControlledHTTPTransport(
+        "mailto:operator@example.test",
+        opener=_pubmed_opener(urls),
+    )
+
+    result = create_builtin("pubmed", transport).enrich(
+        SourceEntry("seed", "39900001", "Seed PubMed record")
+    )
+
+    assert result.entry.external_id == "39900001"
+    assert result.entry.abstract == (
+        "BACKGROUND: Graph retrieval needs reliable metadata. "
+        "RESULTS: The method preserves native PubMed abstracts."
+    )
+    assert [url.split("?", 1)[0].rsplit("/", 1)[-1] for url in urls] == [
+        "esearch.fcgi",
+        "esummary.fcgi",
+        "efetch.fcgi",
+    ]
+    assert all("eutils.ncbi.nlm.nih.gov/entrez/eutils/" in url for url in urls)
+    assert all("pmc" not in url.casefold() and ".pdf" not in url.casefold() for url in urls)
+
+
+def test_pubmed_verify_reuses_esearch_and_esummary_without_efetch() -> None:
+    urls: list[str] = []
+    transport = ControlledHTTPTransport(
+        "mailto:operator@example.test",
+        opener=_pubmed_opener(urls),
+    )
+
+    result = create_builtin("pubmed", transport).verify(
+        IdentityCandidate("Native PubMed ESummary Fixture", doi="10.1000/pubmed.native"),
+        (),
+    )
+
+    assert result.evidence == ("39900001",)
+    assert [url.split("?", 1)[0].rsplit("/", 1)[-1] for url in urls] == [
+        "esearch.fcgi",
+        "esummary.fcgi",
+    ]
 
 
 def test_unpaywall_uses_operator_contact_and_never_fetches_the_returned_pdf() -> None:

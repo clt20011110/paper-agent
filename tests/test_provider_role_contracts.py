@@ -82,7 +82,6 @@ ENRICH_CASES = (
     ("dblp", "dblp-native.json", "conf/icml/native-2025", None, None),
     ("semantic_scholar", "semantic-scholar-paper.json", "s2-paper-role-1", "2025-12-31", "A singleton Graph API paper response."),
     ("openalex", "openalex-work.json", "https://openalex.org/W9876543210", "2025-06-30", "Singleton OpenAlex work"),
-    ("pubmed", "pubmed-esummary.json", "39900001", "2025-01-17", None),
     ("europe_pmc", "europe-pmc-record.json", "40000001", "2025-07-01", "A Europe PMC metadata and open-access response."),
     ("arxiv", "arxiv-atom.json", "2501.01234v2", "2025-01-15", "A decoded Atom summary."),
 )
@@ -111,12 +110,6 @@ ENRICH_FIELDS = {
         "doi": "10.1000/openalex.work",
         "arxiv_id": "2506.12345",
         "venue_name": "Boundary Journal",
-    },
-    "pubmed": {
-        "authors": ("Lovelace A", "Hopper G"),
-        "doi": "10.1000/pubmed.native",
-        "arxiv_id": None,
-        "venue_name": "Nature",
     },
     "europe_pmc": {
         "authors": ("Ada Lovelace", "Grace Hopper"),

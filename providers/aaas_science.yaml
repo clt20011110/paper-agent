@@ -3,7 +3,7 @@ provider: aaas_science
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.providers.builtin:AAASScienceAdapter
-artifact_sha256: f20a516f6df41b45d5cfd20c6e39d6d97919ad9ea53edb22d3339038c45dcc6c
+artifact_sha256: 7980cc0abcef14372e8fa04206e4dbde01adbb744523cf670f28b8e2aa27d988
 enabled: true
 builtin: true
 authority: official
