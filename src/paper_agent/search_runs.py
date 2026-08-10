@@ -12,6 +12,7 @@ from uuid import NAMESPACE_URL, uuid5
 from .canonical import content_hash
 from .domain import EnvelopeStatus, SourceBatch
 from .fanout import FanoutResult
+from .provider_response_artifacts import ProviderResponseArtifactRepository
 from .query_plan import runtime_requirements
 from .storage import Database
 
@@ -56,6 +57,7 @@ class SearchRunCoordinator:
 
     def __init__(self, database: Database) -> None:
         self.database = database
+        self.response_artifacts = ProviderResponseArtifactRepository(database)
 
     def start_crawl(
         self,
@@ -120,12 +122,19 @@ class SearchRunCoordinator:
         if batch.request_audit:
             recorded_params["request_audit"] = [dict(record) for record in batch.request_audit]
         with self.database.transaction() as connection:
+            response_artifact_id = self.response_artifacts.record_batch(
+                connection,
+                batch,
+                replay_scope=crawl_run_id,
+                recorded_at=completed_at,
+            )
             if source is None:
                 connection.execute(
                     """INSERT INTO source_runs(
                         source_run_id, crawl_run_id, provider, provider_version, role, cursor_json,
-                        status, error_json, raw_response_hash, started_at, completed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        status, error_json, raw_response_hash, raw_response_artifact_id,
+                        started_at, completed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         source_run_id,
                         crawl_run_id,
@@ -136,6 +145,7 @@ class SearchRunCoordinator:
                         source_status,
                         error_json,
                         batch.raw_response_artifact_hash,
+                        response_artifact_id,
                         requested_at,
                         completed_at,
                     ),
@@ -143,12 +153,15 @@ class SearchRunCoordinator:
             else:
                 connection.execute(
                     """UPDATE source_runs SET cursor_json = ?, status = ?, error_json = ?,
-                        raw_response_hash = ?, completed_at = ? WHERE source_run_id = ?""",
+                        raw_response_hash = ?,
+                        raw_response_artifact_id = COALESCE(?, raw_response_artifact_id),
+                        completed_at = ? WHERE source_run_id = ?""",
                     (
                         _json({"cursor": batch.next_cursor}),
                         source_status,
                         error_json,
                         batch.raw_response_artifact_hash,
+                        response_artifact_id,
                         completed_at,
                         source_run_id,
                     ),
@@ -159,11 +172,14 @@ class SearchRunCoordinator:
                     query_id, search_plan_id, source_run_id, provider, provider_version,
                     query_compiler_version, role, query_text, provider_params_json, alias_group,
                     filters_json, page, cursor, requested_at, completed_at, query_hash,
-                    response_hash, returned_count, status, error_json
+                    response_hash, response_artifact_id, returned_count, status, error_json
                 ) VALUES (?, (SELECT search_plan_id FROM crawl_runs WHERE crawl_run_id = ?), ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(query_id) DO UPDATE SET
                     completed_at = excluded.completed_at, response_hash = excluded.response_hash,
+                    response_artifact_id = COALESCE(
+                        excluded.response_artifact_id, search_queries.response_artifact_id
+                    ),
                     returned_count = excluded.returned_count, status = excluded.status,
                     error_json = excluded.error_json, provider_params_json = excluded.provider_params_json""",
                 (
@@ -184,6 +200,7 @@ class SearchRunCoordinator:
                     completed_at,
                     batch.query_hash,
                     batch.raw_response_artifact_hash,
+                    response_artifact_id,
                     len(batch.entries),
                     query_status,
                     error_json,

@@ -12,6 +12,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from .canonical import content_hash
+from .artifacts import ArtifactStore
 from .http_transport import ControlledHTTPTransport
 from .manifests import ManifestCatalog, load_catalog
 from .approved_snapshot import (
@@ -21,6 +22,7 @@ from .approved_snapshot import (
     ProviderTransportRouter,
 )
 from .provider_runtime import ProviderRuntime, ProviderRuntimePolicy, policy_from_manifest
+from .provider_response_artifacts import ProviderResponseArtifactService
 from .providers.api import CrawlWindow, SeedInput
 from .providers.builtin import create_builtin, manifest_from_document
 from .query_plan import (
@@ -177,14 +179,30 @@ def execute_search_plan(
                 ),
             )
     provider_runtime = ProviderRuntime(policies)
+    stage_name = "crawl" if venue_only else "search"
+    resolved_run_id = run_id or f"{stage_name}-run-{plan['plan_id']}"
+    crawl_identity = f"{resolved_run_id}:{plan['plan_hash']}:{stage_name}"
+    crawl_run_id = f"crawl-{uuid5(NAMESPACE_URL, crawl_identity).hex}"
 
     if transport is None:
         operator_contact = contact or ""
         needs_http = any(provider["mode"] == "api" and provider["provider"] != "user_library" for provider in active)
         if not operator_contact and needs_http:
             raise ValueError("search execution requires --contact or PAPER_AGENT_CONTACT")
+        if needs_http:
+            with Database(database_path) as database:
+                database.migrate()
         transport = (
-            ControlledHTTPTransport(operator_contact, runtime=provider_runtime, environment=environment)
+            ControlledHTTPTransport(
+                operator_contact,
+                runtime=provider_runtime,
+                environment=environment,
+                response_artifacts=ProviderResponseArtifactService(
+                    database_path,
+                    ArtifactStore(database_path.parent),
+                ),
+                replay_scope=crawl_run_id,
+            )
             if needs_http
             else _no_network_transport
         )
@@ -227,11 +245,6 @@ def execute_search_plan(
         if not venue_only
         and "citation" in next(provider["roles"] for provider in active if provider["provider"] == name)
     }
-    stage_name = "crawl" if venue_only else "search"
-    resolved_run_id = run_id or f"{stage_name}-run-{plan['plan_id']}"
-    crawl_identity = f"{resolved_run_id}:{plan['plan_hash']}:{stage_name}"
-    crawl_run_id = f"crawl-{uuid5(NAMESPACE_URL, crawl_identity).hex}"
-
     with Database(database_path) as database:
         database.migrate()
         row = database.connection.execute(

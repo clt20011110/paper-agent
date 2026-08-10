@@ -27,6 +27,10 @@ from paper_agent.provider_runtime import (
     RetryableProviderError,
     policy_from_manifest,
 )
+from paper_agent.provider_response_artifacts import (
+    ProviderResponseArtifactService,
+    ProviderResponseKey,
+)
 
 
 Opener = Callable[..., Any]
@@ -144,6 +148,8 @@ class ControlledHTTPTransport:
     environment: Mapping[str, str] | None = None
     accepted_terms: Mapping[str, str] | None = None
     delegates: tuple[HTTPProviderDelegate, ...] | None = None
+    response_artifacts: ProviderResponseArtifactService | None = None
+    replay_scope: str | None = None
     _cache: dict[str, CachedResponse] = field(default_factory=dict, init=False)
     _credential_envs: dict[str, dict[str, str]] = field(default_factory=dict, init=False)
     last_request_url: str | None = field(default=None, init=False)
@@ -157,6 +163,8 @@ class ControlledHTTPTransport:
             raise ValueError("a provider contact URL or mailto address is required")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if self.response_artifacts is not None and not (self.replay_scope or "").strip():
+            raise ValueError("persistent provider response replay requires a replay_scope")
         if self.user_agent is None:
             self.user_agent = f"paper-agent/2.0 ({self.contact})"
         if self.delegates is None:
@@ -227,6 +235,8 @@ class ControlledHTTPTransport:
         payload, bodies = self._operation(provider, operation, parameters)
         self.last_response_body = b"".join(bodies)
         self.last_response_sha256 = sha256(self.last_response_body).hexdigest()
+        if self.response_artifacts is not None:
+            self.response_artifacts.capture(self.last_response_body)
         # Do not mutate a value that can have been returned from ProviderRuntime's
         # cache: callers may safely add their own envelope data.
         response = dict(payload)
@@ -465,6 +475,7 @@ class ControlledHTTPTransport:
         version = api_version or _api_version(provider)
         query_hash = sha256(audit_url.encode("utf-8")).hexdigest()
         request_record: dict[str, Any] = {
+            "replay_scope": self.replay_scope,
             "provider": provider,
             "url": audit_url,
             "query_hash": query_hash,
@@ -476,14 +487,41 @@ class ControlledHTTPTransport:
         self.request_audit.append(request_record)
         assert self.runtime is not None
         try:
-            response = self.runtime.request(
-                provider,
-                query_hash=query_hash,
-                cursor=request_record["cursor"],
-                api_version=version,
-                send=lambda: self._read(request_url, provider, credentials),
-                environment=self.environment,
+            replayed = (
+                self.response_artifacts.replay(
+                    ProviderResponseKey(
+                        replay_scope=str(self.replay_scope),
+                        provider=provider,
+                        query_hash=query_hash,
+                        cursor=request_record["cursor"],
+                        api_version=version,
+                    )
+                )
+                if self.response_artifacts is not None
+                else None
             )
+            if replayed is not None:
+                self.runtime.assert_allowed(provider, self.environment)
+                response = CachedResponse(
+                    replayed.body,
+                    replayed.etag,
+                    replayed.last_modified,
+                    replayed.content_type,
+                )
+            else:
+                runtime_query_hash = (
+                    f"{self.replay_scope}:{query_hash}"
+                    if self.replay_scope is not None
+                    else query_hash
+                )
+                response = self.runtime.request(
+                    provider,
+                    query_hash=runtime_query_hash,
+                    cursor=request_record["cursor"],
+                    api_version=version,
+                    send=lambda: self._read(request_url, provider, credentials),
+                    environment=self.environment,
+                )
         except Exception as error:
             request_record.update(
                 status="failed",
@@ -491,12 +529,20 @@ class ControlledHTTPTransport:
                 completed_at=datetime.now(UTC).isoformat(),
             )
             raise
+        response_hash = sha256(response.body).hexdigest()
         request_record.update(
             status="success",
-            response_sha256=sha256(response.body).hexdigest(),
+            response_sha256=response_hash,
+            response_size_bytes=len(response.body),
             content_type=response.content_type,
+            etag=response.etag,
+            last_modified=response.last_modified,
+            cache_source="persistent" if replayed is not None else "provider_or_runtime",
             completed_at=datetime.now(UTC).isoformat(),
         )
+        if self.response_artifacts is not None:
+            stored = self.response_artifacts.capture(response.body)
+            request_record["response_artifact_hash"] = stored.artifact_hash
         self.request_snapshots.append(response.body)
         return response  # type: ignore[return-value]
 
