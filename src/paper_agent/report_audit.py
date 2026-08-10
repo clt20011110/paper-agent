@@ -56,6 +56,7 @@ from .report_artifacts import (
     render_markdown,
     report_artifact_hash,
     report_diff,
+    search_publication_blockers,
     validate_claim_relations,
     verify_report,
 )
@@ -94,7 +95,7 @@ AUDIT_MAX_INPUT_TOKENS = AUDIT_HARD_CONTEXT_TOKENS - AUDIT_OUTPUT_TOKEN_RESERVE
 AUDIT_OUTPUT_BYTE_LIMIT = 65_536
 REPAIR_OUTPUT_TOKEN_RESERVE = MAX_OUTPUT_BYTES
 REPAIR_MAX_INPUT_TOKENS = AUDIT_HARD_CONTEXT_TOKENS - REPAIR_OUTPUT_TOKEN_RESERVE
-IMPLEMENTATION_VERSION = "stage4b-audit-gate-v2"
+IMPLEMENTATION_VERSION = "stage4b-audit-gate-v3"
 SEVERE = frozenset({"blocker", "major"})
 _BUDGET_FIXED_BYTES = 16_384
 _BUDGET_PROMPT_WRAPPER_BYTES = 4_096
@@ -516,6 +517,32 @@ class ReportAuditCoordinator:
         ):
             raise ReportAuditError(
                 "derived comparison or claim-lineage material exceeds the frozen synthesis bound"
+            )
+        publication_blockers = search_publication_blockers(initial["search_audit"])
+        if publication_blockers:
+            snapshot_hash = self._input_snapshot_hash(initial, previous)
+            base_hash = _bundle_hash(initial)
+            self._ensure_run(
+                report_run_id,
+                snapshot_hash,
+                base_hash,
+                initial,
+                {"worst_calls": 1, "worst_tokens": 1},
+            )
+            persisted = self._run_row(report_run_id)
+            if persisted["status"] == "complete":
+                raise ReportAuditError(
+                    "completed report violates the frozen search publication gate"
+                )
+            if persisted["status"] in {"failed", "incomplete"}:
+                return self._terminal_result(report_run_id, persisted)
+            return self._finish_incomplete(
+                report_run_id,
+                initial,
+                (),
+                (),
+                "search audit is not publication-ready: "
+                + "; ".join(publication_blockers),
             )
         verification = self._deterministic_verify(initial)
         if previous is not None:

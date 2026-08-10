@@ -322,6 +322,64 @@ def test_passing_audit_publishes_once_and_resume_is_free(tmp_path: Path) -> None
         fixture.reduce.database.close()
 
 
+@pytest.mark.parametrize(
+    "search_fault, expected_field",
+    (
+        ("search_status", "search_status"),
+        ("required_provider", "required_provider_failures"),
+        ("budget_exhausted", "budget_exhausted"),
+    ),
+)
+def test_incomplete_search_is_terminal_before_sol_and_resume_is_free(
+    tmp_path: Path, monkeypatch, search_fault: str, expected_field: str
+) -> None:
+    import test_report_reduce
+
+    original = test_report_reduce._raw_search_audit
+
+    def incomplete_search_audit() -> dict:
+        audit = original()
+        if search_fault == "search_status":
+            audit["status"] = "incomplete"
+        elif search_fault == "required_provider":
+            audit["sources"][0]["status"] = "failed"
+        else:
+            audit["rounds"][0]["stop_reason"] = "budget_exhausted"
+        return audit
+
+    monkeypatch.setattr(test_report_reduce, "_raw_search_audit", incomplete_search_audit)
+    fixture = _audit_fixture(tmp_path)
+    assert fixture.bundle.search_audit[expected_field]
+    try:
+        first = fixture.run()
+        second = fixture.run()
+
+        assert first.status == second.status == "incomplete"
+        assert first.audit_passes == second.audit_passes == ()
+        assert first.error == second.error
+        assert "not publication-ready" in first.error
+        assert fixture.fake.calls == []
+        assert fixture.constructions == []
+        assert not (fixture.root / "reports/latest.md").exists()
+        assert not (fixture.root / "reports/report-1").exists()
+        audit_run = fixture.reduce.database.connection.execute(
+            """SELECT status, worst_case_calls, worst_case_input_tokens
+               FROM report_audit_runs WHERE report_run_id = 'report-1'"""
+        ).fetchone()
+        assert tuple(audit_run) == ("incomplete", 1, 1)
+        assert fixture.reduce.database.connection.execute(
+            "SELECT COUNT(*) FROM report_audit_steps WHERE report_run_id = 'report-1'"
+        ).fetchone()[0] == 0
+        statuses = fixture.reduce.database.connection.execute(
+            """SELECT rr.status, pr.status
+               FROM report_runs rr JOIN pipeline_runs pr ON pr.run_id = rr.run_id
+               WHERE rr.report_run_id = 'report-1'"""
+        ).fetchone()
+        assert tuple(statuses) == ("incomplete", "incomplete")
+    finally:
+        fixture.reduce.database.close()
+
+
 def test_major_finding_gets_one_typed_repair_reverify_and_fresh_reaudit(tmp_path: Path) -> None:
     fixture = _audit_fixture(tmp_path)
     fixture.fake.severe_a = True

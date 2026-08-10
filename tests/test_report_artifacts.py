@@ -68,7 +68,12 @@ def _bundle() -> dict:
             "report_run_id": "report-1", "objective": "测试领域综述",
             "sections": [{"id": "evidence", "title": "证据综合"}],
         },
-        "search_audit": {"limitations": []},
+        "search_audit": {
+            "search_status": "complete",
+            "required_provider_failures": [],
+            "budget_exhausted": False,
+            "limitations": [],
+        },
         "corpus_snapshot": {"papers": [{"paper_id": "p1", "input_scope": "full_pdf"}]},
         "claims": [claim],
         "coverage": {
@@ -166,6 +171,43 @@ def test_report_directory_rejects_path_traversal(tmp_path) -> None:
     for report_run_id in ("../escape", "nested/run", "nested\\run", ".", ".."):
         with pytest.raises(ReportArtifactError, match="safe path"):
             store.directory(report_run_id)
+
+
+@pytest.mark.parametrize(
+    "search_fault",
+    (
+        {"search_status": "incomplete"},
+        {"required_provider_failures": ["openalex"]},
+        {"budget_exhausted": True},
+    ),
+)
+@pytest.mark.parametrize("operation", ("write", "reconcile"))
+def test_incomplete_search_never_writes_or_restores_latest(
+    tmp_path, search_fault, operation
+) -> None:
+    bundle = _bundle()
+    bundle["search_audit"].update(search_fault)
+    store = ReportArtifactStore(tmp_path)
+    store.latest_path.parent.mkdir(parents=True)
+    store.latest_path.write_text("previous report\n", encoding="utf-8")
+    arguments = {
+        "plan": bundle["plan"],
+        "search_audit": bundle["search_audit"],
+        "corpus_snapshot": bundle["corpus_snapshot"],
+        "claims": bundle["claims"],
+        "comparison_groups": {},
+        "claim_relations": [],
+        "document": bundle["document"],
+        "coverage": bundle["coverage"],
+        "bibliography": bundle["bibliography"],
+        "audit": {},
+    }
+
+    with pytest.raises(ReportVerificationError, match="not publication-ready"):
+        getattr(store, operation)(**arguments)
+
+    assert not store.directory("report-1").exists()
+    assert store.latest_path.read_text(encoding="utf-8") == "previous report\n"
 
 
 def test_verifier_rejects_arbitrary_or_oversized_comparison_group_values() -> None:

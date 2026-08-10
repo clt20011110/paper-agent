@@ -48,6 +48,29 @@ class ReportVerificationError(ReportArtifactError):
     pass
 
 
+def search_publication_blockers(
+    search_audit: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Return frozen search conditions that prohibit a final publication."""
+    blockers = []
+    if search_audit.get("search_status") != "complete":
+        blockers.append("search_status is not complete")
+    required_failures = search_audit.get("required_provider_failures")
+    if (
+        not isinstance(required_failures, Sequence)
+        or isinstance(required_failures, (str, bytes))
+    ):
+        blockers.append("required provider status is missing or invalid")
+    elif required_failures:
+        blockers.append(
+            "required providers failed: "
+            + ", ".join(sorted(str(item) for item in required_failures))
+        )
+    if search_audit.get("budget_exhausted") is not False:
+        blockers.append("search budget is exhausted")
+    return tuple(blockers)
+
+
 def _json(value: Any) -> str:
     return canonical_json(value).decode("utf-8") + "\n"
 
@@ -985,6 +1008,11 @@ class ReportArtifactStore:
         previous: Mapping[str, Any] | None,
         rubric_path: str | Path | None = None,
     ) -> tuple[dict[str, str], str]:
+        blockers = search_publication_blockers(search_audit)
+        if blockers:
+            raise ReportVerificationError(
+                "search audit is not publication-ready: " + "; ".join(blockers)
+            )
         try:
             canonical_comparison_groups = require_exact_comparison_groups(
                 claims, comparison_groups
