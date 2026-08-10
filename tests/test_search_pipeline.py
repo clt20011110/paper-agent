@@ -10,7 +10,7 @@ from paper_agent.domain import CitationBatch, CitationEdge, CitationEdgeType, En
 from paper_agent.query_plan import approve_query_plan, compile_query_plan
 from paper_agent.providers.api import CrawlWindow, EnrichmentResult, IdentityCandidate, SeedInput, VenueDescriptor, VerificationResult
 from paper_agent.providers.builtin import FixtureTransport, create_builtin
-from paper_agent.search_pipeline import SearchPipeline, VenueRun
+from paper_agent.search_pipeline import SEARCH_IMPLEMENTATION_VERSION, SearchPipeline, VenueRun
 from paper_agent.storage import Database
 from paper_agent.verification import ProviderTrust, VenueContext
 
@@ -227,6 +227,126 @@ def test_replay_has_the_same_canonical_ids_and_source_audit(tmp_path) -> None:
             ).fetchone()
             observed.append((result.paper_ids, tuple(audit)))
     assert observed[0] == observed[1]
+
+
+def test_complete_run_recovers_persisted_outcome_without_repeating_fanout(tmp_path) -> None:
+    plan = _plan([_provider("openalex")], required=["openalex"])
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, provider, queries):
+            self.calls += 1
+            return (
+                _batch(
+                    "openalex",
+                    query_hash,
+                    (_entry("openalex", "w1"),),
+                ),
+            )
+
+    client = RecordingClient()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={"openalex": client},
+            trusts={"openalex": _trust("openalex")},
+        )
+        first = pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+        recovered = pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+
+        assert client.calls == 1
+        assert database.connection.execute("SELECT COUNT(*) FROM source_runs").fetchone()[0] == 1
+
+    assert recovered.crawl_run_id == first.crawl_run_id
+    assert recovered.status == first.status == "complete"
+    assert recovered.paper_ids == first.paper_ids
+    assert recovered.arxiv_candidate_ids == first.arxiv_candidate_ids
+    assert recovered.eligible_paper_ids == first.eligible_paper_ids
+    assert recovered.citation_round_ids == first.citation_round_ids
+    assert (
+        recovered.fanout.incomplete,
+        recovered.fanout.budget_exhausted,
+        recovered.fanout.requests_made,
+        recovered.fanout.candidates_returned,
+    ) == (
+        first.fanout.incomplete,
+        first.fanout.budget_exhausted,
+        first.fanout.requests_made,
+        first.fanout.candidates_returned,
+    )
+    assert [
+        (outcome.provider, outcome.status, outcome.error)
+        for outcome in recovered.fanout.outcomes
+    ] == [
+        (outcome.provider, outcome.status, outcome.error)
+        for outcome in first.fanout.outcomes
+    ]
+
+
+@pytest.mark.parametrize(
+    ("column", "mismatched_value"),
+    (
+        ("input_hash", "wrong-input"),
+        ("config_hash", "wrong-config"),
+        ("implementation_version", "wrong-implementation"),
+    ),
+)
+def test_existing_run_binding_mismatch_fails_before_fanout(
+    tmp_path,
+    column: str,
+    mismatched_value: str,
+) -> None:
+    plan = _plan([_provider("openalex")], required=["openalex"])
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, provider, queries):
+            self.calls += 1
+            return ()
+
+    client = RecordingClient()
+    binding = {
+        "input_hash": plan["plan_hash"],
+        "config_hash": plan["filter"]["config_hash"],
+        "implementation_version": SEARCH_IMPLEMENTATION_VERSION,
+    }
+    binding[column] = mismatched_value
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        database.connection.execute(
+            """INSERT INTO pipeline_runs(
+                   run_id, stage, status, input_hash, config_hash,
+                   implementation_version, started_at
+               ) VALUES (?, 'stage-1', 'running', ?, ?, ?, ?)""",
+            (
+                "run",
+                binding["input_hash"],
+                binding["config_hash"],
+                binding["implementation_version"],
+                NOW,
+            ),
+        )
+        database.connection.commit()
+
+        with pytest.raises(ValueError, match="different frozen inputs"):
+            SearchPipeline(
+                database,
+                plan,
+                runtime_providers=plan["providers"],
+                clients={"openalex": client},
+                trusts={"openalex": _trust("openalex")},
+            ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+
+        assert client.calls == 0
+        assert database.connection.execute("SELECT COUNT(*) FROM crawl_runs").fetchone()[0] == 0
 
 
 def test_pipeline_persists_incremental_snapshot_and_does_not_remove_after_source_failure(tmp_path) -> None:

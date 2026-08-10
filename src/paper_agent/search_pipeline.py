@@ -63,6 +63,11 @@ class PipelineResult:
     arxiv_candidate_ids: tuple[str, ...]
     fanout: FanoutResult
     citation_round_ids: tuple[str, ...]
+    eligible_paper_ids: tuple[str, ...] = ()
+
+
+SEARCH_IMPLEMENTATION_VERSION = "phase2-search-v2"
+_OUTCOME_KEY = "pipeline_outcome_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +171,8 @@ class SearchPipeline:
             budgets=self.plan["budgets"],
             include_arxiv_candidates=self.plan["scope"]["include_arxiv_candidates"],
         )
-        self._ensure_run(run_id, observed_at)
+        if self._ensure_run(run_id, observed_at) == "complete":
+            return self._completed_result(run_id, crawl_run_id)
         self.runs.start_crawl(
             crawl_run_id=crawl_run_id,
             run_id=run_id,
@@ -376,42 +382,143 @@ class SearchPipeline:
                 "UPDATE crawl_runs SET status = ?, stats_json = ? WHERE crawl_run_id = ?",
                 (status, json.dumps(stats, sort_keys=True, separators=(",", ":")), crawl_run_id),
             )
-        self.database.connection.execute(
-            "UPDATE pipeline_runs SET status = ?, completed_at = ? WHERE run_id = ?",
-            (status, observed_at, run_id),
-        )
-        self.database.connection.commit()
-        return PipelineResult(
+        result = PipelineResult(
             crawl_run_id,
             status,
             tuple(sorted(non_arxiv_ids)),
             tuple(sorted(all_paper_ids - non_arxiv_ids)),
             fanout,
             tuple(round_ids),
+            root_paper_ids,
         )
+        row = self.database.connection.execute(
+            "SELECT stats_json FROM crawl_runs WHERE crawl_run_id = ?", (crawl_run_id,)
+        ).fetchone()
+        stats = json.loads(row["stats_json"])
+        stats[_OUTCOME_KEY] = self._outcome_document(result)
+        self.database.connection.execute(
+            "UPDATE crawl_runs SET stats_json = ? WHERE crawl_run_id = ?",
+            (json.dumps(stats, sort_keys=True, separators=(",", ":")), crawl_run_id),
+        )
+        self.database.connection.execute(
+            "UPDATE pipeline_runs SET status = ?, completed_at = ? WHERE run_id = ?",
+            (status, observed_at, run_id),
+        )
+        self.database.connection.commit()
+        return result
 
     execute = run
 
-    def _ensure_run(self, run_id: str, observed_at: str) -> None:
+    def _ensure_run(self, run_id: str, observed_at: str) -> str:
         plan_id = str(self.plan["plan_id"])
-        self.database.connection.execute(
-            """INSERT INTO search_plans(search_plan_id, content_hash, schema_version, plan_json, approval_json, status)
-               VALUES (?, ?, ?, ?, ?, 'approved') ON CONFLICT(search_plan_id) DO NOTHING""",
-            (
-                plan_id,
-                str(self.plan["plan_hash"]),
-                str(self.plan["schema_version"]),
-                json.dumps(self.plan, sort_keys=True, separators=(",", ":")),
-                json.dumps(self.plan["approval"], sort_keys=True, separators=(",", ":")),
-            ),
+        plan_binding = (
+            str(self.plan["plan_hash"]),
+            str(self.plan["schema_version"]),
+            json.dumps(self.plan, sort_keys=True, separators=(",", ":")),
+            json.dumps(self.plan["approval"], sort_keys=True, separators=(",", ":")),
         )
-        self.database.connection.execute(
-            """INSERT INTO pipeline_runs(run_id, stage, status, input_hash, config_hash, implementation_version, started_at)
-               VALUES (?, 'stage-1', 'running', ?, ?, 'phase2-search-v1', ?)
-               ON CONFLICT(run_id) DO NOTHING""",
-            (run_id, str(self.plan["plan_hash"]), str(self.plan["filter"]["config_hash"]), observed_at),
+        run_binding = (
+            "stage-1",
+            str(self.plan["plan_hash"]),
+            str(self.plan["filter"]["config_hash"]),
+            SEARCH_IMPLEMENTATION_VERSION,
         )
+        run = self.database.connection.execute(
+            """SELECT stage, status, input_hash, config_hash, implementation_version
+               FROM pipeline_runs WHERE run_id = ?""",
+            (run_id,),
+        ).fetchone()
+        if run is not None and (
+            run["stage"], run["input_hash"], run["config_hash"], run["implementation_version"]
+        ) != run_binding:
+            raise ValueError("run_id already exists with different frozen inputs")
+        stored_plan = self.database.connection.execute(
+            """SELECT content_hash, schema_version, plan_json, approval_json
+               FROM search_plans WHERE search_plan_id = ?""",
+            (plan_id,),
+        ).fetchone()
+        if stored_plan is not None and tuple(stored_plan) != plan_binding:
+            raise ValueError("search plan ID already exists with different frozen inputs")
+        if stored_plan is None:
+            self.database.connection.execute(
+                """INSERT INTO search_plans(
+                       search_plan_id, content_hash, schema_version, plan_json, approval_json, status
+                   ) VALUES (?, ?, ?, ?, ?, 'approved')""",
+                (plan_id, *plan_binding),
+            )
+        if run is None:
+            self.database.connection.execute(
+                """INSERT INTO pipeline_runs(
+                       run_id, stage, status, input_hash, config_hash,
+                       implementation_version, started_at
+                   ) VALUES (?, 'stage-1', 'running', ?, ?, ?, ?)""",
+                (run_id, run_binding[1], run_binding[2], run_binding[3], observed_at),
+            )
         self.database.connection.commit()
+        return str(run["status"]) if run is not None else "running"
+
+    def _completed_result(self, run_id: str, crawl_run_id: str) -> PipelineResult:
+        row = self.database.connection.execute(
+            """SELECT status, stats_json FROM crawl_runs
+               WHERE run_id = ? AND crawl_run_id = ?""",
+            (run_id, crawl_run_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("complete search run has no matching crawl")
+        outcome = json.loads(row["stats_json"]).get(_OUTCOME_KEY)
+        if not isinstance(outcome, Mapping):
+            raise ValueError("complete search run has no persisted outcome")
+        fanout_document = outcome.get("fanout")
+        if not isinstance(fanout_document, Mapping):
+            raise ValueError("persisted search outcome is invalid")
+        outcomes = fanout_document.get("outcomes")
+        if not isinstance(outcomes, list):
+            raise ValueError("persisted search outcome is invalid")
+        return PipelineResult(
+            crawl_run_id,
+            str(outcome["status"]),
+            tuple(str(item) for item in outcome["paper_ids"]),
+            tuple(str(item) for item in outcome["arxiv_candidate_ids"]),
+            FanoutResult(
+                tuple(
+                    ProviderOutcome(
+                        str(item["provider"]), str(item["status"]), None,
+                        str(item["error"]) if item["error"] is not None else None,
+                    )
+                    for item in outcomes
+                ),
+                bool(fanout_document["incomplete"]),
+                bool(fanout_document["budget_exhausted"]),
+                int(fanout_document["requests_made"]),
+                int(fanout_document["candidates_returned"]),
+            ),
+            tuple(str(item) for item in outcome["citation_round_ids"]),
+            tuple(str(item) for item in outcome["eligible_paper_ids"]),
+        )
+
+    @staticmethod
+    def _outcome_document(result: PipelineResult) -> dict[str, object]:
+        return {
+            "status": result.status,
+            "paper_ids": list(result.paper_ids),
+            "arxiv_candidate_ids": list(result.arxiv_candidate_ids),
+            "eligible_paper_ids": list(result.eligible_paper_ids),
+            "citation_round_ids": list(result.citation_round_ids),
+            "fanout": {
+                "outcomes": [
+                    {
+                        "provider": item.provider,
+                        "status": item.status,
+                        "error": item.error,
+                    }
+                    for item in result.fanout.outcomes
+                ],
+                "incomplete": result.fanout.incomplete,
+                "budget_exhausted": result.fanout.budget_exhausted,
+                "requests_made": result.fanout.requests_made,
+                "candidates_returned": result.fanout.candidates_returned,
+            },
+        }
 
     def _provider(self, name: str) -> Mapping[str, Any]:
         return next(item for item in self.plan["providers"] if item["provider"] == name)
