@@ -205,25 +205,48 @@ def _provider_specs(value: Any, root: Path, *, venue_ids: Sequence[str]) -> list
         requested = requested_by_provider[provider_name]
         manifest = catalog.provider(str(requested["provider"]))
         authentication = manifest["authentication"]
-        credential_name = authentication.get("credential_env")
+        credential_names = _credential_environment_variables(authentication)
+        credentials_present = not credential_names or all(
+            bool(os.environ.get(name)) for name in credential_names
+        )
+        credential_availability = {
+            name: bool(os.environ.get(name)) for name in credential_names
+        }
         spec = {
             "provider": manifest["provider"],
             "distribution": manifest["distribution"],
             "version": manifest["version"],
+            "entry_point": manifest["entry_point"],
             "artifact_sha256": manifest["artifact_sha256"],
             "manifest_hash": content_hash(manifest),
             "roles": manifest["roles"],
             "capabilities": manifest["capabilities"],
             "enabled": manifest["enabled"],
+            "authority": manifest["authority"],
+            "credential_environment_variables": credential_names,
+            "credential_availability": credential_availability,
+            "rate_limit": manifest["rate_limit"],
+            "data_use": manifest["terms"]["data_use"],
+            "terms_url": manifest["terms"].get("url"),
+            "independence_group": manifest["independence_group"],
+            "upstream_families": manifest["upstream_families"],
             "mode": "api",
             "credentials_required": authentication["required"],
-            "credentials_present": not authentication["required"] or bool(os.environ.get(credential_name)),
+            "credentials_present": credentials_present,
             "manifest_trusted": manifest["builtin"],
             "exact_required": provider_name in exact_providers,
         }
         spec.update(requested)
         specs.append(spec)
     return specs
+
+
+def _credential_environment_variables(authentication: Mapping[str, Any]) -> tuple[str, ...]:
+    declared = authentication.get("credential_envs", ())
+    names = declared.values() if isinstance(declared, Mapping) else declared
+    if "credential_env" in authentication:
+        names = (*names, authentication["credential_env"])
+    return tuple(sorted(str(name) for name in names))
 
 
 def _load_runtime(value: str) -> dict[str, Any]:

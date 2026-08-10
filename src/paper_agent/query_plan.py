@@ -24,8 +24,24 @@ class QueryPlanDriftError(QueryPlanError):
 _RUNTIME_PROVIDER_FIELDS = (
     "distribution",
     "version",
+    "entry_point",
     "artifact_sha256",
     "manifest_hash",
+    "enabled",
+    "required",
+    "roles",
+    "capabilities",
+    "authority",
+    "credential_environment_variables",
+    "credential_availability",
+    "credentials_required",
+    "rate_limit",
+    "data_use",
+    "terms_url",
+    "independence_group",
+    "upstream_families",
+    "resolved",
+    "resolution_reason",
     "mode",
     "snapshot_hash",
     "credentials_present",
@@ -105,6 +121,25 @@ def approve_query_plan(
 
 def runtime_requirements(plan: Mapping[str, Any]) -> dict[str, Any]:
     return _requirements(plan)
+
+
+def compile_runtime_providers(
+    plan: Mapping[str, Any], provider_specs: Sequence[Mapping[str, Any]]
+) -> tuple[dict[str, Any], ...]:
+    """Resolve current provider facts into the same frozen shape as a QueryPlan."""
+    requirements = runtime_requirements(plan)
+    providers = tuple(
+        _compile_provider(
+            specification,
+            list(plan["query_variants"]),
+            plan["scope"],
+            page_size=_page_size(plan),
+            requirements=requirements,
+        )
+        for specification in provider_specs
+    )
+    _validate_resolution(providers, requirements)
+    return providers
 
 
 def assert_runtime_matches(
@@ -244,14 +279,47 @@ def _compile_provider(
         if resolved and "search" in roles
         else ()
     )
+    credential_environment_variables = sorted(
+        str(name) for name in specification.get("credential_environment_variables", ())
+    )
+    credential_availability = {
+        name: bool(specification.get("credential_availability", {}).get(name, credentials_present))
+        for name in credential_environment_variables
+    }
+    rate_limit = dict(
+        specification.get(
+            "rate_limit",
+            {"global_qps": 1, "max_concurrency": 1, "cache_ttl_seconds": 0},
+        )
+    )
     return {
         "provider": provider,
         "distribution": str(specification["distribution"]),
         "version": str(specification["version"]),
+        "entry_point": str(
+            specification.get("entry_point", f"{specification['distribution']}:{provider}")
+        ),
         "artifact_sha256": specification["artifact_sha256"],
         "manifest_hash": str(specification["manifest_hash"]),
         "roles": roles,
         "capabilities": sorted(str(capability) for capability in specification["capabilities"]),
+        "enabled": enabled,
+        "required": provider in requirements["required_providers"],
+        "authority": str(specification.get("authority", "scholarly_graph")),
+        "credential_environment_variables": credential_environment_variables,
+        "credential_availability": credential_availability,
+        "credentials_required": credentials_required,
+        "rate_limit": {
+            "global_qps": float(rate_limit["global_qps"]),
+            "max_concurrency": int(rate_limit["max_concurrency"]),
+            "cache_ttl_seconds": int(rate_limit["cache_ttl_seconds"]),
+        },
+        "data_use": str(specification.get("data_use", "permitted")),
+        "terms_url": specification.get("terms_url"),
+        "independence_group": str(specification.get("independence_group", provider)),
+        "upstream_families": sorted(
+            str(value) for value in specification.get("upstream_families", (provider,))
+        ),
         "resolved": resolved,
         "resolution_reason": reason,
         "mode": mode,

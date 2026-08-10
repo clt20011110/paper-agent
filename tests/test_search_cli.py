@@ -8,6 +8,11 @@ from paper_agent.cli import main
 from paper_agent.query_plan import QueryPlanDriftError
 
 
+@pytest.fixture(autouse=True)
+def openalex_credentials(monkeypatch) -> None:
+    monkeypatch.setenv("OPENALEX_API_KEY", "test-key")
+
+
 def _digest(character: str) -> str:
     return character * 64
 

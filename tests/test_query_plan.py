@@ -160,3 +160,7 @@ def test_runtime_drift_is_rejected_for_frozen_provider_and_budget() -> None:
         assert_runtime_matches(approved, [changed])
     with pytest.raises(QueryPlanDriftError, match="budgets"):
         assert_runtime_matches(approved, runtime, budgets={"max_requests": 1})
+
+    changed_policy = dict(runtime[0], rate_limit={**runtime[0]["rate_limit"], "global_qps": 2})
+    with pytest.raises(QueryPlanDriftError, match="rate_limit"):
+        assert_runtime_matches(approved, [changed_policy])
