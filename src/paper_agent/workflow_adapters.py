@@ -26,7 +26,11 @@ from .download_cli_service import Stage3DownloadService, load_provider_terms
 from .grants import GrantStore
 from .processing import ArtifactProcessingPolicy, ProcessingGate
 from .report_artifacts import ReportArtifactStore
-from .report_cli_service import load_report_run_bundle
+from .report_cli_service import (
+    assert_report_plan_resource_binding,
+    load_report_run_bundle,
+)
+from .report_config import ReportRuntimeConfig
 from .report_execution_service import ReportExecutionService
 from .report_plan import ReportPlanBundle, assert_report_runtime_matches
 from .search_execution import execute_search_plan
@@ -331,7 +335,18 @@ class AnalyzeStageAdapter(_WorkflowAdapter):
         })
 
 
-ReportServiceFactory = Callable[[Database, ArtifactStore, ProcessingGate, ReportArtifactStore], Any]
+ReportServiceFactory = Callable[
+    [
+        Database,
+        ArtifactStore,
+        ProcessingGate,
+        ReportArtifactStore,
+        ReportRuntimeConfig,
+        str,
+    ],
+    Any,
+]
+_WORKFLOW_REPORT_EXECUTION_MODE = "unattended"
 
 
 class ReportStageAdapter(_WorkflowAdapter):
@@ -343,7 +358,14 @@ class ReportStageAdapter(_WorkflowAdapter):
 
     def _validate_dry_inputs(self, context: StepContext, spec: ReportStep) -> None:
         config = load_config(context.config_path)
+        runtime = _report_runtime_config(config, context.config_path)
+        if not runtime.enabled:
+            return
         bundle = _report_bundle(spec)
+        runtime.validate_for_run(
+            bundle.plan, execution_mode=_WORKFLOW_REPORT_EXECUTION_MODE
+        )
+        assert_report_plan_resource_binding(bundle.plan, runtime.resources)
         assert_report_runtime_matches(
             bundle.plan,
             bundle.plan,
@@ -372,7 +394,19 @@ class ReportStageAdapter(_WorkflowAdapter):
     ) -> StageOutcome:
         del identity
         config = load_config(context.config_path)
+        runtime = _report_runtime_config(config, context.config_path)
+        if not runtime.enabled:
+            return StageOutcome("complete", {
+                "report_run_id": context.child_run_id,
+                "stage_status": "complete",
+                "dry_run": context.dry_run,
+                "skipped": True,
+            })
         bundle = _report_bundle(spec)
+        runtime.validate_for_run(
+            bundle.plan, execution_mode=_WORKFLOW_REPORT_EXECUTION_MODE
+        )
+        assert_report_plan_resource_binding(bundle.plan, runtime.resources)
         policy = ArtifactProcessingPolicy.load(_policy_path(
             spec.policy.resolved_path if spec.policy else None, config, context.config_path, "summary",
         ))
@@ -382,7 +416,12 @@ class ReportStageAdapter(_WorkflowAdapter):
             previous = load_report_run_bundle(root, spec.previous_report_run_id).diff_input()
         with Database(context.database_path) as database:
             service = self.service_factory(
-                database, ArtifactStore(root), ProcessingGate(policy, GrantStore(database)), ReportArtifactStore(root),
+                database,
+                ArtifactStore(root),
+                ProcessingGate(policy, GrantStore(database)),
+                ReportArtifactStore(root),
+                runtime,
+                _WORKFLOW_REPORT_EXECUTION_MODE,
             )
             result = service.run(
                 context.child_run_id,
@@ -397,6 +436,7 @@ class ReportStageAdapter(_WorkflowAdapter):
             "report_run_id": result.report_run_id,
             "stage_status": result.status,
             "dry_run": result.dry_run,
+            "skipped": bool(getattr(result, "skipped", False)),
         })
 
 
@@ -429,9 +469,25 @@ def _analysis_service(
 
 def _report_service(
     database: Database, artifact_store: ArtifactStore, gate: ProcessingGate,
-    report_store: ReportArtifactStore,
+    report_store: ReportArtifactStore, runtime_config: ReportRuntimeConfig,
+    execution_mode: str,
 ) -> ReportExecutionService:
-    return ReportExecutionService(database, artifact_store, gate, report_store)
+    return ReportExecutionService(
+        database,
+        artifact_store,
+        gate,
+        report_store,
+        execution_mode=execution_mode,
+        runtime_config=runtime_config,
+    )
+
+
+def _report_runtime_config(
+    config: Mapping[str, Any], config_path: Path
+) -> ReportRuntimeConfig:
+    if "summary" not in config:
+        return ReportRuntimeConfig.defaults()
+    return ReportRuntimeConfig.from_config(config, config_path)
 
 
 def _artifact_root(context: StepContext) -> Path:

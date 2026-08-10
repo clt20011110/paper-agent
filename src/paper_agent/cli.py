@@ -50,11 +50,13 @@ from .processing import ArtifactProcessingPolicy, ProcessingGate
 from .report_artifacts import ReportArtifactStore
 from .report_cli_service import (
     approve_report_plan_from_files,
+    assert_report_plan_resource_binding,
     compile_report_plan_from_files,
     diff_report_runs,
     load_report_run_bundle,
     verify_report_run,
 )
+from .report_config import ReportRuntimeConfig
 from .report_execution_service import ReportExecutionService
 from .report_plan import ReportPlanBundle
 from .repository import PaperRepository
@@ -489,6 +491,18 @@ def _filter(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _report(args: argparse.Namespace) -> dict[str, Any]:
+    config = load_config(args.config) if args.config else None
+    runtime = _report_runtime_config(config, args.config)
+    generation_requested = (
+        args.report_command == "approve" or args.plan_only or args.plan is not None
+    )
+    if generation_requested and not runtime.enabled:
+        return {
+            "command": "report",
+            "dry_run": args.dry_run,
+            "skipped": True,
+            "status": "complete",
+        }
     if args.report_command == "approve":
         approved_at = args.approved_at or datetime.now(UTC).isoformat().replace(
             "+00:00", "Z"
@@ -502,6 +516,7 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
             approved_by=args.approved_by,
             approved_at=approved_at,
             save_bundle=not args.dry_run,
+            resources=runtime.resources,
         )
         return {
             "command": "report.approve",
@@ -529,6 +544,7 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
             args.search_audit,
             args.output_root,
             save_draft=not args.dry_run,
+            resources=runtime.resources,
         )
         return {
             "command": "report.plan",
@@ -556,14 +572,31 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
             "status": "complete",
         }
     if args.plan is not None:
-        return _report_execute(args)
+        return _report_execute(args, config=config, runtime=runtime)
     raise CliUsageError(
         "report requires --plan-only, approve, --plan, or --diff-from"
     )
 
 
-def _report_execute(args: argparse.Namespace) -> dict[str, Any]:
-    config = load_config(args.config) if args.config else None
+def _report_execute(
+    args: argparse.Namespace,
+    *,
+    config: Mapping[str, Any] | None = None,
+    runtime: ReportRuntimeConfig | None = None,
+) -> dict[str, Any]:
+    if config is None and args.config is not None:
+        config = load_config(args.config)
+    runtime = runtime or _report_runtime_config(config, args.config)
+    if not runtime.enabled:
+        return {
+            "command": "report",
+            "dry_run": args.dry_run,
+            "skipped": True,
+            "status": "complete",
+        }
+    bundle = _load_report_plan_bundle(args.plan)
+    runtime.validate_for_run(bundle.plan, execution_mode=args.execution_mode)
+    assert_report_plan_resource_binding(bundle.plan, runtime.resources)
     database_path = _database_path(args.database, config, args.config)
     if not database_path.is_file():
         raise FileNotFoundError(f"database does not exist: {database_path}")
@@ -573,7 +606,6 @@ def _report_execute(args: argparse.Namespace) -> dict[str, Any]:
     policy_path = args.policy or _report_policy_path(config, args.config)
     if policy_path is None:
         raise ConfigError("report execution requires --policy or a v2 --config")
-    bundle = _load_report_plan_bundle(args.plan)
     report_run_id = args.report_run_id or args.run_id
     if report_run_id is None:
         report_run_id = f"report-{content_hash(bundle.plan)[:16]}"
@@ -596,6 +628,7 @@ def _report_execute(args: argparse.Namespace) -> dict[str, Any]:
             gate,
             ReportArtifactStore(output_root),
             execution_mode=args.execution_mode,
+            runtime_config=runtime,
         )
         result = service.run(
             report_run_id,
@@ -615,6 +648,7 @@ def _report_execute(args: argparse.Namespace) -> dict[str, Any]:
             else None
         ),
         "report_run_id": result.report_run_id,
+        "skipped": bool(getattr(result, "skipped", False)),
         "status": result.status,
     }
 
@@ -856,6 +890,16 @@ def _analysis_policy_path(
         str(config["analysis"]["remote_model_processing"]["policy_matrix"])
     )
     return _config_resource_path(config_path, value)
+
+
+def _report_runtime_config(
+    config: Mapping[str, Any] | None, config_path: Path | None
+) -> ReportRuntimeConfig:
+    if config is None:
+        return ReportRuntimeConfig.defaults()
+    if config_path is None:
+        raise ConfigError("report configuration path is required")
+    return ReportRuntimeConfig.from_config(config, config_path)
 
 
 def _report_policy_path(

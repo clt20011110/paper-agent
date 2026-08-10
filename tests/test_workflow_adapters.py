@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 import yaml
@@ -75,6 +75,7 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
     audit = _write(tmp_path, "audit.json", {"audit": "frozen"})
     calls: list[tuple[str, Any]] = []
     report_factory_args: list[tuple[Any, ...]] = []
+    report_runtime_checks: list[tuple[Mapping[str, Any], str]] = []
 
     def search_runner(plan_value, database_path, **kwargs):
         calls.append(("search", (plan_value, database_path, kwargs)))
@@ -122,9 +123,24 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
     # Only execution needs the v2 configuration; adapters remain independently
     # testable with fake typed services.
     report_root = tmp_path / "configured-output"
+    report_runtime = SimpleNamespace(
+        enabled=True,
+        resources=object(),
+        validate_for_run=lambda plan, *, execution_mode: report_runtime_checks.append(
+            (plan, execution_mode)
+        ),
+    )
     monkeypatch.setattr(
         "paper_agent.workflow_adapters.load_config",
         lambda _path: {"project": {"output_dir": str(report_root)}},
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters._report_runtime_config",
+        lambda _config, _path: report_runtime,
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.assert_report_plan_resource_binding",
+        lambda _plan, _resources: None,
     )
 
     search = SearchStageAdapter(search_runner)
@@ -156,8 +172,79 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
     assert calls[4][1][3]["processing_grants"] == {"a" * 64: "grant-7"}
     assert report_factory_args[0][1].root == report_root
     assert report_factory_args[0][3].root == report_root
+    assert report_factory_args[0][4] is report_runtime
+    assert report_factory_args[0][5] == "unattended"
+    assert report_runtime_checks == [({"plan": "frozen"}, "unattended")]
     with Database(context.database_path, read_only=True) as database:
         assert database.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] > 0
+
+
+def test_disabled_workflow_report_skips_before_bundle_policy_and_database(
+    tmp_path: Path, monkeypatch
+) -> None:
+    context = _context(tmp_path)
+    plan = _write(tmp_path, "plan.json", {"not": "opened"})
+    corpus = _write(tmp_path, "corpus.json", {"not": "opened"})
+    audit = _write(tmp_path, "audit.json", {"not": "opened"})
+    spec = ReportStep("step", plan, corpus, audit, None, None, None)
+    runtime = SimpleNamespace(enabled=False)
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config", lambda _path: {}
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters._report_runtime_config",
+        lambda _config, _path: runtime,
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters._report_bundle",
+        lambda _spec: pytest.fail("disabled report must not load its bundle"),
+    )
+
+    adapter = ReportStageAdapter(
+        lambda *_args: pytest.fail("disabled report must not construct a service")
+    )
+    outcome = adapter.execute(context, spec, adapter.validate(context, spec))
+
+    assert outcome.status == "complete"
+    assert outcome.payload["skipped"] is True
+    assert not context.database_path.exists()
+
+
+def test_workflow_report_checks_unattended_pin_before_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    context = _context(tmp_path)
+    plan = _write(tmp_path, "plan.json", {"plan_hash": "a" * 64})
+    corpus = _write(tmp_path, "corpus.json", {})
+    audit = _write(tmp_path, "audit.json", {})
+    spec = ReportStep("step", plan, corpus, audit, None, None, None)
+    checked_modes: list[str] = []
+
+    class PinnedRuntime:
+        enabled = True
+        resources = object()
+
+        def validate_for_run(self, _plan, *, execution_mode):
+            checked_modes.append(execution_mode)
+            raise RuntimeError("configured plan pin checked")
+
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config", lambda _path: {}
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters._report_runtime_config",
+        lambda _config, _path: PinnedRuntime(),
+    )
+
+    adapter = ReportStageAdapter(
+        lambda *_args: pytest.fail("pin failure must prevent service construction")
+    )
+    identity = adapter.validate(context, spec)
+    with pytest.raises(RuntimeError, match="plan pin checked"):
+        adapter.execute(context, spec, identity)
+
+    assert checked_modes == ["unattended"]
+    assert not context.database_path.exists()
 
 
 def test_orchestrator_dry_run_only_validates_and_observes(tmp_path: Path) -> None:

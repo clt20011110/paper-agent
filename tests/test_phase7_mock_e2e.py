@@ -49,6 +49,7 @@ def _workflow_inputs(root: Path, database_path: Path) -> Path:
         (ROOT / "configs" / "abstract_focus.yaml").read_text(encoding="utf-8")
     )
     config["storage"]["sqlite_path"] = str(database_path)
+    config["summary"]["enabled"] = True
     config_path = root / "research.yaml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
@@ -97,7 +98,24 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
     database_path = tmp_path / "papers.sqlite3"
     workflow_path = _workflow_inputs(tmp_path, database_path)
     calls: list[tuple[str, str]] = []
+    report_modes: list[str] = []
     pause_recovery_download = True
+
+    runtime = SimpleNamespace(
+        enabled=True,
+        resources=object(),
+        validate_for_run=lambda _plan, *, execution_mode: report_modes.append(
+            execution_mode
+        ),
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters._report_runtime_config",
+        lambda _config, _path: runtime,
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.assert_report_plan_resource_binding",
+        lambda _plan, _resources: None,
+    )
 
     def search_runner(_plan: object, _database: Path, **options: Any):
         calls.append(("search", options["run_id"]))
@@ -210,6 +228,7 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
         ("analyze", "clean:analyze"),
         ("report", "clean:report"),
     ]
+    assert report_modes == ["unattended", "unattended"]
 
     with Database(database_path, read_only=True) as database:
         for run_id in ("recovery", "clean"):

@@ -8,16 +8,22 @@ by the report-plan and report-artifact services.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from .canonical import content_hash
 from .report_artifacts import ReportArtifactStore, report_diff, verify_report
+from .report_config import ReportResources
 from .report_plan import (
+    ReportPlanError,
     ReportPlanStore,
     approve_report_plan,
+    assert_report_runtime_matches,
     compile_report_plan,
 )
+from .schema import SchemaValidationError
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,12 +60,14 @@ def compile_report_plan_from_files(
     output_root: str | Path,
     *,
     save_draft: bool = True,
+    resources: ReportResources | None = None,
 ) -> ReportPlanFileResult:
     """Compile a ReportPlan draft from three explicit JSON inputs."""
     plan = compile_report_plan(
         _load_mapping(draft_path),
         corpus_snapshot=_load_mapping(corpus_snapshot_path),
         search_audit_pack=_load_mapping(search_audit_path),
+        resources=resources,
     )
     store = ReportPlanStore(output_root)
     path = store.draft_path(str(plan["plan_id"]))
@@ -78,10 +86,13 @@ def approve_report_plan_from_files(
     approved_by: str,
     approved_at: str,
     save_bundle: bool = True,
+    resources: ReportResources | None = None,
 ) -> ReportPlanFileResult:
     """Approve a persisted draft and write its immutable input bundle."""
+    draft = _load_mapping(draft_path)
+    assert_report_plan_resource_binding(draft, resources)
     plan = approve_report_plan(
-        _load_mapping(draft_path),
+        draft,
         expected_hash,
         approved_by=approved_by,
         approved_at=approved_at,
@@ -89,11 +100,42 @@ def approve_report_plan_from_files(
     store = ReportPlanStore(output_root)
     corpus_snapshot = _load_mapping(corpus_snapshot_path)
     search_audit = _load_mapping(search_audit_path)
+    assert_report_runtime_matches(
+        plan,
+        plan,
+        corpus_snapshot=corpus_snapshot,
+        search_audit_pack=search_audit,
+    )
     if save_bundle:
         store.save_bundle(plan, corpus_snapshot, search_audit)
     return ReportPlanFileResult(
         plan, store.approved_path(str(plan["plan_id"])), save_bundle
     )
+
+
+def assert_report_plan_resource_binding(
+    plan: Mapping[str, Any], resources: ReportResources | None = None
+) -> None:
+    """Require a frozen plan to match the schemas and prompts used at runtime."""
+    selected = resources or ReportResources.defaults()
+    selected.validate_files()
+    expected_schema_hash = content_hash(selected.schema("planning_assist"))
+    expected_prompt_hashes = {
+        call_kind: sha256(path.read_bytes()).hexdigest()
+        for call_kind, path in selected.prompt_paths.items()
+    }
+    if plan.get("schema_hash") != expected_schema_hash:
+        raise ReportPlanError(
+            "ReportPlan schema hash does not match the configured planning schema"
+        )
+    if plan.get("prompt_hashes") != expected_prompt_hashes:
+        raise ReportPlanError(
+            "ReportPlan prompt hashes do not match the configured prompts"
+        )
+    try:
+        selected.validate(plan, "planning_assist")
+    except SchemaValidationError as error:
+        raise ReportPlanError(str(error)) from error
 
 
 def verify_report_run(

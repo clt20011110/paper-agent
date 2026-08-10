@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from paper_agent import cli
 from paper_agent.canonical import content_hash
 from paper_agent.report_artifacts import (
@@ -17,6 +19,8 @@ from paper_agent.report_cli_service import (
     diff_report_runs,
     verify_report_run,
 )
+from paper_agent.report_config import ReportResources
+from paper_agent.report_plan import ReportPlanError
 from test_report_artifacts import _bundle
 from test_report_plan import _draft, _inputs
 
@@ -62,6 +66,72 @@ def test_plan_only_and_approve_save_the_frozen_plan_bundle(tmp_path: Path) -> No
     assert approved.plan["approval"]["approved_hash"] == compiled.plan["plan_hash"]
     assert (approved.path.parent / "CORPUS_SNAPSHOT.json").is_file()
     assert (approved.path.parent / "SEARCH_AUDIT.json").is_file()
+
+
+def test_approval_rejects_resources_that_differ_from_plan_compilation(
+    tmp_path: Path,
+) -> None:
+    corpus, search_audit = _inputs()
+    draft = _draft()
+    draft["created_at"] = "2026-08-10T00:02:00Z"
+    draft_path = _write_json(tmp_path / "draft.json", draft)
+    corpus_path = _write_json(tmp_path / "corpus.json", corpus)
+    audit_path = _write_json(tmp_path / "search-audit.json", search_audit)
+    compiled = compile_report_plan_from_files(
+        draft_path, corpus_path, audit_path, tmp_path
+    )
+    defaults = ReportResources.defaults()
+    changed_prompt = tmp_path / "report-plan.md"
+    changed_prompt.write_text(
+        defaults.prompt("planning_assist") + "\nChanged after planning.\n",
+        encoding="utf-8",
+    )
+    prompt_paths = dict(defaults.prompt_paths)
+    prompt_paths["planning_assist"] = changed_prompt
+    changed_resources = ReportResources(
+        dict(defaults.schema_paths), prompt_paths, configured=True
+    )
+
+    with pytest.raises(ReportPlanError, match="prompt hashes"):
+        approve_report_plan_from_files(
+            compiled.path,
+            corpus_path,
+            audit_path,
+            tmp_path,
+            expected_hash=str(compiled.plan["plan_hash"]),
+            approved_by="owner",
+            approved_at="2026-08-10T00:03:00Z",
+            resources=changed_resources,
+        )
+
+
+def test_approval_dry_run_still_validates_frozen_corpus_binding(
+    tmp_path: Path,
+) -> None:
+    corpus, search_audit = _inputs()
+    draft = _draft()
+    draft["created_at"] = "2026-08-10T00:02:00Z"
+    draft_path = _write_json(tmp_path / "draft.json", draft)
+    corpus_path = _write_json(tmp_path / "corpus.json", corpus)
+    audit_path = _write_json(tmp_path / "search-audit.json", search_audit)
+    compiled = compile_report_plan_from_files(
+        draft_path, corpus_path, audit_path, tmp_path
+    )
+    corpus_path.write_text(
+        json.dumps({**corpus, "snapshot_hash": "b" * 64}), encoding="utf-8"
+    )
+
+    with pytest.raises(ReportPlanError, match="corpus snapshot hash has drifted"):
+        approve_report_plan_from_files(
+            compiled.path,
+            corpus_path,
+            audit_path,
+            tmp_path,
+            expected_hash=str(compiled.plan["plan_hash"]),
+            approved_by="owner",
+            approved_at="2026-08-10T00:03:00Z",
+            save_bundle=False,
+        )
 
 
 def test_verify_report_run_loads_an_immutable_bundle(tmp_path: Path) -> None:

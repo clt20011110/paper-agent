@@ -36,6 +36,17 @@ def test_report_execution_cli_wires_frozen_inputs_and_processing_grants(
         json.dumps({"schema_version": "1", "grants": {"a" * 64: "grant-1"}}),
         encoding="utf-8",
     )
+    output_root = tmp_path / "output"
+    config_document = yaml.safe_load(
+        (ROOT / "configs" / "abstract_focus.yaml").read_text(encoding="utf-8")
+    )
+    config_document["storage"]["sqlite_path"] = str(database_path)
+    config_document["project"]["output_dir"] = str(output_root)
+    config_document["summary"]["enabled"] = True
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(config_document, sort_keys=False), encoding="utf-8"
+    )
     captured = {}
 
     class FakeService:
@@ -63,13 +74,18 @@ def test_report_execution_cli_wires_frozen_inputs_and_processing_grants(
             )
 
     monkeypatch.setattr(cli, "ReportExecutionService", FakeService)
-    output_root = tmp_path / "output"
+    monkeypatch.setattr(
+        cli,
+        "assert_report_plan_resource_binding",
+        lambda plan, resources: captured.update({
+            "resource_plan": plan,
+            "resources": resources,
+        }),
+    )
     assert cli.main([
         "report",
+        "--config", str(config_path),
         "--plan", str(approved),
-        "--database", str(database_path),
-        "--output-root", str(output_root),
-        "--policy", str(ROOT / "policies" / "artifact-processing-v1.yaml"),
         "--processing-grants", str(grants),
         "--report-run-id", "report-1",
         "--dry-run",
@@ -81,6 +97,100 @@ def test_report_execution_cli_wires_frozen_inputs_and_processing_grants(
     assert captured["pipeline_run_id"] == "report-1:stage4b"
     assert captured["run_options"]["processing_grants"] == {"a" * 64: "grant-1"}
     assert captured["run_options"]["dry_run"] is True
+    assert captured["options"]["execution_mode"] == "attended"
+    assert captured["options"]["runtime_config"].enabled
+    assert captured["options"]["runtime_config"].resources is captured["resources"]
+
+
+def test_disabled_report_cli_skips_before_opening_any_inputs(
+    tmp_path: Path, capsys
+) -> None:
+    config_document = yaml.safe_load(
+        (ROOT / "configs" / "abstract_focus.yaml").read_text(encoding="utf-8")
+    )
+    config_document["storage"]["sqlite_path"] = str(tmp_path / "missing.sqlite3")
+    config_document["project"]["output_dir"] = str(tmp_path / "missing-output")
+    config_path = tmp_path / "disabled.yaml"
+    config_path.write_text(
+        yaml.safe_dump(config_document, sort_keys=False), encoding="utf-8"
+    )
+
+    assert cli.main([
+        "report",
+        "--config", str(config_path),
+        "--plan", str(tmp_path / "missing-plan.json"),
+        "--policy", str(tmp_path / "missing-policy.yaml"),
+    ]) == 0
+
+    result = _payload(capsys)
+    assert result["status"] == "complete"
+    assert result["skipped"] is True
+    assert not (tmp_path / "missing.sqlite3").exists()
+
+
+def test_report_plan_and_approval_use_resources_from_config(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    config_document = yaml.safe_load(
+        (ROOT / "configs" / "abstract_focus.yaml").read_text(encoding="utf-8")
+    )
+    config_document["summary"]["enabled"] = True
+    config_path = tmp_path / "enabled.yaml"
+    config_path.write_text(
+        yaml.safe_dump(config_document, sort_keys=False), encoding="utf-8"
+    )
+    captured = {}
+
+    def fake_compile(*_args, **options):
+        captured["compile_resources"] = options["resources"]
+        return SimpleNamespace(
+            path=tmp_path / "REPORT_PLAN.draft.json",
+            plan={"plan_id": "plan-1", "plan_hash": "a" * 64},
+            saved=False,
+        )
+
+    def fake_approve(*_args, **options):
+        captured["approve_resources"] = options["resources"]
+        return SimpleNamespace(
+            path=tmp_path / "REPORT_PLAN.json",
+            plan={"plan_id": "plan-1", "plan_hash": "a" * 64},
+            saved=False,
+        )
+
+    monkeypatch.setattr(cli, "compile_report_plan_from_files", fake_compile)
+    monkeypatch.setattr(cli, "approve_report_plan_from_files", fake_approve)
+    missing = tmp_path / "intentionally-unread.json"
+
+    assert cli.main([
+        "--config", str(config_path),
+        "--dry-run",
+        "report",
+        "--plan-only",
+        "--draft", str(missing),
+        "--corpus-snapshot", str(missing),
+        "--search-audit", str(missing),
+        "--output-root", str(tmp_path),
+    ]) == 0
+    _payload(capsys)
+    assert cli.main([
+        "--config", str(config_path),
+        "--dry-run",
+        "report",
+        "approve",
+        "--plan", str(missing),
+        "--hash", "a" * 64,
+        "--approved-by", "owner",
+        "--corpus-snapshot", str(missing),
+        "--search-audit", str(missing),
+        "--output-root", str(tmp_path),
+    ]) == 0
+    _payload(capsys)
+
+    compiled = captured["compile_resources"]
+    approved = captured["approve_resources"]
+    assert compiled.configured and approved.configured
+    assert compiled.schema_paths == approved.schema_paths
+    assert compiled.prompt_paths == approved.prompt_paths
 
 
 def test_download_cli_wires_explicit_authorized_skill_handoff(
