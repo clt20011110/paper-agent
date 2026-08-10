@@ -12,6 +12,7 @@ license = "MIT"
 dependencies = [
     "jsonschema>=4.23,<5",
     "PyYAML>=6.0,<7",
+    "pypdf>=6,<7",
     "rfc8785>=0.1.4,<1",
 ]
 
@@ -35,6 +36,7 @@ paper_agent = ["storage/migrations/*.sql"]
 "share/paper-agent/providers" = ["providers/*.yaml"]
 "share/paper-agent/venues" = ["venues/*.yaml"]
 "share/paper-agent/acceptance" = ["acceptance/*.yaml"]
+"share/paper-agent/policies" = ["policies/*.yaml"]
 "share/paper-agent/tests/fixtures/providers" = ["tests/fixtures/providers/*.json"]
 
 [tool.pytest.ini_options]

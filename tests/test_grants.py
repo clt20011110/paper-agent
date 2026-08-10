@@ -158,6 +158,37 @@ def test_attended_grant_does_not_authorize_unattended_execution(grants: GrantSto
         )
 
 
+def test_unattended_mode_requires_an_explicit_frozen_allowance(grants: GrantStore) -> None:
+    with pytest.raises(GrantError, match="allow_unattended"):
+        grants.create_draft(
+            kind="download",
+            actions=["download", "store"],
+            purpose="personal_research",
+            mode="unattended",
+            scope=scope(provider=None, model=None, artifact_hashes=[]),
+            max_papers=1,
+            expires_at=FUTURE,
+        )
+
+    draft = grants.create_draft(
+        grant_id="grant-unattended",
+        kind="download",
+        actions=["download", "store"],
+        purpose="personal_research",
+        mode="unattended",
+        allow_unattended=True,
+        scope=scope(provider=None, model=None, artifact_hashes=[]),
+        max_papers=1,
+        expires_at=FUTURE,
+    )
+    approved_document = grants.approve(
+        draft, draft["content_hash"], approved_by="owner", approved_at=NOW
+    )
+
+    assert approved_document["allow_unattended"] is True
+    assert grants.load("grant-unattended").document["allow_unattended"] is True
+
+
 def test_yaml_defaults_cannot_expand_approved_scope(grants: GrantStore) -> None:
     approved(grants)
     yaml_defaults = {"paper_ids": ["paper-1", "paper-2"], "max_papers": 999}

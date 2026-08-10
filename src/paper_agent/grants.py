@@ -54,6 +54,7 @@ class GrantStore:
         actions: list[str],
         purpose: str,
         mode: str,
+        allow_unattended: bool = False,
         scope: Mapping[str, Any],
         max_papers: int,
         expires_at: str,
@@ -66,11 +67,13 @@ class GrantStore:
             raise GrantError(f"unknown grant kind: {kind}")
         if _KINDS[kind] not in actions:
             raise GrantError(f"{kind} grants require the {kind} action")
+        if (mode == "unattended") != allow_unattended:
+            raise GrantError("unattended mode requires explicit allow_unattended=true")
         if not _has_selection_scope(scope):
             raise GrantError("grant scope requires a paper, collection, selection snapshot, or artifact")
 
         draft: dict[str, Any] = {
-            "schema_version": "1",
+            "schema_version": "2",
             "grant_id": grant_id or str(uuid4()),
             "content_hash": "0" * 64,
             "status": "draft",
@@ -78,6 +81,7 @@ class GrantStore:
             "actions": list(actions),
             "purpose": purpose,
             "mode": mode,
+            "allow_unattended": allow_unattended,
             "scope": deepcopy(dict(scope)),
             "max_papers": max_papers,
             "expires_at": expires_at,
@@ -119,9 +123,9 @@ class GrantStore:
                 """
                 INSERT INTO authorization_grants(
                     grant_id, content_hash, approval_json, grant_kind, actions_json, purpose,
-                    mode, scope_json, selection_snapshot_hash, max_papers, artifact_hash,
+                    mode, allow_unattended, scope_json, selection_snapshot_hash, max_papers, artifact_hash,
                     lineage_hash, provider, model_id, skill_digest, dependency_digest, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     approved["grant_id"],
@@ -131,6 +135,7 @@ class GrantStore:
                     _json(approved["actions"]),
                     approved["purpose"],
                     approved["mode"],
+                    int(approved["allow_unattended"]),
                     _json(scope),
                     scope["selection_snapshot_hash"],
                     approved["max_papers"],
@@ -190,7 +195,7 @@ class GrantStore:
             raise GrantError(f"grant kind does not match: expected {kind}")
 
         document = {
-            "schema_version": "1",
+            "schema_version": "2",
             "grant_id": row["grant_id"],
             "content_hash": row["content_hash"],
             "status": "approved",
@@ -198,6 +203,7 @@ class GrantStore:
             "actions": json.loads(row["actions_json"]),
             "purpose": row["purpose"],
             "mode": row["mode"],
+            "allow_unattended": bool(row["allow_unattended"]),
             "scope": json.loads(row["scope_json"]),
             "max_papers": row["max_papers"],
             "expires_at": row["expires_at"],
@@ -257,6 +263,8 @@ class GrantStore:
             raise GrantError("grant purpose does not match")
         if mode != document["mode"]:
             raise GrantError("grant mode does not match")
+        if mode == "unattended" and not document["allow_unattended"]:
+            raise GrantError("grant does not allow unattended execution")
         if paper_count < 1 or paper_count > document["max_papers"]:
             raise GrantError("grant max_papers does not cover this request")
         _require_scope_item(scope["paper_ids"], paper_id, "paper")
