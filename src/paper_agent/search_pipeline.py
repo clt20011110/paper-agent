@@ -222,7 +222,7 @@ class SearchPipeline:
                     page=str(page.page),
                     cursor=page.cursor,
                     alias_group=query.variant_id if query else None,
-                    filters=dict(self.plan["scope"]),
+                    filters=self._filter_audit(query),
                 )
                 prior = metrics.get(batch.source_run_id, SourceMetrics())
                 source_entries.setdefault(batch.source_run_id, []).extend(batch.entries)
@@ -522,6 +522,30 @@ class SearchPipeline:
 
     def _provider(self, name: str) -> Mapping[str, Any]:
         return next(item for item in self.plan["providers"] if item["provider"] == name)
+
+    def _filter_audit(self, query: NativeQuery | None) -> dict[str, object]:
+        if query is not None:
+            return {
+                "requested_filters": dict(query.requested_filters),
+                "native_applied_filters": dict(query.native_applied_filters),
+                "post_filters": dict(query.post_filters),
+            }
+        requested = {
+            name: self.plan["scope"][name]
+            for name in (
+                "date_from",
+                "date_to",
+                "venues",
+                "fields",
+                "languages",
+                "document_types",
+            )
+        }
+        return {
+            "requested_filters": requested,
+            "native_applied_filters": {},
+            "post_filters": requested,
+        }
 
     def _execution_clients(self) -> dict[str, Any]:
         clients: dict[str, Any] = {}

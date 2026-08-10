@@ -384,6 +384,7 @@ def venue_pages(client: Any, descriptor: VenueDescriptor, window: CrawlWindow) -
 
 def query_spec_for_native(provider: Mapping[str, Any], query: NativeQuery) -> QuerySpec:
     parameters = query.parameters
+    requested_filters = query.requested_filters
     original_query = next(
         str(parameters[key])
         for key in ("query.bibliographic", "q", "query", "search", "term", "search_query")
@@ -412,6 +413,14 @@ def query_spec_for_native(provider: Mapping[str, Any], query: NativeQuery) -> Qu
         research_question_id=query.variant_id,
         original_query=original_query,
         alias_group=query.variant_id,
+        date_from=str(requested_filters["date_from"]),
+        date_to=str(requested_filters["date_to"]),
+        venue_ids=tuple(str(value) for value in requested_filters.get("venues", ())),
+        fields=tuple(str(value) for value in requested_filters.get("fields", ())),
+        languages=tuple(str(value) for value in requested_filters.get("languages", ())),
+        document_types=tuple(
+            str(value) for value in requested_filters.get("document_types", ())
+        ),
         page_size=page_size,
         native_parameters=dict(parameters),
         native_query_hash=query.query_hash,

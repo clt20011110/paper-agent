@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .canonical import content_hash
 
 
-COMPILER_VERSION = "1"
+COMPILER_VERSION = "2"
 
 
 class QueryCompilerError(ValueError):
@@ -21,6 +21,9 @@ class NativeQuery:
     provider: str
     variant_id: str
     parameters: Mapping[str, Any]
+    requested_filters: Mapping[str, Any] = field(default_factory=dict)
+    native_applied_filters: Mapping[str, Any] = field(default_factory=dict)
+    post_filters: Mapping[str, Any] = field(default_factory=dict)
     compiler_version: str = COMPILER_VERSION
 
     @property
@@ -31,6 +34,9 @@ class NativeQuery:
                 "variant_id": self.variant_id,
                 "compiler_version": self.compiler_version,
                 "parameters": dict(self.parameters),
+                "requested_filters": dict(self.requested_filters),
+                "native_applied_filters": dict(self.native_applied_filters),
+                "post_filters": dict(self.post_filters),
             }
         )
 
@@ -39,6 +45,9 @@ class NativeQuery:
             "provider": self.provider,
             "variant_id": self.variant_id,
             "parameters": dict(self.parameters),
+            "requested_filters": dict(self.requested_filters),
+            "native_applied_filters": dict(self.native_applied_filters),
+            "post_filters": dict(self.post_filters),
             "compiler_version": self.compiler_version,
             "query_hash": self.query_hash,
         }
@@ -89,11 +98,49 @@ def _variant_id(variant: Mapping[str, Any]) -> str:
     return str(variant["id"])
 
 
+def _requested_filters(scope: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "date_from": str(scope["date_from"]),
+        "date_to": str(scope["date_to"]),
+        "venues": [str(value) for value in scope.get("venues", ())],
+        "fields": [str(value) for value in scope.get("fields", ())],
+        "languages": [str(value) for value in scope.get("languages", ())],
+        "document_types": [str(value) for value in scope.get("document_types", ())],
+    }
+
+
+def _native_query(
+    provider: str,
+    variant: Mapping[str, Any],
+    scope: Mapping[str, Any],
+    parameters: Mapping[str, Any],
+    *,
+    native_applied_filters: Mapping[str, Any],
+    exact_filter_names: tuple[str, ...],
+) -> NativeQuery:
+    requested = _requested_filters(scope)
+    exact = frozenset(exact_filter_names)
+    post_filters = {
+        name: value
+        for name, value in requested.items()
+        if name not in exact and value not in (None, "", [], ())
+    }
+    return NativeQuery(
+        provider,
+        _variant_id(variant),
+        parameters,
+        requested,
+        dict(native_applied_filters),
+        post_filters,
+    )
+
+
 def _crossref(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: int) -> NativeQuery:
     start, end = _date_range(scope)
-    return NativeQuery(
+    return _native_query(
         "crossref",
-        _variant_id(variant),
+        variant,
+        scope,
         {
             "query.bibliographic": " ".join(_terms(variant)),
             "filter": f"from-pub-date:{start},until-pub-date:{end}",
@@ -101,70 +148,87 @@ def _crossref(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: i
             "sort": "published",
             "order": "asc",
         },
+        native_applied_filters={"date_from": start, "date_to": end},
+        exact_filter_names=("date_from", "date_to"),
     )
 
 
 def _dblp(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: int) -> NativeQuery:
-    return NativeQuery(
+    return _native_query(
         "dblp",
-        _variant_id(variant),
+        variant,
+        scope,
         {"q": " ".join(_terms(variant)), "format": "json", "h": page_size},
+        native_applied_filters={},
+        exact_filter_names=(),
     )
 
 
 def _semantic_scholar(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: int) -> NativeQuery:
     start, end = _date_range(scope)
-    return NativeQuery(
+    return _native_query(
         "semantic_scholar",
-        _variant_id(variant),
+        variant,
+        scope,
         {
             "query": " ".join(_terms(variant)),
             "year": f"{start[:4]}-{end[:4]}",
             "limit": page_size,
             "fields": "paperId,title,abstract,authors,year,venue,externalIds,publicationDate",
         },
+        native_applied_filters={"year_from": start[:4], "year_to": end[:4]},
+        exact_filter_names=(),
     )
 
 
 def _openalex(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: int) -> NativeQuery:
     start, end = _date_range(scope)
-    return NativeQuery(
+    return _native_query(
         "openalex",
-        _variant_id(variant),
+        variant,
+        scope,
         {
             "search": " ".join(_terms(variant)),
             "filter": f"from_publication_date:{start},to_publication_date:{end}",
             "per-page": page_size,
             "sort": "publication_date:asc",
         },
+        native_applied_filters={"date_from": start, "date_to": end},
+        exact_filter_names=("date_from", "date_to"),
     )
 
 
 def _pubmed(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: int) -> NativeQuery:
     start, end = _date_range(scope)
-    return NativeQuery(
+    return _native_query(
         "pubmed",
-        _variant_id(variant),
+        variant,
+        scope,
         {
             "db": "pubmed",
             "term": f"({_joined_terms(variant)}) AND {start}:{end}[pdat]",
             "retmax": page_size,
             "sort": "pub date",
         },
+        native_applied_filters={"date_from": start, "date_to": end},
+        exact_filter_names=("date_from", "date_to"),
     )
 
 
 def _europe_pmc(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: int) -> NativeQuery:
     start, end = _date_range(scope)
-    return NativeQuery(
+    return _native_query(
         "europe_pmc",
-        _variant_id(variant),
+        variant,
+        scope,
         {
             "query": f"({_joined_terms(variant)}) AND FIRST_PDATE:[{start} TO {end}]",
             "format": "json",
             "pageSize": page_size,
             "sort": "FIRST_PDATE_ASC",
         },
+        native_applied_filters={"date_from": start, "date_to": end},
+        exact_filter_names=("date_from", "date_to"),
     )
 
 
@@ -172,9 +236,10 @@ def _arxiv(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: int)
     start, end = _date_range(scope)
     start_compact = start.replace("-", "") + "0000"
     end_compact = end.replace("-", "") + "2359"
-    return NativeQuery(
+    return _native_query(
         "arxiv",
-        _variant_id(variant),
+        variant,
+        scope,
         {
             "search_query": f"all:({_joined_terms(variant)}) AND submittedDate:[{start_compact} TO {end_compact}]",
             "start": 0,
@@ -182,21 +247,27 @@ def _arxiv(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: int)
             "sortBy": "submittedDate",
             "sortOrder": "ascending",
         },
+        native_applied_filters={"date_from": start, "date_to": end},
+        exact_filter_names=("date_from", "date_to"),
     )
 
 
 def _openreview(variant: Mapping[str, Any], scope: Mapping[str, Any], page_size: int) -> NativeQuery:
     start, end = _date_range(scope)
-    return NativeQuery(
+    venues = [str(venue) for venue in scope.get("venues", ())]
+    return _native_query(
         "openreview",
-        _variant_id(variant),
+        variant,
+        scope,
         {
             "term": " ".join(_terms(variant)),
-            "venue_ids": [str(venue) for venue in scope.get("venues", ())],
+            "venue_ids": venues,
             "date_from": start,
             "date_to": end,
             "limit": page_size,
         },
+        native_applied_filters={"date_from": start, "date_to": end, "venues": venues},
+        exact_filter_names=("date_from", "date_to", "venues"),
     )
 
 

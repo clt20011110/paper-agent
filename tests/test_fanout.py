@@ -43,6 +43,7 @@ def test_required_provider_failure_marks_fanout_incomplete() -> None:
 
 def test_provider_protocol_clients_receive_one_query_spec_per_variant() -> None:
     calls: list[tuple[str, object, str, dict[str, object]]] = []
+    scopes: list[tuple[object, ...]] = []
 
     class Client:
         def search(self, query_spec, cursor):
@@ -54,6 +55,16 @@ def test_provider_protocol_clients_receive_one_query_spec_per_variant() -> None:
                     dict(query_spec.native_parameters),
                 )
             )
+            scopes.append(
+                (
+                    query_spec.date_from,
+                    query_spec.date_to,
+                    query_spec.venue_ids,
+                    query_spec.fields,
+                    query_spec.languages,
+                    query_spec.document_types,
+                )
+            )
             return {"query": query_spec.original_query}
 
     result = fan_out(_plan(), {"openalex": Client(), "crossref": Client()})
@@ -62,6 +73,16 @@ def test_provider_protocol_clients_receive_one_query_spec_per_variant() -> None:
     assert [call[:2] for call in sorted(calls)] == [("q1", None), ("q1", None)]
     assert all(len(call[2]) == 64 for call in calls)
     assert {next(iter(call[3])) for call in calls} == {"query.bibliographic", "search"}
+    assert scopes == [
+        (
+            "2020-01-01",
+            "2024-12-31",
+            (),
+            ("computer science",),
+            ("en",),
+            ("article",),
+        )
+    ] * 2
 
 
 def test_protocol_client_paginates_until_cursor_is_empty() -> None:

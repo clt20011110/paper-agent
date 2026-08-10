@@ -225,6 +225,28 @@ def test_replay_has_the_same_canonical_ids_and_source_audit(tmp_path) -> None:
             audit = database.connection.execute(
                 "SELECT raw_discovered, unique_after_dedup, overlap, error_count FROM source_run_audits"
             ).fetchone()
+            filter_audit = json.loads(
+                database.connection.execute("SELECT filters_json FROM search_queries").fetchone()[0]
+            )
+            assert filter_audit == {
+                "requested_filters": {
+                    "date_from": "2024-01-01",
+                    "date_to": "2024-12-31",
+                    "venues": [],
+                    "fields": ["computer science"],
+                    "languages": ["en"],
+                    "document_types": ["article"],
+                },
+                "native_applied_filters": {
+                    "date_from": "2024-01-01",
+                    "date_to": "2024-12-31",
+                },
+                "post_filters": {
+                    "fields": ["computer science"],
+                    "languages": ["en"],
+                    "document_types": ["article"],
+                },
+            }
             observed.append((result.paper_ids, tuple(audit)))
     assert observed[0] == observed[1]
 
