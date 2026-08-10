@@ -75,7 +75,7 @@ sources:
         email_env: NCBI_EMAIL
       europe_pmc:
         enabled: auto_for_biomed
-        roles: [search, citation, metadata_enricher, metadata_verifier, oa_resolver]
+        roles: [search, metadata_enricher, metadata_verifier, oa_resolver]
       unpaywall:
         enabled: true
         roles: [oa_resolver]

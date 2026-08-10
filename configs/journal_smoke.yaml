@@ -26,7 +26,7 @@ sources:
       semantic_scholar: {enabled: true, roles: [search, citation, metadata_enricher, metadata_verifier], api_key_env: SEMANTIC_SCHOLAR_API_KEY, use_batch_endpoints: true}
       openalex: {enabled: true, roles: [search, citation, metadata_enricher, metadata_verifier], api_key_env: OPENALEX_API_KEY, mode: api, snapshot_path: null}
       pubmed: {enabled: auto_for_biomed, roles: [search, metadata_enricher, metadata_verifier], api_key_env: NCBI_API_KEY, tool: paper-agent, email_env: NCBI_EMAIL}
-      europe_pmc: {enabled: auto_for_biomed, roles: [search, citation, metadata_enricher, metadata_verifier, oa_resolver]}
+      europe_pmc: {enabled: auto_for_biomed, roles: [search, metadata_enricher, metadata_verifier, oa_resolver]}
       unpaywall: {enabled: true, roles: [oa_resolver], email_env: UNPAYWALL_EMAIL}
     verification: {prefer_formal_version: true, require_two_sources_when_feasible: true, preserve_conflicts: true}
     citation_snowball: {enabled: true, directions: [references, citations], max_depth: 2, max_rounds: 2, seed_selector: relevant_topk_by_subquestion_v1, seeds_per_subquestion: 20, max_per_seed_per_source: 500, max_candidates_per_round: 50000, max_seconds_per_round: 14400}

@@ -2,7 +2,9 @@ from pathlib import Path
 
 from paper_agent import cli
 from paper_agent.config import load_config
+from paper_agent.doctor import DoctorPaths, SystemDoctor
 from paper_agent.download_cli_service import _policy_path as download_policy_path
+from paper_agent.manifests import load_catalog
 
 
 ROOT = Path(__file__).parents[1]
@@ -55,6 +57,39 @@ def test_example_configs_reference_shipped_descriptors_and_contracts() -> None:
         ]
 
         assert all((ROOT / reference).is_file() for reference in references)
+
+
+def test_example_configs_doctor_resolves_descriptor_primary_providers(tmp_path) -> None:
+    catalog = load_catalog(ROOT)
+    for path in EXAMPLES:
+        config = load_config(path)
+        report = SystemDoctor(
+            DoctorPaths(
+                repository_root=ROOT,
+                config_path=path,
+                database_path=tmp_path / f"{path.stem}.sqlite3",
+            ),
+            environment={},
+            executable_finder=lambda _: None,
+        ).run()
+
+        primary_providers = {
+            catalog.venue(Path(venue["descriptor"]).stem)["primary_provider"]
+            for venue in config["sources"]["plan_defaults"]["venues"]
+        }
+        assert all(
+            any(
+                check.name == f"provider:{provider}"
+                or check.name.startswith(f"provider:{provider}:")
+                for check in report.checks
+            )
+            for provider in primary_providers
+        )
+        assert not any(
+            check.status == "blocker"
+            and (check.name == "provider_roles" or check.name.endswith(":roles"))
+            for check in report.checks
+        )
 
 
 def test_query_draft_example_compiles_without_writing(tmp_path, capsys) -> None:

@@ -237,7 +237,7 @@ class SystemDoctor:
         ))
         result.append(DoctorCheck("config", "pass" if config is not None else "warning", config is not None,
                                   "configuration schema is valid" if config is not None else "no configuration supplied", True))
-        configured = self._configured_providers(config) if query_plan is None else ()
+        configured = self._configured_providers(config, catalog) if query_plan is None else ()
         usable_roles: set[str] = set()
         conditional_roles: set[str] = set()
         for provider, enabled_state, mode, snapshot_path, configured_roles in configured:
@@ -426,7 +426,9 @@ class SystemDoctor:
         return _sha256_file(path) if path.is_file() else None
 
     def _configured_providers(
-        self, config: Mapping[str, object] | None,
+        self,
+        config: Mapping[str, object] | None,
+        catalog: ManifestCatalog | None = None,
     ) -> tuple[tuple[str, Literal["enabled", "disabled", "conditional"], str, str | None, tuple[str, ...]], ...]:
         if config is None:
             return ()
@@ -436,7 +438,9 @@ class SystemDoctor:
         assert isinstance(defaults, Mapping)
         raw = defaults["providers"]
         assert isinstance(raw, Mapping)
-        values = []
+        values: dict[str, tuple[
+            str, Literal["enabled", "disabled", "conditional"], str, str | None, tuple[str, ...],
+        ]] = {}
         for name, entry in sorted(raw.items()):
             assert isinstance(entry, Mapping)
             setting = entry["enabled"]
@@ -447,12 +451,31 @@ class SystemDoctor:
                 enabled_state = "disabled"
             else:
                 enabled_state = "conditional"
-            values.append((
+            values[str(name)] = (
                 str(name), enabled_state, str(entry.get("mode", "api")),
                 entry.get("snapshot_path") if isinstance(entry.get("snapshot_path"), str) else None,
                 tuple(sorted(map(str, entry["roles"]))),
-            ))
-        return tuple(values)
+            )
+        if catalog is not None:
+            venues = defaults.get("venues", [])
+            assert isinstance(venues, list)
+            for configured_venue in venues:
+                assert isinstance(configured_venue, Mapping)
+                venue_id = Path(str(configured_venue["descriptor"])).stem
+                venue = catalog.venues.get(venue_id)
+                if venue is None:
+                    continue
+                provider = str(venue["primary_provider"])
+                existing = values.get(provider)
+                if existing is None:
+                    values[provider] = (provider, "enabled", "api", None, ("venue_primary",))
+                    continue
+                name, state, mode, snapshot_path, roles = existing
+                values[provider] = (
+                    name, state, mode, snapshot_path,
+                    tuple(sorted({*roles, "venue_primary"})),
+                )
+        return tuple(values[name] for name in sorted(values))
 
     @staticmethod
     def _required_roles(config: Mapping[str, object]) -> set[str]:
@@ -582,7 +605,7 @@ class SystemDoctor:
                 return set()
             names = {
                 name
-                for name, state, _, _, _ in self._configured_providers(config)
+                for name, state, _, _, _ in self._configured_providers(config, catalog)
                 if state != "disabled"
             }
         return {
