@@ -3,6 +3,13 @@
   "$id": "https://paper-agent.dev/schemas/filter-decision.schema.json",
   "title": "Stage 2 adjudicator decision",
   "type": "object", "additionalProperties": false,
-  "required": ["paper_id", "decision", "reason", "subquestion_ids"],
-  "properties": {"paper_id": {"type": "string", "minLength": 1}, "decision": {"enum": ["relevant", "irrelevant", "needs_review"]}, "reason": {"type": "string", "minLength": 1}, "subquestion_ids": {"type": "array", "items": {"type": "string"}}}
+  "required": ["paper_id", "decision", "score", "reason_codes", "rationale", "evidence_fields"],
+  "properties": {
+    "paper_id": {"type": "string", "minLength": 1},
+    "decision": {"enum": ["relevant", "irrelevant", "needs_review"]},
+    "score": {"type": "number", "minimum": 0, "maximum": 1},
+    "reason_codes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "rationale": {"type": "string", "minLength": 1},
+    "evidence_fields": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  }
 }
