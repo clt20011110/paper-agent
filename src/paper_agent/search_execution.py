@@ -109,6 +109,7 @@ def execute_search_plan(
     snapshot_paths: Mapping[str, Path] | None = None,
     transport: Any | None = None,
     venue_only: bool = False,
+    historical_replay: bool = False,
 ) -> tuple[PipelineResult, str, str]:
     """Execute one approved plan through the same single-writer pipeline as tests."""
     installed = catalog or load_catalog()
@@ -173,7 +174,7 @@ def execute_search_plan(
         name: ProviderTrust.from_manifest(installed.provider(name))
         for name in clients
     }
-    venues = _venue_runs(plan, installed)
+    venues = _venue_runs(plan, installed, historical_replay=historical_replay)
     seeds = () if venue_only else tuple(seed_input(value) for value in plan["scope"].get("user_seeds", ()))
     citation_clients = {
         name: client
@@ -234,7 +235,9 @@ def seed_input(value: str) -> SeedInput:
     raise ValueError(f"seed needs an explicit supported kind: {value}")
 
 
-def _venue_runs(plan: Mapping[str, Any], catalog: ManifestCatalog) -> tuple[VenueRun, ...]:
+def _venue_runs(
+    plan: Mapping[str, Any], catalog: ManifestCatalog, *, historical_replay: bool = False
+) -> tuple[VenueRun, ...]:
     start = str(plan["scope"]["date_from"])
     end = str(plan["scope"]["date_to"])
     year = int(start[:4]) if start[:4] == end[:4] else None
@@ -253,6 +256,7 @@ def _venue_runs(plan: Mapping[str, Any], catalog: ManifestCatalog) -> tuple[Venu
                     str(venue["primary_provider"]),
                     venue,
                 ),
+                historical_replay=historical_replay,
             )
         )
     return tuple(runs)

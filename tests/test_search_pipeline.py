@@ -34,7 +34,7 @@ def _provider(name: str, roles: list[str] | None = None) -> dict[str, object]:
 def _plan(
     providers: list[dict[str, object]], *, required: list[str], citation_cap: int = 10,
     max_depth: int = 1, max_rounds: int = 2, max_requests: int = 4, max_candidates: int = 10,
-    max_seconds: int = 10,
+    max_seconds: int = 10, required_roles: tuple[str, ...] = ("search",),
 ) -> dict[str, object]:
     plan = compile_query_plan(
         {
@@ -47,7 +47,7 @@ def _plan(
             "citation_snowball": {"enabled": True, "directions": ["references", "citations"], "max_depth": max_depth, "max_rounds": max_rounds, "max_per_seed_per_source": citation_cap},
             "budgets": {"max_requests": max_requests, "max_candidates": max_candidates, "max_seconds": max_seconds, "saturation": {"min_unique_included_yield": 0.01, "consecutive_low_yield_rounds": 2}},
             "provider_policy": "all_resolved",
-            "required_roles": ["search"],
+            "required_roles": list(required_roles),
             "required_providers": required,
         },
         providers=providers,
@@ -150,6 +150,112 @@ def test_replay_has_the_same_canonical_ids_and_source_audit(tmp_path) -> None:
             ).fetchone()
             observed.append((result.paper_ids, tuple(audit)))
     assert observed[0] == observed[1]
+
+
+def test_pipeline_persists_incremental_snapshot_and_does_not_remove_after_source_failure(tmp_path) -> None:
+    plan = _plan([_provider("openalex")], required=["openalex"])
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+    first = SourceEntry("openalex", "first", "First", doi="10.1000/first", metadata={"publication_version": "published"})
+    second = SourceEntry("openalex", "second", "Second", doi="10.1000/second", metadata={"publication_version": "published"})
+    client = SearchFixture((_batch("openalex", query_hash, (first,)),))
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database, plan, runtime_providers=plan["providers"], clients={"openalex": client},
+            trusts={"openalex": _trust("openalex")},
+        )
+        first_result = pipeline.run(run_id="run-1", crawl_run_id="crawl-1", observed_at=NOW)
+        client.batches = (_batch("openalex", query_hash, (second,)),)
+        second_result = pipeline.run(run_id="run-2", crawl_run_id="crawl-2", observed_at=NOW)
+        changes = database.connection.execute(
+            "SELECT paper_id, change_kind FROM incremental_diff_papers WHERE crawl_run_id = 'crawl-2' ORDER BY change_kind, paper_id"
+        ).fetchall()
+        assert [(row["paper_id"], row["change_kind"]) for row in changes] == [
+            (second_result.paper_ids[0], "new"),
+            (first_result.paper_ids[0], "removed"),
+        ]
+
+        client.failure = "offline"
+        pipeline.run(run_id="run-3", crawl_run_id="crawl-3", observed_at=NOW)
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM incremental_diff_papers WHERE crawl_run_id = 'crawl-3'"
+        ).fetchone()[0] == 0
+        watermark = database.connection.execute(
+            "SELECT watermark_json FROM provider_watermarks WHERE provider = 'openalex' AND descriptor_key = 'query:q'"
+        ).fetchone()
+        assert watermark is not None
+
+
+def test_venue_crawl_uses_scoped_watermark_but_explicit_history_replay_bypasses_it(tmp_path) -> None:
+    plan = _plan([_provider("openreview", ["venue_primary", "search"])], required=[])
+    descriptor = VenueDescriptor(1, "testconf", "openreview", "openreview")
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        from paper_agent.search_runs import SearchRunCoordinator
+
+        SearchRunCoordinator(database).set_watermark(
+            "openreview", "testconf", {"cursor": "page-2"}, updated_at=NOW
+        )
+        pipeline = SearchPipeline(
+            database, plan, runtime_providers=plan["providers"], clients={}, trusts={},
+            venue_runs=(VenueRun(descriptor, CrawlWindow(date_from="2024-01-01", date_to="2024-12-31", year=2024), _trust("openreview")),),
+        )
+        assert pipeline._watermarked_venue_runs()[0].cursor == "page-2"
+        pipeline.venue_runs = (
+            VenueRun(
+                descriptor,
+                CrawlWindow(date_from="2024-01-01", date_to="2024-12-31", year=2024),
+                _trust("openreview"),
+                historical_replay=True,
+            ),
+        )
+        assert pipeline._watermarked_venue_runs()[0].cursor is None
+
+
+def test_historical_venue_replay_keeps_the_normal_watermark(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openreview", ["venue_primary", "search"])],
+        required=["openreview"],
+        required_roles=("venue_primary",),
+    )
+    descriptor = VenueDescriptor(1, "testconf", "openreview", "openreview")
+
+    class VenueClient:
+        cursor: str | None = "not-called"
+
+        def discover(self, _descriptor, _window, cursor):
+            self.cursor = cursor
+            return SourceBatch("history", "history", (), None, EnvelopeStatus.SUCCESS)
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        from paper_agent.search_runs import SearchRunCoordinator
+
+        SearchRunCoordinator(database).set_watermark(
+            "openreview", "testconf", {"cursor": "page-2"}, updated_at=NOW
+        )
+        client = VenueClient()
+        SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={"openreview": client},
+            trusts={"openreview": _trust("openreview", primary=True)},
+            venue_runs=(
+                VenueRun(
+                    descriptor,
+                    CrawlWindow(date_from="2024-01-01", date_to="2024-12-31", year=2024),
+                    VenueContext("venue", "testconf", "TestConf", "conference", "openreview", {}),
+                    historical_replay=True,
+                ),
+            ),
+            venue_only=True,
+        ).run(run_id="history", crawl_run_id="history-crawl", observed_at=NOW)
+        assert client.cursor is None
+        watermark = database.connection.execute(
+            "SELECT watermark_json FROM provider_watermarks WHERE provider = 'openreview' AND descriptor_key = 'testconf'"
+        ).fetchone()
+        assert json.loads(watermark["watermark_json"]) == {"cursor": "page-2"}
 
 
 def test_protocol_client_uses_frozen_native_query_and_audits_each_page(tmp_path) -> None:

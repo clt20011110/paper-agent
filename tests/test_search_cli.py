@@ -10,7 +10,7 @@ import pytest
 
 from paper_agent.approval import ApprovalError
 from paper_agent.approved_snapshot import frozen_parameters_hash
-from paper_agent.cli import main
+from paper_agent.cli import build_parser, main
 from paper_agent.query_plan import QueryPlanDriftError
 from paper_agent.query_compilers import compile_queries
 
@@ -22,6 +22,13 @@ def openalex_credentials(monkeypatch) -> None:
 
 def _digest(character: str) -> str:
     return character * 64
+
+
+def test_historical_replay_is_an_explicit_search_and_crawl_flag() -> None:
+    parser = build_parser()
+    search = parser.parse_args(["search", "run", "--plan", "approved.json", "--historical-replay"])
+    crawl = parser.parse_args(["crawl", "--venue", "neurips", "--historical-replay"])
+    assert (search.historical_replay, crawl.historical_replay) == (True, True)
 
 
 def _draft() -> dict[str, object]:

@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--database", type=Path)
     run.add_argument("--contact")
     run.add_argument("--snapshot", action="append", default=[], metavar="PROVIDER=PATH")
+    run.add_argument("--historical-replay", action="store_true")
     audit = search_commands.add_parser("audit", help="read a persisted search audit")
     audit.add_argument("--database", required=True, type=Path)
     audit.add_argument("--crawl-run-id", required=True)
@@ -62,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument("--database", type=Path)
     crawl.add_argument("--contact")
     crawl.add_argument("--snapshot", action="append", default=[], metavar="PROVIDER=PATH")
+    crawl.add_argument("--historical-replay", action="store_true")
     import_command = subcommands.add_parser("import-seeds", help="import authorized library seeds")
     import_command.add_argument("--database", required=True, type=Path)
     import_command.add_argument("--seed", action="append", default=[])
@@ -102,6 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config_path=args.config,
                 run_id=args.run_id,
                 dry_run=args.dry_run,
+                historical_replay=args.historical_replay,
             )
         )
         return 0
@@ -122,6 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config_path=args.config,
                 run_id=args.run_id,
                 dry_run=args.dry_run,
+                historical_replay=args.historical_replay,
             )
         )
         return 0
@@ -180,6 +184,7 @@ def _search_run(
     run_id: str | None,
     dry_run: bool,
     venue_only: bool = False,
+    historical_replay: bool = False,
 ) -> dict[str, Any]:
     plan = _load_json(plan_path)
     config = load_config(config_path) if config_path else None
@@ -212,6 +217,7 @@ def _search_run(
         contact=operator_contact,
         snapshot_paths=snapshots,
         venue_only=venue_only,
+        historical_replay=historical_replay,
     )
     return {
         "command": "search.run",
@@ -261,6 +267,7 @@ def _crawl(
     config_path: Path | None = None,
     run_id: str | None = None,
     dry_run: bool = False,
+    historical_replay: bool = False,
 ) -> dict[str, Any]:
     catalog = load_catalog()
     normalized_ids = sorted(set(venue_ids))
@@ -277,6 +284,7 @@ def _crawl(
             run_id=run_id,
             dry_run=dry_run,
             venue_only=True,
+            historical_replay=historical_replay,
         )
         return {
             **result,

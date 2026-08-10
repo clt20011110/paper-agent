@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from uuid import NAMESPACE_URL, uuid5
 
+from .canonical import content_hash
 from .domain import EnvelopeStatus, SourceBatch
 from .fanout import FanoutResult
 from .query_plan import runtime_requirements
@@ -39,6 +40,15 @@ class SourceMetrics:
 class IncrementalChange:
     paper_id: str
     kind: IncrementalChangeKind
+
+
+@dataclass(frozen=True, slots=True)
+class IncrementalScope:
+    provider: str
+    descriptor_key: str
+    cursor: str | None
+    complete: bool
+    advance_watermark: bool = True
 
 
 class SearchRunCoordinator:
@@ -346,6 +356,190 @@ class SearchRunCoordinator:
         ).fetchall()
         return tuple(IncrementalChange(row["paper_id"], IncrementalChangeKind(row["change_kind"])) for row in rows)
 
+    def finalize_incremental_crawl(
+        self,
+        crawl_run_id: str,
+        *,
+        paper_sources: Mapping[str, Sequence[tuple[str, str]]],
+        scopes: Sequence[IncrementalScope],
+        recorded_at: str,
+    ) -> tuple[IncrementalChange, ...]:
+        """Snapshot this crawl, compare its frozen scope with the preceding crawl, and advance watermarks."""
+        snapshots = self._paper_snapshots(tuple(sorted(paper_sources)))
+        current = self.database.connection.execute(
+            "SELECT search_plan_id, window_json FROM crawl_runs WHERE crawl_run_id = ?", (crawl_run_id,)
+        ).fetchone()
+        if current is None:
+            raise ValueError(f"unknown crawl run: {crawl_run_id}")
+        previous = self.database.connection.execute(
+            """SELECT c.crawl_run_id FROM crawl_runs c
+               WHERE c.search_plan_id IS ? AND c.window_json = ? AND c.crawl_run_id != ?
+                 AND EXISTS (SELECT 1 FROM incremental_diffs d WHERE d.crawl_run_id = c.crawl_run_id)
+               ORDER BY c.rowid DESC LIMIT 1""",
+            (current["search_plan_id"], current["window_json"], crawl_run_id),
+        ).fetchone()
+        prior = self._stored_snapshots(previous["crawl_run_id"]) if previous else {}
+        prior_sources = self._stored_snapshot_sources(previous["crawl_run_id"]) if previous else {}
+        changes = self._incremental_changes(
+            prior,
+            prior_sources,
+            snapshots,
+            scopes,
+            previous["crawl_run_id"] if previous else None,
+        )
+        with self.database.transaction() as connection:
+            connection.execute("DELETE FROM crawl_paper_snapshot_sources WHERE crawl_run_id = ?", (crawl_run_id,))
+            connection.execute("DELETE FROM crawl_paper_snapshots WHERE crawl_run_id = ?", (crawl_run_id,))
+            connection.execute("DELETE FROM crawl_scope_statuses WHERE crawl_run_id = ?", (crawl_run_id,))
+            for paper_id, snapshot in snapshots.items():
+                connection.execute(
+                    """INSERT INTO crawl_paper_snapshots(crawl_run_id, paper_id, metadata_hash, status_version_json)
+                       VALUES (?, ?, ?, ?)""",
+                    (crawl_run_id, paper_id, snapshot["metadata_hash"], _json(snapshot["status_version"])),
+                )
+                for provider, descriptor_key in sorted(set(paper_sources[paper_id])):
+                    connection.execute(
+                        """INSERT INTO crawl_paper_snapshot_sources(crawl_run_id, paper_id, provider, descriptor_key)
+                           VALUES (?, ?, ?, ?)""",
+                        (crawl_run_id, paper_id, provider, descriptor_key),
+                    )
+            for scope in sorted(scopes, key=lambda item: (item.provider, item.descriptor_key)):
+                connection.execute(
+                    """INSERT INTO crawl_scope_statuses(crawl_run_id, provider, descriptor_key, cursor, complete)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (crawl_run_id, scope.provider, scope.descriptor_key, scope.cursor, int(scope.complete)),
+                )
+                if scope.complete and scope.advance_watermark:
+                    connection.execute(
+                        """INSERT INTO provider_watermarks(provider, descriptor_key, watermark_json, updated_at)
+                           VALUES (?, ?, ?, ?)
+                           ON CONFLICT(provider, descriptor_key) DO UPDATE SET
+                               watermark_json = excluded.watermark_json, updated_at = excluded.updated_at""",
+                        (
+                            scope.provider,
+                            scope.descriptor_key,
+                            _json({"cursor": scope.cursor, "crawl_run_id": crawl_run_id}),
+                            recorded_at,
+                        ),
+                    )
+        self.record_incremental_diff(crawl_run_id, changes, recorded_at=recorded_at)
+        return changes
+
+    def _paper_snapshots(self, paper_ids: Sequence[str]) -> dict[str, dict[str, object]]:
+        snapshots: dict[str, dict[str, object]] = {}
+        for paper_id in paper_ids:
+            paper = self.database.connection.execute(
+                """SELECT title, abstract, authors_json, keywords_json, publication_date, year, venue_id,
+                          venue_name, venue_type, doi, arxiv_id, canonical_url, volume, issue, pages,
+                          verification_status
+                   FROM papers WHERE paper_id = ?""",
+                (paper_id,),
+            ).fetchone()
+            if paper is None:
+                continue
+            sources = self.database.connection.execute(
+                """SELECT provider, external_id, publication_version, raw_metadata_json
+                   FROM paper_sources WHERE paper_id = ? ORDER BY provider, external_id""",
+                (paper_id,),
+            ).fetchall()
+            evidence = [_source_status_evidence(source) for source in sources]
+            snapshots[paper_id] = {
+                "metadata_hash": content_hash(dict(paper)),
+                "status_version": {
+                    "verification_status": paper["verification_status"],
+                    "sources": evidence,
+                    "retracted": any(item["retracted"] for item in evidence),
+                    "preprint": any(item["publication_version"] == "preprint" for item in evidence),
+                    "published": any(item["publication_version"] == "published" for item in evidence),
+                },
+            }
+        return snapshots
+
+    def _stored_snapshots(self, crawl_run_id: str) -> dict[str, dict[str, object]]:
+        rows = self.database.connection.execute(
+            """SELECT paper_id, metadata_hash, status_version_json FROM crawl_paper_snapshots
+               WHERE crawl_run_id = ?""",
+            (crawl_run_id,),
+        ).fetchall()
+        return {
+            row["paper_id"]: {
+                "metadata_hash": row["metadata_hash"],
+                "status_version": json.loads(row["status_version_json"]),
+            }
+            for row in rows
+        }
+
+    def _stored_snapshot_sources(self, crawl_run_id: str) -> dict[str, set[tuple[str, str]]]:
+        rows = self.database.connection.execute(
+            """SELECT paper_id, provider, descriptor_key FROM crawl_paper_snapshot_sources
+               WHERE crawl_run_id = ?""",
+            (crawl_run_id,),
+        ).fetchall()
+        sources: dict[str, set[tuple[str, str]]] = {}
+        for row in rows:
+            sources.setdefault(row["paper_id"], set()).add((row["provider"], row["descriptor_key"]))
+        return sources
+
+    def _incremental_changes(
+        self,
+        prior: Mapping[str, Mapping[str, object]],
+        prior_sources: Mapping[str, set[tuple[str, str]]],
+        current: Mapping[str, Mapping[str, object]],
+        scopes: Sequence[IncrementalScope],
+        previous_crawl_run_id: str | None,
+    ) -> tuple[IncrementalChange, ...]:
+        if not prior:
+            return tuple(IncrementalChange(paper_id, IncrementalChangeKind.NEW) for paper_id in sorted(current))
+        prior_ids = set(prior)
+        current_ids = set(current)
+        replacements = self._preprint_replacements(previous_crawl_run_id, prior, current)
+        changes: list[IncrementalChange] = []
+        for paper_id in sorted(current_ids - prior_ids):
+            kind = IncrementalChangeKind.PREPRINT_REPLACED if paper_id in replacements.values() else IncrementalChangeKind.NEW
+            changes.append(IncrementalChange(paper_id, kind))
+        for paper_id in sorted(prior_ids & current_ids):
+            before = prior[paper_id]["status_version"]
+            after = current[paper_id]["status_version"]
+            if not before["retracted"] and after["retracted"]:
+                changes.append(IncrementalChange(paper_id, IncrementalChangeKind.RETRACTED))
+            elif before["preprint"] and after["published"]:
+                changes.append(IncrementalChange(paper_id, IncrementalChangeKind.PREPRINT_REPLACED))
+            elif prior[paper_id]["metadata_hash"] != current[paper_id]["metadata_hash"]:
+                changes.append(IncrementalChange(paper_id, IncrementalChangeKind.METADATA_CHANGED))
+        complete_scopes = {(scope.provider, scope.descriptor_key) for scope in scopes if scope.complete}
+        replaced_preprints = set(replacements)
+        for paper_id in sorted(prior_ids - current_ids - replaced_preprints):
+            source_scopes = prior_sources.get(paper_id, set())
+            if source_scopes and source_scopes.issubset(complete_scopes):
+                changes.append(IncrementalChange(paper_id, IncrementalChangeKind.REMOVED))
+        return tuple(changes)
+
+    def _preprint_replacements(
+        self,
+        previous_crawl_run_id: str | None,
+        prior: Mapping[str, Mapping[str, object]],
+        current: Mapping[str, Mapping[str, object]],
+    ) -> dict[str, str]:
+        if previous_crawl_run_id is None:
+            return {}
+        rows = self.database.connection.execute(
+            """SELECT source_paper_id, target_paper_id, provider, raw_evidence_json
+               FROM citation_edges WHERE edge_type = 'version_of'
+                 AND source_paper_id IN (SELECT paper_id FROM crawl_paper_snapshots WHERE crawl_run_id = ?)""",
+            (previous_crawl_run_id,),
+        ).fetchall()
+        replacements: dict[str, str] = {}
+        for row in rows:
+            source_id, target_id = row["source_paper_id"], row["target_paper_id"]
+            if source_id not in prior or target_id not in current:
+                continue
+            evidence = json.loads(row["raw_evidence_json"])
+            if row["provider"] == "metadata" and evidence.get("match") == "title-author-year":
+                continue
+            if prior[source_id]["status_version"]["preprint"] and current[target_id]["status_version"]["published"]:
+                replacements[source_id] = target_id
+        return replacements
+
 
 def _statuses(status: EnvelopeStatus) -> tuple[str, str]:
     if status is EnvelopeStatus.FAILED:
@@ -365,6 +559,25 @@ def _json(value: object) -> str:
 
 def _error_json(error: str | None) -> str | None:
     return _json({"message": error}) if error else None
+
+
+def _source_status_evidence(source: Mapping[str, object]) -> dict[str, object]:
+    metadata = json.loads(str(source["raw_metadata_json"]))
+    retracted = False
+    retraction_evidence: dict[str, object] | None = None
+    for key in ("retracted", "is_retracted", "publication_status", "status"):
+        value = metadata.get(key)
+        if value is True or isinstance(value, str) and value.casefold() == "retracted":
+            retracted = True
+            retraction_evidence = {"key": key, "value": value}
+            break
+    return {
+        "provider": source["provider"],
+        "external_id": source["external_id"],
+        "publication_version": source["publication_version"] or "unknown",
+        "retracted": retracted,
+        "retraction_evidence": retraction_evidence,
+    }
 
 
 def _non_negative(metrics: SourceMetrics) -> None:

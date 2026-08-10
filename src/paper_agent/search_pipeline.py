@@ -44,14 +44,13 @@ from .fanout import (
     ProviderPage,
     fan_out,
     search_streams,
-    venue_stream,
 )
 from .identity import normalize_author, normalize_doi, normalize_title
 from .query_compilers import NativeQuery, compile_queries
 from .query_plan import assert_runtime_matches
 from .repository import PaperRepository
 from .providers.api import CrawlWindow, IdentityCandidate, SeedInput, VenueDescriptor
-from .search_runs import SearchRunCoordinator, SourceMetrics
+from .search_runs import IncrementalScope, SearchRunCoordinator, SourceMetrics
 from .storage import Database
 from .verification import MetadataCoordinator, ProviderTrust, VenueContext
 
@@ -71,6 +70,8 @@ class VenueRun:
     descriptor: VenueDescriptor
     window: CrawlWindow
     context: VenueContext
+    cursor: str | None = None
+    historical_replay: bool = False
 
 
 class InitialFanoutAdapter:
@@ -85,7 +86,18 @@ class InitialFanoutAdapter:
         self, provider: Mapping[str, Any], queries: tuple[NativeQuery, ...]
     ) -> tuple[PageStream, ...]:
         streams = list(search_streams(self.client, provider, queries)) if queries else []
-        streams.extend(venue_stream(self.client, run.descriptor, run.window) for run in self.venue_runs)
+        streams.extend(
+            PageStream(
+                run.descriptor.provider,
+                "venue_primary",
+                None,
+                run.descriptor.venue_id,
+                lambda cursor, run=run: self.client.discover(
+                    run.descriptor, run.window, cursor if cursor is not None else run.cursor
+                ),
+            )
+            for run in self.venue_runs
+        )
         if "library" in provider["roles"] and self.seed_inputs:
             streams.append(
                 PageStream(
@@ -124,6 +136,7 @@ class SearchPipeline:
         self.trusts = trusts
         self.venue = venue
         self.venue_runs = tuple(venue_runs)
+        self._active_venue_runs = self.venue_runs
         self.seed_inputs = tuple(seed_inputs)
         self.citation_clients = citation_clients or {}
         self.screener = screener or DeterministicFakeScreener(frozenset())
@@ -151,6 +164,7 @@ class SearchPipeline:
             search_plan_id=str(self.plan["plan_id"]),
             window=dict(self.plan["scope"]),
         )
+        self._active_venue_runs = self._watermarked_venue_runs()
 
         campaign_deadline = time.monotonic() + float(self.plan["budgets"]["max_seconds"])
         fanout = fan_out(self._discovery_plan(), self._execution_clients(), deadline=campaign_deadline)
@@ -159,6 +173,8 @@ class SearchPipeline:
         library_seed_ids: set[str] = set()
         metrics: dict[str, SourceMetrics] = {}
         source_entries: dict[str, list[SourceEntry]] = {}
+        paper_sources: dict[str, set[tuple[str, str]]] = {}
+        scope_states: dict[tuple[str, str], IncrementalScope] = {}
         for outcome in fanout.outcomes:
             provider = self._provider(outcome.provider)
             queries = self._queries(provider)
@@ -168,6 +184,7 @@ class SearchPipeline:
                     (item for item in queries if item.query_hash == page.batch.query_hash), None
                 )
                 scope = page.scope_id or (query.variant_id if query else "default")
+                descriptor_key = self._descriptor_key(page, query)
                 batch = replace(
                     page.batch,
                     source_run_id=f"{crawl_run_id}:{outcome.provider}:{page.role}:{scope}",
@@ -203,6 +220,13 @@ class SearchPipeline:
                     error_count=prior.error_count + int(batch.status is EnvelopeStatus.FAILED),
                 )
                 if batch.status is EnvelopeStatus.FAILED:
+                    self._record_scope(
+                        scope_states,
+                        outcome.provider,
+                        descriptor_key,
+                        batch,
+                        advance_watermark=self._advance_watermark(page, outcome.provider, descriptor_key),
+                    )
                     continue
                 venue = (
                     self._arxiv_context()
@@ -211,6 +235,15 @@ class SearchPipeline:
                 )
                 papers = self.metadata.merge_batch(batch, venue)
                 ids = {paper.paper_id for paper in papers}
+                self._record_scope(
+                    scope_states,
+                    outcome.provider,
+                    descriptor_key,
+                    batch,
+                    advance_watermark=self._advance_watermark(page, outcome.provider, descriptor_key),
+                )
+                for paper_id in ids:
+                    paper_sources.setdefault(paper_id, set()).add((outcome.provider, descriptor_key))
                 all_paper_ids.update(ids)
                 if outcome.provider != "arxiv":
                     non_arxiv_ids.update(ids)
@@ -245,6 +278,12 @@ class SearchPipeline:
             deadline=campaign_deadline,
         )
         self._link_versions(observed_at)
+        self.runs.finalize_incremental_crawl(
+            crawl_run_id,
+            paper_sources=paper_sources,
+            scopes=tuple(scope_states.values()),
+            recorded_at=observed_at,
+        )
         status = self.runs.finish_crawl(crawl_run_id, plan=self.plan, fanout=fanout, finished_at=observed_at)
         if fanout.budget_exhausted:
             status = "incomplete"
@@ -350,7 +389,7 @@ class SearchPipeline:
         for provider in self.plan["providers"]:
             name = str(provider["provider"])
             client = self.clients.get(name)
-            runs = tuple(run for run in self.venue_runs if run.descriptor.provider == name)
+            runs = tuple(run for run in self._active_venue_runs if run.descriptor.provider == name)
             if client is None or callable(client) or (not runs and "library" not in provider["roles"]):
                 clients[name] = client
                 continue
@@ -563,6 +602,74 @@ class SearchPipeline:
         return next(
             (run.context for run in self.venue_runs if run.descriptor.venue_id == venue_id),
             self.venue,
+        )
+
+    def _watermarked_venue_runs(self) -> tuple[VenueRun, ...]:
+        active: list[VenueRun] = []
+        for run in self.venue_runs:
+            requested = self._window_mapping(run.window)
+            resolved = self.runs.window_for(
+                run.descriptor.provider,
+                run.descriptor.venue_id,
+                requested,
+                replay_window=requested if run.historical_replay else None,
+            )
+            watermark = resolved.pop("watermark", {})
+            active.append(
+                replace(
+                    run,
+                    window=CrawlWindow(**{key: resolved.get(key) for key in requested}),
+                    cursor=watermark.get("cursor") if isinstance(watermark, Mapping) else None,
+                )
+            )
+        return tuple(active)
+
+    @staticmethod
+    def _window_mapping(window: CrawlWindow) -> dict[str, object]:
+        return {key: value for key, value in {
+            "date_from": window.date_from,
+            "date_to": window.date_to,
+            "year": window.year,
+            "volume": window.volume,
+            "issue": window.issue,
+        }.items() if value is not None}
+
+    @staticmethod
+    def _descriptor_key(page: ProviderPage, query: NativeQuery | None) -> str:
+        if page.role == "venue_primary":
+            return page.scope_id or "default"
+        if page.role == "search":
+            return f"query:{query.variant_id if query else 'default'}"
+        return page.role
+
+    def _advance_watermark(self, page: ProviderPage, provider: str, descriptor_key: str) -> bool:
+        return not (
+            page.role == "venue_primary"
+            and any(
+                run.descriptor.provider == provider
+                and run.descriptor.venue_id == descriptor_key
+                and run.historical_replay
+                for run in self._active_venue_runs
+            )
+        )
+
+    @staticmethod
+    def _record_scope(
+        states: dict[tuple[str, str], IncrementalScope],
+        provider: str,
+        descriptor_key: str,
+        batch: SourceBatch,
+        *,
+        advance_watermark: bool,
+    ) -> None:
+        key = (provider, descriptor_key)
+        previous = states.get(key)
+        states[key] = IncrementalScope(
+            provider,
+            descriptor_key,
+            batch.next_cursor if batch.status is not EnvelopeStatus.FAILED else previous.cursor if previous else None,
+            batch.status is EnvelopeStatus.SUCCESS and (previous.complete if previous else True),
+            advance_watermark,
         )
 
     def _queries(self, provider: Mapping[str, Any]) -> tuple[NativeQuery, ...]:

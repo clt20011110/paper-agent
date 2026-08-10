@@ -7,6 +7,7 @@ from paper_agent.fanout import FanoutResult, ProviderOutcome
 from paper_agent.search_runs import (
     IncrementalChange,
     IncrementalChangeKind,
+    IncrementalScope,
     SearchRunCoordinator,
     SourceMetrics,
 )
@@ -224,6 +225,141 @@ def test_incremental_diff_records_every_required_change_and_paper(tmp_path) -> N
         }
         counts = database.connection.execute("SELECT * FROM incremental_diffs WHERE crawl_run_id = 'crawl-1'").fetchone()
         assert tuple(counts[key] for key in ("new_count", "removed_count", "retracted_count", "metadata_changed_count", "preprint_replaced_count")) == (1, 1, 1, 1, 1)
+    finally:
+        database.close()
+
+
+def _start_next_crawl(database: Database, coordinator: SearchRunCoordinator, number: int) -> str:
+    run_id = f"run-{number}"
+    crawl_run_id = f"crawl-{number}"
+    database.connection.execute(
+        """INSERT INTO pipeline_runs(run_id, stage, status, input_hash, config_hash, implementation_version)
+           VALUES (?, 'stage-1', 'running', 'input', 'config', 'test')""",
+        (run_id,),
+    )
+    database.connection.commit()
+    coordinator.start_crawl(
+        crawl_run_id=crawl_run_id,
+        run_id=run_id,
+        search_plan_id="plan-1",
+        window={"date_from": "2024-01-01", "date_to": "2024-12-31"},
+    )
+    return crawl_run_id
+
+
+def _paper_source(database: Database, paper_id: str, *, version: str = "published", retracted: bool = False) -> None:
+    database.connection.execute("INSERT OR IGNORE INTO papers(paper_id, title) VALUES (?, ?)", (paper_id, paper_id))
+    database.connection.execute(
+        """INSERT INTO paper_sources(source_id, paper_id, provider, external_id, publication_version, raw_metadata_json)
+           VALUES (?, ?, 'fixture', ?, ?, ?)
+           ON CONFLICT(provider, external_id) DO UPDATE SET
+               publication_version = excluded.publication_version, raw_metadata_json = excluded.raw_metadata_json""",
+        (f"source-{paper_id}", paper_id, paper_id, version, json.dumps({"retracted": retracted})),
+    )
+    database.connection.commit()
+
+
+def test_incremental_snapshot_detects_metadata_and_retraction_changes(tmp_path) -> None:
+    database, coordinator = _coordinator(tmp_path)
+    try:
+        _paper_source(database, "paper")
+        scope = (IncrementalScope("fixture", "venue", None, True),)
+        assert coordinator.finalize_incremental_crawl(
+            "crawl-1", paper_sources={"paper": (("fixture", "venue"),)}, scopes=scope, recorded_at=NOW
+        ) == (IncrementalChange("paper", IncrementalChangeKind.NEW),)
+
+        crawl_2 = _start_next_crawl(database, coordinator, 2)
+        database.connection.execute("UPDATE papers SET title = 'Updated title' WHERE paper_id = 'paper'")
+        database.connection.commit()
+        assert coordinator.finalize_incremental_crawl(
+            crawl_2, paper_sources={"paper": (("fixture", "venue"),)}, scopes=scope, recorded_at=NOW
+        ) == (IncrementalChange("paper", IncrementalChangeKind.METADATA_CHANGED),)
+
+        crawl_3 = _start_next_crawl(database, coordinator, 3)
+        _paper_source(database, "paper", retracted=True)
+        assert coordinator.finalize_incremental_crawl(
+            crawl_3, paper_sources={"paper": (("fixture", "venue"),)}, scopes=scope, recorded_at=NOW
+        ) == (IncrementalChange("paper", IncrementalChangeKind.RETRACTED),)
+    finally:
+        database.close()
+
+
+def test_incremental_snapshot_uses_explicit_version_edges_and_never_removes_after_failure(tmp_path) -> None:
+    database, coordinator = _coordinator(tmp_path)
+    try:
+        _paper_source(database, "preprint", version="preprint")
+        _paper_source(database, "published", version="published")
+        scope = (IncrementalScope("fixture", "venue", None, True),)
+        coordinator.finalize_incremental_crawl(
+            "crawl-1", paper_sources={"preprint": (("fixture", "venue"),)}, scopes=scope, recorded_at=NOW
+        )
+        database.connection.execute(
+            """INSERT INTO citation_edges(citation_edge_id, source_paper_id, target_paper_id, edge_type, provider, observed_at, raw_evidence_json)
+               VALUES ('version', 'preprint', 'published', 'version_of', 'fixture', ?, '{"relation":"published_version"}')""",
+            (NOW,),
+        )
+        database.connection.commit()
+        crawl_2 = _start_next_crawl(database, coordinator, 2)
+        assert coordinator.finalize_incremental_crawl(
+            crawl_2, paper_sources={"published": (("fixture", "venue"),)}, scopes=scope, recorded_at=NOW
+        ) == (IncrementalChange("published", IncrementalChangeKind.PREPRINT_REPLACED),)
+
+        crawl_3 = _start_next_crawl(database, coordinator, 3)
+        assert coordinator.finalize_incremental_crawl(
+            crawl_3,
+            paper_sources={},
+            scopes=(IncrementalScope("fixture", "venue", None, False),),
+            recorded_at=NOW,
+        ) == ()
+        assert coordinator.incremental_diff(crawl_3) == ()
+    finally:
+        database.close()
+
+
+def test_incremental_removal_requires_every_previous_source_scope_to_complete(tmp_path) -> None:
+    database, coordinator = _coordinator(tmp_path)
+    try:
+        _paper_source(database, "paper")
+        coordinator.finalize_incremental_crawl(
+            "crawl-1",
+            paper_sources={"paper": (("fixture", "venue-a"), ("fixture", "venue-b"))},
+            scopes=(
+                IncrementalScope("fixture", "venue-a", None, True),
+                IncrementalScope("fixture", "venue-b", None, True),
+            ),
+            recorded_at=NOW,
+        )
+        crawl_2 = _start_next_crawl(database, coordinator, 2)
+        assert coordinator.finalize_incremental_crawl(
+            crawl_2,
+            paper_sources={},
+            scopes=(
+                IncrementalScope("fixture", "venue-a", None, True),
+                IncrementalScope("other", "unrelated", None, True),
+            ),
+            recorded_at=NOW,
+        ) == ()
+    finally:
+        database.close()
+
+
+def test_zero_result_crawl_is_the_next_incremental_baseline(tmp_path) -> None:
+    database, coordinator = _coordinator(tmp_path)
+    try:
+        _paper_source(database, "first")
+        _paper_source(database, "next")
+        scope = (IncrementalScope("fixture", "venue", None, True),)
+        coordinator.finalize_incremental_crawl(
+            "crawl-1", paper_sources={"first": (("fixture", "venue"),)}, scopes=scope, recorded_at=NOW
+        )
+        crawl_2 = _start_next_crawl(database, coordinator, 2)
+        assert coordinator.finalize_incremental_crawl(
+            crawl_2, paper_sources={}, scopes=scope, recorded_at=NOW
+        ) == (IncrementalChange("first", IncrementalChangeKind.REMOVED),)
+        crawl_3 = _start_next_crawl(database, coordinator, 3)
+        assert coordinator.finalize_incremental_crawl(
+            crawl_3, paper_sources={"next": (("fixture", "venue"),)}, scopes=scope, recorded_at=NOW
+        ) == (IncrementalChange("next", IncrementalChangeKind.NEW),)
     finally:
         database.close()
 
