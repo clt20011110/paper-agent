@@ -259,14 +259,6 @@ class SearchRunCoordinator:
         successful_roles = {
             row["role"] for row in sources if row["status"] == "complete"
         }
-        if fanout is not None:
-            successful_names = set(fanout.successful_providers)
-            successful_roles.update(
-                role
-                for provider in plan.get("providers", ())
-                if provider["provider"] in successful_names
-                for role in provider["roles"]
-            )
         required_providers = set(requirements["required_providers"])
         required_roles = set(requirements["required_roles"])
         required_failure = not required_providers.issubset(successful) or not required_roles.issubset(successful_roles)

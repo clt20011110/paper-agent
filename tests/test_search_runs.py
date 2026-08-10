@@ -17,11 +17,17 @@ from paper_agent.storage import Database
 NOW = "2026-08-09T00:00:00Z"
 
 
-def _plan(*, required_providers: tuple[str, ...] = ("openalex",)) -> dict[str, object]:
+def _plan(
+    *,
+    required_providers: tuple[str, ...] = ("openalex",),
+    required_roles: tuple[str, ...] = ("search",),
+    providers: tuple[dict[str, object], ...] = (),
+) -> dict[str, object]:
     return {
+        "providers": providers,
         "execution": {
             "required_providers": required_providers,
-            "required_roles": ("search",),
+            "required_roles": required_roles,
         }
     }
 
@@ -138,6 +144,49 @@ def test_required_provider_failure_marks_crawl_incomplete(tmp_path) -> None:
         assert coordinator.finish_crawl("crawl-1", plan=_plan(), finished_at=NOW) == "incomplete"
         row = database.connection.execute("SELECT status FROM crawl_runs WHERE crawl_run_id = 'crawl-1'").fetchone()
         assert row["status"] == "incomplete"
+    finally:
+        database.close()
+
+
+def test_required_role_needs_its_own_completed_operation(tmp_path) -> None:
+    database, coordinator = _coordinator(tmp_path)
+    try:
+        _record(coordinator, "dual", _batch("dual"))
+        coordinator.record_batch(
+            crawl_run_id="crawl-1",
+            provider="dual",
+            provider_version="2026.08",
+            role="metadata_verifier",
+            query_text="paper-1",
+            provider_params={"paper_id": "paper-1"},
+            query_compiler_version="metadata-verifier-v1",
+            batch=SourceBatch(
+                source_run_id="crawl-1:dual:metadata_verifier",
+                query_hash="dual-metadata-verifier-query-hash",
+                entries=(),
+                next_cursor=None,
+                status=EnvelopeStatus.FAILED,
+                error="verification unavailable",
+            ),
+            requested_at=NOW,
+            completed_at=NOW,
+            page="paper-1",
+        )
+        fanout = FanoutResult(
+            (ProviderOutcome("dual", "success", None, None),),
+            incomplete=False,
+        )
+        plan = _plan(
+            required_providers=("dual",),
+            required_roles=("search", "metadata_verifier"),
+            providers=(
+                {"provider": "dual", "roles": ("search", "metadata_verifier")},
+            ),
+        )
+
+        assert coordinator.finish_crawl(
+            "crawl-1", plan=plan, fanout=fanout, finished_at=NOW
+        ) == "incomplete"
     finally:
         database.close()
 
