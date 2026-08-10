@@ -118,6 +118,26 @@ def _coordinator(tmp_path: Path, factory):
     return database, PaperAnalysisCoordinator(database, ArtifactStore(tmp_path / "store"), gate, invoker_factory=factory)
 
 
+def _comparison_evidence(locator: dict[str, str] | None = None) -> dict:
+    return {
+        "claim": "ResNet-50 reached 91% accuracy.", "direction": "support",
+        "task_id": "image_classification", "dataset_id": "mnist", "dataset_version": "original",
+        "split_id": "test", "metric_id": "accuracy",
+        "metric_definition_hash": "677b87be65f571cd1027701cdc332cb607d8558e258f5de6431e34433742fab0",
+        "unit": "ratio", "optimization_direction": "maximize", "value": 91.0,
+        "uncertainty": None, "statistical_method": None, "protocol_id": "official_test",
+        "protocol_hash": "aa15debef3444b8ee215dd6043eaf89a00af76145ff2cfbf2a5f01bd6b67a9c3",
+        "sample_size": 10000, "baseline_id": "resnet50", "baseline_version": "torchvision",
+        "conditions": [
+            "source_task=image classification", "source_dataset=MNIST", "source_metric=accuracy",
+            "source_baseline=ResNet-50", "source_protocol=official test split", "source_unit=percent",
+        ],
+        "locator": locator or {"kind": "page", "value": "7"},
+        "normalization_method": "model_candidate", "normalizer_version": "model_candidate",
+        "source_value": 91.0, "comparison_eligibility": "comparable", "missing_fields": [],
+    }
+
+
 def test_denial_precedes_executor_construction_and_persists_policy_decision(tmp_path: Path) -> None:
     calls: list[object] = []
     database, coordinator = _coordinator(tmp_path, lambda: (_ for _ in ()).throw(AssertionError("must not construct")))
@@ -448,30 +468,15 @@ def test_actual_luna_metadata_must_be_present_and_exact(
 def test_authorized_output_is_registry_normalized_before_persistence(tmp_path: Path) -> None:
     calls: list[object] = []
     holder: dict[str, PaperAnalysisCoordinator] = {}
-    evidence = {
-        "claim": "ResNet-50 reached 91% accuracy.", "direction": "support",
-        "task_id": "image_classification", "dataset_id": "mnist", "dataset_version": "original",
-        "split_id": "test", "metric_id": "accuracy",
-        "metric_definition_hash": "677b87be65f571cd1027701cdc332cb607d8558e258f5de6431e34433742fab0",
-        "unit": "ratio", "optimization_direction": "maximize", "value": 91.0,
-        "uncertainty": None, "statistical_method": None, "protocol_id": "official_test",
-        "protocol_hash": "aa15debef3444b8ee215dd6043eaf89a00af76145ff2cfbf2a5f01bd6b67a9c3",
-        "sample_size": 10000, "baseline_id": "resnet50", "baseline_version": "torchvision",
-        "conditions": [
-            "source_task=image classification", "source_dataset=MNIST", "source_metric=accuracy",
-            "source_baseline=ResNet-50", "source_protocol=official test split", "source_unit=percent",
-        ],
-        "locator": {"kind": "page", "value": "7"},
-        "normalization_method": "model_candidate", "normalizer_version": "model_candidate",
-        "source_value": 91.0, "comparison_eligibility": "comparable", "missing_fields": [],
-    }
+    evidence = _comparison_evidence()
     database, coordinator = _coordinator(
         tmp_path, lambda: FakeInvoker(holder["coordinator"], calls=calls, evidence_unit=evidence),
     )
     holder["coordinator"] = coordinator
     try:
         result = coordinator.run("run-normalized", [AnalysisInput(
-            "one", "CC-BY-4.0", "open_license", normalized_text="normalized paper",
+            "one", "CC-BY-4.0", "open_license",
+            normalized_text="\n\n===== PAGE 7 =====\n\nResNet-50 reached 91% accuracy.",
         )])
 
         unit = result.for_paper("one").output["evidence_units"][0]
@@ -481,6 +486,32 @@ def test_authorized_output_is_registry_normalized_before_persistence(tmp_path: P
             "SELECT invocation_metadata_json FROM analysis_runs",
         ).fetchone()[0])
         assert metadata["normalization_registry"]["registry_hash"] == coordinator.normalization_registry.registry_hash
+    finally:
+        database.close()
+
+
+def test_nonexistent_full_text_page_locator_is_rejected(tmp_path: Path) -> None:
+    calls: list[object] = []
+    holder: dict[str, PaperAnalysisCoordinator] = {}
+    database, coordinator = _coordinator(
+        tmp_path,
+        lambda: FakeInvoker(
+            holder["coordinator"],
+            calls=calls,
+            evidence_unit=_comparison_evidence({"kind": "page", "value": "99999"}),
+        ),
+    )
+    holder["coordinator"] = coordinator
+    try:
+        result = coordinator.run("run-invalid-page", [AnalysisInput(
+            "one", "CC-BY-4.0", "open_license",
+            normalized_text="\n\n===== PAGE 1 =====\n\nOnly page one exists.",
+        )])
+
+        paper = result.for_paper("one")
+        assert paper.status == "failed"
+        assert "page locator does not exist" in (paper.error or "")
+        assert len(calls) == 1
     finally:
         database.close()
 
@@ -545,6 +576,51 @@ def test_abstract_scope_sends_only_the_bound_abstract_wrapper(tmp_path: Path) ->
         assert payload["content"] == {"abstract": "Public abstract", "metadata": {"title": "One"}}
         assert payload["output_binding"]["schema_hash"] == coordinator.schema_hash
         assert result.for_paper("one").output["missing_fields"] == ["full_text"]
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize(
+    ("locator", "source_text", "message"),
+    (
+        ({"kind": "input_field", "value": "body"}, "Public abstract", "does not name a field"),
+        ({"kind": "input_field", "value": "abstract"}, "Invented source text", "does not occur"),
+    ),
+)
+def test_abstract_label_locator_must_bind_real_field_and_source_text(
+    tmp_path: Path, locator: dict[str, str], source_text: str, message: str,
+) -> None:
+    calls: list[object] = []
+    holder: dict[str, PaperAnalysisCoordinator] = {}
+
+    class LocatorInvoker:
+        def invoke(self, request):
+            result = FakeInvoker(holder["coordinator"], calls=calls).invoke(request)
+            output = dict(result.output)
+            output["labels"] = {**output["labels"], "theme": ["fixture-theme"]}
+            output["label_evidence"] = [{
+                "axis": "theme",
+                "value": "fixture-theme",
+                "source_text": source_text,
+                "locator": locator,
+            }]
+            return CodexExecResult(output, result.metadata)
+
+    database, coordinator = _coordinator(tmp_path, LocatorInvoker)
+    holder["coordinator"] = coordinator
+    try:
+        result = coordinator.run("run-invalid-input-field", [AnalysisInput(
+            "one", None, "public_read_only",
+            abstract="Public abstract", metadata={"title": "One"},
+        )])
+
+        paper = result.for_paper("one")
+        assert paper.status == "failed"
+        error = json.loads(database.connection.execute(
+            "SELECT error_json FROM analysis_dispatches"
+        ).fetchone()[0])
+        assert message in error["cause"]["message"]
+        assert len(calls) == 1
     finally:
         database.close()
 

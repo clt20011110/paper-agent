@@ -14,10 +14,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import Path
+import re
 from typing import Any, Protocol
 from uuid import uuid4
+
+from pypdf import PdfReader
 
 from .analysis_dispatches import (
     AnalysisDispatchBinding,
@@ -52,8 +56,9 @@ from .storage import Database
 ANALYSIS_PROFILE = "stage4_analysis_luna"
 ANALYSIS_SCHEMA = "paper-analysis.schema.json"
 ANALYSIS_PROMPT = "paper-analysis.md"
-IMPLEMENTATION_VERSION = "phase5-stage4-v2"
+IMPLEMENTATION_VERSION = "phase5-stage4-v3"
 ANALYSIS_DISPATCH_LEASE_SECONDS = 900
+PAGE_MARKER = re.compile(r"(?:^|\n\n)===== PAGE ([1-9][0-9]*) =====\n\n")
 
 
 class AnalysisValidationError(ValueError):
@@ -665,7 +670,7 @@ class PaperAnalysisCoordinator:
             ))
             metadata = result.metadata
             analysis_output = self._validate_output(
-                result.output, paper.paper_id, request.artifact_hash, request.input_scope, created_at, metadata,
+                result.output, paper.paper_id, request, created_at, metadata,
             )
             return CodexExecResult(analysis_output, metadata)
 
@@ -699,9 +704,11 @@ class PaperAnalysisCoordinator:
             return self._persist_failure(run_id, paper, request, decision, sent_hash, metadata, error)
 
     def _validate_output(
-        self, output: Mapping[str, Any], paper_id: str, artifact_hash: str, input_scope: str,
+        self, output: Mapping[str, Any], paper_id: str, request: ProcessingRequest,
         created_at: str, metadata: InvocationMetadata,
     ) -> Mapping[str, Any]:
+        artifact_hash = request.artifact_hash
+        input_scope = request.input_scope
         if (
             metadata.profile != ANALYSIS_PROFILE
             or metadata.model != "gpt-5.6-luna"
@@ -731,10 +738,60 @@ class PaperAnalysisCoordinator:
         for unit in normalized["evidence_units"]:
             self._validate_evidence_unit(unit, input_scope)
         self._validate_label_evidence(normalized, input_scope)
+        self._validate_source_locators(normalized, request)
         if input_scope != "full_pdf":
             if normalized["comparison_eligibility"] != "not_comparable" or "full_text" not in normalized["missing_fields"]:
                 raise AnalysisValidationError("abstract_only and metadata_only analyses must disclose missing full text")
         return normalized
+
+    @staticmethod
+    def _validate_source_locators(
+        output: Mapping[str, Any], request: ProcessingRequest,
+    ) -> None:
+        evidence = tuple(output["evidence_units"])
+        labels = tuple(output["label_evidence"])
+        if not evidence and not labels:
+            return
+        located = (*evidence, *labels)
+        if request.input_scope == "full_pdf":
+            pages = _authorized_pages(request)
+            document = "\n".join(pages.values())
+            for item in located:
+                locator = item["locator"]
+                if locator["kind"] == "page":
+                    if not locator["value"].isdigit() or int(locator["value"]) not in pages:
+                        raise AnalysisValidationError(
+                            "full-text page locator does not exist in the authorized input"
+                        )
+                    source = pages[int(locator["value"])]
+                elif locator["kind"] == "section":
+                    if not _contains_text(document, locator["value"]):
+                        raise AnalysisValidationError(
+                            "full-text section locator does not exist in the authorized input"
+                        )
+                    source = document
+                else:
+                    raise AnalysisValidationError(
+                        "full-text evidence must use page or section locators"
+                    )
+                if "source_text" in item and not _contains_text(source, item["source_text"]):
+                    raise AnalysisValidationError(
+                        "label source_text does not occur at its full-text locator"
+                    )
+            return
+
+        fields = _authorized_input_fields(request)
+        for item in located:
+            locator = item["locator"]
+            value = locator["value"]
+            if locator["kind"] != "input_field" or value not in fields:
+                raise AnalysisValidationError(
+                    "input_field locator does not name a field in the authorized input"
+                )
+            if "source_text" in item and not _contains_text(fields[value], item["source_text"]):
+                raise AnalysisValidationError(
+                    "label source_text does not occur in its authorized input field"
+                )
 
     @staticmethod
     def _validate_evidence_unit(unit: Mapping[str, Any], input_scope: str) -> None:
@@ -1171,6 +1228,61 @@ def _authorized_payload(
         "paper_id": paper_id, "artifact_hash": artifact_hash, "input_scope": input_scope,
         "output_binding": dict(output_binding), "content_encoding": encoding, "content": content,
     }
+
+
+def _authorized_pages(request: ProcessingRequest) -> dict[int, str]:
+    if request.normalized_text_bytes is not None:
+        text = request.normalized_text_bytes.decode("utf-8")
+        markers = tuple(PAGE_MARKER.finditer(text))
+        if not markers:
+            raise AnalysisValidationError(
+                "full-text citations require normalized page markers"
+            )
+        return {
+            int(match.group(1)): text[
+                match.end() : markers[index + 1].start()
+                if index + 1 < len(markers)
+                else len(text)
+            ]
+            for index, match in enumerate(markers)
+        }
+    if request.pdf_bytes is not None:
+        reader = PdfReader(BytesIO(request.pdf_bytes), strict=False)
+        if reader.is_encrypted:
+            raise AnalysisValidationError(
+                "encrypted PDF cannot validate full-text locators"
+            )
+        return {
+            index: page.extract_text() or ""
+            for index, page in enumerate(reader.pages, start=1)
+        }
+    raise AnalysisValidationError("full-text locator has no authorized full-text input")
+
+
+def _authorized_input_fields(request: ProcessingRequest) -> dict[str, str]:
+    if request.abstract_bytes is not None:
+        wrapper = json.loads(request.abstract_bytes.decode("utf-8"))
+        fields = {"abstract": str(wrapper["abstract"])}
+        fields.update(
+            {
+                f"metadata.{key}": _field_text(value)
+                for key, value in wrapper["metadata"].items()
+            }
+        )
+        return fields
+    if request.metadata is not None:
+        return {str(key): _field_text(value) for key, value in request.metadata.items()}
+    raise AnalysisValidationError("input_field locator has no authorized structured input")
+
+
+def _field_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _contains_text(source: str, cited: str) -> bool:
+    return " ".join(cited.split()).casefold() in " ".join(source.split()).casefold()
 
 
 def _timestamp(value: datetime | str | None) -> str:
