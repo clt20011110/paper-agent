@@ -125,6 +125,75 @@ def test_dry_run_validates_without_database_writes_or_execution(tmp_path: Path) 
         database.close()
 
 
+def test_dry_run_resume_requires_and_validates_the_persisted_run(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    manifest = _manifest(tmp_path)
+    adapter = FakeAdapter(
+        outcomes={"search": StageOutcome("incomplete", {"reason": "pause"})}
+    )
+    try:
+        orchestrator = SequentialWorkflowOrchestrator(
+            database, manifest, _adapters(adapter)
+        )
+        with pytest.raises(ValueError, match="requires an existing run"):
+            orchestrator.resume("dry-resume", dry_run=True)
+
+        orchestrator.run("dry-resume")
+        adapter.executions.clear()
+        before = tuple(
+            tuple(row)
+            for row in database.connection.execute(
+                """SELECT workflow_run_id, status, manifest_hash, updated_at
+                   FROM workflow_runs
+                   UNION ALL
+                   SELECT workflow_run_id, status, identity_hash, completed_at
+                   FROM workflow_steps
+                   ORDER BY workflow_run_id"""
+            ).fetchall()
+        )
+
+        validated = orchestrator.resume("dry-resume", dry_run=True)
+
+        assert validated["status"] == "validated"
+        assert adapter.executions == []
+        after = tuple(
+            tuple(row)
+            for row in database.connection.execute(
+                """SELECT workflow_run_id, status, manifest_hash, updated_at
+                   FROM workflow_runs
+                   UNION ALL
+                   SELECT workflow_run_id, status, identity_hash, completed_at
+                   FROM workflow_steps
+                   ORDER BY workflow_run_id"""
+            ).fetchall()
+        )
+        assert after == before
+
+        changed_manifest = WorkflowManifest(
+            "changed",
+            manifest.config,
+            manifest.steps,
+            manifest.source_path,
+        )
+        with pytest.raises(ValueError, match="input is immutable"):
+            SequentialWorkflowOrchestrator(
+                database, changed_manifest, _adapters(adapter)
+            ).resume("dry-resume", dry_run=True)
+
+        database.connection.execute(
+            """UPDATE workflow_steps SET identity_hash = ?
+               WHERE workflow_run_id = 'dry-resume' AND step_id = 'search'""",
+            ("f" * 64,),
+        )
+        database.connection.commit()
+        with pytest.raises(ValueError, match="step identity has drifted"):
+            orchestrator.resume("dry-resume", dry_run=True)
+    finally:
+        database.close()
+
+
 def test_resume_skips_persisted_completed_step(tmp_path: Path) -> None:
     database = _database(tmp_path)
     try:

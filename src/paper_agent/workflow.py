@@ -321,11 +321,14 @@ class SequentialWorkflowOrchestrator:
 
     def run(self, workflow_run_id: str, *, dry_run: bool = False) -> dict[str, Any]:
         identities, observations = self._preflight(workflow_run_id, dry_run=dry_run)
+        existing = (
+            self._run_row(workflow_run_id) if self.database is not None else None
+        )
+        if existing is not None:
+            self._assert_persisted_run(workflow_run_id, existing, identities)
         if dry_run:
             return self._dry_result(workflow_run_id, identities, observations)
-        existing = self._run_row(workflow_run_id)
         if existing is not None:
-            self._assert_manifest(existing)
             if existing["status"] == "complete":
                 return self._result(workflow_run_id)
             raise ValueError("existing non-complete workflow requires resume")
@@ -338,18 +341,18 @@ class SequentialWorkflowOrchestrator:
             existing = self._run_row(workflow_run_id)
             if existing is None:
                 raise
-            self._assert_manifest(existing)
+            self._assert_persisted_run(workflow_run_id, existing, identities)
         return self._process(workflow_run_id, identities)
 
     def resume(self, workflow_run_id: str, *, dry_run: bool = False) -> dict[str, Any]:
         identities, observations = self._preflight(workflow_run_id, dry_run=dry_run)
-        if dry_run:
-            return self._dry_result(workflow_run_id, identities, observations)
         self._database()
         existing = self._run_row(workflow_run_id)
         if existing is None:
             raise ValueError("workflow resume requires an existing run")
-        self._assert_manifest(existing)
+        self._assert_persisted_run(workflow_run_id, existing, identities)
+        if dry_run:
+            return self._dry_result(workflow_run_id, identities, observations)
         if existing["status"] == "complete":
             return self._result(workflow_run_id)
         return self._process(workflow_run_id, identities)
@@ -732,6 +735,32 @@ class SequentialWorkflowOrchestrator:
         )
         if (row["manifest_hash"], row["manifest_json"]) != expected:
             raise ValueError("workflow run input is immutable")
+
+    def _assert_persisted_run(
+        self,
+        workflow_run_id: str,
+        row: Any,
+        identities: Mapping[str, StageIdentity],
+    ) -> None:
+        self._assert_manifest(row)
+        persisted = self._database().connection.execute(
+            """SELECT step_id, ordinal, stage, child_run_id, spec_hash, identity_hash
+               FROM workflow_steps WHERE workflow_run_id = ? ORDER BY ordinal""",
+            (workflow_run_id,),
+        ).fetchall()
+        expected = tuple(
+            (
+                step.step_id,
+                ordinal,
+                step.stage.value,
+                f"{workflow_run_id}:{step.step_id}",
+                content_hash(step.document()),
+                identities[step.step_id].identity_hash,
+            )
+            for ordinal, step in enumerate(self.manifest.steps)
+        )
+        if tuple(tuple(item) for item in persisted) != expected:
+            raise ValueError("workflow step identity has drifted")
 
     def _assert_step_identity(
         self, workflow_run_id: str, step: StageSpec, identity: StageIdentity
