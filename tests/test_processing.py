@@ -12,6 +12,7 @@ from paper_agent.processing import (
     ArtifactProcessingPolicy,
     PROCESSING_MODEL,
     PROCESSING_PROVIDER,
+    SUMMARY_MODEL,
     ProcessingGate,
     ProcessingOutcome,
     ProcessingRequest,
@@ -24,6 +25,9 @@ NOW = "2026-08-09T12:00:00Z"
 FUTURE = "2026-08-10T00:00:00Z"
 PDF_BYTES = b"%PDF-restricted-content"
 HASH = sha256(PDF_BYTES).hexdigest()
+DERIVED_BYTES = b'{"paper_id":"paper-1","analysis":"restricted derivative"}'
+DERIVED_HASH = sha256(DERIVED_BYTES).hexdigest()
+LINEAGE_HASH = "e" * 64
 
 
 @pytest.fixture
@@ -50,6 +54,18 @@ def request(**changes: object) -> ProcessingRequest:
             if values["artifact"] == "metadata"
             else sha256(payload).hexdigest()  # type: ignore[arg-type]
         )
+    return ProcessingRequest(**values)  # type: ignore[arg-type]
+
+
+def derived_request(**changes: object) -> ProcessingRequest:
+    values: dict[str, object] = {
+        "artifact_hash": DERIVED_HASH, "artifact": "analysis", "input_scope": "full_pdf",
+        "license": "CC-BY-4.0", "access_basis": "open_license",
+        "purpose": "research_synthesis", "data_category": "analysis",
+        "provider": PROCESSING_PROVIDER, "model": SUMMARY_MODEL,
+        "paper_id": "paper-1", "lineage_hash": LINEAGE_HASH, "derived_bytes": DERIVED_BYTES,
+    }
+    values.update(changes)
     return ProcessingRequest(**values)  # type: ignore[arg-type]
 
 
@@ -118,6 +134,17 @@ def test_normalized_text_hash_authorizes_only_the_bound_text_payload(gate: Proce
     assert calls[0].normalized_text_bytes == b"normalized paper text"
 
 
+def test_open_analysis_derivative_is_dispatched_only_to_frozen_sol_target(gate: ProcessingGate) -> None:
+    calls = []
+    result = gate.dispatch(derived_request(), calls.append)
+
+    assert result.decision.outcome is ProcessingOutcome.FULL_PDF
+    assert result.decision.model == SUMMARY_MODEL
+    assert len(calls) == 1
+    assert calls[0].derived_bytes == DERIVED_BYTES
+    assert calls[0].pdf_bytes is None
+
+
 def test_declared_hash_must_match_selected_payload() -> None:
     with pytest.raises(ValueError, match="does not match"):
         request(artifact_hash="b" * 64)
@@ -135,6 +162,22 @@ def _approved_grant(store: GrantStore, *, artifact_hash: str = HASH) -> None:
         grant_id="processing-grant", kind="remote_model_processing",
         actions=["remote_model_processing"], purpose="internal_analysis", mode="attended",
         scope=scope, max_papers=1, expires_at=FUTURE,
+    )
+    store.approve(draft, draft["content_hash"], approved_by="owner", approved_at=NOW)
+
+
+def _approved_sol_grant(store: GrantStore) -> None:
+    scope = {
+        "paper_ids": ["paper-1"], "artifact_hashes": [DERIVED_HASH],
+        "collection_ids": [], "collection_snapshot_hash": None,
+        "selection_snapshot_hash": None, "domains": [],
+        "provider": PROCESSING_PROVIDER, "model": SUMMARY_MODEL,
+        "data_categories": ["analysis"],
+    }
+    draft = store.create_draft(
+        grant_id="sol-processing-grant", kind="remote_model_processing",
+        actions=["remote_model_processing"], purpose="research_synthesis", mode="attended",
+        scope=scope, max_papers=1, expires_at=FUTURE, lineage_hash=LINEAGE_HASH,
     )
     store.approve(draft, draft["content_hash"], approved_by="owner", approved_at=NOW)
 
@@ -159,6 +202,41 @@ def test_exact_artifact_bound_grant_can_authorize_full_pdf(grant_gate: tuple[Pro
 
     assert result.decision.outcome is ProcessingOutcome.FULL_PDF
     assert result.decision.authorized_by == "grant"
+    assert len(calls) == 1
+
+
+def test_luna_grant_never_authorizes_sol_derivatives(grant_gate: tuple[ProcessingGate, GrantStore]) -> None:
+    gate, store = grant_gate
+    _approved_grant(store, artifact_hash=DERIVED_HASH)
+    calls = []
+
+    result = gate.dispatch(
+        derived_request(access_basis="user_subscription", license=None), calls.append,
+        processing_grant_id="processing-grant", now=NOW,
+    )
+
+    assert not result.decision.is_authorized
+    assert calls == []
+
+
+def test_exact_sol_artifact_and_lineage_grant_authorizes_only_that_derivative(
+    grant_gate: tuple[ProcessingGate, GrantStore],
+) -> None:
+    gate, store = grant_gate
+    _approved_sol_grant(store)
+    calls = []
+
+    allowed = gate.dispatch(
+        derived_request(access_basis="user_subscription", license=None), calls.append,
+        processing_grant_id="sol-processing-grant", now=NOW,
+    )
+    rejected = gate.dispatch(
+        derived_request(access_basis="user_subscription", license=None, lineage_hash="f" * 64), calls.append,
+        processing_grant_id="sol-processing-grant", now=NOW,
+    )
+
+    assert allowed.decision.is_authorized
+    assert not rejected.decision.is_authorized
     assert len(calls) == 1
 
 

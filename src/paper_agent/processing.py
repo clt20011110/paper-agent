@@ -25,6 +25,8 @@ from .grants import GrantError, GrantStore
 
 PROCESSING_PROVIDER = "codex_cli"
 PROCESSING_MODEL = "gpt-5.6-luna"
+SUMMARY_MODEL = "gpt-5.6-sol"
+PROCESSING_MODELS = frozenset({PROCESSING_MODEL, SUMMARY_MODEL})
 PROCESSING_ACTION = "remote_model_processing"
 _DIMENSIONS = (
     "artifact", "input_scope", "license", "access_basis", "provider", "model", "purpose", "data_category",
@@ -85,6 +87,7 @@ class ProcessingRequest:
     normalized_text_bytes: bytes | None = None
     abstract_bytes: bytes | None = None
     metadata: Mapping[str, Any] | None = None
+    derived_bytes: bytes | None = None
 
     def __post_init__(self) -> None:
         if len(self.artifact_hash) != 64 or any(char not in "0123456789abcdef" for char in self.artifact_hash):
@@ -132,6 +135,7 @@ class ModelInvocation:
     normalized_text_bytes: bytes | None = None
     abstract_bytes: bytes | None = None
     metadata: Mapping[str, Any] | None = None
+    derived_bytes: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +211,7 @@ class ProcessingGate:
         processing_grant_id: str | None = None,
         now: datetime | str | None = None,
     ) -> ProcessingDecision:
-        if request.provider != PROCESSING_PROVIDER or request.model != PROCESSING_MODEL:
+        if request.provider != PROCESSING_PROVIDER or request.model not in PROCESSING_MODELS:
             return self._decision(request, ProcessingOutcome.ANALYSIS_NOT_AUTHORIZED, "remote_target_not_permitted", None, None)
 
         outcome, reason = self.policy.evaluate(request)
@@ -236,7 +240,7 @@ class ProcessingGate:
                         request.selection_snapshot_hash if scope["selection_snapshot_hash"] else None
                     ),
                     domain=request.domain if scope["domains"] else None,
-                    provider=PROCESSING_PROVIDER, model=PROCESSING_MODEL,
+                    provider=request.provider, model=request.model,
                     data_category=request.data_category if scope["data_categories"] else None,
                     skill_digest=request.skill_digest if loaded.document["skill_digest"] else None,
                     dependency_digest=(
@@ -247,7 +251,7 @@ class ProcessingGate:
                 scope = active.document["scope"]
                 if not scope["artifact_hashes"] or request.artifact_hash not in scope["artifact_hashes"]:
                     raise GrantError("processing grant must bind the exact artifact hash")
-                if scope["provider"] != PROCESSING_PROVIDER or scope["model"] != PROCESSING_MODEL:
+                if scope["provider"] != request.provider or scope["model"] != request.model:
                     raise GrantError("processing grant must bind the frozen provider and model")
             except GrantError as error:
                 return self._decision(request, _denied_outcome(outcome), f"grant_rejected:{error}", processing_grant_id, None)
@@ -310,6 +314,8 @@ def _denied_outcome(policy_outcome: ProcessingOutcome) -> ProcessingOutcome:
 
 
 def _invocation_for(request: ProcessingRequest, decision: ProcessingDecision) -> ModelInvocation:
+    if request.derived_bytes is not None:
+        return ModelInvocation(decision, derived_bytes=request.derived_bytes)
     if decision.outcome is ProcessingOutcome.FULL_PDF:
         if request.artifact == "pdf":
             return ModelInvocation(decision, pdf_bytes=request.pdf_bytes)
@@ -323,6 +329,10 @@ def _invocation_for(request: ProcessingRequest, decision: ProcessingDecision) ->
 
 
 def _selected_payload_hash(request: ProcessingRequest) -> str:
+    if request.artifact in {"analysis", "evidence", "claim_ledger", "report_draft"}:
+        if request.data_category != request.artifact or request.derived_bytes is None:
+            raise ValueError("derived processing artifact requires matching data_category and bytes")
+        return sha256(request.derived_bytes).hexdigest()
     if request.artifact == "pdf" and request.input_scope == "full_pdf" and request.data_category == "full_text":
         if request.pdf_bytes is None:
             raise ValueError("pdf processing requires pdf_bytes")
