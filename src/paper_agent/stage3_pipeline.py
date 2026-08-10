@@ -155,6 +155,7 @@ class Stage3Pipeline:
     manual_queue: Stage3ManualQueue
     resolver_order: tuple[str, ...] = DEFAULT_RESOLVER_ORDER
     authorized: AuthorizedSkillOptions = AuthorizedSkillOptions()
+    public_authorization_grant_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.purpose or not self.now or not self.run_id:
@@ -272,7 +273,12 @@ class Stage3Pipeline:
         ))
 
     def _public_context(self) -> ProbeContext:
-        return ProbeContext(self.purpose, self.now, run_id=self.run_id)
+        return ProbeContext(
+            self.purpose,
+            self.now,
+            authorization_grant_id=self.public_authorization_grant_id,
+            run_id=self.run_id,
+        )
 
     def _public_fetch_context(self) -> FetchContext:
         return FetchContext(self.run_id, self.now)

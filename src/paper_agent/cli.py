@@ -5,19 +5,30 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
+import sysconfig
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from . import __version__
 from .authorized_skill_runtime import AuthorizedSkillRuntime, load_audit_record
+from .analysis_cli_service import AnalysisCliService, load_analysis_input_manifest
+from .artifacts import ArtifactStore
 from .canonical import canonical_json, content_hash
 from .citations import CitationRequest, SelectedSeed, schedule_requests
 from .config import ConfigError, load_config, load_yaml
 from .doctor import DoctorPaths, SystemDoctor
+from .download_cli_service import (
+    AuthorizedSkillHandoffOptions,
+    Stage3DownloadResult,
+    Stage3DownloadService,
+    load_provider_terms,
+)
 from .domain import CitationEdgeType
 from .exchange import export_csv, export_jsonl, validate_export
 from .grants import (
@@ -33,12 +44,17 @@ from .query_plan import (
     assert_runtime_matches,
     compile_query_plan,
 )
+from .processing import ArtifactProcessingPolicy, ProcessingGate
+from .report_artifacts import ReportArtifactStore
 from .report_cli_service import (
     approve_report_plan_from_files,
     compile_report_plan_from_files,
     diff_report_runs,
+    load_report_run_bundle,
     verify_report_run,
 )
+from .report_execution_service import ReportExecutionService
+from .report_plan import ReportPlanBundle
 from .repository import PaperRepository
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import Stage2ReleaseError, load_stage2_release
@@ -46,6 +62,8 @@ from .stage2_commands import evaluate_benchmark_artifacts, filter_database
 from .search_audit import search_audit
 from .seed_import import import_seeds, inputs_from_files, validate_seed_inputs
 from .storage import Database
+from .workflow import SequentialWorkflowOrchestrator, StopToken, load_workflow_manifest
+from .workflow_adapters import default_stage_adapters
 
 
 class CliUsageError(ValueError):
@@ -191,6 +209,21 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     report.add_argument("--search-audit", type=Path)
     report.add_argument("--output-root", type=Path)
     report.add_argument("--report-run-id")
+    report.add_argument("--pipeline-run-id")
+    report.add_argument("--database", type=Path)
+    report.add_argument("--artifact-root", type=Path)
+    report.add_argument("--policy", type=Path)
+    report.add_argument(
+        "--processing-grant",
+        action="append",
+        default=[],
+        metavar="ARTIFACT_HASH=GRANT_ID",
+    )
+    report.add_argument("--processing-grants", type=Path)
+    report.add_argument("--previous-report-run-id")
+    report.add_argument(
+        "--execution-mode", choices=("attended", "unattended"), default="attended"
+    )
     report_commands = report.add_subparsers(dest="report_command")
     report_approve = report_commands.add_parser(
         "approve", help="approve and persist a frozen ReportPlan bundle"
@@ -208,6 +241,39 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     )
     verify.add_argument("--output-root", required=True, type=Path)
     verify.add_argument("--report-run-id")
+
+    download = subcommands.add_parser(
+        "download", help="run the frozen Stage 3 resolver/probe/fetch chain"
+    )
+    download.add_argument("--database", type=Path)
+    download.add_argument("--artifact-root", type=Path)
+    download.add_argument("--paper-id", action="append", default=[])
+    download.add_argument("--filter-run-id")
+    download.add_argument("--grant-id")
+    download.add_argument("--provider-terms", type=Path)
+    download.add_argument("--authorized-skill-queue", type=Path)
+    download.add_argument("--authorized-skill-output", type=Path)
+    download.add_argument("--authorized-skill-root", action="append", default=[], type=Path)
+    download.add_argument("--authorized-skill-zip", type=Path)
+    download.add_argument("--authorized-skill-audit", type=Path)
+
+    analyze = subcommands.add_parser(
+        "analyze", help="run policy-gated Stage 4 Luna analysis"
+    )
+    analyze.add_argument("--database", type=Path)
+    analyze.add_argument("--artifact-root", type=Path)
+    analyze.add_argument("--input", required=True, type=Path)
+    analyze.add_argument("--processing-grant-id")
+    analyze.add_argument("--policy", type=Path)
+
+    for command_name, help_text in (
+        ("run", "execute a frozen multi-stage workflow manifest"),
+        ("resume", "resume an interrupted frozen workflow manifest"),
+    ):
+        workflow = subcommands.add_parser(command_name, help=help_text)
+        workflow.add_argument("--workflow", required=True, type=Path)
+        workflow.add_argument("--database", type=Path)
+        workflow.add_argument("--workflow-run-id")
     import_command = subcommands.add_parser("import-seeds", help="import authorized library seeds")
     import_command.add_argument("--database", required=True, type=Path)
     import_command.add_argument("--seed", action="append", default=[])
@@ -325,6 +391,17 @@ def main(
             "report_run_id": report_run_id,
             "status": "passed",
         })
+    if args.command == "download":
+        return _finish(args, _download(args))
+    if args.command == "analyze":
+        return _finish(args, _analyze(args))
+    if args.command in {"run", "resume"}:
+        result = _workflow(args)
+        return _finish(
+            args,
+            result,
+            int(result["status"] not in {"complete", "validated"}),
+        )
     if args.command == "import-seeds":
         return _finish(
             args,
@@ -421,12 +498,390 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
             "status": "complete",
         }
     if args.plan is not None:
-        raise CliUsageError(
-            "report execution adapter is not configured yet; use --plan-only, approve, "
-            "--diff-from, or verify-report"
-        )
+        return _report_execute(args)
     raise CliUsageError(
         "report requires --plan-only, approve, --plan, or --diff-from"
+    )
+
+
+def _report_execute(args: argparse.Namespace) -> dict[str, Any]:
+    config = load_config(args.config) if args.config else None
+    database_path = _database_path(args.database, config, args.config)
+    if not database_path.is_file():
+        raise FileNotFoundError(f"database does not exist: {database_path}")
+    output_root = args.output_root or _configured_output_root(config, args.config)
+    if output_root is None:
+        raise ConfigError("report execution requires --output-root or a v2 --config")
+    policy_path = args.policy or _report_policy_path(config, args.config)
+    if policy_path is None:
+        raise ConfigError("report execution requires --policy or a v2 --config")
+    bundle = _load_report_plan_bundle(args.plan)
+    report_run_id = args.report_run_id or args.run_id
+    if report_run_id is None:
+        report_run_id = f"report-{content_hash(bundle.plan)[:16]}"
+    pipeline_run_id = args.pipeline_run_id or f"{report_run_id}:stage4b"
+    grants = _processing_grants(args.processing_grants, args.processing_grant)
+    previous = None
+    if args.previous_report_run_id is not None:
+        previous = load_report_run_bundle(
+            output_root, args.previous_report_run_id
+        ).diff_input()
+    with Database(database_path, read_only=args.dry_run) as database:
+        if not args.dry_run:
+            database.migrate()
+        gate = ProcessingGate(
+            ArtifactProcessingPolicy.load(policy_path), GrantStore(database)
+        )
+        service = ReportExecutionService(
+            database,
+            ArtifactStore(args.artifact_root or output_root),
+            gate,
+            ReportArtifactStore(output_root),
+            execution_mode=args.execution_mode,
+        )
+        result = service.run(
+            report_run_id,
+            pipeline_run_id,
+            bundle,
+            processing_grants=grants,
+            previous=previous,
+            dry_run=args.dry_run,
+        )
+    return {
+        "command": "report",
+        "dry_run": result.dry_run,
+        "pipeline_run_id": pipeline_run_id,
+        "published_path": (
+            str(result.audit.published_path)
+            if result.audit and result.audit.published_path
+            else None
+        ),
+        "report_run_id": result.report_run_id,
+        "status": result.status,
+    }
+
+
+def _workflow(args: argparse.Namespace) -> dict[str, Any]:
+    manifest = load_workflow_manifest(args.workflow)
+    if (
+        args.config is not None
+        and args.config.resolve() != manifest.config.resolved_path
+    ):
+        raise ConfigError("--config must match the frozen workflow config FileRef")
+    config_path = manifest.config.resolved_path
+    config = load_config(config_path)
+    database_path = _database_path(args.database, config, config_path)
+    workflow_run_id = args.workflow_run_id or args.run_id or manifest.workflow_id
+    if args.command == "resume" and not database_path.is_file():
+        raise FileNotFoundError(f"database does not exist: {database_path}")
+    stop_token = StopToken()
+    if args.dry_run and not database_path.is_file():
+        orchestrator = SequentialWorkflowOrchestrator(
+            None, manifest, default_stage_adapters(), stop_token=stop_token
+        )
+        result = orchestrator.run(workflow_run_id, dry_run=True)
+    else:
+        with Database(database_path, read_only=args.dry_run) as database:
+            if not args.dry_run:
+                database.migrate()
+            orchestrator = SequentialWorkflowOrchestrator(
+                database, manifest, default_stage_adapters(), stop_token=stop_token
+            )
+            with stop_token.install_signal_handlers():
+                operation = (
+                    orchestrator.resume if args.command == "resume" else orchestrator.run
+                )
+                result = operation(workflow_run_id, dry_run=args.dry_run)
+    result["command"] = args.command
+    return result
+
+
+def _download(args: argparse.Namespace) -> dict[str, Any]:
+    if args.config is None:
+        raise ConfigError("download requires a v2 --config")
+    config = load_config(args.config)
+    database_path = _database_path(args.database, config, args.config)
+    if not database_path.is_file():
+        raise FileNotFoundError(f"database does not exist: {database_path}")
+    terms = load_provider_terms(args.provider_terms) if args.provider_terms else None
+    authorized_skill = _authorized_skill_options(args)
+    if args.dry_run:
+        # Probe against a consistent disposable clone.  Stage 3's exact dry
+        # run deliberately exercises persisted probe code and rolls it back;
+        # using the original database would still create WAL/SHM side effects.
+        with TemporaryDirectory(prefix="paper-agent-download-dry-") as directory:
+            clone_path = Path(directory) / "papers.sqlite3"
+            with Database(clone_path) as database:
+                _backup_for_download_dry_run(database_path, database)
+                expected = Database.migrations()[-1].version
+                if database.current_version() != expected:
+                    raise ValueError("download dry-run requires a fully migrated database")
+                result = _run_download_service(
+                    args,
+                    config,
+                    database,
+                    Path(directory) / "artifacts",
+                    terms,
+                    authorized_skill,
+                )
+    else:
+        with Database(database_path) as database:
+            database.migrate()
+            result = _run_download_service(
+                args,
+                config,
+                database,
+                args.artifact_root or database_path.parent,
+                terms,
+                authorized_skill,
+            )
+    papers = [] if result.run is None else [
+        {
+            "paper_id": item.paper_id,
+            "reason_code": item.reason_code,
+            "resumed": item.resumed,
+            "status": item.status.value,
+        }
+        for item in result.run.papers
+    ]
+    return {
+        "command": "download",
+        "dry_run": result.dry_run,
+        "paper_ids": list(result.paper_ids),
+        "papers": papers,
+        "planned_decisions": [list(item) for item in result.planned_decisions],
+        "authorized_queue_path": (
+            str(result.authorized_queue_path)
+            if result.authorized_queue_path is not None
+            else None
+        ),
+        "run_id": result.run_id,
+        "status": result.status,
+    }
+
+
+def _run_download_service(
+    args: argparse.Namespace,
+    config: Mapping[str, Any],
+    database: Database,
+    artifact_root: Path,
+    terms: Mapping[str, Any] | None,
+    authorized_skill: AuthorizedSkillHandoffOptions | None,
+) -> Stage3DownloadResult:
+    service = Stage3DownloadService(
+        database,
+        config,
+        config_root=args.config.parent,
+        artifact_root=artifact_root,
+        provider_terms=terms,
+    )
+    return service.run(
+        paper_ids=args.paper_id,
+        filter_run_id=args.filter_run_id,
+        authorization_grant_id=args.grant_id,
+        run_id=args.run_id,
+        dry_run=args.dry_run,
+        authorized_skill=authorized_skill,
+    )
+
+
+def _backup_for_download_dry_run(source_path: Path, destination: Database) -> None:
+    """Copy a consistent source snapshot without touching a quiescent WAL database."""
+    wal_path = source_path.with_name(f"{source_path.name}-wal")
+    if not wal_path.exists() or wal_path.stat().st_size == 0:
+        uri = f"{source_path.resolve().as_uri()}?mode=ro&immutable=1"
+        source = sqlite3.connect(uri, uri=True)
+        try:
+            source.backup(destination.connection)
+        finally:
+            source.close()
+        return
+    with Database(source_path, read_only=True) as source:
+        source.connection.backup(destination.connection)
+
+
+def _analyze(args: argparse.Namespace) -> dict[str, Any]:
+    config = load_config(args.config) if args.config else None
+    database_path = _database_path(args.database, config, args.config)
+    if not database_path.is_file():
+        raise FileNotFoundError(f"database does not exist: {database_path}")
+    policy_path = args.policy or _analysis_policy_path(config, args.config)
+    if policy_path is None:
+        raise ConfigError("analyze requires --policy or a v2 --config")
+    grant_id = args.processing_grant_id
+    if grant_id is None and config is not None:
+        grant_id = config["analysis"]["remote_model_processing"][
+            "processing_grant_id"
+        ]
+    manifest = load_analysis_input_manifest(args.input)
+    manifest_hash = content_hash({
+        "paper_ids": manifest.paper_ids,
+        "stage3_artifact_ids": manifest.stage3_artifact_ids,
+    })
+    resolved_run_id = args.run_id or f"analysis-{manifest_hash[:16]}"
+    with Database(database_path, read_only=args.dry_run) as database:
+        if not args.dry_run:
+            database.migrate()
+        service = AnalysisCliService(
+            database,
+            ArtifactStore(args.artifact_root or database_path.parent),
+            ArtifactProcessingPolicy.load(policy_path),
+            grants=GrantStore(database),
+        )
+        result = service.run(
+            resolved_run_id,
+            manifest,
+            processing_grant_id=grant_id,
+            dry_run=args.dry_run,
+        )
+    papers = [] if result.result is None else [
+        {
+            "error": item.error,
+            "input_scope": item.input_scope,
+            "paper_id": item.paper_id,
+            "resumed": item.resumed,
+            "status": item.status,
+        }
+        for item in result.result.papers
+    ]
+    status = (
+        "validated"
+        if result.dry_run
+        else "complete"
+        if papers and all(item["status"] == "complete" for item in papers)
+        else "incomplete"
+    )
+    return {
+        "command": "analyze",
+        "dry_run": result.dry_run,
+        "input_scopes": list(result.input_scopes),
+        "paper_ids": list(result.selected_paper_ids),
+        "papers": papers,
+        "run_id": result.run_id,
+        "status": status,
+    }
+
+
+def _analysis_policy_path(
+    config: Mapping[str, Any] | None, config_path: Path | None
+) -> Path | None:
+    if config is None or config_path is None:
+        return None
+    value = Path(
+        str(config["analysis"]["remote_model_processing"]["policy_matrix"])
+    )
+    return _config_resource_path(config_path, value)
+
+
+def _report_policy_path(
+    config: Mapping[str, Any] | None, config_path: Path | None
+) -> Path | None:
+    if config is None or config_path is None:
+        return None
+    value = Path(
+        str(config["summary"]["remote_model_processing"]["policy_matrix"])
+    )
+    return _config_resource_path(config_path, value)
+
+
+def _configured_output_root(
+    config: Mapping[str, Any] | None, config_path: Path | None
+) -> Path | None:
+    if config is None or config_path is None:
+        return None
+    value = Path(str(config["project"]["output_dir"]))
+    return value if value.is_absolute() else config_path.parent / value
+
+
+def _config_resource_path(config_path: Path, value: Path) -> Path:
+    if value.is_absolute():
+        return value
+    configured = config_path.parent / value
+    if configured.is_file():
+        return configured
+    repository = Path(__file__).resolve().parents[2] / value
+    if repository.is_file():
+        return repository
+    installed = Path(sysconfig.get_path("data")) / "share" / "paper-agent" / value
+    return installed if installed.is_file() else configured
+
+
+def _load_report_plan_bundle(path: Path) -> ReportPlanBundle:
+    directory = path.parent
+    return ReportPlanBundle(
+        _load_mapping(path, "ReportPlan"),
+        _load_mapping(directory / "CORPUS_SNAPSHOT.json", "corpus snapshot"),
+        _load_mapping(directory / "SEARCH_AUDIT.json", "search audit"),
+    )
+
+
+def _load_mapping(path: Path, label: str) -> Mapping[str, Any]:
+    value = _load_json(path)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be a JSON object")
+    return value
+
+
+def _processing_grants(path: Path | None, values: Sequence[str]) -> dict[str, str]:
+    grants: dict[str, str] = {}
+    if path is not None:
+        document = _load_mapping(path, "processing grants")
+        if set(document) == {"schema_version", "grants"}:
+            if document["schema_version"] != "1" or not isinstance(
+                document["grants"], Mapping
+            ):
+                raise ValueError("processing grants must use schema_version 1")
+            document = document["grants"]
+        if not all(
+            isinstance(artifact_hash, str)
+            and len(artifact_hash) == 64
+            and all(character in "0123456789abcdef" for character in artifact_hash)
+            and isinstance(grant_id, str)
+            and grant_id
+            for artifact_hash, grant_id in document.items()
+        ):
+            raise ValueError("processing grants must map artifact SHA-256 hashes to grant IDs")
+        grants.update(document)
+    for value in values:
+        artifact_hash, separator, grant_id = value.partition("=")
+        if (
+            not separator
+            or len(artifact_hash) != 64
+            or any(character not in "0123456789abcdef" for character in artifact_hash)
+            or not grant_id
+        ):
+            raise ValueError("--processing-grant must be ARTIFACT_HASH=GRANT_ID")
+        grants[artifact_hash] = grant_id
+    return grants
+
+
+def _authorized_skill_options(
+    args: argparse.Namespace,
+) -> AuthorizedSkillHandoffOptions | None:
+    supplied = (
+        args.authorized_skill_queue,
+        args.authorized_skill_output,
+        *args.authorized_skill_root,
+        args.authorized_skill_zip,
+        args.authorized_skill_audit,
+    )
+    if not any(value is not None for value in supplied):
+        return None
+    if (
+        args.authorized_skill_queue is None
+        or args.authorized_skill_output is None
+        or not args.authorized_skill_root
+    ):
+        raise CliUsageError(
+            "authorized skill handoff requires --authorized-skill-queue, "
+            "--authorized-skill-output, and --authorized-skill-root"
+        )
+    return AuthorizedSkillHandoffOptions(
+        queue_path=args.authorized_skill_queue,
+        output_dir=args.authorized_skill_output,
+        skill_roots=tuple(args.authorized_skill_root),
+        original_zip=args.authorized_skill_zip,
+        audit_manifest=args.authorized_skill_audit,
     )
 
 
@@ -1274,6 +1729,12 @@ def _command_stage(command: str) -> str:
         return "stage2"
     if command.startswith(("report", "verify-report")):
         return "stage4b"
+    if command == "download":
+        return "stage3"
+    if command == "analyze":
+        return "stage4"
+    if command in {"run", "resume"}:
+        return "workflow"
     if command.startswith("grant"):
         return "authorization"
     return "system"

@@ -16,12 +16,26 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
+from .analysis_dispatches import (
+    AnalysisDispatchBinding,
+    AnalysisDispatchClaim,
+    AnalysisDispatchRecord,
+    AnalysisDispatchStatus,
+    AnalysisDispatchStore,
+)
 from .analysis_registry import AnalysisNormalizationRegistry
 from .artifacts import ArtifactStore
 from .canonical import content_hash
 from .codex_exec import CodexExec, CodexExecRequest, CodexExecResult, InvocationMetadata
-from .processing import ModelInvocation, ProcessingDecision, ProcessingGate, ProcessingRequest
+from .processing import (
+    ModelInvocation,
+    ProcessingDecision,
+    ProcessingGate,
+    ProcessingOutcome,
+    ProcessingRequest,
+)
 from .schema import SchemaValidationError, schema_directory, validate
 from .storage import Database
 
@@ -30,10 +44,15 @@ ANALYSIS_PROFILE = "stage4_analysis_luna"
 ANALYSIS_SCHEMA = "paper-analysis.schema.json"
 ANALYSIS_PROMPT = "paper-analysis.md"
 IMPLEMENTATION_VERSION = "phase5-stage4-v2"
+ANALYSIS_DISPATCH_LEASE_SECONDS = 900
 
 
 class AnalysisValidationError(ValueError):
     """A model result is valid JSON but is not a valid bound paper analysis."""
+
+
+class _DispatchClaimLost(RuntimeError):
+    """Another coordinator already consumed the single dispatch claim."""
 
 
 class AnalysisInvoker(Protocol):
@@ -143,21 +162,38 @@ class PaperAnalysisCoordinator:
         invoker_factory: Callable[[], AnalysisInvoker] = CodexExec,
         normalization_registry: AnalysisNormalizationRegistry | None = None,
         implementation_version: str = IMPLEMENTATION_VERSION,
+        dispatch_store: AnalysisDispatchStore | None = None,
+        clock: Callable[[], datetime] | None = None,
+        dispatch_lease_seconds: int = ANALYSIS_DISPATCH_LEASE_SECONDS,
     ) -> None:
+        if dispatch_lease_seconds <= 0:
+            raise ValueError("dispatch_lease_seconds must be positive")
         self.database = database
         self.artifact_store = artifact_store
         self.gate = gate
         self.invoker_factory = invoker_factory
         self.normalization_registry = normalization_registry or AnalysisNormalizationRegistry.load()
         self.implementation_version = implementation_version
+        self.dispatch_store = dispatch_store or AnalysisDispatchStore(database)
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.dispatch_lease_seconds = dispatch_lease_seconds
         root = schema_directory()
         self.schema = json.loads((root / ANALYSIS_SCHEMA).read_text(encoding="utf-8"))
         self.schema_hash = _digest_json(self.schema)
         self.prompt_hash = sha256((Path(__file__).resolve().parents[2] / "prompts" / ANALYSIS_PROMPT).read_bytes()).hexdigest()
-        self.config_hash = content_hash({
+        legacy_config = {
             "profile": ANALYSIS_PROFILE, "model": "gpt-5.6-luna", "prompt_hash": self.prompt_hash,
             "schema_hash": self.schema_hash, "implementation_version": implementation_version,
             "normalization_registry": self.normalization_registry.registry_hash,
+        }
+        # Preserve the exact pre-ledger identity solely for migration-016
+        # compatibility checks.  Every newly created/resumed dispatch freezes
+        # the policy as part of both the pipeline and paid-call identities.
+        self.legacy_config_hash = content_hash(legacy_config)
+        self.config_hash = content_hash({
+            **legacy_config,
+            "processing_policy_version": self.gate.policy.version,
+            "processing_policy_hash": self.gate.policy.hash,
         })
 
     def run(
@@ -182,9 +218,23 @@ class PaperAnalysisCoordinator:
                 results.append(self._record_unexpected_failure(run_id, paper, request, error))
         status = "complete" if all(result.status == "complete" for result in results) else "incomplete"
         with self.database.transaction() as connection:
+            terminal = connection.execute(
+                """SELECT 1 FROM analysis_dispatches
+                   WHERE run_id = ? AND status = 'failed_terminal' LIMIT 1""",
+                (run_id,),
+            ).fetchone()
+            if terminal is not None:
+                status = "failed"
             connection.execute(
-                "UPDATE pipeline_runs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE run_id = ?",
-                (status, run_id),
+                """UPDATE pipeline_runs
+                   SET status = CASE
+                           WHEN ? = 'failed' THEN 'failed'
+                           WHEN status IN ('complete', 'failed') THEN status
+                           ELSE ?
+                       END,
+                       completed_at = CURRENT_TIMESTAMP
+                   WHERE run_id = ?""",
+                (status, status, run_id),
             )
         return AnalysisRunResult(tuple(results))
 
@@ -202,14 +252,98 @@ class PaperAnalysisCoordinator:
             expected = ("stage4", input_hash, self.config_hash, self.implementation_version)
             if row is not None:
                 actual = tuple(row[key] for key in ("stage", "input_hash", "config_hash", "implementation_version"))
-                if actual != expected:
+                if actual == expected:
+                    return
+                legacy = ("stage4", input_hash, self.legacy_config_hash, self.implementation_version)
+                if actual != legacy or not self._legacy_policy_compatible(
+                    connection, run_id, requests,
+                ):
                     raise ValueError("Stage 4 run input or configuration is immutable")
+                connection.execute(
+                    """UPDATE pipeline_runs SET config_hash = ?
+                       WHERE run_id = ? AND config_hash = ?""",
+                    (self.config_hash, run_id, self.legacy_config_hash),
+                )
                 return
             connection.execute(
                 """INSERT INTO pipeline_runs(run_id, stage, status, input_hash, config_hash, implementation_version, started_at)
                    VALUES (?, 'stage4', 'running', ?, ?, ?, CURRENT_TIMESTAMP)""",
                 (run_id, input_hash, self.config_hash, self.implementation_version),
             )
+
+    def _legacy_policy_compatible(
+        self,
+        connection: Any,
+        run_id: str,
+        requests: Sequence[ProcessingRequest],
+    ) -> bool:
+        """Adopt only verifiably same-policy v15 work or terminal tombstones."""
+        for request in requests:
+            assert request.paper_id is not None
+            dispatch_row = connection.execute(
+                """SELECT * FROM analysis_dispatches
+                   WHERE run_id = ? AND paper_id = ?""",
+                (run_id, request.paper_id),
+            ).fetchone()
+            if dispatch_row is not None:
+                dispatch = self.dispatch_store.find(
+                    run_id, request.paper_id, connection=connection,
+                )
+                assert dispatch is not None
+                if (
+                    dispatch.status is AnalysisDispatchStatus.FAILED_TERMINAL
+                    and dispatch.dispatch_id.startswith("analysis-dispatch-legacy-")
+                    and dispatch.artifact_hash == request.artifact_hash
+                ):
+                    if dispatch.processing_decision is None:
+                        # No policy proof exists, so the migration consumed the
+                        # dispatch budget permanently.  This is safe to adopt
+                        # only because no execution path can reopen it.
+                        continue
+                    if self._decision_matches_current_policy(dispatch.processing_decision):
+                        continue
+                return False
+
+            row = self._legacy_analysis_row(connection, run_id, request)
+            if row is None:
+                return False
+            detail = json.loads(row["invocation_metadata_json"] or "{}")
+            decision = detail.get("processing_decision")
+            if not isinstance(decision, Mapping) or not self._decision_matches_current_policy(decision):
+                return False
+        return True
+
+    def _legacy_analysis_row(
+        self,
+        connection: Any,
+        run_id: str,
+        request: ProcessingRequest,
+    ) -> Any | None:
+        rows = connection.execute(
+            """SELECT * FROM analysis_runs WHERE run_id = ? AND paper_id = ?
+               ORDER BY CASE status WHEN 'complete' THEN 0 ELSE 1 END,
+                        created_at DESC, analysis_run_id DESC""",
+            (run_id, request.paper_id),
+        ).fetchall()
+        for row in rows:
+            detail = json.loads(row["invocation_metadata_json"] or "{}")
+            facts = detail.get("input_policy_facts", {})
+            decision = detail.get("processing_decision", {})
+            if (
+                isinstance(facts, Mapping)
+                and facts.get("artifact_hash") == request.artifact_hash
+            ) or (
+                isinstance(decision, Mapping)
+                and decision.get("input_artifact_hash") == request.artifact_hash
+            ):
+                return row
+        return None
+
+    def _decision_matches_current_policy(self, decision: Mapping[str, Any]) -> bool:
+        return (
+            decision.get("policy_version") == self.gate.policy.version
+            and decision.get("policy_hash") == self.gate.policy.hash
+        )
 
     def _run_one(
         self, run_id: str, paper: AnalysisInput, request: ProcessingRequest,
@@ -219,20 +353,71 @@ class PaperAnalysisCoordinator:
         if existing is not None:
             self._assert_existing_binding(existing, paper, request)
             if existing["status"] == "complete":
-                return AnalysisPaperResult(
-                    paper.paper_id, existing["analysis_run_id"], "complete", existing["input_hash"],
-                    existing["input_scope"], output=self._load_output(existing), resumed=True,
-                    markdown_artifact_id=existing["markdown_artifact_id"],
-                )
+                ledger = self.database.connection.execute(
+                    "SELECT 1 FROM analysis_dispatches WHERE run_id = ? AND paper_id = ?",
+                    (run_id, paper.paper_id),
+                ).fetchone()
+                if ledger is None:  # Completed before migration 016; preserve free legacy resume.
+                    return AnalysisPaperResult(
+                        paper.paper_id, existing["analysis_run_id"], "complete", existing["input_hash"],
+                        existing["input_scope"], output=self._load_output(existing), resumed=True,
+                        markdown_artifact_id=existing["markdown_artifact_id"],
+                    )
+
+        binding = AnalysisDispatchBinding(
+            run_id=run_id,
+            paper_id=paper.paper_id,
+            artifact_hash=request.artifact_hash,
+            artifact_id=paper.artifact_id,
+            input_scope=request.input_scope,
+            config_hash=self.config_hash,
+            implementation_version=self.implementation_version,
+            profile=ANALYSIS_PROFILE,
+            model_id="gpt-5.6-luna",
+            prompt_hash=self.prompt_hash,
+            schema_hash=self.schema_hash,
+            policy_version=self.gate.policy.version,
+            policy_hash=self.gate.policy.hash,
+        )
+        persisted = self.dispatch_store.find(run_id, paper.paper_id)
+        if persisted is not None and persisted.status is AnalysisDispatchStatus.FAILED_TERMINAL:
+            self.dispatch_store.assert_binding(
+                persisted,
+                binding,
+                allow_legacy_terminal=True,
+                legacy_config_hash=self.legacy_config_hash,
+            )
+            current, terminal_result = self._observe_dispatch(persisted, paper, request)
+            if terminal_result is None:  # Defensive: failed_terminal is immutable.
+                raise AnalysisValidationError("terminal analysis dispatch was reopened")
+            return terminal_result
+        dispatch = self.dispatch_store.prepare(
+            binding,
+            stable_created_at=now if now is not None else self.clock(),
+        )
+        dispatch, terminal_result = self._observe_dispatch(dispatch, paper, request)
+        if terminal_result is not None:
+            return terminal_result
+        if existing is not None and existing["status"] == "complete" and (
+            dispatch.status is not AnalysisDispatchStatus.COMPLETE
+            or dispatch.analysis_run_id != existing["analysis_run_id"]
+        ):
+            raise AnalysisValidationError("completed analysis run conflicts with its dispatch ledger")
+        if dispatch.status is AnalysisDispatchStatus.COMPLETE:
+            return self._result_from_dispatch(dispatch, paper, request)
+        if dispatch.status is AnalysisDispatchStatus.RUNNING:
+            return self._result_from_dispatch(dispatch, paper, request)
 
         captured: ModelInvocation | None = None
         sent_hash: str | None = None
         metadata: InvocationMetadata | None = None
         analysis_output: Mapping[str, Any] | None = None
-        created_at = _timestamp(now)
+        claim: AnalysisDispatchClaim | None = None
+        created_at = dispatch.stable_created_at
+        owner = f"analysis-worker-{uuid4()}"
 
         def invoke(invocation: ModelInvocation) -> CodexExecResult:
-            nonlocal captured, sent_hash, metadata, analysis_output
+            nonlocal captured, sent_hash, metadata, analysis_output, claim
             captured = invocation
             payload = _authorized_payload(
                 paper.paper_id,
@@ -251,6 +436,16 @@ class PaperAnalysisCoordinator:
             )
             prompt = _json_text(payload)
             sent_hash = sha256(prompt.encode("utf-8")).hexdigest()
+            claim = self.dispatch_store.claim(
+                dispatch.dispatch_id,
+                invocation.decision,
+                owner=owner,
+                prompt_input_hash=sent_hash,
+                now=self.clock(),
+                lease_seconds=self.dispatch_lease_seconds,
+            )
+            if claim is None:
+                raise _DispatchClaimLost("analysis dispatch was already claimed")
             # This factory call is intentionally within ProcessingGate.dispatch.
             result = self.invoker_factory().invoke(CodexExecRequest(
                 profile=ANALYSIS_PROFILE, prompt=prompt, output_schema=self.schema,
@@ -266,15 +461,26 @@ class PaperAnalysisCoordinator:
             dispatched = self.gate.dispatch(
                 request, invoke, processing_grant_id=processing_grant_id, now=now,
             )
+            decision = dispatched.decision
+            if not decision.is_authorized:
+                return self._persist_not_authorized(run_id, paper, request, decision, dispatch)
+            assert claim is not None and sent_hash is not None and metadata is not None
+            assert analysis_output is not None
+            return self._persist_complete(
+                run_id, paper, request, decision, sent_hash, metadata, analysis_output, claim,
+            )
+        except _DispatchClaimLost:
+            current, terminal_result = self._observe_dispatch(
+                self.dispatch_store.get(dispatch.dispatch_id), paper, request,
+            )
+            return terminal_result or self._result_from_dispatch(current, paper, request)
         except Exception as error:
             decision = captured.decision if captured is not None else None
+            if claim is not None:
+                return self._persist_uncertain_failure(
+                    run_id, paper, request, decision, sent_hash, metadata, error, claim,
+                )
             return self._persist_failure(run_id, paper, request, decision, sent_hash, metadata, error)
-
-        decision = dispatched.decision
-        if not decision.is_authorized:
-            return self._persist_not_authorized(run_id, paper, request, decision)
-        assert sent_hash is not None and metadata is not None and analysis_output is not None
-        return self._persist_complete(run_id, paper, request, decision, sent_hash, metadata, analysis_output)
 
     def _validate_output(
         self, output: Mapping[str, Any], paper_id: str, artifact_hash: str, input_scope: str,
@@ -336,14 +542,139 @@ class PaperAnalysisCoordinator:
         ):
             raise AnalysisValidationError("abstract_only and metadata_only labels must use input_field locators")
 
+    def _observe_dispatch(
+        self,
+        dispatch: AnalysisDispatchRecord,
+        paper: AnalysisInput,
+        request: ProcessingRequest,
+    ) -> tuple[AnalysisDispatchRecord, AnalysisPaperResult | None]:
+        """Expire stale claims and materialize their terminal audit row atomically."""
+        with self.database.transaction() as connection:
+            current = self.dispatch_store.expire_stale(
+                dispatch.dispatch_id, now=self.clock(), connection=connection,
+            )
+            if (
+                current.status is AnalysisDispatchStatus.FAILED_TERMINAL
+                and current.analysis_run_id is None
+            ):
+                failure = dict(current.error or {
+                    "error": "UncertainDispatch",
+                    "message": "analysis dispatch outcome is uncertain",
+                })
+                decision = _processing_decision(current.processing_decision)
+                result = self._upsert(
+                    current.run_id,
+                    paper,
+                    request,
+                    current.prompt_input_hash or current.artifact_hash,
+                    decision,
+                    "failed",
+                    None,
+                    None,
+                    failure,
+                    connection=connection,
+                )
+                current = self.dispatch_store.link_analysis_run(
+                    current.dispatch_id, result.analysis_run_id, connection=connection,
+                )
+        if current.status is AnalysisDispatchStatus.FAILED_TERMINAL:
+            return current, self._result_from_dispatch(current, paper, request)
+        return current, None
+
+    def _result_from_dispatch(
+        self,
+        dispatch: AnalysisDispatchRecord,
+        paper: AnalysisInput,
+        request: ProcessingRequest,
+    ) -> AnalysisPaperResult:
+        decision = _processing_decision(dispatch.processing_decision)
+        input_hash = dispatch.prompt_input_hash or dispatch.artifact_hash
+        analysis_run_id = dispatch.analysis_run_id or (
+            "analysis-" + content_hash([dispatch.run_id, dispatch.paper_id, input_hash])
+        )
+        row = None
+        if dispatch.analysis_run_id is not None:
+            row = self.database.connection.execute(
+                "SELECT * FROM analysis_runs WHERE analysis_run_id = ?",
+                (dispatch.analysis_run_id,),
+            ).fetchone()
+            if row is None:
+                raise AnalysisValidationError("analysis dispatch references a missing analysis run")
+            self._assert_existing_binding(row, paper, request)
+            input_hash = row["input_hash"]
+
+        if dispatch.status is AnalysisDispatchStatus.COMPLETE:
+            if row is None or row["status"] != "complete":
+                raise AnalysisValidationError("completed analysis dispatch has no completed analysis run")
+            return AnalysisPaperResult(
+                paper.paper_id,
+                analysis_run_id,
+                "complete",
+                input_hash,
+                request.input_scope,
+                decision,
+                self._load_output(row),
+                resumed=True,
+                markdown_artifact_id=row["markdown_artifact_id"],
+            )
+
+        if dispatch.status is AnalysisDispatchStatus.FAILED_TERMINAL:
+            return AnalysisPaperResult(
+                paper.paper_id,
+                analysis_run_id,
+                "failed",
+                input_hash,
+                request.input_scope,
+                decision,
+                resumed=True,
+                error=_dispatch_error(dispatch),
+                markdown_artifact_id=row["markdown_artifact_id"] if row is not None else None,
+            )
+
+        return AnalysisPaperResult(
+            paper.paper_id,
+            analysis_run_id,
+            "incomplete",
+            input_hash,
+            request.input_scope,
+            decision,
+            resumed=True,
+            error="analysis dispatch is already running" if dispatch.status is AnalysisDispatchStatus.RUNNING else None,
+            markdown_artifact_id=row["markdown_artifact_id"] if row is not None else None,
+        )
+
     def _persist_not_authorized(
-        self, run_id: str, paper: AnalysisInput, request: ProcessingRequest, decision: ProcessingDecision,
+        self,
+        run_id: str,
+        paper: AnalysisInput,
+        request: ProcessingRequest,
+        decision: ProcessingDecision,
+        dispatch: AnalysisDispatchRecord,
     ) -> AnalysisPaperResult:
         # No prompt was sent; use the selected artifact hash solely as the
         # auditable attempted-input identity, never as a claimed sent prompt.
-        return self._upsert(
-            run_id, paper, request, request.artifact_hash, decision, "incomplete", None, None, None,
-        )
+        result: AnalysisPaperResult | None = None
+        with self.database.transaction() as connection:
+            current = self.dispatch_store.record_manual(
+                dispatch.dispatch_id, decision, connection=connection,
+            )
+            if current.status is AnalysisDispatchStatus.MANUAL_REQUIRED:
+                result = self._upsert(
+                    run_id,
+                    paper,
+                    request,
+                    request.artifact_hash,
+                    decision,
+                    "incomplete",
+                    None,
+                    None,
+                    None,
+                    connection=connection,
+                )
+                current = self.dispatch_store.link_analysis_run(
+                    current.dispatch_id, result.analysis_run_id, connection=connection,
+                )
+        return result or self._result_from_dispatch(current, paper, request)
 
     def _persist_failure(
         self, run_id: str, paper: AnalysisInput, request: ProcessingRequest, decision: ProcessingDecision | None,
@@ -359,9 +690,59 @@ class PaperAnalysisCoordinator:
     ) -> AnalysisPaperResult:
         return self._persist_failure(run_id, paper, request, None, None, None, error)
 
+    def _persist_uncertain_failure(
+        self,
+        run_id: str,
+        paper: AnalysisInput,
+        request: ProcessingRequest,
+        decision: ProcessingDecision | None,
+        sent_hash: str | None,
+        metadata: InvocationMetadata | None,
+        error: Exception,
+        claim: AnalysisDispatchClaim,
+    ) -> AnalysisPaperResult:
+        failure: dict[str, Any] = {
+            "error": "UncertainDispatch",
+            "message": f"UncertainDispatch: {type(error).__name__}: {error}",
+            "cause": {"error": type(error).__name__, "message": str(error)},
+        }
+        result: AnalysisPaperResult | None = None
+        with self.database.transaction() as connection:
+            current = self.dispatch_store.fail_terminal(
+                claim,
+                error=failure,
+                now=self.clock(),
+                invocation_id=metadata.invocation_id if metadata is not None else None,
+                rendered_prompt_hash=metadata.rendered_prompt_hash if metadata is not None else None,
+                invocation_metadata=asdict(metadata) if metadata is not None else None,
+                connection=connection,
+            )
+            if (
+                current.status is AnalysisDispatchStatus.FAILED_TERMINAL
+                and current.analysis_run_id is None
+            ):
+                frozen_decision = _processing_decision(current.processing_decision) or decision
+                result = self._upsert(
+                    run_id,
+                    paper,
+                    request,
+                    current.prompt_input_hash or sent_hash or request.artifact_hash,
+                    frozen_decision,
+                    "failed",
+                    metadata,
+                    None,
+                    dict(current.error or failure),
+                    connection=connection,
+                )
+                current = self.dispatch_store.link_analysis_run(
+                    current.dispatch_id, result.analysis_run_id, connection=connection,
+                )
+        return result or self._result_from_dispatch(current, paper, request)
+
     def _persist_complete(
         self, run_id: str, paper: AnalysisInput, request: ProcessingRequest, decision: ProcessingDecision,
         sent_hash: str, metadata: InvocationMetadata, output: Mapping[str, Any],
+        claim: AnalysisDispatchClaim,
     ) -> AnalysisPaperResult:
         payload = _json_bytes(output)
         stored = self.artifact_store.put_bytes(payload, mime_type="application/json", metadata={"kind": "analysis"})
@@ -369,17 +750,54 @@ class PaperAnalysisCoordinator:
         markdown_stored = self.artifact_store.put_bytes(
             markdown, mime_type="text/markdown; charset=utf-8", metadata={"kind": "analysis_markdown"},
         )
-        return self._upsert(
-            run_id, paper, request, sent_hash, decision, "complete", metadata, stored, None, output,
-            markdown_stored=markdown_stored,
-        )
+        with self.database.transaction() as connection:
+            result = self._upsert(
+                run_id,
+                paper,
+                request,
+                sent_hash,
+                decision,
+                "complete",
+                metadata,
+                stored,
+                None,
+                output,
+                markdown_stored=markdown_stored,
+                connection=connection,
+            )
+            self.dispatch_store.complete(
+                claim,
+                analysis_run_id=result.analysis_run_id,
+                invocation_id=metadata.invocation_id,
+                rendered_prompt_hash=metadata.rendered_prompt_hash,
+                invocation_metadata=asdict(metadata),
+                now=self.clock(),
+                connection=connection,
+            )
+        return result
 
     def _upsert(
         self, run_id: str, paper: AnalysisInput, request: ProcessingRequest, input_hash: str,
         decision: ProcessingDecision | None, status: str, metadata: InvocationMetadata | None,
-        stored: Any | None, error: Mapping[str, str] | None, output: Mapping[str, Any] | None = None,
-        *, markdown_stored: Any | None = None,
+        stored: Any | None, error: Mapping[str, Any] | None, output: Mapping[str, Any] | None = None,
+        *, markdown_stored: Any | None = None, connection: Any | None = None,
     ) -> AnalysisPaperResult:
+        if connection is None:
+            with self.database.transaction() as active:
+                return self._upsert(
+                    run_id,
+                    paper,
+                    request,
+                    input_hash,
+                    decision,
+                    status,
+                    metadata,
+                    stored,
+                    error,
+                    output,
+                    markdown_stored=markdown_stored,
+                    connection=active,
+                )
         analysis_run_id = "analysis-" + content_hash([run_id, paper.paper_id, input_hash])
         metadata_document: dict[str, Any] = {}
         if output is not None:
@@ -410,41 +828,41 @@ class PaperAnalysisCoordinator:
             metadata_document["failure"] = dict(error)
         artifact_id = None
         markdown_artifact_id = None
-        with self.database.transaction() as connection:
-            if stored is not None:
-                artifact_id = self._save_output_artifact(
-                    connection, paper.paper_id, stored, analysis_run_id, output_format="json",
-                )
-            if markdown_stored is not None:
-                markdown_artifact_id = self._save_output_artifact(
-                    connection, paper.paper_id, markdown_stored, analysis_run_id, output_format="markdown",
-                )
-            connection.execute(
-                """INSERT INTO analysis_runs(
-                    analysis_run_id, run_id, paper_id, artifact_id, input_hash, input_scope, model_id, model_revision,
-                    prompt_hash, schema_hash, implementation_version, authorization_grant_id, policy_version,
-                    policy_decision, invocation_metadata_json, status, output_artifact_id,
-                    markdown_artifact_id, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IN ('complete', 'failed', 'incomplete') THEN CURRENT_TIMESTAMP END)
-                ON CONFLICT(run_id, paper_id, input_hash) DO UPDATE SET
-                    artifact_id=excluded.artifact_id, authorization_grant_id=excluded.authorization_grant_id,
-                    policy_version=excluded.policy_version, policy_decision=excluded.policy_decision,
-                    invocation_metadata_json=excluded.invocation_metadata_json, status=excluded.status,
-                    output_artifact_id=excluded.output_artifact_id,
-                    markdown_artifact_id=excluded.markdown_artifact_id, completed_at=excluded.completed_at""",
-                (
-                    analysis_run_id, run_id, paper.paper_id, paper.artifact_id, input_hash, request.input_scope,
-                    "gpt-5.6-luna", str(output["model_revision"]) if output else "unavailable",
-                    self.prompt_hash, self.schema_hash, self.implementation_version,
-                    decision.processing_grant_id if decision else None,
-                    decision.policy_version if decision else "unavailable",
-                    decision.outcome.value if decision else "failed_before_policy",
-                    _json_text(metadata_document), status, artifact_id, markdown_artifact_id, status,
-                ),
+        if stored is not None:
+            artifact_id = self._save_output_artifact(
+                connection, paper.paper_id, stored, analysis_run_id, output_format="json",
             )
+        if markdown_stored is not None:
+            markdown_artifact_id = self._save_output_artifact(
+                connection, paper.paper_id, markdown_stored, analysis_run_id, output_format="markdown",
+            )
+        connection.execute(
+            """INSERT INTO analysis_runs(
+                analysis_run_id, run_id, paper_id, artifact_id, input_hash, input_scope, model_id, model_revision,
+                prompt_hash, schema_hash, implementation_version, authorization_grant_id, policy_version,
+                policy_decision, invocation_metadata_json, status, output_artifact_id,
+                markdown_artifact_id, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IN ('complete', 'failed', 'incomplete') THEN CURRENT_TIMESTAMP END)
+            ON CONFLICT(run_id, paper_id, input_hash) DO UPDATE SET
+                artifact_id=excluded.artifact_id, authorization_grant_id=excluded.authorization_grant_id,
+                policy_version=excluded.policy_version, policy_decision=excluded.policy_decision,
+                invocation_metadata_json=excluded.invocation_metadata_json, status=excluded.status,
+                output_artifact_id=excluded.output_artifact_id,
+                markdown_artifact_id=excluded.markdown_artifact_id, completed_at=excluded.completed_at""",
+            (
+                analysis_run_id, run_id, paper.paper_id, paper.artifact_id, input_hash, request.input_scope,
+                "gpt-5.6-luna", str(output["model_revision"]) if output else "unavailable",
+                self.prompt_hash, self.schema_hash, self.implementation_version,
+                decision.processing_grant_id if decision is not None and decision.is_authorized else None,
+                decision.policy_version if decision else "unavailable",
+                decision.outcome.value if decision else "failed_before_policy",
+                _json_text(metadata_document), status, artifact_id, markdown_artifact_id, status,
+            ),
+        )
         return AnalysisPaperResult(
             paper.paper_id, analysis_run_id, status, input_hash, request.input_scope, decision, output,
-            error=error["message"] if error else None, markdown_artifact_id=markdown_artifact_id,
+            error=str(error.get("message", error.get("error"))) if error else None,
+            markdown_artifact_id=markdown_artifact_id,
         )
 
     def _save_output_artifact(
@@ -574,6 +992,44 @@ def render_analysis_markdown(output: Mapping[str, Any]) -> str:
     if not output["evidence_units"]:
         lines.append("- 未提供")
     return "\n".join(lines) + "\n"
+
+
+def _processing_decision(document: Mapping[str, Any] | None) -> ProcessingDecision | None:
+    if document is None:
+        return None
+    try:
+        return ProcessingDecision(
+            policy_version=str(document["policy_version"]),
+            policy_hash=str(document["policy_hash"]),
+            outcome=ProcessingOutcome(str(document["outcome"])),
+            reason_code=str(document["reason_code"]),
+            input_artifact_hash=str(document["input_artifact_hash"]),
+            provider=str(document["provider"]),
+            model=str(document["model"]),
+            purpose=str(document["purpose"]),
+            data_category=str(document["data_category"]),
+            processing_grant_id=(
+                str(document["processing_grant_id"])
+                if document.get("processing_grant_id") is not None
+                else None
+            ),
+            authorized_by=(
+                str(document["authorized_by"])
+                if document.get("authorized_by") is not None
+                else None
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise AnalysisValidationError("analysis dispatch processing decision is malformed") from error
+
+
+def _dispatch_error(dispatch: AnalysisDispatchRecord) -> str:
+    if dispatch.error is None:
+        return "UncertainDispatch: remote invocation outcome is uncertain"
+    message = str(dispatch.error.get("message", "remote invocation outcome is uncertain"))
+    if "UncertainDispatch" in message:
+        return message
+    return f"UncertainDispatch: {message}"
 
 
 def _decision_json(decision: ProcessingDecision) -> dict[str, Any]:
