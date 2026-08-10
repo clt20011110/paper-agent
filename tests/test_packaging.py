@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 import tomllib
 
+import paper_agent.analysis as analysis_module
+from paper_agent.analysis import ANALYSIS_PROMPT, PaperAnalysisCoordinator
+from paper_agent.artifacts import ArtifactStore
 from paper_agent.cli import doctor
 from paper_agent.domain import QuerySpec
 from paper_agent.manifests import load_catalog
+from paper_agent.processing import ArtifactProcessingPolicy, ProcessingGate
 from paper_agent.providers.builtin import FixtureTransport, create_builtin
+from paper_agent.storage import Database
+
+
+ROOT = Path(__file__).parents[1]
 
 
 def test_runtime_data_and_builtin_work_outside_repository_cwd(tmp_path, monkeypatch) -> None:
@@ -43,3 +52,30 @@ def test_console_script_uses_the_structured_error_boundary() -> None:
     )
 
     assert project["project"]["scripts"]["paper-agent"] == "paper_agent.cli:entrypoint"
+
+
+def test_stage4_coordinator_uses_the_runtime_prompt_locator(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    prompt_root = tmp_path / "installed-data" / "prompts"
+    prompt_root.mkdir(parents=True)
+    prompt = b"installed wheel Stage 4 prompt\n"
+    (prompt_root / ANALYSIS_PROMPT).write_bytes(prompt)
+    monkeypatch.setattr(analysis_module, "prompt_directory", lambda: prompt_root)
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        coordinator = PaperAnalysisCoordinator(
+            database,
+            ArtifactStore(tmp_path / "artifacts"),
+            ProcessingGate(
+                ArtifactProcessingPolicy.load(
+                    ROOT / "policies" / "artifact-processing-v1.yaml"
+                )
+            ),
+            invoker_factory=lambda: (_ for _ in ()).throw(
+                AssertionError("coordinator construction must not dispatch Codex")
+            ),
+        )
+
+    assert coordinator.prompt_hash == sha256(prompt).hexdigest()

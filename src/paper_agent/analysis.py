@@ -14,7 +14,6 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
-from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -28,7 +27,13 @@ from .analysis_dispatches import (
 from .analysis_registry import AnalysisNormalizationRegistry
 from .artifacts import ArtifactStore
 from .canonical import content_hash
-from .codex_exec import CodexExec, CodexExecRequest, CodexExecResult, InvocationMetadata
+from .codex_exec import (
+    CodexExec,
+    CodexExecRequest,
+    CodexExecResult,
+    InvocationMetadata,
+    prompt_directory,
+)
 from .processing import (
     ModelInvocation,
     ProcessingDecision,
@@ -180,7 +185,9 @@ class PaperAnalysisCoordinator:
         root = schema_directory()
         self.schema = json.loads((root / ANALYSIS_SCHEMA).read_text(encoding="utf-8"))
         self.schema_hash = _digest_json(self.schema)
-        self.prompt_hash = sha256((Path(__file__).resolve().parents[2] / "prompts" / ANALYSIS_PROMPT).read_bytes()).hexdigest()
+        self.prompt_hash = sha256(
+            (prompt_directory() / ANALYSIS_PROMPT).read_bytes()
+        ).hexdigest()
         legacy_config = {
             "profile": ANALYSIS_PROFILE, "model": "gpt-5.6-luna", "prompt_hash": self.prompt_hash,
             "schema_hash": self.schema_hash, "implementation_version": implementation_version,

@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
 import sys
+import sysconfig
 from tempfile import TemporaryDirectory
 
+from paper_agent.analysis import ANALYSIS_PROMPT, PaperAnalysisCoordinator
 from paper_agent.analysis_registry import registry_directory
+from paper_agent.artifacts import ArtifactStore
 from paper_agent.authorized_skill_runtime import audit_manifest_path
 from paper_agent.codex_exec import prompt_directory
 from paper_agent.domain import QuerySpec
 from paper_agent.manifests import load_catalog
+from paper_agent.processing import ArtifactProcessingPolicy, ProcessingGate
 from paper_agent.providers.builtin import FixtureTransport, create_builtin
 from paper_agent.report_artifacts import audit_rubric_hash
 from paper_agent.schema import schema_directory
@@ -61,9 +66,29 @@ def main() -> None:
     assert audit_manifest_path().is_file()
     assert len(audit_rubric_hash()) == 64
     with TemporaryDirectory() as directory:
-        with Database(Path(directory) / "wheel.sqlite3") as database:
+        root = Path(directory)
+        with Database(root / "wheel.sqlite3") as database:
             database.migrate()
             assert database.current_version() >= 16
+            policy_path = (
+                Path(sysconfig.get_path("data"))
+                / "share"
+                / "paper-agent"
+                / "policies"
+                / "artifact-processing-v1.yaml"
+            )
+            coordinator = PaperAnalysisCoordinator(
+                database,
+                ArtifactStore(root / "stage4-artifacts"),
+                ProcessingGate(ArtifactProcessingPolicy.load(policy_path)),
+                invoker_factory=lambda: (_ for _ in ()).throw(
+                    AssertionError("wheel verification must not dispatch Codex")
+                ),
+            )
+            assert coordinator.prompt_hash == sha256(
+                (prompt_directory() / ANALYSIS_PROMPT).read_bytes()
+            ).hexdigest()
+            assert len(coordinator.schema_hash) == 64
 
 
 if __name__ == "__main__":
