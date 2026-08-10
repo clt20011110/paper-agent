@@ -362,7 +362,7 @@ def test_sharded_sol_audit_is_independent_persisted_and_free_on_resume(
         value = original_draft(200_000_000)
         value["budget"] = {
             **value["budget"],
-            "max_sol_calls": 2_000,
+            "max_sol_calls": 2_100,
             "max_input_tokens": 200_000_000,
         }
         value["stage4b_audit_config_hash"] = _fixture_audit_config_hash()
@@ -423,7 +423,7 @@ def test_sharded_audit_invocation_cannot_be_reused_by_repair(
         value = original_draft(200_000_000)
         value["budget"] = {
             **value["budget"],
-            "max_sol_calls": 2_000,
+            "max_sol_calls": 2_100,
             "max_input_tokens": 200_000_000,
         }
         value["stage4b_audit_config_hash"] = _fixture_audit_config_hash()
@@ -505,7 +505,7 @@ def test_uncertain_shard_dispatch_is_terminal_and_never_repaid(
         value = original_draft(200_000_000)
         value["budget"] = {
             **value["budget"],
-            "max_sol_calls": 2_000,
+            "max_sol_calls": 2_100,
             "max_input_tokens": 200_000_000,
         }
         value["stage4b_audit_config_hash"] = _fixture_audit_config_hash()
