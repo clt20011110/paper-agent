@@ -38,11 +38,12 @@ from .domain import (
 )
 from .fanout import (
     FanoutResult,
+    PageStream,
     ProviderOutcome,
     ProviderPage,
     fan_out,
-    search_pages,
-    venue_pages,
+    search_streams,
+    venue_stream,
 )
 from .identity import normalize_author, normalize_doi, normalize_title
 from .query_compilers import NativeQuery, compile_queries
@@ -69,6 +70,32 @@ class VenueRun:
     descriptor: VenueDescriptor
     window: CrawlWindow
     context: VenueContext
+
+
+class InitialFanoutAdapter:
+    """Expose protocol search, venue, and library calls as budgeted page streams."""
+
+    def __init__(self, client: Any, venue_runs: Sequence[VenueRun], seed_inputs: Sequence[SeedInput]) -> None:
+        self.client = client
+        self.venue_runs = tuple(venue_runs)
+        self.seed_inputs = tuple(seed_inputs)
+
+    def initial_streams(
+        self, provider: Mapping[str, Any], queries: tuple[NativeQuery, ...]
+    ) -> tuple[PageStream, ...]:
+        streams = list(search_streams(self.client, provider, queries)) if queries else []
+        streams.extend(venue_stream(self.client, run.descriptor, run.window) for run in self.venue_runs)
+        if "library" in provider["roles"] and self.seed_inputs:
+            streams.append(
+                PageStream(
+                    str(provider["provider"]),
+                    "library",
+                    None,
+                    None,
+                    lambda cursor: self.client.import_seeds(self.seed_inputs),
+                )
+            )
+        return tuple(streams)
 
 
 class SearchPipeline:
@@ -122,7 +149,8 @@ class SearchPipeline:
             window=dict(self.plan["scope"]),
         )
 
-        fanout = fan_out(self.plan, self._execution_clients())
+        campaign_deadline = time.monotonic() + float(self.plan["budgets"]["max_seconds"])
+        fanout = fan_out(self.plan, self._execution_clients(), deadline=campaign_deadline)
         all_paper_ids: set[str] = set()
         non_arxiv_ids: set[str] = set()
         library_seed_ids: set[str] = set()
@@ -202,10 +230,19 @@ class SearchPipeline:
 
         self._link_versions(observed_at)
         status = self.runs.finish_crawl(crawl_run_id, plan=self.plan, fanout=fanout, finished_at=observed_at)
-        round_ids = self._run_citations(
+        if fanout.budget_exhausted:
+            status = "incomplete"
+            self.database.connection.execute(
+                "UPDATE crawl_runs SET status = ? WHERE crawl_run_id = ?",
+                (status, crawl_run_id),
+            )
+        round_ids, citation_requests_made, citation_candidates_returned = self._run_citations(
             crawl_run_id,
             observed_at,
             (*seed_paper_ids, *sorted(library_seed_ids)),
+            request_budget=max(0, int(self.plan["budgets"]["max_requests"]) - fanout.requests_made),
+            candidate_budget=max(0, int(self.plan["budgets"]["max_candidates"]) - fanout.candidates_returned),
+            deadline=campaign_deadline,
         )
         citation_limited = self.database.connection.execute(
             "SELECT 1 FROM search_rounds WHERE crawl_run_id = ? AND limited_scope = 1 LIMIT 1",
@@ -216,6 +253,25 @@ class SearchPipeline:
             self.database.connection.execute(
                 "UPDATE crawl_runs SET status = 'incomplete' WHERE crawl_run_id = ?",
                 (crawl_run_id,),
+            )
+        citation_budget_exhausted = self.database.connection.execute(
+            "SELECT 1 FROM search_rounds WHERE crawl_run_id = ? AND stop_reason = 'budget_exhausted' LIMIT 1",
+            (crawl_run_id,),
+        ).fetchone()
+        if fanout.budget_exhausted or citation_budget_exhausted:
+            row = self.database.connection.execute(
+                "SELECT stats_json FROM crawl_runs WHERE crawl_run_id = ?", (crawl_run_id,)
+            ).fetchone()
+            stats = json.loads(row["stats_json"])
+            stats["budget"] = {
+                "reason": "budget_exhausted",
+                "requests_made": fanout.requests_made + citation_requests_made,
+                "candidates_returned": fanout.candidates_returned + citation_candidates_returned,
+            }
+            status = "incomplete"
+            self.database.connection.execute(
+                "UPDATE crawl_runs SET status = ?, stats_json = ? WHERE crawl_run_id = ?",
+                (status, json.dumps(stats, sort_keys=True, separators=(",", ":")), crawl_run_id),
             )
         self.database.connection.execute(
             "UPDATE pipeline_runs SET status = ?, completed_at = ? WHERE run_id = ?",
@@ -266,25 +322,7 @@ class SearchPipeline:
             if client is None or callable(client) or (not runs and "library" not in provider["roles"]):
                 clients[name] = client
                 continue
-
-            def invoke(
-                specification: Mapping[str, Any],
-                queries: tuple[NativeQuery, ...],
-                *,
-                protocol_client: Any = client,
-                venue_work: tuple[VenueRun, ...] = runs,
-            ) -> tuple[ProviderPage, ...]:
-                pages = list(search_pages(protocol_client, specification, queries)) if queries else []
-                for venue_run in venue_work:
-                    pages.extend(
-                        venue_pages(protocol_client, venue_run.descriptor, venue_run.window)
-                    )
-                if "library" in specification["roles"] and self.seed_inputs:
-                    batch = protocol_client.import_seeds(self.seed_inputs)
-                    pages.append(ProviderPage("library", batch, None, 1, None))
-                return tuple(pages)
-
-            clients[name] = invoke
+            clients[name] = InitialFanoutAdapter(client, runs, self.seed_inputs)
         return clients
 
     def _venue_context(self, venue_id: str | None) -> VenueContext | None:
@@ -316,7 +354,7 @@ class SearchPipeline:
             if "venue_primary" in provider["roles"]
             else str(provider["roles"][0])
         )
-        if outcome.status == "failed":
+        if outcome.status in {"failed", "skipped_budget"}:
             return tuple(
                 ProviderPage(
                     role,
@@ -445,21 +483,27 @@ class SearchPipeline:
                 self.citations.save(version_edge(preprint_id, published_id, provider="metadata", observed_at=observed_at, raw_evidence={"match": "title-author-year"}))
 
     def _run_citations(
-        self, crawl_run_id: str, observed_at: str, seed_paper_ids: Sequence[str]
-    ) -> list[str]:
+        self,
+        crawl_run_id: str,
+        observed_at: str,
+        seed_paper_ids: Sequence[str],
+        *,
+        request_budget: int,
+        candidate_budget: int,
+        deadline: float,
+    ) -> tuple[list[str], int, int]:
         config = self.plan["citation_snowball"]
         if not config["enabled"] or not self.citation_clients:
-            return []
+            return [], 0, 0
         providers = tuple(sorted(self.citation_clients))
         roots = tuple(sorted({paper_id for paper_id in seed_paper_ids if self.repository.get_paper(paper_id)}))
         if not roots:
-            return []
-        max_requests = int(self.plan["budgets"]["max_requests"])
+            return [], 0, 0
+        max_requests = request_budget
         max_depth = int(config["max_depth"])
         max_rounds = int(config["max_rounds"])
         max_per_request = int(config["max_per_seed_per_source"])
-        max_candidates = int(self.plan["budgets"]["max_candidates"])
-        deadline = time.monotonic() + int(self.plan["budgets"]["max_seconds"])
+        max_candidates = candidate_budget
         directions = tuple(CitationEdgeType(value) for value in config["directions"])
         default_subquestion = next(
             (item.get("subquestion_id") for item in self.plan["query_variants"] if item.get("subquestion_id")),
@@ -560,7 +604,7 @@ class SearchPipeline:
             self._audit_round(round_id, audit, decision, observed_at)
             if decision.stop:
                 break
-        return round_ids
+        return round_ids, used_requests, used_candidates
 
     def _execute_citation_requests(
         self,

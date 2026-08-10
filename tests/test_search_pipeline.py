@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from paper_agent.citations import DeterministicFakeScreener, citation_edge, reference_edge
@@ -32,7 +33,7 @@ def _provider(name: str, roles: list[str] | None = None) -> dict[str, object]:
 
 def _plan(
     providers: list[dict[str, object]], *, required: list[str], citation_cap: int = 10,
-    max_depth: int = 1, max_rounds: int = 2, max_requests: int = 2, max_candidates: int = 10,
+    max_depth: int = 1, max_rounds: int = 2, max_requests: int = 4, max_candidates: int = 10,
     max_seconds: int = 10,
 ) -> dict[str, object]:
     plan = compile_query_plan(
@@ -388,7 +389,7 @@ def test_citation_pages_consume_the_global_request_budget(tmp_path) -> None:
     plan = _plan(
         [_provider("openalex", ["search", "citation"])],
         required=["openalex"],
-        max_requests=3,
+        max_requests=4,
         max_candidates=10,
         citation_cap=5,
     )
@@ -456,7 +457,7 @@ def test_citation_pages_consume_the_global_request_budget(tmp_path) -> None:
 def test_citation_depth_propagates_to_a_second_round_and_global_candidate_cap_stops(tmp_path) -> None:
     plan = _plan(
         [_provider("openalex", ["search", "citation"])], required=["openalex"],
-        max_depth=2, max_rounds=2, max_requests=4, max_candidates=2,
+        max_depth=2, max_rounds=2, max_requests=5, max_candidates=2,
     )
     query_hash = plan["providers"][0]["native_query_hashes"][0]
 
@@ -550,7 +551,7 @@ def test_time_budget_marks_the_citation_round_limited(tmp_path, monkeypatch) -> 
         [_provider("openalex", ["search", "citation"])], required=["openalex"], max_seconds=1,
     )
     query_hash = plan["providers"][0]["native_query_hashes"][0]
-    clock = iter((0.0, 2.0, 2.0))
+    clock = iter((0.0, 2.0, 4.0, 6.0, 6.0))
     monkeypatch.setattr("paper_agent.search_pipeline.time.monotonic", lambda: next(clock))
 
     with Database(tmp_path / "papers.sqlite3") as database:
@@ -611,3 +612,97 @@ def test_library_seed_is_used_as_a_citation_root_without_a_canonical_id(tmp_path
         ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
 
     assert citation_client.seed_dois == ["10.1000/library", "10.1000/library"]
+
+
+def test_initial_fanout_budget_marks_crawl_incomplete_with_audit(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex"), _provider("crossref")], required=["openalex"], max_requests=1,
+    )
+
+    class Client:
+        def search(self, query_spec, cursor):
+            return SourceBatch("source", query_spec.native_query_hash, (), None, EnvelopeStatus.SUCCESS)
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        result = SearchPipeline(
+            database, plan, runtime_providers=plan["providers"],
+            clients={"openalex": Client(), "crossref": Client()},
+            trusts={"openalex": _trust("openalex"), "crossref": _trust("crossref")},
+        ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+        crawl = database.connection.execute(
+            "SELECT status, stats_json FROM crawl_runs WHERE crawl_run_id = 'crawl'"
+        ).fetchone()
+
+    assert result.status == "incomplete"
+    assert crawl["status"] == "incomplete"
+    assert json.loads(crawl["stats_json"])["budget"] == {
+        "candidates_returned": 0,
+        "reason": "budget_exhausted",
+        "requests_made": 1,
+    }
+
+
+def test_initial_and_citation_work_share_the_campaign_hard_budgets(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex", ["search", "citation"])],
+        required=["openalex"], max_requests=2, max_candidates=2,
+    )
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class Client:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def search(self, query_spec, cursor):
+            self.calls.append("search")
+            return SourceBatch(
+                "openalex", query_spec.native_query_hash,
+                (SourceEntry("openalex", "initial", "Initial", ("Ada",), doi="10.1000/initial", year=2024),),
+                None, EnvelopeStatus.SUCCESS,
+            )
+
+        def citations(self, seed, cursor):
+            self.calls.append("citations")
+            return CitationBatch(
+                "fixture", "cites", (
+                    CitationEdge(
+                        "native-citing", seed.paper_id, CitationEdgeType.CITATIONS, "openalex", NOW,
+                        candidate=SourceEntry("openalex", "citation", "Citation", ("Ada",), doi="10.1000/citation", year=2024),
+                    ),
+                ), None, EnvelopeStatus.SUCCESS,
+            )
+
+        def references(self, seed, cursor):
+            self.calls.append("references")
+            return CitationBatch("fixture", "refs", (), None, EnvelopeStatus.SUCCESS)
+
+    client = Client()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database, plan, runtime_providers=plan["providers"], clients={"openalex": client},
+            trusts={"openalex": _trust("openalex")}, citation_clients={"openalex": client},
+        )
+        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
+        pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
+        citation_requests = database.connection.execute(
+            "SELECT COUNT(*) FROM citation_requests WHERE status = 'complete'"
+        ).fetchone()[0]
+        discovered = database.connection.execute(
+            "SELECT COUNT(*) FROM papers WHERE doi IN ('10.1000/initial', '10.1000/citation')"
+        ).fetchone()[0]
+        crawl_stats = json.loads(
+            database.connection.execute(
+                "SELECT stats_json FROM crawl_runs WHERE crawl_run_id = 'crawl'"
+            ).fetchone()["stats_json"]
+        )
+
+    assert client.calls == ["search", "citations"]
+    assert citation_requests == 1
+    assert discovered == 2
+    assert crawl_stats["budget"] == {
+        "candidates_returned": 2,
+        "reason": "budget_exhausted",
+        "requests_made": 2,
+    }
