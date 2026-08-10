@@ -28,6 +28,7 @@ from .reporting import (
     comparison_assessment,
     require_exact_comparison_groups,
     stable_claim_id,
+    validate_evidence_reference_shape,
 )
 from .schema import SchemaValidationError, validate
 
@@ -441,6 +442,11 @@ def verify_report(
     for claim in claims:
         support = tuple(claim["supporting_evidence"])
         contradict = tuple(claim["contradicting_evidence"])
+        try:
+            for reference in (*support, *contradict):
+                validate_evidence_reference_shape(reference)
+        except EvidenceValidationError as error:
+            raise ReportVerificationError(str(error)) from error
         signatures = [content_hash(ref) for ref in (*support, *contradict)]
         if len(set(signatures)) != len(signatures):
             raise ReportVerificationError("claim repeats the same evidence reference")
@@ -900,6 +906,7 @@ class ReportArtifactStore:
         audit: Mapping[str, Any],
         previous: Mapping[str, Any] | None = None,
         rubric_path: str | Path | None = None,
+        advance_latest: bool = True,
     ) -> Path:
         contents, markdown = self._bundle_contents(
             plan=plan,
@@ -928,7 +935,8 @@ class ReportArtifactStore:
             for name, text in contents.items():
                 (temporary / name).write_text(text, encoding="utf-8")
             os.replace(temporary, target)
-            self._atomic_write(self.latest_path, markdown)
+            if advance_latest:
+                self._atomic_write(self.latest_path, markdown)
         except OSError as error:
             raise ReportArtifactError("immutable report bundle could not be written atomically") from error
         return target
@@ -948,8 +956,9 @@ class ReportArtifactStore:
         audit: Mapping[str, Any],
         previous: Mapping[str, Any] | None = None,
         rubric_path: str | Path | None = None,
+        advance_latest: bool = True,
     ) -> Path:
-        """Verify a crash-left bundle byte-for-byte, then restore ``latest.md``."""
+        """Verify a crash-left bundle and optionally restore ``latest.md``."""
         contents, markdown = self._bundle_contents(
             plan=plan,
             search_audit=search_audit,
@@ -986,10 +995,13 @@ class ReportArtifactStore:
                 raise ReportArtifactError(
                     f"existing immutable report artifact conflicts with final state: {name}"
                 )
-        try:
-            self._atomic_write(self.latest_path, markdown)
-        except OSError as error:
-            raise ReportArtifactError("reports/latest.md could not be restored atomically") from error
+        if advance_latest:
+            try:
+                self._atomic_write(self.latest_path, markdown)
+            except OSError as error:
+                raise ReportArtifactError(
+                    "reports/latest.md could not be restored atomically"
+                ) from error
         return target
 
     @staticmethod

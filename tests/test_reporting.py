@@ -297,6 +297,11 @@ def test_section_validation_binds_claim_ids_analysis_units_and_citations() -> No
     with pytest.raises(EvidenceValidationError, match="non-allowlisted paper marker"):
         _validator().validate_section(hallucinated_citation)
 
+    mixed_shape = deepcopy(_valid_s1())
+    mixed_shape["claims"][0]["supporting_evidence"][0]["query_id"] = "query-1"
+    with pytest.raises(EvidenceValidationError, match="corpus-only fields"):
+        _validator().validate_section(mixed_shape)
+
 
 def test_corpus_stat_uses_frozen_search_ids_and_recomputed_count() -> None:
     audit = {
@@ -365,6 +370,10 @@ def test_corpus_stat_uses_frozen_search_ids_and_recomputed_count() -> None:
     )
 
     assert validator.validate_section(document).claims[0]["claim_type"] == "corpus_stat"
+    mixed_shape = deepcopy(document)
+    mixed_shape["claims"][0]["supporting_evidence"][0]["paper_id"] = "p1"
+    with pytest.raises(EvidenceValidationError, match="paper-only fields"):
+        validator.validate_section(mixed_shape)
     tampered = deepcopy(document)
     tampered["claims"][0]["supporting_evidence"][0]["calculation"] = "999"
     with pytest.raises(EvidenceValidationError, match="frozen search audit"):

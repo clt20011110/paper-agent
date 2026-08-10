@@ -17,6 +17,7 @@ from paper_agent.report_cli_service import (
     approve_report_plan_from_files,
     compile_report_plan_from_files,
     diff_report_runs,
+    load_report_run_bundle,
     verify_report_run,
 )
 from paper_agent.report_config import ReportResources
@@ -159,6 +160,17 @@ def test_diff_report_runs_loads_each_bundle_and_current_relations(tmp_path: Path
     assert diff["unmapped_claim_ids"] == ["claim-1"]
 
 
+def test_report_bundle_directory_cannot_impersonate_another_run(tmp_path: Path) -> None:
+    _write_minimal_run(tmp_path, "expected", claims=[], papers=[])
+    document_path = tmp_path / "reports/expected/REPORT_DOCUMENT.json"
+    document_path.write_text(
+        json.dumps({"report_run_id": "foreign"}), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        load_report_run_bundle(tmp_path, "expected")
+
+
 def test_report_plan_approve_verify_and_diff_cli(tmp_path: Path, capsys) -> None:
     corpus, search_audit = _inputs()
     draft = _draft()
@@ -263,7 +275,7 @@ def _write_minimal_run(
         "CORPUS_SNAPSHOT.json": {"papers": papers},
         "COMPARISON_GROUPS.json": {},
         "CLAIM_RELATIONS.json": [],
-        "REPORT_DOCUMENT.json": {},
+        "REPORT_DOCUMENT.json": {"report_run_id": run_id},
         "COVERAGE.json": {},
         "BIBLIOGRAPHY.json": {},
     }

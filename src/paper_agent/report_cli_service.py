@@ -46,11 +46,15 @@ class ReportRunBundle:
     bibliography: Mapping[str, Mapping[str, Any]]
 
     def diff_input(self) -> dict[str, Any]:
-        return {
+        value = {
             "plan": self.plan,
             "claims": self.claims,
             "corpus_snapshot": self.corpus_snapshot,
         }
+        report_run_id = self.document.get("report_run_id")
+        if isinstance(report_run_id, str) and report_run_id:
+            value["report_run_id"] = report_run_id
+        return value
 
 
 def compile_report_plan_from_files(
@@ -185,7 +189,7 @@ def load_report_run_bundle(
 ) -> ReportRunBundle:
     """Load only the deterministic-verifier inputs from a published run."""
     directory = ReportArtifactStore(output_root).directory(report_run_id)
-    return ReportRunBundle(
+    bundle = ReportRunBundle(
         plan=_load_mapping(directory / "REPORT_PLAN.json"),
         search_audit=_load_mapping(directory / "SEARCH_AUDIT.json"),
         corpus_snapshot=_load_mapping(directory / "CORPUS_SNAPSHOT.json"),
@@ -196,6 +200,11 @@ def load_report_run_bundle(
         coverage=_load_mapping(directory / "COVERAGE.json"),
         bibliography=_load_mapping(directory / "BIBLIOGRAPHY.json"),
     )
+    if bundle.document.get("report_run_id") != report_run_id:
+        raise ValueError(
+            "REPORT_DOCUMENT report_run_id does not match its immutable directory"
+        )
+    return bundle
 
 
 def _load_mapping(path: str | Path) -> Mapping[str, Any]:

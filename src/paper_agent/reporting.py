@@ -56,6 +56,14 @@ INPUT_SCOPE_LEVELS = {
     "full_pdf": frozenset(EVIDENCE_LEVEL_RANK),
 }
 PAPER_MARKER = re.compile(r"@([A-Za-z0-9._:-]+)")
+_PAPER_EVIDENCE_FIELDS = ("paper_id", "analysis_run_id", "evidence_unit", "locator")
+_CORPUS_EVIDENCE_FIELDS = (
+    "search_plan_id",
+    "source_run_id",
+    "query_id",
+    "statistic",
+    "calculation",
+)
 
 
 class ReportPlanningError(ValueError):
@@ -68,6 +76,43 @@ class EvidenceValidationError(ValueError):
 
 class BudgetExceeded(ReportPlanningError):
     pass
+
+
+def validate_evidence_reference_shape(ref: Mapping[str, Any]) -> None:
+    """Enforce the paper/corpus evidence union shared with SQLite facts."""
+    kind = ref.get("kind")
+    if kind == "paper_evidence":
+        if (
+            not isinstance(ref.get("paper_id"), str)
+            or not ref["paper_id"]
+            or not isinstance(ref.get("analysis_run_id"), str)
+            or not ref["analysis_run_id"]
+            or not isinstance(ref.get("evidence_unit"), Mapping)
+            or not isinstance(ref.get("locator"), str)
+            or not ref["locator"]
+        ):
+            raise EvidenceValidationError(
+                "paper evidence requires paper, analysis, unit, and locator bindings"
+            )
+        if any(ref.get(field) is not None for field in _CORPUS_EVIDENCE_FIELDS):
+            raise EvidenceValidationError(
+                "paper evidence contains corpus-only fields"
+            )
+        return
+    if kind == "corpus_evidence":
+        if any(ref.get(field) is not None for field in _PAPER_EVIDENCE_FIELDS):
+            raise EvidenceValidationError(
+                "corpus evidence contains paper-only fields"
+            )
+        if any(
+            not isinstance(ref.get(field), str) or not ref[field]
+            for field in _CORPUS_EVIDENCE_FIELDS
+        ):
+            raise EvidenceValidationError(
+                "corpus evidence requires frozen search and statistic bindings"
+            )
+        return
+    raise EvidenceValidationError(f"unknown evidence kind: {kind}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -721,6 +766,7 @@ class SynthesisValidator:
         signatures: set[str] = set()
         for direction, refs in (("support", support), ("contradict", contradict)):
             for ref in refs:
+                validate_evidence_reference_shape(ref)
                 signature = content_hash(ref)
                 if signature in signatures:
                     raise EvidenceValidationError("claim repeats the same evidence reference")

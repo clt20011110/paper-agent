@@ -40,6 +40,11 @@ from .processing import (
 )
 from .report_budget import CanonicalReportBudgetError, canonical_report_budget
 from .report_config import ReportResources
+from .report_facts import (
+    ReportFactError,
+    materialize_verified_report_facts,
+    require_verified_report_claims,
+)
 from .report_invocations import (
     ReportInvocationError,
     register_report_invocation,
@@ -512,6 +517,21 @@ class ReportAuditCoordinator:
             ))
         except ReportVerificationError as error:
             raise ReportAuditError(str(error)) from error
+        previous_report_run_id = _previous_report_run_id(
+            previous,
+            initial["claim_relations"],
+            current_report_run_id=report_run_id,
+        )
+        if previous_report_run_id is not None:
+            assert previous is not None
+            try:
+                require_verified_report_claims(
+                    self.database.connection,
+                    report_run_id=previous_report_run_id,
+                    claims=previous["claims"],
+                )
+            except (KeyError, ReportFactError) as error:
+                raise ReportAuditError(str(error)) from error
         material_limit = self._synthesis_output_byte_limit(report_run_id)
         if (
             len(canonical_json(initial["comparison_groups"])) > material_limit
@@ -4154,11 +4174,19 @@ class ReportAuditCoordinator:
     ) -> ReportAuditResult:
         if not audit["coverage_complete"] or _severe_findings(audit):
             raise ReportAuditError("publish requires complete audit coverage and zero severe findings")
+        verification = self._deterministic_verify(bundle)
+        previous_report_run_id = _previous_report_run_id(
+            previous,
+            bundle["claim_relations"],
+            current_report_run_id=report_run_id,
+        )
         self._validate_invocation_registry(report_run_id)
         try:
             target = self.report_store.directory(report_run_id)
             if target.exists():
-                self._reconcile_existing_publish(target, bundle, audit, previous)
+                self._reconcile_existing_publish(
+                    target, bundle, audit, previous, advance_latest=False
+                )
             else:
                 try:
                     self.report_store.write(
@@ -4174,11 +4202,14 @@ class ReportAuditCoordinator:
                         audit=audit,
                         previous=previous,
                         rubric_path=self.rubric_path,
+                        advance_latest=False,
                     )
                 except ReportArtifactError:
                     if not target.exists():
                         raise
-                    self._reconcile_existing_publish(target, bundle, audit, previous)
+                    self._reconcile_existing_publish(
+                        target, bundle, audit, previous, advance_latest=False
+                    )
         except (ReportArtifactError, ReportAuditError) as error:
             return self._finish_failed(
                 report_run_id,
@@ -4189,27 +4220,50 @@ class ReportAuditCoordinator:
             )
         assert target is not None
         relative = str(target.relative_to(self.report_store.root))
-        with self.database.transaction() as connection:
-            connection.execute(
-                """UPDATE report_audit_runs SET status = 'complete', final_audit_step = ?,
-                       published_relative_path = ?, error_json = NULL,
-                       completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                   WHERE report_run_id = ?""",
-                ("audit_c" if audit["audit_pass"] == "C" else "audit_a", relative, report_run_id),
-            )
-            report = connection.execute(
-                "SELECT run_id FROM report_runs WHERE report_run_id = ?", (report_run_id,)
-            ).fetchone()
-            connection.execute(
-                """UPDATE report_runs SET status = 'complete', output_relative_path = ?,
-                       completed_at = CURRENT_TIMESTAMP WHERE report_run_id = ?""",
-                (relative, report_run_id),
-            )
-            connection.execute(
-                """UPDATE pipeline_runs SET status = 'complete', completed_at = CURRENT_TIMESTAMP
-                   WHERE run_id = ?""",
-                (report["run_id"],),
-            )
+        try:
+            with self.database.transaction() as connection:
+                materialize_verified_report_facts(
+                    connection,
+                    report_run_id=report_run_id,
+                    bundle=bundle,
+                    deterministic_verification=verification,
+                    previous_report_run_id=previous_report_run_id,
+                )
+                connection.execute(
+                    """UPDATE report_audit_runs SET status = 'complete', final_audit_step = ?,
+                           published_relative_path = ?, error_json = NULL,
+                           completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                       WHERE report_run_id = ?""",
+                    (
+                        "audit_c" if audit["audit_pass"] == "C" else "audit_a",
+                        relative,
+                        report_run_id,
+                    ),
+                )
+                report = connection.execute(
+                    "SELECT run_id FROM report_runs WHERE report_run_id = ?",
+                    (report_run_id,),
+                ).fetchone()
+                connection.execute(
+                    """UPDATE report_runs SET status = 'complete', output_relative_path = ?,
+                           completed_at = CURRENT_TIMESTAMP WHERE report_run_id = ?""",
+                    (relative, report_run_id),
+                )
+                connection.execute(
+                    """UPDATE pipeline_runs SET status = 'complete', completed_at = CURRENT_TIMESTAMP
+                       WHERE run_id = ?""",
+                    (report["run_id"],),
+                )
+        except ReportFactError as error:
+            raise ReportAuditError(
+                "verified report fact materialization conflicts with SQLite"
+            ) from error
+        try:
+            self._reconcile_existing_publish(target, bundle, audit, previous)
+        except ReportAuditError as error:
+            raise ReportAuditError(
+                "verified report was committed but reports/latest.md was not advanced"
+            ) from error
         return ReportAuditResult(
             report_run_id,
             "complete",
@@ -4226,6 +4280,8 @@ class ReportAuditCoordinator:
         bundle: Mapping[str, Any],
         audit: Mapping[str, Any],
         previous: Mapping[str, Any] | None,
+        *,
+        advance_latest: bool = True,
     ) -> None:
         try:
             if target != self.report_store.directory(str(bundle["document"]["report_run_id"])):
@@ -4243,6 +4299,7 @@ class ReportAuditCoordinator:
                 audit=audit,
                 previous=previous,
                 rubric_path=self.rubric_path,
+                advance_latest=advance_latest,
             )
         except ReportArtifactError as error:
             raise ReportAuditError(
@@ -4499,6 +4556,31 @@ class ReportAuditCoordinator:
         expected_relative = str(expected_path.relative_to(self.report_store.root))
         if row["published_relative_path"] != expected_relative:
             raise ReportAuditError("completed report audit publish path has drifted")
+        verification = self._deterministic_verify(current)
+        self._reconcile_existing_publish(
+            expected_path,
+            current,
+            final_audit,
+            previous,
+            advance_latest=False,
+        )
+        try:
+            with self.database.transaction() as connection:
+                materialize_verified_report_facts(
+                    connection,
+                    report_run_id=report_run_id,
+                    bundle=current,
+                    deterministic_verification=verification,
+                    previous_report_run_id=_previous_report_run_id(
+                        previous,
+                        current["claim_relations"],
+                        current_report_run_id=report_run_id,
+                    ),
+                )
+        except ReportFactError as error:
+            raise ReportAuditError(
+                "completed report SQLite facts have drifted or cannot be upgraded"
+            ) from error
         self._reconcile_existing_publish(
             expected_path, current, final_audit, previous
         )
@@ -4565,6 +4647,26 @@ def _bundle_hash(bundle: Mapping[str, Any]) -> str:
         claim_relations=bundle["claim_relations"],
         bibliography=bundle["bibliography"],
     )
+
+
+def _previous_report_run_id(
+    previous: Mapping[str, Any] | None,
+    relations: Sequence[Mapping[str, Any]],
+    *,
+    current_report_run_id: str,
+) -> str | None:
+    if not relations:
+        return None
+    value = previous.get("report_run_id") if previous is not None else None
+    if not isinstance(value, str) or not value:
+        raise ReportAuditError(
+            "claim relations require the previous report_run_id binding"
+        )
+    if value == current_report_run_id:
+        raise ReportAuditError(
+            "claim relations require a distinct previous report_run_id binding"
+        )
+    return value
 
 
 def _classification_values(value: object) -> tuple[str, ...]:

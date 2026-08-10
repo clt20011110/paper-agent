@@ -19,6 +19,7 @@ from paper_agent.report_audit import (
     ReportAuditError,
     ReportBundle,
 )
+from paper_agent.report_facts import ReportFactError
 from test_report_reduce import _fixture
 
 
@@ -318,6 +319,118 @@ def test_passing_audit_publishes_once_and_resume_is_free(tmp_path: Path) -> None
         assert fixture.reduce.database.connection.execute(
             "SELECT execution_mode FROM report_audit_runs WHERE report_run_id = 'report-1'"
         ).fetchone()[0] == "attended"
+        expected_evidence = sum(
+            len(claim[field])
+            for claim in fixture.bundle.claims
+            for field in ("supporting_evidence", "contradicting_evidence")
+        )
+        fact_set = fixture.reduce.database.connection.execute(
+            """SELECT sealed, claim_count, evidence_count,
+                      comparison_group_count, claim_relation_count
+               FROM report_fact_sets WHERE report_run_id = 'report-1'"""
+        ).fetchone()
+        assert tuple(fact_set) == (
+            1,
+            len(fixture.bundle.claims),
+            expected_evidence,
+            0,
+            0,
+        )
+        assert fixture.reduce.database.connection.execute(
+            "SELECT COUNT(*) FROM report_claims WHERE report_run_id = 'report-1'"
+        ).fetchone()[0] == len(fixture.bundle.claims)
+        assert fixture.reduce.database.connection.execute(
+            "SELECT COUNT(*) FROM claim_evidence WHERE report_run_id = 'report-1'"
+        ).fetchone()[0] == expected_evidence
+    finally:
+        fixture.reduce.database.close()
+
+
+def test_fact_materialization_failure_never_advances_latest_and_resume_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import paper_agent.report_audit as report_audit_module
+
+    fixture = _audit_fixture(tmp_path)
+    materialize = report_audit_module.materialize_verified_report_facts
+    attempts = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ReportFactError("injected fact-set conflict")
+        return materialize(*args, **kwargs)
+
+    monkeypatch.setattr(
+        report_audit_module, "materialize_verified_report_facts", fail_once
+    )
+    try:
+        with pytest.raises(ReportAuditError, match="fact materialization"):
+            fixture.run()
+
+        assert (fixture.root / "reports/report-1/REPORT.md").is_file()
+        assert not (fixture.root / "reports/latest.md").exists()
+        assert fixture.reduce.database.connection.execute(
+            "SELECT COUNT(*) FROM report_fact_sets WHERE report_run_id = 'report-1'"
+        ).fetchone()[0] == 0
+        statuses = fixture.reduce.database.connection.execute(
+            """SELECT rr.status, rar.status, pr.status
+               FROM report_runs rr
+               JOIN report_audit_runs rar ON rar.report_run_id = rr.report_run_id
+               JOIN pipeline_runs pr ON pr.run_id = rr.run_id
+               WHERE rr.report_run_id = 'report-1'"""
+        ).fetchone()
+        assert tuple(statuses) == ("running", "running", "running")
+
+        resumed = fixture.run()
+
+        assert resumed.status == "complete"
+        assert resumed.resumed_steps == ("audit_a",)
+        assert len(fixture.fake.calls) == 1
+        assert attempts == 2
+        assert (fixture.root / "reports/latest.md").is_file()
+        assert fixture.reduce.database.connection.execute(
+            "SELECT sealed FROM report_fact_sets WHERE report_run_id = 'report-1'"
+        ).fetchone()[0] == 1
+    finally:
+        fixture.reduce.database.close()
+
+
+def test_completed_pre_facts_report_is_lazily_upgraded_without_another_sol_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import paper_agent.report_audit as report_audit_module
+
+    fixture = _audit_fixture(tmp_path)
+    materialize = report_audit_module.materialize_verified_report_facts
+    monkeypatch.setattr(
+        report_audit_module,
+        "materialize_verified_report_facts",
+        lambda *args, **kwargs: None,
+    )
+    try:
+        historical = fixture.run()
+        assert historical.status == "complete"
+        assert fixture.reduce.database.connection.execute(
+            "SELECT COUNT(*) FROM report_fact_sets WHERE report_run_id = 'report-1'"
+        ).fetchone()[0] == 0
+        (fixture.root / "reports/latest.md").unlink()
+
+        monkeypatch.setattr(
+            report_audit_module,
+            "materialize_verified_report_facts",
+            materialize,
+        )
+        upgraded = fixture.run()
+
+        assert upgraded.status == "complete"
+        assert upgraded.resumed_steps == ("audit_a",)
+        assert len(fixture.fake.calls) == 1
+        assert fixture.reduce.database.connection.execute(
+            "SELECT sealed FROM report_fact_sets WHERE report_run_id = 'report-1'"
+        ).fetchone()[0] == 1
+        assert (fixture.root / "reports/latest.md").is_file()
     finally:
         fixture.reduce.database.close()
 
@@ -404,6 +517,9 @@ def test_major_finding_gets_one_typed_repair_reverify_and_fresh_reaudit(tmp_path
         invocation_ids = [json.loads(item["invocation_metadata_json"])["invocation_id"] for item in metadata]
         assert len(set(invocation_ids)) == 3
         assert json.loads((fixture.root / "reports/report-1/AUDIT.json").read_text())["audit_pass"] == "C"
+        assert fixture.reduce.database.connection.execute(
+            "SELECT report_document_hash FROM report_fact_sets WHERE report_run_id = 'report-1'"
+        ).fetchone()[0] == result.report_document_hash
     finally:
         fixture.reduce.database.close()
 
@@ -423,6 +539,9 @@ def test_failed_fresh_reaudit_is_incomplete_and_never_updates_latest(tmp_path: P
         assert fixture.reduce.database.connection.execute(
             "SELECT status FROM report_runs WHERE report_run_id = 'report-1'"
         ).fetchone()[0] == "incomplete"
+        assert fixture.reduce.database.connection.execute(
+            "SELECT COUNT(*) FROM report_fact_sets WHERE report_run_id = 'report-1'"
+        ).fetchone()[0] == 0
     finally:
         fixture.reduce.database.close()
 
@@ -541,6 +660,42 @@ def test_non_incremental_claim_relations_reach_no_paid_audit(tmp_path: Path) -> 
     try:
         with pytest.raises(ReportAuditError, match="non-incremental"):
             fixture.run()
+        assert fixture.fake.calls == []
+        assert fixture.constructions == []
+        assert fixture.reduce.database.connection.execute(
+            "SELECT 1 FROM report_audit_runs WHERE report_run_id = 'report-1'"
+        ).fetchone() is None
+    finally:
+        fixture.reduce.database.close()
+
+
+def test_incremental_claim_relations_require_previous_run_binding_before_paid_audit(
+    tmp_path: Path,
+) -> None:
+    fixture = _audit_fixture(tmp_path)
+    claim = fixture.bundle.claims[0]
+    relation = {
+        "previous_claim_id": claim["claim_id"],
+        "current_claim_id": claim["claim_id"],
+        "relation_type": "same",
+        "reason": "The frozen claim is unchanged.",
+        "evidence_diff": {
+            "added_support": [],
+            "removed_support": [],
+            "added_contradiction": [],
+            "removed_contradiction": [],
+        },
+    }
+    fixture.bundle = replace(fixture.bundle, claim_relations=(relation,))
+    previous = {
+        "plan": fixture.bundle.plan,
+        "claims": fixture.bundle.claims,
+        "corpus_snapshot": fixture.bundle.corpus_snapshot,
+    }
+    try:
+        with pytest.raises(ReportAuditError, match="previous report_run_id"):
+            fixture.run(previous=previous)
+
         assert fixture.fake.calls == []
         assert fixture.constructions == []
         assert fixture.reduce.database.connection.execute(
