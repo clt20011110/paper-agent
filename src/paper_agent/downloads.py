@@ -245,6 +245,7 @@ class DownloadService:
         fetcher: Callable[[str], HTTPResponse],
         scope_membership: Callable[[str, str], bool] | None = None,
         clock: Callable[[], datetime] | None = None,
+        provider_fetchers: Mapping[str, Callable[[str], HTTPResponse]] | None = None,
     ) -> None:
         self.database = database
         self.artifact_store = artifact_store
@@ -257,6 +258,7 @@ class DownloadService:
         )
         self.scope_membership = scope_membership
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.provider_fetchers = dict(provider_fetchers or {})
         for provider, terms in self.provider_terms.items():
             if provider != terms.provider:
                 raise ValueError("provider terms registry keys must match provider names")
@@ -513,7 +515,7 @@ class DownloadService:
             )
 
         try:
-            response = self.fetcher(candidate.url)
+            response = self.provider_fetchers.get(request.provider, self.fetcher)(candidate.url)
         except (TimeoutError, OSError) as error:
             return self._finish_failure(
                 attempt_id,

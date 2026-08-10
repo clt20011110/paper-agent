@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Protocol
+from typing import Any, Protocol
 
 from .authorized_skill_runtime import (
     AuthorizedSkillDoctorResult,
     AuthorizedSkillRuntime,
     AuthorizedSkillRuntimeError,
 )
+from .codex_exec import CodexExecError
 from .downloads import AuthorizationContext, FetchRejected
 from .domain import (
     AccessLocationCandidate,
@@ -82,7 +83,13 @@ class LunaPlannerInput:
     reason_code: str
 
 
-LunaPlanner = Callable[[LunaPlannerInput], bool]
+class LunaPlannerResult(Protocol):
+    selected: bool
+    reason_code: str
+    invocation_metadata: Mapping[str, Any]
+
+
+LunaPlanner = Callable[[LunaPlannerInput], bool | LunaPlannerResult]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +115,7 @@ class Stage3Attempt:
     reason_code: str
     download_status: DownloadStatus | None = None
     fetch_request: FetchRequest | None = field(default=None, repr=False)
+    planner_metadata: Mapping[str, Any] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,18 +360,32 @@ class Stage3Pipeline:
         except (GrantError, OSError, ValueError) as error:
             return Stage3Attempt(candidate.candidate_id, "authorized_skill", FetchDecisionStatus.MANUAL.value, "authorized_grant_invalid:" + _reason(error))
         control = LunaPlannerInput(candidate.candidate_id, candidate.paper_id, candidate.host, public.status, public.reason_code)
+        planner_metadata = None
         if options.planner is not None:
             try:
-                if options.planner(control) is not True:
-                    return Stage3Attempt(candidate.candidate_id, "authorized_skill", FetchDecisionStatus.MANUAL.value, "authorized_skill_not_selected")
-            except (OSError, ValueError) as error:
+                planned = options.planner(control)
+                if isinstance(planned, bool):
+                    selected, planner_reason = planned, "authorized_skill_not_selected"
+                else:
+                    selected = planned.selected
+                    planner_reason = planned.reason_code
+                    planner_metadata = planned.invocation_metadata
+                if not selected:
+                    return Stage3Attempt(
+                        candidate.candidate_id, "authorized_skill", FetchDecisionStatus.MANUAL.value,
+                        planner_reason, planner_metadata=planner_metadata,
+                    )
+            except (CodexExecError, OSError, ValueError) as error:
                 return Stage3Attempt(candidate.candidate_id, "authorized_skill", FetchDecisionStatus.MANUAL.value, "authorized_planner_failed:" + _reason(error))
         context = ProbeContext(
             self.purpose, self.now, options.authorization_grant_id, options.mode,
             state.ready.installed_content_sha256, state.ready.dependency_lock_sha256,
             options.collection_id, options.collection_snapshot_hash, options.selection_snapshot_hash, self.run_id,
         )
-        return self._probe(candidate, provider="authorized_skill", context=context)
+        return replace(
+            self._probe(candidate, provider="authorized_skill", context=context),
+            planner_metadata=planner_metadata,
+        )
 
     def _skill_fetch_context(self, state: _SkillState) -> FetchContext:
         if state.ready is None:

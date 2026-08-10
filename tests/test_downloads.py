@@ -124,8 +124,9 @@ def service(
     provider_terms: ProviderTerms | None = None,
     scope_membership=None,
     clock=None,
+    provider_fetchers=None,
 ) -> DownloadService:
-    registry = {} if provider_terms is None else {"public_http": provider_terms}
+    registry = {} if provider_terms is None else {provider_terms.provider: provider_terms}
     return DownloadService(
         database,
         ArtifactStore(tmp_path / "store"),
@@ -134,7 +135,29 @@ def service(
         fetcher,
         scope_membership,
         clock or (lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))),
+        provider_fetchers,
     )
+
+
+def test_provider_specific_fetcher_keeps_authorized_skill_off_public_http(
+    database: Database, tmp_path: Path, policy: DownloadAccessPolicy,
+) -> None:
+    public = FakeFetcher(AssertionError("public fetcher must not receive authorized skill work"))
+    authorized = FakeFetcher(HTTPResponse(200, {"Content-Type": "application/pdf"}, valid_pdf(), "https://example.test/paper-1.pdf"))
+    authorized_terms = replace(terms(), provider="authorized_skill")
+    downloader = service(
+        database, tmp_path, policy, public, provider_terms=authorized_terms,
+        provider_fetchers={"authorized_skill": authorized},
+    )
+
+    decision = downloader.probe(
+        candidate(), purpose="personal_research", provider="authorized_skill", now=NOW,
+    )
+    result = downloader.fetch(decision.fetch_request, run_id="run-1", now=NOW)
+
+    assert result.status is DownloadStatus.DOWNLOADED
+    assert public.calls == []
+    assert authorized.calls == ["https://example.test/paper-1.pdf"]
 
 
 def valid_pdf() -> bytes:
