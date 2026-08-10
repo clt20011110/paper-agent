@@ -33,9 +33,16 @@ from .query_plan import (
     assert_runtime_matches,
     compile_query_plan,
 )
+from .report_cli_service import (
+    approve_report_plan_from_files,
+    compile_report_plan_from_files,
+    diff_report_runs,
+    verify_report_run,
+)
 from .repository import PaperRepository
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import Stage2ReleaseError, load_stage2_release
+from .stage2_commands import evaluate_benchmark_artifacts, filter_database
 from .search_audit import search_audit
 from .seed_import import import_seeds, inputs_from_files, validate_seed_inputs
 from .storage import Database
@@ -155,6 +162,52 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     crawl.add_argument("--snapshot", action="append", default=[], metavar="PROVIDER=PATH")
     crawl.add_argument("--stage2-release", type=Path, help="passed local Stage 2 release manifest")
     crawl.add_argument("--historical-replay", action="store_true")
+    filter_command = subcommands.add_parser(
+        "filter", help="screen canonical papers with an approved local Stage 2 release"
+    )
+    filter_command.add_argument("--plan", required=True, type=Path)
+    filter_command.add_argument("--stage2-release", type=Path)
+    filter_command.add_argument("--database", type=Path)
+    filter_command.add_argument("--campaign-id")
+    filter_command.add_argument("--paper-id", action="append", default=[])
+
+    benchmark = subcommands.add_parser(
+        "benchmark-stage2", help="evaluate frozen Stage 2 benchmark and soak records"
+    )
+    benchmark.add_argument("--manifest", required=True, type=Path)
+    benchmark.add_argument("--record", required=True, action="append", type=Path)
+    benchmark.add_argument("--soak-manifest", type=Path)
+    benchmark.add_argument("--soak-record", type=Path)
+
+    report = subcommands.add_parser(
+        "report", help="plan, approve, run, or compare Stage 4b reports"
+    )
+    report_mode = report.add_mutually_exclusive_group()
+    report_mode.add_argument("--plan-only", action="store_true")
+    report_mode.add_argument("--plan", type=Path)
+    report_mode.add_argument("--diff-from")
+    report.add_argument("--draft", type=Path)
+    report.add_argument("--corpus-snapshot", type=Path)
+    report.add_argument("--search-audit", type=Path)
+    report.add_argument("--output-root", type=Path)
+    report.add_argument("--report-run-id")
+    report_commands = report.add_subparsers(dest="report_command")
+    report_approve = report_commands.add_parser(
+        "approve", help="approve and persist a frozen ReportPlan bundle"
+    )
+    report_approve.add_argument("--plan", required=True, type=Path)
+    report_approve.add_argument("--hash", required=True)
+    report_approve.add_argument("--approved-by", required=True)
+    report_approve.add_argument("--approved-at")
+    report_approve.add_argument("--corpus-snapshot", required=True, type=Path)
+    report_approve.add_argument("--search-audit", required=True, type=Path)
+    report_approve.add_argument("--output-root", required=True, type=Path)
+
+    verify = subcommands.add_parser(
+        "verify-report", help="run deterministic gates over a published report"
+    )
+    verify.add_argument("--output-root", required=True, type=Path)
+    verify.add_argument("--report-run-id")
     import_command = subcommands.add_parser("import-seeds", help="import authorized library seeds")
     import_command.add_argument("--database", required=True, type=Path)
     import_command.add_argument("--seed", action="append", default=[])
@@ -249,12 +302,132 @@ def main(
                 historical_replay=args.historical_replay,
             )
         )
+    if args.command == "filter":
+        return _finish(args, _filter(args))
+    if args.command == "benchmark-stage2":
+        result = evaluate_benchmark_artifacts(
+            manifest_path=args.manifest,
+            record_paths=args.record,
+            soak_manifest_path=args.soak_manifest,
+            soak_record_path=args.soak_record,
+        )
+        return _finish(args, result, int(result["status"] != "passed"))
+    if args.command == "report":
+        return _finish(args, _report(args))
+    if args.command == "verify-report":
+        report_run_id = args.report_run_id or args.run_id
+        if report_run_id is None:
+            raise CliUsageError("verify-report requires --report-run-id or --run-id")
+        checklist = verify_report_run(args.output_root, report_run_id)
+        return _finish(args, {
+            "checks": checklist,
+            "command": "verify-report",
+            "report_run_id": report_run_id,
+            "status": "passed",
+        })
     if args.command == "import-seeds":
         return _finish(
             args,
             _import_seeds(args.database, args.seed, args.input, args.run_id, args.dry_run),
         )
     raise AssertionError(args.command)
+
+
+def _filter(args: argparse.Namespace) -> dict[str, Any]:
+    config = load_config(args.config) if args.config else None
+    database = _database_path(args.database, config, args.config)
+    release = args.stage2_release or _configured_stage2_release()
+    if release is None:
+        raise Stage2ReleaseError(
+            "filter requires --stage2-release or PAPER_AGENT_STAGE2_RELEASE"
+        )
+    plan = _load_json(args.plan)
+    campaign_id = args.campaign_id or args.run_id or f"filter-{plan['plan_id']}"
+    return filter_database(
+        plan_path=args.plan,
+        release_path=release,
+        database_path=database,
+        campaign_id=campaign_id,
+        paper_ids=args.paper_id,
+        dry_run=args.dry_run,
+    )
+
+
+def _report(args: argparse.Namespace) -> dict[str, Any]:
+    if args.report_command == "approve":
+        approved_at = args.approved_at or datetime.now(UTC).isoformat().replace(
+            "+00:00", "Z"
+        )
+        result = approve_report_plan_from_files(
+            args.plan,
+            args.corpus_snapshot,
+            args.search_audit,
+            args.output_root,
+            expected_hash=args.hash,
+            approved_by=args.approved_by,
+            approved_at=approved_at,
+            save_bundle=not args.dry_run,
+        )
+        return {
+            "command": "report.approve",
+            "path": str(result.path),
+            "plan_hash": result.plan["plan_hash"],
+            "plan_id": result.plan["plan_id"],
+            "status": "validated" if args.dry_run else "approved",
+            "write_performed": result.saved,
+        }
+    if args.plan_only:
+        required = {
+            "--draft": args.draft,
+            "--corpus-snapshot": args.corpus_snapshot,
+            "--search-audit": args.search_audit,
+            "--output-root": args.output_root,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise CliUsageError(
+                "report --plan-only requires " + ", ".join(missing)
+            )
+        result = compile_report_plan_from_files(
+            args.draft,
+            args.corpus_snapshot,
+            args.search_audit,
+            args.output_root,
+            save_draft=not args.dry_run,
+        )
+        return {
+            "command": "report.plan",
+            "draft_path": str(result.path),
+            "plan_hash": result.plan["plan_hash"],
+            "plan_id": result.plan["plan_id"],
+            "status": "validated" if args.dry_run else "draft",
+            "write_performed": result.saved,
+        }
+    if args.diff_from is not None:
+        if args.output_root is None:
+            raise CliUsageError("report --diff-from requires --output-root")
+        report_run_id = args.report_run_id or args.run_id
+        if report_run_id is None:
+            raise CliUsageError(
+                "report --diff-from requires --report-run-id or --run-id"
+            )
+        return {
+            "command": "report.diff",
+            "diff": diff_report_runs(
+                args.output_root, args.diff_from, report_run_id
+            ),
+            "previous_report_run_id": args.diff_from,
+            "report_run_id": report_run_id,
+            "status": "complete",
+        }
+    if args.plan is not None:
+        raise CliUsageError(
+            "report execution adapter is not configured yet; use --plan-only, approve, "
+            "--diff-from, or verify-report"
+        )
+    raise CliUsageError(
+        "report requires --plan-only, approve, --plan, or --diff-from"
+    )
 
 
 def entrypoint(argv: Sequence[str] | None = None) -> int:
@@ -1087,7 +1260,9 @@ def _command_from_argv(argv: Sequence[str]) -> str:
     if index >= len(argv):
         return "unknown"
     command = argv[index]
-    if command in {"grant", "search"} and index + 1 < len(argv):
+    if command in {"grant", "search", "report"} and index + 1 < len(argv):
+        if argv[index + 1].startswith("-"):
+            return command
         command = f"{command}.{argv[index + 1]}"
     return command
 
@@ -1095,6 +1270,10 @@ def _command_from_argv(argv: Sequence[str]) -> str:
 def _command_stage(command: str) -> str:
     if command.startswith(("search", "crawl", "import-seeds")):
         return "stage1"
+    if command.startswith(("filter", "benchmark-stage2")):
+        return "stage2"
+    if command.startswith(("report", "verify-report")):
+        return "stage4b"
     if command.startswith("grant"):
         return "authorization"
     return "system"
