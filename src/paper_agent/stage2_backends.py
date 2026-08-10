@@ -153,6 +153,19 @@ class RerankScore:
     raw_score: float
 
 
+class RerankBatchError(Stage2BackendError):
+    """A rerank request that preserved successful scores and isolated failures."""
+
+    def __init__(
+        self,
+        scores: Sequence[RerankScore],
+        failed_paper_ids: Sequence[str],
+    ) -> None:
+        self.scores = tuple(scores)
+        self.failed_paper_ids = tuple(failed_paper_ids)
+        super().__init__("oMLX rerank could not score every paper")
+
+
 class RerankerBackend(Protocol):
     backend_name: str
 
@@ -185,8 +198,41 @@ class OmlxRerankBackend:
             raise ValueError("reranker query is required")
         batches = [documents[index : index + self.document_batch_size] for index in range(0, len(documents), self.document_batch_size)]
         with ThreadPoolExecutor(max_workers=self.max_in_flight) as executor:
-            scored = list(executor.map(lambda batch: self._rerank_batch(query, batch), batches))
-        return tuple(score for batch in scored for score in batch)
+            outcomes = list(executor.map(lambda batch: self._rerank_with_downgrade(query, batch), batches))
+        scores = tuple(score for batch_scores, _ in outcomes for score in batch_scores)
+        failures = tuple(paper_id for _, paper_ids in outcomes for paper_id in paper_ids)
+        if failures:
+            raise RerankBatchError(scores, failures)
+        return scores
+
+    def _rerank_with_downgrade(
+        self,
+        query: str,
+        documents: Sequence[RerankInput],
+    ) -> tuple[tuple[RerankScore, ...], tuple[str, ...]]:
+        try:
+            return self._rerank_batch(query, documents), ()
+        except Stage2BackendError:
+            next_size = 32 if len(documents) > 32 else 16 if len(documents) > 16 else None
+            if next_size is not None:
+                outcomes = [
+                    self._rerank_with_downgrade(query, documents[index : index + next_size])
+                    for index in range(0, len(documents), next_size)
+                ]
+                return (
+                    tuple(score for scores, _ in outcomes for score in scores),
+                    tuple(paper_id for _, paper_ids in outcomes for paper_id in paper_ids),
+                )
+            if len(documents) == 1:
+                return (), (documents[0].paper_id,)
+            outcomes = [
+                self._rerank_with_downgrade(query, (document,))
+                for document in documents
+            ]
+            return (
+                tuple(score for scores, _ in outcomes for score in scores),
+                tuple(paper_id for _, paper_ids in outcomes for paper_id in paper_ids),
+            )
 
     def _rerank_batch(self, query: str, documents: Sequence[RerankInput]) -> tuple[RerankScore, ...]:
         payload = {

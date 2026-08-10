@@ -9,6 +9,7 @@ from paper_agent.domain import FilterStatus
 from paper_agent.stage2_backends import (
     AdjudicationDecision,
     AdjudicationInput,
+    RerankBatchError,
     RerankInput,
     RerankScore,
     Stage2BackendError,
@@ -30,6 +31,20 @@ class FakeReranker:
         if self.fail:
             raise Stage2BackendError("service unavailable")
         return tuple(RerankScore(item.paper_id, self.scores[item.paper_id]) for item in documents)
+
+
+@dataclass
+class PartiallyFailingReranker(FakeReranker):
+    failed_paper_ids: tuple[str, ...] = ()
+
+    def rerank(self, query: str, documents: Sequence[RerankInput]) -> tuple[RerankScore, ...]:
+        self.requests.append((query, tuple(documents)))
+        scores = tuple(
+            RerankScore(item.paper_id, self.scores[item.paper_id])
+            for item in documents
+            if item.paper_id not in self.failed_paper_ids
+        )
+        raise RerankBatchError(scores, self.failed_paper_ids)
 
 
 @dataclass
@@ -175,6 +190,30 @@ def test_stage2_backend_and_schema_failures_never_auto_exclude(tmp_path) -> None
         assert decisions[paper_id].status is FilterStatus.NEEDS_REVIEW
         assert decisions[paper_id].reason_code == "reranker_backend_failure"
     assert not adjudicator.requests
+    database.close()
+
+
+def test_stage2_preserves_successful_peers_when_reranker_isolates_failures(tmp_path) -> None:
+    database = _database(tmp_path)
+    reranker = PartiallyFailingReranker(
+        {"low": -2.0, "high": 3.0, "gray": 0.0, "missing": 3.0},
+        failed_paper_ids=("high",),
+    )
+    adjudicator = FakeAdjudicator({
+        "gray": AdjudicationDecision("gray", "relevant", 0.8, ("topic_match",), "kept", ("abstract",)),
+        "missing": AdjudicationDecision("missing", "relevant", 0.8, ("title_only",), "kept", ("title",)),
+    })
+    summary = Stage2Pipeline(database, reranker, adjudicator, _profile()).run(
+        "partial-rerank-failure", _papers()
+    )
+
+    decisions = {item.paper_id: item for item in summary.decisions}
+    assert decisions["high"].status is FilterStatus.NEEDS_REVIEW
+    assert decisions["high"].reason_code == "reranker_backend_failure"
+    assert decisions["low"].status is FilterStatus.IRRELEVANT
+    assert decisions["gray"].status is FilterStatus.RELEVANT
+    assert decisions["missing"].status is FilterStatus.RELEVANT
+    assert [request.paper_id for request in adjudicator.requests] == ["gray", "missing"]
     database.close()
 
 

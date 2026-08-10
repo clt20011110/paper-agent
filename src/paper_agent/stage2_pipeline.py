@@ -20,6 +20,7 @@ from .stage2_backends import (
     CascadeInput,
     CascadeRoute,
     DeterministicRuleDecision,
+    RerankBatchError,
     RerankInput,
     RerankerBackend,
     Stage2BackendError,
@@ -420,6 +421,11 @@ class Stage2Pipeline:
                     self.profile.query,
                     tuple(RerankInput(paper.paper_id, self.document(paper)) for paper in batch),
                 )
+            except RerankBatchError as error:
+                scores.update({item.paper_id: item.raw_score for item in error.scores})
+                failed = set(error.failed_paper_ids)
+                failures.extend(paper for paper in batch if paper.paper_id in failed)
+                continue
             except _FAILURES:
                 failures.extend(batch)
                 continue

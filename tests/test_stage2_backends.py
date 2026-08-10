@@ -14,6 +14,7 @@ from paper_agent.stage2_backends import (
     OmlxChatBackend,
     OmlxRerankBackend,
     OmlxResponse,
+    RerankBatchError,
     RerankInput,
     Stage2BackendError,
     StructuredOutputError,
@@ -80,11 +81,50 @@ def test_omlx_rerank_batches_documents_and_never_sends_unsupported_limits() -> N
 
 
 def test_omlx_rerank_rejects_incomplete_result_indexes() -> None:
-    transport = FakeTransport([_response({"results": [{"index": 0, "relevance_score": 0.1}]})])
+    transport = FakeTransport([
+        _response({"results": [{"index": 0, "relevance_score": 0.1}]}),
+        _response({"results": []}),
+        _response({"results": []}),
+    ])
     backend = OmlxRerankBackend("model", transport)
 
-    with pytest.raises(Stage2BackendError, match="result count"):
+    with pytest.raises(RerankBatchError, match="could not score"):
         backend.rerank("q", [RerankInput("p1", "one"), RerankInput("p2", "two")])
+
+
+def test_omlx_rerank_downgrades_64_to_32_to_16_and_isolates_one_failure() -> None:
+    class ResourceLimitedTransport:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def request(self, path: str, payload: dict[str, object]) -> OmlxResponse:
+            documents = payload["documents"]
+            assert isinstance(documents, list)
+            self.batch_sizes.append(len(documents))
+            if len(documents) > 16 or "bad" in documents:
+                return _response({"error": "capacity"}, status=503)
+            return _response({
+                "results": [
+                    {"index": index, "relevance_score": float(index)}
+                    for index in range(len(documents))
+                ]
+            })
+
+    transport = ResourceLimitedTransport()
+    backend = OmlxRerankBackend("model", transport, document_batch_size=64, max_in_flight=1)
+    documents = [
+        RerankInput(f"paper-{index:02d}", "bad" if index == 0 else f"document-{index}")
+        for index in range(64)
+    ]
+
+    with pytest.raises(RerankBatchError) as raised:
+        backend.rerank("q", documents)
+
+    assert transport.batch_sizes[:3] == [64, 32, 16]
+    assert raised.value.failed_paper_ids == ("paper-00",)
+    assert {score.paper_id for score in raised.value.scores} == {
+        f"paper-{index:02d}" for index in range(1, 64)
+    }
 
 
 def test_omlx_chat_uses_fixed_generation_and_structured_output_contract() -> None:
