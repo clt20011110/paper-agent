@@ -150,7 +150,7 @@ class DownloadStep:
 @dataclass(frozen=True, slots=True)
 class AnalyzeStep:
     step_id: str
-    selection: FileRef
+    selection: FileRef | StepOutputRef
     processing_grant_id: str | None
     policy: FileRef | None
     stage: StageKind = StageKind.ANALYZE
@@ -165,7 +165,8 @@ class AnalyzeStep:
         }
 
     def file_refs(self) -> tuple[FileRef, ...]:
-        return (self.selection, *((self.policy,) if self.policy else ()))
+        selection = (self.selection,) if isinstance(self.selection, FileRef) else ()
+        return (*selection, *((self.policy,) if self.policy else ()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,9 +242,15 @@ class WorkflowManifest:
                 self._validate_selection(step.selection, source, step.stage)
                 if source is None and preceding:
                     raise ValueError("workflow v2 download requires an upstream filter step")
-            elif step.stage in {StageKind.ANALYZE, StageKind.REPORT} and preceding:
+            elif isinstance(step, AnalyzeStep):
+                source = preceding.get(StageKind.DOWNLOAD)
+                self._validate_selection(step.selection, source, step.stage)
+                if source is None and preceding:
+                    raise ValueError("workflow v2 analyze requires an upstream download step")
+            elif isinstance(step, ReportStep) and preceding:
                 raise ValueError(
-                    "workflow v2 analyze/report lineage requires the version 2 upstream contract"
+                    "workflow report requires a separately approved frozen plan "
+                    "after the analysis workflow completes"
                 )
             preceding[step.stage] = step
 
@@ -1040,7 +1047,9 @@ def _step(value: object, root: Path, schema_version: str) -> StageSpec:
         _exact(value, {"id", "stage", "selection", "processing_grant_id", "policy"})
         return AnalyzeStep(
             step_id,
-            _file_ref(value["selection"], root, "analysis selection"),
+            _required_selection_ref(
+                value["selection"], root, "analysis selection", schema_version
+            ),
             _optional_text(value["processing_grant_id"], "processing_grant_id"),
             _optional_file_ref(value["policy"], root, "analysis policy"),
         )
@@ -1066,6 +1075,15 @@ def _snapshot(value: object, root: Path) -> SnapshotRef:
     if not isinstance(value["provider"], str) or not value["provider"]:
         raise ValueError("search snapshot provider is required")
     return SnapshotRef(value["provider"], _file_ref(value["file"], root, "search snapshot"))
+
+
+def _step_output_ref(value: object, label: str) -> StepOutputRef:
+    if not isinstance(value, dict) or set(value) != {"from_step"}:
+        raise ValueError(f"workflow {label} must be a step output reference")
+    from_step = value["from_step"]
+    if not isinstance(from_step, str) or not from_step:
+        raise ValueError(f"workflow {label} output reference is invalid")
+    return StepOutputRef(from_step)
 
 
 def _file_ref(value: object, root: Path, label: str) -> FileRef:
@@ -1096,10 +1114,7 @@ def _selection_ref(
     if value is None:
         return None
     if schema_version == "2" and isinstance(value, dict) and set(value) == {"from_step"}:
-        from_step = value["from_step"]
-        if not isinstance(from_step, str) or not from_step:
-            raise ValueError(f"workflow {label} output reference is invalid")
-        return StepOutputRef(from_step)
+        return _step_output_ref(value, label)
     return _file_ref(value, root, label)
 
 

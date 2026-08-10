@@ -45,6 +45,14 @@ UTC 时钟，CLI 不接受可回拨的 `--now`。
 于下一 stage 边界写入可恢复 checkpoint。等待 JSON 结果中的 `status` 再决定是否调用相同
 `--workflow` 和 `--workflow-run-id` 的 `resume`。
 
+schema version 2 可把 Analyze 精确绑定到当前 Download step，但完整动态链在 Analyze 结束。
+随后用这些子运行的精确 ID 执行 `report prepare-inputs`，人工完成 plan-only 与 approve，并将
+approved ReportPlan path/hash 固定到新 config，再启动独立的单阶段 Report workflow。ReportPlan
+要求 membership 与实际 corpus 完全一致，因此不能在 crawler 运行前把 Report 塞进同一 manifest；
+解析器会拒绝这种清单。Stage 4b 若在 `pipeline_runs=running` 时崩溃，workflow 会检查 reduce、
+audit 与 audit-shard 的子租约：仍有效时保持 blocked，无有效租约时允许相同冻结输入进入协调器的
+故障恢复逻辑。
+
 授权下载只在 CLI 已输出 `authorized_queue_path` 后交给 `download-authorized-papers`。生成该队列时
 需要有效 grant 及 `--authorized-skill-queue`、`--authorized-skill-output`、至少一个
 `--authorized-skill-root`；CLI 不启动或接管浏览器会话。报告执行则使用已批准的 ReportPlan bundle：

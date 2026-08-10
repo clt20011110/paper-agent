@@ -13,6 +13,7 @@ import yaml
 from paper_agent import cli
 from paper_agent.storage import Database
 from paper_agent.workflow import (
+    AnalyzeStep,
     DownloadStep,
     FileRef,
     FilterStep,
@@ -22,6 +23,7 @@ from paper_agent.workflow import (
     WorkflowManifest,
 )
 from paper_agent.workflow_adapters import (
+    AnalyzeStageAdapter,
     DownloadStageAdapter,
     FilterStageAdapter,
     SearchStageAdapter,
@@ -59,6 +61,7 @@ def _workflow_inputs(root: Path, database_path: Path) -> Path:
             SearchStep("search", plan, release, (), False),
             FilterStep("filter", plan, release, StepOutputRef("search")),
             DownloadStep("download", StepOutputRef("filter"), None, None, False),
+            AnalyzeStep("analyze", StepOutputRef("download"), None, None),
         ),
         root / "workflow.json",
         "2",
@@ -114,16 +117,57 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
         def run(self, **options: Any) -> SimpleNamespace:
             nonlocal pause_recovery_download
             run_id = options["run_id"]
+            assert options["filter_run_id"] == (
+                f"{run_id.replace(':download', ':filter')}:stage2"
+            )
             calls.append(("download", run_id))
             if run_id == "recovery:download" and pause_recovery_download:
                 pause_recovery_download = False
                 status = "incomplete"
             else:
                 status = "complete"
+            with Database(database_path) as database:
+                database.connection.execute(
+                    """INSERT INTO pipeline_runs(
+                           run_id, stage, status, input_hash, config_hash,
+                           implementation_version
+                       ) VALUES (?, 'stage-3-download', ?, 'download-input',
+                                 'download-config', 'test')
+                       ON CONFLICT(run_id) DO UPDATE SET status = excluded.status""",
+                    (run_id, status),
+                )
+                database.connection.commit()
             return SimpleNamespace(
                 run_id=run_id,
-                paper_ids=tuple(options["paper_ids"]),
+                paper_ids=("paper-e2e",),
                 status=status,
+                dry_run=options["dry_run"],
+            )
+
+    class FakeAnalysisService:
+        def run_from_stage3(
+            self, run_id: str, stage3_run_id: str, **options: Any
+        ) -> SimpleNamespace:
+            calls.append(("analyze", run_id))
+            assert stage3_run_id == run_id.replace(":analyze", ":download")
+            assert options["expected_paper_ids"] == ("paper-e2e",)
+            with Database(database_path) as database:
+                database.connection.execute(
+                    """INSERT INTO pipeline_runs(
+                           run_id, stage, status, input_hash, config_hash,
+                           implementation_version
+                       ) VALUES (?, 'stage4', 'complete', 'analysis-input',
+                                 'analysis-config', 'test')""",
+                    (run_id,),
+                )
+                database.connection.commit()
+            return SimpleNamespace(
+                run_id=run_id,
+                selected_paper_ids=("paper-e2e",),
+                input_scopes=("abstract",),
+                result=SimpleNamespace(
+                    papers=(SimpleNamespace(status="complete"),)
+                ),
                 dry_run=options["dry_run"],
             )
 
@@ -131,10 +175,14 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
         StageKind.SEARCH: SearchStageAdapter(search_runner),
         StageKind.FILTER: FilterStageAdapter(filter_runner),
         StageKind.DOWNLOAD: DownloadStageAdapter(lambda *_args: FakeDownloadService()),
+        StageKind.ANALYZE: AnalyzeStageAdapter(
+            lambda *_args, **_kwargs: FakeAnalysisService()
+        ),
     }
     assert isinstance(adapters[StageKind.SEARCH], SearchStageAdapter)
     assert isinstance(adapters[StageKind.FILTER], FilterStageAdapter)
     assert isinstance(adapters[StageKind.DOWNLOAD], DownloadStageAdapter)
+    assert isinstance(adapters[StageKind.ANALYZE], AnalyzeStageAdapter)
     monkeypatch.setattr(cli, "default_stage_adapters", lambda: adapters)
 
     def recursive_cli(*_args: Any, **_kwargs: Any) -> None:
@@ -156,7 +204,7 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
     assert first["status"] == "incomplete"
     assert first["event_code"] == "run.incomplete"
     assert [step["status"] for step in first["steps"]] == [
-        "complete", "complete", "incomplete",
+        "complete", "complete", "incomplete", "pending",
     ]
     assert calls == [
         ("search", "recovery:search"),
@@ -166,20 +214,22 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
 
     resumed = invoke("resume", "recovery", 0)
     assert resumed["status"] == "complete"
-    assert [step["status"] for step in resumed["steps"]] == ["complete"] * 3
+    assert [step["status"] for step in resumed["steps"]] == ["complete"] * 4
     assert calls == [
         ("search", "recovery:search"),
         ("filter", "recovery:filter"),
         ("download", "recovery:download"),
         ("download", "recovery:download"),
+        ("analyze", "recovery:analyze"),
     ]
 
     clean = invoke("run", "clean", 0)
     assert clean["status"] == "complete"
-    assert calls[-3:] == [
+    assert calls[-4:] == [
         ("search", "clean:search"),
         ("filter", "clean:filter"),
         ("download", "clean:download"),
+        ("analyze", "clean:analyze"),
     ]
 
     with Database(database_path, read_only=True) as database:
@@ -195,5 +245,5 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
             ).fetchall()
             assert [(row["child_run_id"], row["status"]) for row in steps] == [
                 (f"{run_id}:{stage}", "complete")
-                for stage in ("search", "filter", "download")
+                for stage in ("search", "filter", "download", "analyze")
             ]

@@ -98,6 +98,131 @@ def _service(database, store, factory, *, clock=None):
     )
 
 
+def _add_pipeline_run(
+    database: Database, run_id: str, *, stage: str, status: str
+) -> None:
+    database.connection.execute(
+        """INSERT INTO pipeline_runs(
+               run_id, stage, status, input_hash, config_hash, implementation_version
+           ) VALUES (?, ?, ?, ?, ?, 'fixture')""",
+        (run_id, stage, status, "4" * 64, "5" * 64),
+    )
+
+
+def _add_paper(
+    database: Database, paper_id: str, *, abstract: str | None = None
+) -> None:
+    database.connection.execute(
+        "INSERT INTO papers(paper_id, title, abstract) VALUES (?, ?, ?)",
+        (paper_id, f"Title for {paper_id}", abstract),
+    )
+
+
+def _add_downloaded_pdf(
+    database: Database,
+    store: ArtifactStore,
+    *,
+    run_id: str,
+    paper_id: str,
+    suffix: str,
+    text: str,
+) -> str:
+    artifact_id = f"pdf-{suffix}"
+    candidate_id = f"candidate-{suffix}"
+    fetch_request_id = f"fetch-{suffix}"
+    stored = store.put_bytes(
+        _pdf((text + " ") * 80),
+        mime_type="application/pdf",
+        metadata={"fixture": suffix},
+    )
+    database.connection.execute(
+        """INSERT INTO artifacts(
+               artifact_id, paper_id, artifact_kind, relative_path, mime_type,
+               byte_size, sha256, provenance_json
+           ) VALUES (?, ?, 'pdf', ?, 'application/pdf', ?, ?, '{}')""",
+        (
+            artifact_id,
+            paper_id,
+            stored.relative_path,
+            stored.size_bytes,
+            stored.artifact_hash,
+        ),
+    )
+    database.connection.execute(
+        """INSERT INTO download_candidates(
+               candidate_id, paper_id, resolver, url, host, license, access_basis,
+               retrieved_at, provenance_json
+           ) VALUES (?, ?, 'fixture', ?, 'example.test', 'CC-BY-4.0',
+                     'open_license', '2026-08-10T00:00:00Z', '{}')""",
+        (candidate_id, paper_id, f"https://example.test/{suffix}.pdf"),
+    )
+    database.connection.execute(
+        """INSERT INTO fetch_requests(
+               request_id, candidate_id, policy_version, policy_hash, purpose,
+               provider, created_at, expires_at, idempotency_key, fencing_token,
+               status
+           ) VALUES (?, ?, 'fixture', ?, 'personal_research', 'public_direct',
+                     '2026-08-10T00:00:00Z', '2026-08-11T00:00:00Z', ?, 0,
+                     'consumed')""",
+        (fetch_request_id, candidate_id, "6" * 64, f"key-{suffix}"),
+    )
+    database.connection.execute(
+        """INSERT INTO download_attempts(
+               download_attempt_id, run_id, candidate_id, provider,
+               fetch_request_id, result_status, artifact_id
+           ) VALUES (?, ?, ?, 'public_direct', ?, 'downloaded', ?)""",
+        (f"attempt-{suffix}", run_id, candidate_id, fetch_request_id, artifact_id),
+    )
+    return artifact_id
+
+
+def _add_old_text(
+    database: Database,
+    store: ArtifactStore,
+    *,
+    paper_id: str,
+    source_artifact_id: str,
+    suffix: str,
+) -> None:
+    stored = store.put_bytes(
+        f"OLD EXTRACTED TEXT MUST NEVER BE SELECTED {suffix}".encode(),
+        mime_type="text/plain",
+        metadata={"fixture": suffix},
+    )
+    artifact_id = f"text-{suffix}"
+    source_sha256 = database.connection.execute(
+        "SELECT sha256 FROM artifacts WHERE artifact_id = ?", (source_artifact_id,)
+    ).fetchone()[0]
+    database.connection.execute(
+        """INSERT INTO artifacts(
+               artifact_id, paper_id, artifact_kind, relative_path, mime_type,
+               byte_size, sha256, provenance_json
+           ) VALUES (?, ?, 'text', ?, 'text/plain', ?, ?, '{}')""",
+        (
+            artifact_id,
+            paper_id,
+            stored.relative_path,
+            stored.size_bytes,
+            stored.artifact_hash,
+        ),
+    )
+    database.connection.execute(
+        """INSERT INTO text_extractions(
+               extraction_id, paper_id, source_artifact_id, source_sha256,
+               output_artifact_id, extractor_name, extractor_version, page_count,
+               character_count, text_coverage, printable_ratio, status
+           ) VALUES (?, ?, ?, ?, ?, 'fixture', '1', 1, 40, 1.0, 1.0,
+                     'full_text_ready')""",
+        (
+            f"extraction-{suffix}",
+            paper_id,
+            source_artifact_id,
+            source_sha256,
+            artifact_id,
+        ),
+    )
+
+
 def test_stage3_artifact_without_processing_grant_never_constructs_codex(tmp_path) -> None:
     database, store = _prepared(tmp_path, license=None, access_basis="user_subscription")
     try:
@@ -221,5 +346,324 @@ def test_authorized_stage3_artifact_resume_does_not_repeat_codex(tmp_path) -> No
         assert first.result and first.result.for_paper("paper-1").status == "complete"
         assert second.result and second.result.for_paper("paper-1").resumed
         assert len(calls) == 1
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize(
+    ("stage", "status"),
+    (("stage-3-download", "running"), ("stage4", "complete")),
+)
+def test_run_from_stage3_only_accepts_complete_download_runs(
+    tmp_path: Path, stage: str, status: str
+) -> None:
+    database = Database(tmp_path / "papers.sqlite3")
+    database.migrate()
+    _add_pipeline_run(database, "stage3-source", stage=stage, status=status)
+    database.connection.commit()
+    factory_calls = 0
+
+    def forbidden_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("invalid Stage 3 lineage must fail before Codex")
+
+    try:
+        service = _service(
+            database, ArtifactStore(tmp_path / "store"), forbidden_factory
+        )
+        with pytest.raises(
+            ValueError, match="complete Stage 3 download run"
+        ):
+            service.run_from_stage3(
+                "analysis-run", "stage3-source", expected_paper_ids=()
+            )
+        assert factory_calls == 0
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM analysis_runs"
+        ).fetchone()[0] == 0
+    finally:
+        database.close()
+
+
+def test_run_from_stage3_rejects_missing_expected_checkpoints_before_codex(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "papers.sqlite3")
+    database.migrate()
+    _add_paper(database, "paper-1", abstract="One")
+    _add_paper(database, "paper-2", abstract="Two")
+    _add_pipeline_run(
+        database, "current-stage3", stage="stage-3-download", status="complete"
+    )
+    database.connection.execute(
+        """INSERT INTO stage3_paper_results(
+               run_id, paper_id, status, reason_code, updated_at
+           ) VALUES ('current-stage3', 'paper-1', 'not_available',
+                     'not_available', '2026-08-10T00:00:00Z')"""
+    )
+    database.connection.commit()
+    factory_calls = 0
+
+    def forbidden_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("incomplete Stage 3 lineage must fail before Codex")
+
+    try:
+        service = _service(
+            database, ArtifactStore(tmp_path / "store"), forbidden_factory
+        )
+        with pytest.raises(ValueError, match="checkpoints do not match"):
+            service.run_from_stage3(
+                "analysis-run",
+                "current-stage3",
+                expected_paper_ids=("paper-1", "paper-2"),
+            )
+        assert factory_calls == 0
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM analysis_runs"
+        ).fetchone()[0] == 0
+    finally:
+        database.close()
+
+
+def test_run_from_stage3_uses_only_this_runs_unique_downloaded_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(tmp_path / "papers.sqlite3")
+    database.migrate()
+    store = ArtifactStore(tmp_path / "store")
+    _add_paper(database, "paper-1", abstract="Fallback abstract")
+    _add_pipeline_run(
+        database, "old-stage3", stage="stage-3-download", status="complete"
+    )
+    _add_pipeline_run(
+        database, "current-stage3", stage="stage-3-download", status="complete"
+    )
+    old_pdf = _add_downloaded_pdf(
+        database,
+        store,
+        run_id="old-stage3",
+        paper_id="paper-1",
+        suffix="old",
+        text="OLD PDF MUST NEVER BE SELECTED",
+    )
+    _add_old_text(
+        database,
+        store,
+        paper_id="paper-1",
+        source_artifact_id=old_pdf,
+        suffix="old",
+    )
+    current_pdf = _add_downloaded_pdf(
+        database,
+        store,
+        run_id="current-stage3",
+        paper_id="paper-1",
+        suffix="current",
+        text="CURRENT RUN PDF",
+    )
+    _add_pipeline_run(
+        database, "later-stage3", stage="stage-3-download", status="complete"
+    )
+    database.connection.execute(
+        """INSERT INTO download_candidates(
+               candidate_id, paper_id, resolver, url, host, license, access_basis,
+               retrieved_at, provenance_json
+           ) VALUES ('candidate-later', 'paper-1', 'fixture',
+                     'https://later.example/paper.pdf', 'later.example', NULL,
+                     'user_subscription', '2026-08-10T01:00:00Z', '{}')"""
+    )
+    database.connection.execute(
+        """INSERT INTO fetch_requests(
+               request_id, candidate_id, policy_version, policy_hash, purpose,
+               provider, created_at, expires_at, idempotency_key, fencing_token,
+               status
+           ) VALUES ('fetch-later', 'candidate-later', 'fixture', ?,
+                     'personal_research', 'public_direct',
+                     '2026-08-10T01:00:00Z', '2026-08-11T01:00:00Z',
+                     'key-later', 0, 'consumed')""",
+        ("7" * 64,),
+    )
+    database.connection.execute(
+        """INSERT INTO download_attempts(
+               download_attempt_id, run_id, candidate_id, provider,
+               fetch_request_id, result_status, artifact_id, attempted_at
+           ) VALUES ('attempt-later', 'later-stage3', 'candidate-later',
+                     'public_direct', 'fetch-later', 'downloaded', ?,
+                     '2999-01-01T00:00:00Z')""",
+        (current_pdf,),
+    )
+    database.connection.execute(
+        """INSERT INTO stage3_paper_results(
+               run_id, paper_id, status, reason_code, updated_at
+           ) VALUES ('current-stage3', 'paper-1', 'downloaded', 'downloaded',
+                     '2026-08-10T00:00:00Z')"""
+    )
+    database.connection.commit()
+    captured = []
+
+    try:
+        service = _service(
+            database,
+            store,
+            lambda: (_ for _ in ()).throw(
+                AssertionError("dry-run must not construct Codex")
+            ),
+        )
+        decide = service.gate.decide
+
+        def capture(request, **options):
+            captured.append(request)
+            return decide(request, **options)
+
+        monkeypatch.setattr(service.gate, "decide", capture)
+        result = service.run_from_stage3(
+            "analysis-run",
+            "current-stage3",
+            expected_paper_ids=("paper-1",),
+            dry_run=True,
+        )
+
+        assert result.selected_paper_ids == ("paper-1",)
+        assert result.input_scopes == ("full_pdf",)
+        assert len(captured) == 1
+        assert captured[0].artifact == "normalized_text"
+        assert captured[0].license == "CC-BY-4.0"
+        assert captured[0].access_basis == "open_license"
+        assert captured[0].domain == "example.test"
+        normalized = (captured[0].normalized_text_bytes or b"").decode()
+        assert "CURRENT RUN PDF" in normalized
+        assert "OLD PDF MUST NEVER BE SELECTED" not in normalized
+        assert "OLD EXTRACTED TEXT MUST NEVER BE SELECTED" not in normalized
+    finally:
+        database.close()
+
+
+def test_run_from_stage3_terminal_outcomes_force_abstract_or_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(tmp_path / "papers.sqlite3")
+    database.migrate()
+    store = ArtifactStore(tmp_path / "store")
+    _add_paper(database, "paper-abstract", abstract="Current public abstract")
+    _add_paper(database, "paper-metadata")
+    _add_pipeline_run(
+        database, "old-stage3", stage="stage-3-download", status="complete"
+    )
+    _add_pipeline_run(
+        database, "current-stage3", stage="stage-3-download", status="complete"
+    )
+    for paper_id, suffix in (
+        ("paper-abstract", "old-abstract"),
+        ("paper-metadata", "old-metadata"),
+    ):
+        old_pdf = _add_downloaded_pdf(
+            database,
+            store,
+            run_id="old-stage3",
+            paper_id=paper_id,
+            suffix=suffix,
+            text=f"OLD PDF FOR {paper_id}",
+        )
+        _add_old_text(
+            database,
+            store,
+            paper_id=paper_id,
+            source_artifact_id=old_pdf,
+            suffix=suffix,
+        )
+    database.connection.executemany(
+        """INSERT INTO stage3_paper_results(
+               run_id, paper_id, status, reason_code, updated_at
+           ) VALUES ('current-stage3', ?, ?, ?, '2026-08-10T00:00:00Z')""",
+        (
+            ("paper-abstract", "not_available", "not_available"),
+            ("paper-metadata", "failed_terminal", "invalid_pdf"),
+        ),
+    )
+    database.connection.commit()
+    captured = []
+
+    try:
+        service = _service(
+            database,
+            store,
+            lambda: (_ for _ in ()).throw(
+                AssertionError("dry-run must not construct Codex")
+            ),
+        )
+        decide = service.gate.decide
+
+        def capture(request, **options):
+            captured.append(request)
+            return decide(request, **options)
+
+        monkeypatch.setattr(service.gate, "decide", capture)
+        result = service.run_from_stage3(
+            "analysis-run",
+            "current-stage3",
+            expected_paper_ids=("paper-abstract", "paper-metadata"),
+            dry_run=True,
+        )
+
+        assert result.selected_paper_ids == ("paper-abstract", "paper-metadata")
+        assert result.input_scopes == ("abstract_only", "metadata_only")
+        assert [(item.paper_id, item.artifact) for item in captured] == [
+            ("paper-abstract", "abstract"),
+            ("paper-metadata", "metadata"),
+        ]
+        assert all(item.normalized_text_bytes is None for item in captured)
+        assert all(item.pdf_bytes is None for item in captured)
+    finally:
+        database.close()
+
+
+def test_run_from_stage3_rejects_two_current_downloaded_artifacts_before_codex(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "papers.sqlite3")
+    database.migrate()
+    store = ArtifactStore(tmp_path / "store")
+    _add_paper(database, "paper-1", abstract="Fallback abstract")
+    _add_pipeline_run(
+        database, "current-stage3", stage="stage-3-download", status="complete"
+    )
+    for suffix in ("current-a", "current-b"):
+        _add_downloaded_pdf(
+            database,
+            store,
+            run_id="current-stage3",
+            paper_id="paper-1",
+            suffix=suffix,
+            text=suffix,
+        )
+    database.connection.execute(
+        """INSERT INTO stage3_paper_results(
+               run_id, paper_id, status, reason_code, updated_at
+           ) VALUES ('current-stage3', 'paper-1', 'downloaded', 'downloaded',
+                     '2026-08-10T00:00:00Z')"""
+    )
+    database.connection.commit()
+    factory_calls = 0
+
+    def forbidden_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("ambiguous Stage 3 lineage must fail before Codex")
+
+    try:
+        service = _service(database, store, forbidden_factory)
+        with pytest.raises(ValueError, match="exactly one available PDF artifact"):
+            service.run_from_stage3(
+                "analysis-run",
+                "current-stage3",
+                expected_paper_ids=("paper-1",),
+            )
+        assert factory_calls == 0
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM analysis_runs"
+        ).fetchone()[0] == 0
     finally:
         database.close()

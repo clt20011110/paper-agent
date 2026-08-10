@@ -121,8 +121,57 @@ class AnalysisCliService:
         """
         if not run_id:
             raise ValueError("run_id is required")
-        now = self.clock()
         inputs = self._inputs(manifest, extract=True, preview=dry_run)
+        return self._run_inputs(
+            run_id,
+            inputs,
+            processing_grant_id=processing_grant_id,
+            dry_run=dry_run,
+        )
+
+    def run_from_stage3(
+        self,
+        run_id: str,
+        stage3_run_id: str,
+        *,
+        expected_paper_ids: Sequence[str],
+        processing_grant_id: str | None = None,
+        dry_run: bool = False,
+    ) -> AnalysisServiceResult:
+        """Analyze one Stage 3 run only when all expected checkpoints are present."""
+        if not run_id or not stage3_run_id:
+            raise ValueError("run_id and stage3_run_id are required")
+        if isinstance(expected_paper_ids, (str, bytes)):
+            raise ValueError("expected Stage 3 paper IDs must be a sequence")
+        expected = tuple(expected_paper_ids)
+        if any(
+            not isinstance(paper_id, str) or not paper_id
+            for paper_id in expected
+        ):
+            raise ValueError("expected Stage 3 paper IDs must be non-empty strings")
+        if len(set(expected)) != len(expected):
+            raise ValueError("expected Stage 3 paper IDs must be unique")
+        inputs = self._stage3_inputs(
+            stage3_run_id,
+            expected_paper_ids=expected,
+            preview=dry_run,
+        )
+        return self._run_inputs(
+            run_id,
+            inputs,
+            processing_grant_id=processing_grant_id,
+            dry_run=dry_run,
+        )
+
+    def _run_inputs(
+        self,
+        run_id: str,
+        inputs: tuple[AnalysisInput, ...],
+        *,
+        processing_grant_id: str | None,
+        dry_run: bool,
+    ) -> AnalysisServiceResult:
+        now = self.clock()
         if dry_run:
             # The preview runs the same local extraction selection as execution
             # without persisting its derived artifact or constructing Codex.
@@ -162,6 +211,67 @@ class AnalysisCliService:
             run_id, False, tuple(item.paper_id for item in inputs),
             tuple(item.processing_request().input_scope for item in inputs), result,
         )
+
+    def _stage3_inputs(
+        self,
+        stage3_run_id: str,
+        *,
+        expected_paper_ids: Sequence[str],
+        preview: bool,
+    ) -> tuple[AnalysisInput, ...]:
+        run = self.database.connection.execute(
+            "SELECT stage, status FROM pipeline_runs WHERE run_id = ?",
+            (stage3_run_id,),
+        ).fetchone()
+        if run is None or tuple(run) != ("stage-3-download", "complete"):
+            raise ValueError("stage3_run_id must name a complete Stage 3 download run")
+        results = self.database.connection.execute(
+            """SELECT paper_id, status FROM stage3_paper_results
+               WHERE run_id = ? ORDER BY paper_id""",
+            (stage3_run_id,),
+        ).fetchall()
+        actual_paper_ids = tuple(str(result["paper_id"]) for result in results)
+        if actual_paper_ids != tuple(sorted(expected_paper_ids)):
+            raise ValueError(
+                "Stage 3 paper checkpoints do not match the expected selection"
+            )
+        inputs: list[AnalysisInput] = []
+        for result in results:
+            paper_id = str(result["paper_id"])
+            if result["status"] == "downloaded":
+                source = self._stage3_run_artifact(stage3_run_id, paper_id)
+            elif result["status"] in {"not_available", "failed_terminal"}:
+                source = self._paper(paper_id)
+            else:
+                raise ValueError("complete Stage 3 run contains a non-terminal paper result")
+            inputs.append(self._input_for(
+                source,
+                extract=True,
+                preview=preview,
+                download_run_id=(
+                    stage3_run_id if result["status"] == "downloaded" else None
+                ),
+            ))
+        return tuple(inputs)
+
+    def _stage3_run_artifact(self, stage3_run_id: str, paper_id: str):
+        rows = self.database.connection.execute(
+            """SELECT DISTINCT a.* FROM download_attempts da
+               JOIN download_candidates dc ON dc.candidate_id = da.candidate_id
+               JOIN artifacts a ON a.artifact_id = da.artifact_id
+               WHERE da.run_id = ? AND dc.paper_id = ?
+                 AND da.result_status = 'downloaded'
+                 AND a.paper_id = dc.paper_id AND a.artifact_kind = 'pdf'
+                 AND a.mime_type = 'application/pdf'
+                 AND a.processing_status = 'available'
+               ORDER BY a.artifact_id""",
+            (stage3_run_id, paper_id),
+        ).fetchall()
+        if len(rows) != 1:
+            raise ValueError(
+                "downloaded Stage 3 paper must bind exactly one available PDF artifact"
+            )
+        return rows[0]
 
     def _inputs(
         self, manifest: AnalysisInputManifest, *, extract: bool, preview: bool = False,
@@ -212,9 +322,18 @@ class AnalysisCliService:
             raise ValueError("stage3_artifact_id must reference an available downloaded PDF")
         return row
 
-    def _input_for(self, source: Any, *, extract: bool, preview: bool = False) -> AnalysisInput:
+    def _input_for(
+        self,
+        source: Any,
+        *,
+        extract: bool,
+        preview: bool = False,
+        download_run_id: str | None = None,
+    ) -> AnalysisInput:
         paper = self._paper(str(source["paper_id"]))
-        facts = self._facts(str(paper["paper_id"]), source)
+        facts = self._facts(
+            str(paper["paper_id"]), source, download_run_id=download_run_id
+        )
         if "artifact_id" not in source.keys():
             metadata = _metadata(paper)
             if paper["abstract"]:
@@ -263,7 +382,13 @@ class AnalysisCliService:
             raise ValueError(f"unknown canonical paper_id: {paper_id}")
         return row
 
-    def _facts(self, paper_id: str, source: Any) -> Mapping[str, str | None]:
+    def _facts(
+        self,
+        paper_id: str,
+        source: Any,
+        *,
+        download_run_id: str | None = None,
+    ) -> Mapping[str, str | None]:
         artifact_id = source["artifact_id"] if "artifact_id" in source.keys() else None
         row = self.database.connection.execute(
             """SELECT dc.license, dc.access_basis, dc.host FROM artifacts a
@@ -271,8 +396,9 @@ class AnalysisCliService:
                JOIN download_attempts da ON da.artifact_id = COALESCE(te.source_artifact_id, a.artifact_id)
                JOIN download_candidates dc ON dc.candidate_id = da.candidate_id
                WHERE a.artifact_id = ? AND da.result_status = 'downloaded'
+                 AND (? IS NULL OR da.run_id = ?)
                ORDER BY da.attempted_at DESC LIMIT 1""",
-            (artifact_id,),
+            (artifact_id, download_run_id, download_run_id),
         ).fetchone() if artifact_id else None
         return {
             "license": row["license"] if row else None,

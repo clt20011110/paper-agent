@@ -13,9 +13,11 @@ import pytest
 
 from paper_agent.storage import Database
 from paper_agent.workflow import (
+    AnalyzeStep,
     DownloadStep,
     FileRef,
     FilterStep,
+    ReportStep,
     SearchStep,
     SequentialWorkflowOrchestrator,
     StageIdentity,
@@ -188,6 +190,84 @@ def test_v2_requires_current_upstream_selection_and_explicit_download_flag(
                     "download", StepOutputRef("search"), None, None, False
                 ),
             ),
+            tmp_path / "workflow.json",
+            "2",
+        )
+
+
+def test_v2_analyze_must_select_the_current_download_output(tmp_path: Path) -> None:
+    config = tmp_path / "config.json"
+    selection = tmp_path / "selection.json"
+    analysis_selection = tmp_path / "analysis.json"
+    for path in (config, selection, analysis_selection):
+        path.write_text("{}", encoding="utf-8")
+    download = DownloadStep(
+        "download", _ref(selection), None, None, False
+    )
+
+    manifest = WorkflowManifest(
+        "download-analyze",
+        _ref(config),
+        (
+            download,
+            AnalyzeStep("analyze", StepOutputRef("download"), None, None),
+        ),
+        tmp_path / "workflow.json",
+        "2",
+    )
+    path = tmp_path / "workflow.json"
+    path.write_text(json.dumps(manifest.document()), encoding="utf-8")
+
+    loaded = load_workflow_manifest(path)
+    assert loaded.document() == manifest.document()
+    assert loaded.steps[-1].selection == StepOutputRef("download")
+
+    with pytest.raises(ValueError, match="analyze must select the current download"):
+        WorkflowManifest(
+            "static-analysis-selection",
+            _ref(config),
+            (
+                download,
+                AnalyzeStep("analyze", _ref(analysis_selection), None, None),
+            ),
+            path,
+            "2",
+        )
+
+    with pytest.raises(ValueError, match="analyze must select the current download"):
+        WorkflowManifest(
+            "wrong-analysis-source",
+            _ref(config),
+            (
+                download,
+                AnalyzeStep("analyze", StepOutputRef("filter"), None, None),
+            ),
+            path,
+            "2",
+        )
+
+
+def test_v2_report_requires_a_separately_approved_static_workflow(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.json"
+    selection = tmp_path / "selection.json"
+    report_plan = tmp_path / "report-plan.json"
+    corpus = tmp_path / "corpus.json"
+    audit = tmp_path / "audit.json"
+    for path in (config, selection, report_plan, corpus, audit):
+        path.write_text("{}", encoding="utf-8")
+    download = DownloadStep("download", _ref(selection), None, None, False)
+    analyze = AnalyzeStep("analyze", StepOutputRef("download"), None, None)
+    report = ReportStep(
+        "report", _ref(report_plan), _ref(corpus), _ref(audit), None, None, None
+    )
+
+    with pytest.raises(ValueError, match="separately approved frozen plan"):
+        WorkflowManifest(
+            "analysis-report",
+            _ref(config),
+            (download, analyze, report),
             tmp_path / "workflow.json",
             "2",
         )

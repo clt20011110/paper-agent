@@ -268,6 +268,38 @@ def test_repeat_run_reuses_consumed_fetch_request_and_stage2_selection(
     assert fetcher.calls == ["https://publisher.example/paper.pdf"]
 
 
+def test_resumed_download_backfills_missing_stage3_paper_checkpoint(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+    )
+    fetcher = Fetcher()
+    service = _service(tmp_path, database, fetcher, terms=_terms())
+
+    first = service.run(paper_ids=[paper_id])
+    database.connection.execute(
+        "DELETE FROM stage3_paper_results WHERE run_id = ? AND paper_id = ?",
+        (first.run_id, paper_id),
+    )
+    database.connection.commit()
+
+    resumed = service.run(paper_ids=[paper_id])
+
+    assert resumed.status == "complete"
+    assert resumed.run is not None
+    assert resumed.run.for_paper(paper_id).resumed is True
+    assert fetcher.calls == ["https://publisher.example/paper.pdf"]
+    checkpoint = database.connection.execute(
+        """SELECT status, reason_code FROM stage3_paper_results
+           WHERE run_id = ? AND paper_id = ?""",
+        (first.run_id, paper_id),
+    ).fetchone()
+    assert tuple(checkpoint) == ("downloaded", "downloaded")
+
+
 @pytest.mark.parametrize(
     ("http_status", "paper_status"),
     (

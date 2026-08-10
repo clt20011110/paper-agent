@@ -283,6 +283,8 @@ class Stage3DownloadService:
                 self.database, resolved_run_id, item, timestamp
             ),
         )
+        for item in result.papers:
+            _save_checkpoint(self.database, resolved_run_id, item, timestamp)
         complete = all(
             item.status in _TERMINAL_DOWNLOAD_STATUSES for item in result.papers
         )

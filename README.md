@@ -113,8 +113,9 @@ paper-agent resume --workflow /absolute/path/to/workflow.json \
 
 `schema_version: "1"` 只允许单阶段清单。多阶段必须使用 version 2，并通过
 `{"from_step":"..."}` 绑定本次 workflow 的上游结果；静态 selection 不能替代这一绑定。
-当前可连续运行 `search → filter → download`，例如 Filter 的 `selection` 写
-`{"from_step":"search"}`，Download 的 `selection` 写 `{"from_step":"filter"}`。
+当前可连续运行 `search → filter → download → analyze`。Filter、Download 与
+Analyze 的 `selection` 依次写 `{"from_step":"search"}`、
+`{"from_step":"filter"}` 和 `{"from_step":"download"}`。
 Download 还必须显式冻结 `include_needs_review`；默认建议为 `false`。空 Search 结果会保持
 为空，不会退化成筛选全库。`run --help` 只列命令参数；字段合同如下，未列字段会被拒绝：
 
@@ -123,11 +124,14 @@ Download 还必须显式冻结 `include_needs_review`；默认建议为 `false`�
 | `search` | `plan`、`stage2_release`、`snapshots`、`historical_replay` |
 | `filter` | `plan`、`stage2_release`、`selection`（单阶段为 `FileRef`；v2 链为 Search output ref） |
 | `download` | `selection`、`authorization_grant_id`、`provider_terms`；v2 另需 `include_needs_review` |
-| `analyze` | `selection`、`processing_grant_id`、`policy` |
+| `analyze` | `selection`（单阶段为 `FileRef`；v2 链为 Download output ref）、`processing_grant_id`、`policy` |
 | `report` | `plan`、`corpus_snapshot`、`search_audit`、`processing_grants`、`previous_report_run_id`、`policy` |
 
-Analyze 与 Report 的动态上游绑定仍受 ReportPlan 人工审批边界约束，暂时使用各自的单阶段
-version 1 清单。所有文件字段均为 `FileRef`，`snapshots` 元素为
+ReportPlan 必须在实际 corpus 和 Stage 4 结果产生后编译、人工批准；它的 paper membership
+不能在 crawler 运行前猜测。因此完整分析 workflow 在 Analyze 结束，随后用
+`report prepare-inputs` 生成精确输入，编译并批准 ReportPlan，再用冻结 approved plan、corpus、
+search audit 和已 pin plan path/hash 的 config 启动独立单阶段 Report workflow。多阶段 manifest
+中直接追加 Report 会被拒绝。所有文件字段均为 `FileRef`，`snapshots` 元素为
 `{"provider":"...","file":<FileRef>}`；可选字段也必须显式写成 `null`。收到 SIGINT/SIGTERM
 时，已在运行的 step 会先返回到自己的安全点，工作流仅在 step 边界 checkpoint 为可恢复状态。
 

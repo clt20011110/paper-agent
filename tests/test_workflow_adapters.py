@@ -21,13 +21,16 @@ from paper_agent.workflow import (
     ReportStep,
     SearchStep,
     SequentialWorkflowOrchestrator,
+    StageIdentity,
     StageKind,
     StepContext,
     StepObservation,
     StepOutputRef,
+    StepResultRef,
     WorkflowManifest,
 )
 from paper_agent.workflow_adapters import (
+    _report_dispatch_is_live,
     AnalyzeStageAdapter,
     DownloadStageAdapter,
     FilterStageAdapter,
@@ -59,6 +62,67 @@ def _context(tmp_path: Path, *, dry_run: bool = False) -> StepContext:
         child_run_id="workflow-7:step",
         dry_run=dry_run,
     )
+
+
+def _stage3_binding(run_id: str = "workflow-7:download") -> dict[str, str]:
+    return {
+        "run_id": run_id,
+        "stage": "stage-3-download",
+        "status": "complete",
+        "input_hash": "stage3-input",
+        "config_hash": "stage3-config",
+        "implementation_version": "stage3-test",
+    }
+
+
+def _analysis_context(
+    tmp_path: Path,
+    *,
+    payload: Mapping[str, Any] | None = None,
+) -> StepContext:
+    config = tmp_path / "config.json"
+    config.write_text("{}", encoding="utf-8")
+    return StepContext(
+        database_path=tmp_path / "papers.sqlite3",
+        config_path=config,
+        workflow_run_id="workflow-7",
+        child_run_id="workflow-7:analyze",
+        dry_run=False,
+        upstream_results=(
+            StepResultRef(
+                "download",
+                StageKind.DOWNLOAD,
+                "workflow-7:download",
+                "a" * 64,
+                payload
+                if payload is not None
+                else {
+                    "run_id": "workflow-7:download",
+                    "paper_ids": ["paper-current"],
+                    "_pipeline_binding": _stage3_binding(),
+                },
+            ),
+        ),
+    )
+
+
+def _insert_complete_stage3_binding(database: Database) -> None:
+    binding = _stage3_binding()
+    database.connection.execute(
+        """INSERT INTO pipeline_runs(
+               run_id, stage, status, input_hash, config_hash,
+               implementation_version
+           ) VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            binding["run_id"],
+            binding["stage"],
+            binding["status"],
+            binding["input_hash"],
+            binding["config_hash"],
+            binding["implementation_version"],
+        ),
+    )
+    database.connection.commit()
 
 
 def _insert_running_stage4(database: Database, run_id: str) -> None:
@@ -377,6 +441,218 @@ def test_v2_workflow_hands_exact_search_and_filter_outputs_to_download(
     assert download_calls[0]["include_needs_review"] is include_needs_review
 
 
+def test_v2_workflow_analyze_uses_the_exact_current_download_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config.json"
+    config.write_text("{}", encoding="utf-8")
+    database_path = tmp_path / "papers.sqlite3"
+    download_context = StepContext(
+        database_path=database_path,
+        config_path=config,
+        workflow_run_id="workflow-7",
+        child_run_id="workflow-7:download",
+        dry_run=False,
+    )
+    selection = _write(
+        tmp_path,
+        "download-selection.json",
+        {"schema_version": "1", "paper_ids": ["paper-current"]},
+    )
+    policy = _ref(ROOT / "policies" / "artifact-processing-v1.yaml")
+    analysis_calls: list[tuple[str, str, Mapping[str, Any]]] = []
+
+    analysis_config = {
+        "analysis": {
+            "workers": 8,
+            "allow_abstract_only": True,
+            "output_schema": "./schemas/paper-analysis.schema.json",
+        },
+    }
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: analysis_config,
+    )
+
+    @dataclass
+    class DownloadService:
+        database: Database
+
+        def run(self, **kwargs: Any) -> SimpleNamespace:
+            assert kwargs["run_id"] == "workflow-7:download"
+            binding = _stage3_binding(kwargs["run_id"])
+            self.database.connection.execute(
+                """INSERT INTO pipeline_runs(
+                       run_id, stage, status, input_hash, config_hash,
+                       implementation_version
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    binding["run_id"],
+                    binding["stage"],
+                    binding["status"],
+                    binding["input_hash"],
+                    binding["config_hash"],
+                    binding["implementation_version"],
+                ),
+            )
+            self.database.connection.commit()
+            return SimpleNamespace(
+                run_id=kwargs["run_id"],
+                paper_ids=("paper-current",),
+                status="complete",
+                dry_run=False,
+            )
+
+    download_adapter = DownloadStageAdapter(
+        lambda database, *_args: DownloadService(database)
+    )
+    download_spec = DownloadStep("download", selection, None, None, False)
+    download_outcome = download_adapter.execute(
+        download_context,
+        download_spec,
+        download_adapter.validate(download_context, download_spec),
+    )
+    assert download_outcome.payload["_pipeline_binding"] == _stage3_binding()
+
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_analysis_input_manifest",
+        lambda *_args: pytest.fail(
+            "dynamic analysis must not load a stale selection FileRef"
+        ),
+    )
+
+    @dataclass
+    class AnalysisService:
+        def run(self, *_args: Any, **_kwargs: Any) -> None:
+            pytest.fail("dynamic analysis must not call the static manifest API")
+
+        def run_from_stage3(
+            self,
+            run_id: str,
+            stage3_run_id: str,
+            **kwargs: Any,
+        ) -> SimpleNamespace:
+            analysis_calls.append((run_id, stage3_run_id, kwargs))
+            return SimpleNamespace(
+                run_id=run_id,
+                dry_run=False,
+                selected_paper_ids=("paper-current",),
+                input_scopes=("full_text",),
+                result=SimpleNamespace(
+                    papers=(SimpleNamespace(status="complete"),)
+                ),
+            )
+
+    analysis_context = _analysis_context(
+        tmp_path, payload=download_outcome.payload
+    )
+    analysis_adapter = AnalyzeStageAdapter(
+        lambda *_args, **_kwargs: AnalysisService()
+    )
+    analysis_spec = AnalyzeStep(
+        "analyze", StepOutputRef("download"), "processing-grant", policy
+    )
+    outcome = analysis_adapter.execute(
+        analysis_context,
+        analysis_spec,
+        analysis_adapter.validate(analysis_context, analysis_spec),
+    )
+
+    assert outcome.status == "complete"
+    assert analysis_calls == [
+        (
+            "workflow-7:analyze",
+            "workflow-7:download",
+            {
+                "expected_paper_ids": ("paper-current",),
+                "processing_grant_id": "processing-grant",
+                "dry_run": False,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("payload", "insert_current"),
+    [
+        (
+            {
+                "run_id": "workflow-7:download",
+                "paper_ids": ["paper-current"],
+                "_pipeline_binding": {
+                    **_stage3_binding(),
+                    "input_hash": "drifted-input",
+                },
+            },
+            True,
+        ),
+        (
+            {
+                "run_id": "workflow-7:download",
+                "paper_ids": ["paper-current"],
+            },
+            True,
+        ),
+        (
+            {
+                "run_id": "workflow-7:download",
+                "paper_ids": ["paper-current"],
+                "_pipeline_binding": _stage3_binding(),
+            },
+            False,
+        ),
+    ],
+    ids=("binding-drifted", "recorded-binding-missing", "current-run-missing"),
+)
+def test_v2_workflow_analyze_rejects_missing_or_drifted_download_binding_before_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: Mapping[str, Any],
+    insert_current: bool,
+) -> None:
+    context = _analysis_context(tmp_path, payload=payload)
+    database = Database(context.database_path)
+    database.migrate()
+    try:
+        if insert_current:
+            _insert_complete_stage3_binding(database)
+    finally:
+        database.close()
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {
+            "analysis": {
+                "workers": 8,
+                "allow_abstract_only": True,
+                "output_schema": "./schemas/paper-analysis.schema.json",
+            },
+        },
+    )
+    service_calls: list[str] = []
+
+    @dataclass
+    class AnalysisService:
+        def run(self, *_args: Any, **_kwargs: Any) -> None:
+            service_calls.append("run")
+
+        def run_from_stage3(self, *_args: Any, **_kwargs: Any) -> None:
+            service_calls.append("run_from_stage3")
+
+    adapter = AnalyzeStageAdapter(
+        lambda *_args, **_kwargs: AnalysisService()
+    )
+    policy = _ref(ROOT / "policies" / "artifact-processing-v1.yaml")
+    spec = AnalyzeStep(
+        "analyze", StepOutputRef("download"), None, policy
+    )
+
+    with pytest.raises(ValueError, match="binding"):
+        adapter.execute(context, spec, adapter.validate(context, spec))
+
+    assert service_calls == []
+
+
 def test_disabled_workflow_report_skips_before_bundle_policy_and_database(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -589,6 +865,82 @@ def test_running_stage4_with_expired_dispatch_is_safe_to_resume(tmp_path: Path) 
 
 def test_running_stage4_without_dispatch_is_safe_to_resume(tmp_path: Path) -> None:
     assert _observe_running_stage4(tmp_path, None) is StepObservation.SAFE_TO_RESUME
+
+
+@pytest.mark.parametrize(
+    "table",
+    ("report_reduce_nodes", "report_audit_steps", "report_audit_shard_steps"),
+)
+def test_report_live_dispatch_detection_covers_every_stage4b_queue(
+    table: str,
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        for name in (
+            "report_reduce_nodes",
+            "report_audit_steps",
+            "report_audit_shard_steps",
+        ):
+            connection.execute(
+                f"""CREATE TABLE {name}(
+                    report_run_id TEXT, status TEXT, lease_expires_at TEXT
+                )"""
+            )
+        connection.execute(
+            f"""INSERT INTO {table}(report_run_id, status, lease_expires_at)
+                VALUES ('workflow-7:step', 'running',
+                        '2026-08-11T00:05:00.000000Z')"""
+        )
+
+        assert _report_dispatch_is_live(
+            connection,
+            "workflow-7:step",
+            "2026-08-11T00:00:00.000000Z",
+        )
+        assert not _report_dispatch_is_live(
+            connection,
+            "workflow-7:step",
+            "2026-08-11T00:10:00.000000Z",
+        )
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    ("live", "expected"),
+    ((True, StepObservation.RUNNING), (False, StepObservation.SAFE_TO_RESUME)),
+)
+def test_running_stage4b_observation_uses_child_dispatch_leases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    live: bool,
+    expected: StepObservation,
+) -> None:
+    context = _context(tmp_path)
+    plan = _write(tmp_path, "report-plan.json", {})
+    corpus = _write(tmp_path, "corpus.json", {})
+    audit = _write(tmp_path, "audit.json", {})
+    spec = ReportStep("step", plan, corpus, audit, None, None, None)
+    database = Database(context.database_path)
+    database.migrate()
+    database.connection.execute(
+        """INSERT INTO pipeline_runs(
+               run_id, stage, status, input_hash, config_hash,
+               implementation_version
+           ) VALUES (?, 'stage4b', 'running', 'input', 'config', 'test')""",
+        (context.child_run_id,),
+    )
+    database.connection.commit()
+    database.close()
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters._report_dispatch_is_live",
+        lambda *_args: live,
+    )
+    adapter = ReportStageAdapter(
+        clock=lambda: datetime(2026, 8, 11, tzinfo=UTC)
+    )
+
+    assert adapter.observe(context, spec, adapter.validate(context, spec)) is expected
 
 
 def test_incomplete_and_uncheckpointed_complete_child_runs_are_safe_to_reconcile(

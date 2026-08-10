@@ -284,7 +284,7 @@ DownloadServiceFactory = Callable[[Database, Mapping[str, Any], Path, Path, Mapp
 class DownloadStageAdapter(_WorkflowAdapter):
     expected_type = DownloadStep
     stage = StageKind.DOWNLOAD
-    contract_version = "2"
+    contract_version = "3"
 
     def __init__(self, service_factory: DownloadServiceFactory | None = None) -> None:
         self.service_factory = service_factory or _download_service
@@ -330,12 +330,18 @@ class DownloadStageAdapter(_WorkflowAdapter):
                 run_id=context.child_run_id,
                 dry_run=context.dry_run,
             )
-        return StageOutcome(_outcome_status(str(result.status)), {
+        payload: dict[str, Any] = {
             "run_id": result.run_id,
             "paper_ids": list(result.paper_ids),
             "stage_status": result.status,
             "dry_run": result.dry_run,
-        })
+        }
+        binding = _pipeline_binding_document(
+            context, result.run_id, "stage-3-download"
+        )
+        if binding is not None:
+            payload["_pipeline_binding"] = binding
+        return StageOutcome(_outcome_status(str(result.status)), payload)
 
 
 AnalysisServiceFactory = Callable[..., Any]
@@ -351,7 +357,7 @@ class _AnalysisRuntime:
 class AnalyzeStageAdapter(_WorkflowAdapter):
     expected_type = AnalyzeStep
     stage = StageKind.ANALYZE
-    contract_version = "2"
+    contract_version = "3"
 
     def __init__(
         self,
@@ -364,7 +370,8 @@ class AnalyzeStageAdapter(_WorkflowAdapter):
 
     def _validate_dry_inputs(self, context: StepContext, spec: AnalyzeStep) -> None:
         config = load_config(context.config_path)
-        load_analysis_input_manifest(spec.selection.resolved_path)
+        if isinstance(spec.selection, FileRef):
+            load_analysis_input_manifest(spec.selection.resolved_path)
         runtime = _analysis_runtime(config, context.config_path)
         load_analysis_output_schema(runtime.output_schema_path)
         ArtifactProcessingPolicy.load(_policy_path(
@@ -396,7 +403,6 @@ class AnalyzeStageAdapter(_WorkflowAdapter):
         self, context: StepContext, spec: AnalyzeStep, identity: StageIdentity
     ) -> StageOutcome:
         del identity
-        manifest = load_analysis_input_manifest(spec.selection.resolved_path)
         config = load_config(context.config_path)
         runtime = _analysis_runtime(config, context.config_path)
         policy = ArtifactProcessingPolicy.load(_policy_path(
@@ -411,12 +417,24 @@ class AnalyzeStageAdapter(_WorkflowAdapter):
                 allow_abstract_only=runtime.allow_abstract_only,
                 output_schema_path=runtime.output_schema_path,
             )
-            result = service.run(
-                context.child_run_id,
-                manifest,
-                processing_grant_id=spec.processing_grant_id,
-                dry_run=context.dry_run,
-            )
+            if isinstance(spec.selection, FileRef):
+                result = service.run(
+                    context.child_run_id,
+                    load_analysis_input_manifest(spec.selection.resolved_path),
+                    processing_grant_id=spec.processing_grant_id,
+                    dry_run=context.dry_run,
+                )
+            else:
+                stage3_run_id, expected_paper_ids = _upstream_stage3_selection(
+                    context, spec.selection
+                )
+                result = service.run_from_stage3(
+                    context.child_run_id,
+                    stage3_run_id,
+                    expected_paper_ids=expected_paper_ids,
+                    processing_grant_id=spec.processing_grant_id,
+                    dry_run=context.dry_run,
+                )
         pipeline_status = _pipeline_status(context, "stage4", result.run_id)
         status = "validated" if result.dry_run else (
             "failed" if pipeline_status == "failed" else
@@ -425,14 +443,18 @@ class AnalyzeStageAdapter(_WorkflowAdapter):
         outcome_status = (
             "uncertain_terminal" if pipeline_status == "failed" else _outcome_status(status)
         )
-        return StageOutcome(outcome_status, {
+        payload: dict[str, Any] = {
             "run_id": result.run_id,
             "paper_ids": list(result.selected_paper_ids),
             "input_scopes": list(result.input_scopes),
             "stage_status": status,
             "pipeline_status": pipeline_status,
             "dry_run": result.dry_run,
-        })
+        }
+        binding = _pipeline_binding_document(context, result.run_id, "stage4")
+        if binding is not None:
+            payload["_pipeline_binding"] = binding
+        return StageOutcome(outcome_status, payload)
 
 
 ReportServiceFactory = Callable[
@@ -452,10 +474,16 @@ _WORKFLOW_REPORT_EXECUTION_MODE = "unattended"
 class ReportStageAdapter(_WorkflowAdapter):
     expected_type = ReportStep
     stage = StageKind.REPORT
-    contract_version = "2"
+    contract_version = "3"
 
-    def __init__(self, service_factory: ReportServiceFactory | None = None) -> None:
+    def __init__(
+        self,
+        service_factory: ReportServiceFactory | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.service_factory = service_factory or _report_service
+        self.clock = _trusted_clock(clock)
 
     def _validate_dry_inputs(self, context: StepContext, spec: ReportStep) -> None:
         config = load_config(context.config_path)
@@ -488,7 +516,15 @@ class ReportStageAdapter(_WorkflowAdapter):
         self, context: StepContext, spec: ReportStep, identity: StageIdentity
     ) -> StepObservation:
         del spec, identity
-        return self._observe_pipeline(context, "stage4b")
+
+        def running_dispatch_is_live(connection: sqlite3.Connection) -> bool:
+            return _report_dispatch_is_live(
+                connection, context.child_run_id, _ordered_timestamp(self.clock())
+            )
+
+        return self._observe_pipeline(
+            context, "stage4b", running_is_live=running_dispatch_is_live
+        )
 
     def execute(
         self, context: StepContext, spec: ReportStep, identity: StageIdentity
@@ -533,12 +569,18 @@ class ReportStageAdapter(_WorkflowAdapter):
                 previous=previous,
                 dry_run=context.dry_run,
             )
-        return StageOutcome(_outcome_status(str(result.status)), {
+        payload: dict[str, Any] = {
             "report_run_id": result.report_run_id,
             "stage_status": result.status,
             "dry_run": result.dry_run,
             "skipped": bool(getattr(result, "skipped", False)),
-        })
+        }
+        binding = _pipeline_binding_document(
+            context, result.report_run_id, "stage4b"
+        )
+        if binding is not None:
+            payload["_pipeline_binding"] = binding
+        return StageOutcome(_outcome_status(str(result.status)), payload)
 
 
 def default_stage_adapters() -> dict[StageKind, _WorkflowAdapter]:
@@ -693,6 +735,26 @@ def _upstream_filter_run(context: StepContext, reference: StepOutputRef) -> str:
     return run_ids[0]
 
 
+def _upstream_stage3_selection(
+    context: StepContext, reference: StepOutputRef
+) -> tuple[str, tuple[str, ...]]:
+    result = context.upstream(reference, StageKind.DOWNLOAD)
+    run_id = result.payload.get("run_id")
+    if not isinstance(run_id, str) or run_id != result.child_run_id:
+        raise ValueError("workflow download output has an invalid Stage 3 run ID")
+    paper_ids = result.payload.get("paper_ids")
+    if not isinstance(paper_ids, list) or any(
+        not isinstance(paper_id, str) or not paper_id for paper_id in paper_ids
+    ):
+        raise ValueError("workflow download output has invalid paper IDs")
+    if len(set(paper_ids)) != len(paper_ids):
+        raise ValueError("workflow download output has duplicate paper IDs")
+    _require_upstream_binding(
+        context, result.payload, run_id, "stage-3-download"
+    )
+    return run_id, tuple(paper_ids)
+
+
 def _pipeline_binding_document(
     context: StepContext, run_id: str, expected_stage: str
 ) -> dict[str, str] | None:
@@ -772,6 +834,28 @@ def _pipeline_status(context: StepContext, expected_stage: str, run_id: str) -> 
     if row is None or row["stage"] != expected_stage:
         return None
     return str(row["status"])
+
+
+def _report_dispatch_is_live(
+    connection: sqlite3.Connection, report_run_id: str, now: str
+) -> bool:
+    """Return whether any fenced Stage 4b model dispatch still owns a live lease."""
+    row = connection.execute(
+        """SELECT 1 FROM (
+               SELECT report_run_id, status, lease_expires_at
+               FROM report_reduce_nodes
+               UNION ALL
+               SELECT report_run_id, status, lease_expires_at
+               FROM report_audit_steps
+               UNION ALL
+               SELECT report_run_id, status, lease_expires_at
+               FROM report_audit_shard_steps
+           )
+           WHERE report_run_id = ? AND status = 'running'
+             AND lease_expires_at > ? LIMIT 1""",
+        (report_run_id, now),
+    ).fetchone()
+    return row is not None
 
 
 def _policy_path(

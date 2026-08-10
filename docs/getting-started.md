@@ -110,8 +110,8 @@ grant；全文及其受限派生物进入 Luna/Sol 前必须另有匹配的 proc
 ## 6. 可恢复 typed workflow（可选）
 
 当要把多个阶段串成一次可恢复运行时，创建 schema version 2 的 JSON workflow manifest，
-而不是把 CLI argv 写入文件。Filter 与 Download 的 `selection` 必须分别使用
-`{"from_step":"search"}` 与 `{"from_step":"filter"}`，Download 还要显式冻结
+而不是把 CLI argv 写入文件。Filter、Download 与 Analyze 的 `selection` 必须分别使用
+`{"from_step":"search"}`、`{"from_step":"filter"}` 与 `{"from_step":"download"}`，Download 还要显式冻结
 `include_needs_review`。version 1 仅用于单阶段清单。manifest 必须有 `schema_version`、
 `workflow_id`、config FileRef 和 typed steps；每个 FileRef
 只包含相对 manifest 目录的 `path` 与该文件的小写 SHA-256。最小 search step 的 JSON 和摘要生成
@@ -125,3 +125,9 @@ paper-agent --dry-run run --workflow /absolute/path/to/workflow.json \
 然后使用同一个 `--workflow`、数据库和 workflow run ID 执行或恢复。`resume` 也要求
 `--workflow`；它不会从一个裸 `--run-id` 推断输入。修改任何被引用文件后，旧 manifest 和旧 run
 都不再可恢复，必须生成并批准新的冻结输入。
+
+报告不能直接追加到这条动态链：ReportPlan 的 paper membership 只有在实际 corpus 和 Stage 4
+结果产生后才能冻结。Analyze 完成后，先运行 `report prepare-inputs`，再执行 plan-only 与人工批准；
+把 approved plan path/hash 固定到新的 config 后，以 approved plan、corpus snapshot 和 search audit
+创建独立的单阶段 Report workflow。这样不会为了恢复报告而修改原 workflow 的 FileRef，也不会
+把一次人工批准伪装成无人值守执行。
