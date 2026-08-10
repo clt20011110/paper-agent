@@ -1,0 +1,291 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import json
+from pathlib import Path
+from threading import Lock
+from typing import Any, Mapping
+
+import pytest
+
+from paper_agent.stage2_backends import OmlxResponse, ThresholdArtifact
+from paper_agent.stage2_benchmark import BenchmarkRunSpec, Stage2BenchmarkRunner
+from paper_agent.stage2_evaluation import BenchmarkEnvironment, PerformanceCase
+from paper_agent.stage2_pipeline import Stage2Paper, Stage2Profile
+from paper_agent.storage import Database
+
+
+@dataclass
+class StepClock:
+    value: float = 0.0
+    step: float = 0.01
+    lock: Lock = field(default_factory=Lock)
+
+    def __call__(self) -> float:
+        with self.lock:
+            self.value += self.step
+            return self.value
+
+
+@dataclass
+class FakeOmlxTransport:
+    malformed_chat_ids: frozenset[str] = frozenset()
+    fail_first_multi_rerank: bool = False
+    requests: list[tuple[str, Mapping[str, Any]]] = field(default_factory=list)
+    lock: Lock = field(default_factory=Lock)
+    _multi_rerank_failed: bool = False
+
+    def request(self, path: str, payload: Mapping[str, Any]) -> OmlxResponse:
+        with self.lock:
+            self.requests.append((path, payload))
+        if path == "/v1/rerank":
+            if self.fail_first_multi_rerank and len(payload["documents"]) > 1 and not self._multi_rerank_failed:
+                self._multi_rerank_failed = True
+                return OmlxResponse(503, b"{}")
+            scores = []
+            for index, document in enumerate(payload["documents"]):
+                title = document.splitlines()[0].removeprefix("Title: ")
+                score = -2.0 if title == "p-low" else 3.0
+                scores.append({"index": index, "relevance_score": score})
+            return OmlxResponse(200, json.dumps({"results": scores}).encode())
+        assert path == "/v1/chat/completions"
+        prompt = payload["messages"][-1]["content"]
+        paper_id = prompt.split("Paper ID: ", 1)[1].splitlines()[0]
+        if paper_id in self.malformed_chat_ids:
+            content = "not-json"
+        else:
+            content = json.dumps({
+                "paper_id": paper_id,
+                "decision": "relevant",
+                "score": 0.9,
+                "reason_codes": ["topic_match"],
+                "rationale": "The paper matches the frozen query.",
+                "evidence_fields": ["title"],
+            })
+        return OmlxResponse(200, json.dumps({
+            "choices": [{"message": {"content": content}}],
+        }).encode())
+
+
+def _profile() -> Stage2Profile:
+    return Stage2Profile(
+        query="frozen benchmark topic",
+        query_version="benchmark-topic-v1",
+        thresholds=ThresholdArtifact("threshold-v1", "fixture-reranker-lock", "raw_reranker_score", -1.0, 2.0),
+        reranker_model_id="fixture-reranker",
+        reranker_revision="reranker-revision",
+        adjudicator_model_id="fixture-qwen",
+        adjudicator_revision="qwen-revision",
+        token_bucket_width=10_000,
+        document_batch_size=16,
+        reranker_max_in_flight=1,
+        adjudicator_concurrency=2,
+    )
+
+
+def _papers() -> tuple[Stage2Paper, ...]:
+    return (
+        Stage2Paper("p-low", "p-low", "irrelevant material"),
+        Stage2Paper("p-high", "p-high", "strong topic match"),
+        Stage2Paper("p-gray", "p-gray", "forced performance route"),
+        Stage2Paper("p-missing", "p-missing", None),
+    )
+
+
+def _cases() -> tuple[PerformanceCase, ...]:
+    return tuple(
+        PerformanceCase(paper.paper_id, 100 + index, paper.abstract is None)
+        for index, paper in enumerate(_papers())
+    )
+
+
+def _environment() -> BenchmarkEnvironment:
+    return BenchmarkEnvironment(
+        machine_model="Apple Silicon M4 Max",
+        memory_gb=36,
+        macos_version="15.6",
+        omlx_version="0.5.7",
+        mlx_version="0.27.0",
+        power_mode="automatic",
+        background_load="isolated fixture",
+        batch_config={"document_batch_size": 16, "reranker_max_in_flight": 1, "adjudicator_concurrency": 2},
+        resident_model_instances={"fixture-reranker-lock": 1, "fixture-qwen-lock": 1},
+    )
+
+
+def _runner(tmp_path: Path, transport: FakeOmlxTransport) -> tuple[Database, Stage2BenchmarkRunner]:
+    database = Database(tmp_path / "benchmark.sqlite3")
+    database.migrate()
+    profile = _profile()
+    schema = json.loads(Path("schemas/filter-decision.schema.json").read_text())
+    runner = Stage2BenchmarkRunner.from_omlx(
+        database=database,
+        profile=profile,
+        transport=transport,
+        schema=schema,
+        environment=_environment(),
+        release_hash="release-fixture-hash",
+        clock=StepClock(),
+        rss_sampler=lambda: 2 * 1024 ** 3,
+        rss_scope="fixture_constant_rss",
+    )
+    return database, runner
+
+
+def test_performance_runner_executes_omlx_pipeline_and_writes_canonical_measurements(tmp_path) -> None:
+    transport = FakeOmlxTransport()
+    database, runner = _runner(tmp_path, transport)
+    spec = BenchmarkRunSpec.fixture(
+        kind="performance",
+        scenario="normal",
+        cases=_cases(),
+        stage2_config_hash=runner.profile.base_runtime_config_hash,
+        forced_qwen_pair_ids=("p-gray", "p-missing"),
+    )
+
+    record = runner.run(spec, _papers(), run_id="performance-fixture")
+    document = record.document()
+
+    assert {path for path, _ in transport.requests} == {"/v1/rerank", "/v1/chat/completions"}
+    assert document["case_count"] == 4
+    assert document["fixture_scale"] is True
+    assert document["duration_seconds"] > 0
+    assert document["p50_seconds"] <= document["p95_seconds"]
+    assert document["papers_per_second"] == pytest.approx(4 / document["duration_seconds"])
+    assert document["input_tokens_per_second"] == pytest.approx(sum(case.input_tokens for case in _cases()) / document["duration_seconds"])
+    assert document["peak_rss_bytes"] == 2 * 1024 ** 3
+    assert document["batch_concurrency"]["document_batch_size"] == 16
+    assert document["qwen_pair_ids"] == ["p-gray", "p-missing"]
+    assert document["qwen_share"] == 0.5
+    assert document["frozen_qwen_routing_matches"] is True
+    assert document["request_count"] == 4
+    assert document["request_count_unit"] == "manifest_case"
+    assert document["pair_attempt_count"] == 6
+    assert document["sqlite_commit_count"] == 4
+    assert document["sqlite_commit_unit"] == "persisted_filter_decision"
+    assert document["resume_verified"] is True
+    assert document["resume_model_call_count"] == 0
+    assert document["resumed_pair_count"] == 4
+    assert document["release_hash"] == "release-fixture-hash"
+    assert document["observed_stage2_config_hash"] == runner.profile.base_runtime_config_hash
+    assert document["full_profile_hash"] == runner.profile.full_profile_hash
+    with pytest.raises(ValueError, match="fixture-scale"):
+        record.as_performance_record()
+
+    artifact = tmp_path / "artifacts" / "performance.json"
+    record.write(artifact)
+    assert artifact.read_bytes() == record.canonical_bytes()
+    assert json.loads(artifact.read_bytes())["input_hash"] == document["input_hash"]
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM filter_decisions WHERE run_id = 'performance-fixture'"
+    ).fetchone()[0] == 4
+    gray_reason = json.loads(database.connection.execute(
+        "SELECT reason FROM filter_decisions WHERE run_id = 'performance-fixture' AND paper_id = 'p-gray'"
+    ).fetchone()[0])
+    assert gray_reason["reason_code"].startswith("performance_manifest_forced_qwen:")
+    database.close()
+
+
+def test_runner_measures_terminal_schema_failure_and_fail_closed_resume(tmp_path) -> None:
+    transport = FakeOmlxTransport(frozenset({"p-gray"}))
+    database, runner = _runner(tmp_path, transport)
+    spec = BenchmarkRunSpec.fixture(
+        kind="performance",
+        scenario="stress",
+        cases=_cases(),
+        stage2_config_hash=runner.profile.base_runtime_config_hash,
+        forced_qwen_pair_ids=("p-gray", "p-missing"),
+    )
+
+    record = runner.run(spec, _papers(), run_id="failure-fixture").document()
+
+    assert record["backend_failed_call_count"] == 2
+    assert record["failed_request_count"] == 1
+    assert record["failed_request_pair_ids"] == ["p-gray"]
+    assert "p-gray" in record["needs_review_pair_ids"]
+    assert "p-gray" not in record["completed_pair_ids"]
+    assert set(record["completed_pair_ids"]) | set(record["needs_review_pair_ids"]) == {
+        paper.paper_id for paper in _papers()
+    }
+    assert record["request_count"] == 4
+    assert record["pair_attempt_count"] == 7
+    assert record["request_failure_rate"] == 0.25
+    assert record["resume_verified"] is True
+    database.close()
+
+
+def test_soak_fixture_uses_the_same_measured_runner_without_weakening_production_scale(tmp_path) -> None:
+    transport = FakeOmlxTransport()
+    database, runner = _runner(tmp_path, transport)
+    spec = BenchmarkRunSpec.fixture(
+        kind="soak",
+        cases=_cases(),
+        stage2_config_hash=runner.profile.base_runtime_config_hash,
+    )
+
+    record = runner.run(spec, _papers(), run_id="soak-fixture")
+
+    assert record.document()["kind"] == "soak"
+    assert record.document()["scenario"] is None
+    assert record.document()["sqlite_commit_count"] == 4
+    with pytest.raises(ValueError, match="fixture-scale"):
+        record.as_soak_record()
+    with pytest.raises(ValueError, match="exactly 1,000"):
+        BenchmarkRunSpec(
+            kind="performance",
+            scenario="normal",
+            manifest_hash="manifest",
+            corpus_hash="corpus",
+            stage2_config_hash=runner.profile.base_runtime_config_hash,
+            model_lock_hashes=("reranker", "qwen"),
+            threshold_artifact_hashes=("threshold",),
+            output_token_limit=256,
+            cases=_cases(),
+        )
+    database.close()
+
+
+def test_omlx_transport_probe_measures_reranker_batch_downgrades(tmp_path) -> None:
+    transport = FakeOmlxTransport(fail_first_multi_rerank=True)
+    database, runner = _runner(tmp_path, transport)
+    spec = BenchmarkRunSpec.fixture(
+        kind="performance",
+        scenario="normal",
+        cases=_cases(),
+        stage2_config_hash=runner.profile.base_runtime_config_hash,
+        forced_qwen_pair_ids=("p-gray", "p-missing"),
+    )
+
+    record = runner.run(spec, _papers(), run_id="fallback-fixture").document()
+
+    assert record["reranker_fallback_measurement_available"] is True
+    assert record["reranker_fallback_count"] == 4
+    assert record["service_request_count"] >= 5
+    assert record["service_failed_request_count"] == 1
+    assert record["service_request_failure_rate"] == pytest.approx(
+        1 / record["service_request_count"]
+    )
+    assert record["request_count"] == 4
+    assert record["failed_request_count"] == 0
+    assert record["request_failure_rate"] == 0
+    assert record["service_pair_attempt_count"] > record["pair_attempt_count"]
+    assert record["latency_by_path"]["reranker"]["sample_count"] == 5
+    database.close()
+
+
+def test_runner_rejects_input_drift_before_warmup(tmp_path) -> None:
+    transport = FakeOmlxTransport()
+    database, runner = _runner(tmp_path, transport)
+    cases = list(_cases())
+    cases[-1] = PerformanceCase("p-missing", cases[-1].input_tokens, False)
+    spec = BenchmarkRunSpec.fixture(
+        kind="soak",
+        cases=cases,
+        stage2_config_hash=runner.profile.base_runtime_config_hash,
+    )
+
+    with pytest.raises(ValueError, match="missing-abstract"):
+        runner.run(spec, _papers(), run_id="drift-fixture")
+
+    assert transport.requests == []
+    database.close()
