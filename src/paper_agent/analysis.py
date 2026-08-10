@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
+from .analysis_registry import AnalysisNormalizationRegistry
 from .artifacts import ArtifactStore
 from .canonical import content_hash
 from .codex_exec import CodexExec, CodexExecRequest, CodexExecResult, InvocationMetadata
@@ -28,7 +29,7 @@ from .storage import Database
 ANALYSIS_PROFILE = "stage4_analysis_luna"
 ANALYSIS_SCHEMA = "paper-analysis.schema.json"
 ANALYSIS_PROMPT = "paper-analysis.md"
-IMPLEMENTATION_VERSION = "phase5-stage4-v1"
+IMPLEMENTATION_VERSION = "phase5-stage4-v2"
 
 
 class AnalysisValidationError(ValueError):
@@ -140,12 +141,14 @@ class PaperAnalysisCoordinator:
         gate: ProcessingGate,
         *,
         invoker_factory: Callable[[], AnalysisInvoker] = CodexExec,
+        normalization_registry: AnalysisNormalizationRegistry | None = None,
         implementation_version: str = IMPLEMENTATION_VERSION,
     ) -> None:
         self.database = database
         self.artifact_store = artifact_store
         self.gate = gate
         self.invoker_factory = invoker_factory
+        self.normalization_registry = normalization_registry or AnalysisNormalizationRegistry.load()
         self.implementation_version = implementation_version
         root = schema_directory()
         self.schema = json.loads((root / ANALYSIS_SCHEMA).read_text(encoding="utf-8"))
@@ -154,6 +157,7 @@ class PaperAnalysisCoordinator:
         self.config_hash = content_hash({
             "profile": ANALYSIS_PROFILE, "model": "gpt-5.6-luna", "prompt_hash": self.prompt_hash,
             "schema_hash": self.schema_hash, "implementation_version": implementation_version,
+            "normalization_registry": self.normalization_registry.registry_hash,
         })
 
     def run(
@@ -253,11 +257,10 @@ class PaperAnalysisCoordinator:
                 schema_name=ANALYSIS_SCHEMA, prompt_name=ANALYSIS_PROMPT, input_hash=sent_hash,
             ))
             metadata = result.metadata
-            self._validate_output(
+            analysis_output = self._validate_output(
                 result.output, paper.paper_id, request.artifact_hash, request.input_scope, created_at, metadata,
             )
-            analysis_output = result.output
-            return result
+            return CodexExecResult(analysis_output, metadata)
 
         try:
             dispatched = self.gate.dispatch(
@@ -276,7 +279,7 @@ class PaperAnalysisCoordinator:
     def _validate_output(
         self, output: Mapping[str, Any], paper_id: str, artifact_hash: str, input_scope: str,
         created_at: str, metadata: InvocationMetadata,
-    ) -> None:
+    ) -> Mapping[str, Any]:
         try:
             validate(output, ANALYSIS_SCHEMA)
         except SchemaValidationError as error:
@@ -288,16 +291,26 @@ class PaperAnalysisCoordinator:
         }
         if any(output[key] != value for key, value in bindings.items()):
             raise AnalysisValidationError("analysis output does not match its paper/artifact/model/prompt/schema binding")
-        for unit in output["evidence_units"]:
+        normalized = self.normalization_registry.normalize_analysis(output)
+        try:
+            validate(normalized, ANALYSIS_SCHEMA)
+        except SchemaValidationError as error:
+            raise AnalysisValidationError(str(error)) from error
+        for unit in normalized["evidence_units"]:
             self._validate_evidence_unit(unit, input_scope)
-        self._validate_label_evidence(output, input_scope)
+        self._validate_label_evidence(normalized, input_scope)
         if input_scope != "full_pdf":
-            if output["comparison_eligibility"] != "not_comparable" or "full_text" not in output["missing_fields"]:
+            if normalized["comparison_eligibility"] != "not_comparable" or "full_text" not in normalized["missing_fields"]:
                 raise AnalysisValidationError("abstract_only and metadata_only analyses must disclose missing full text")
+        return normalized
 
     @staticmethod
     def _validate_evidence_unit(unit: Mapping[str, Any], input_scope: str) -> None:
-        needed = ("task_id", "dataset_id", "metric_id", "metric_definition_hash", "unit", "protocol_id", "protocol_hash", "baseline_id")
+        needed = (
+            "task_id", "dataset_id", "dataset_version", "split_id", "metric_id",
+            "metric_definition_hash", "unit", "protocol_id", "protocol_hash", "baseline_id",
+            "baseline_version", "source_value", "normalization_method", "normalizer_version",
+        )
         absent = [name for name in needed if unit[name] is None]
         if unit["comparison_eligibility"] == "comparable":
             if absent or unit["missing_fields"] or not isinstance(unit["value"], (int, float)):
@@ -373,6 +386,10 @@ class PaperAnalysisCoordinator:
             metadata_document["processing_decision"] = _decision_json(decision)
         if metadata is not None:
             metadata_document["invocation"] = asdict(metadata)
+        metadata_document["normalization_registry"] = {
+            "version": self.normalization_registry.version,
+            "registry_hash": self.normalization_registry.registry_hash,
+        }
         if error is not None:
             metadata_document["failure"] = dict(error)
         artifact_id = None

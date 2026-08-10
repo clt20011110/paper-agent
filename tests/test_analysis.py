@@ -36,6 +36,7 @@ class FakeInvoker:
     coordinator: PaperAnalysisCoordinator
     fail: bool = False
     calls: list[object] | None = None
+    evidence_unit: dict | None = None
 
     def invoke(self, request):
         assert self.calls is not None
@@ -56,9 +57,9 @@ class FakeInvoker:
             "topic_relevance": "Relevant", "labels": {
                 "subquestion": [], "theme": [], "method_family": [], "task": [], "dataset": [], "benchmark": [],
                 "evidence_type": [], "publication_status": "unknown", "study_setting": "other",
-            }, "label_evidence": [], "evidence_units": [],
-            "comparison_eligibility": "not_comparable",
-            "missing_fields": ["full_text"] if payload["input_scope"] != "full_pdf" else ["comparison_evidence"],
+            }, "label_evidence": [], "evidence_units": [self.evidence_unit] if self.evidence_unit else [],
+            "comparison_eligibility": "comparable" if self.evidence_unit else "not_comparable",
+            "missing_fields": ["full_text"] if payload["input_scope"] != "full_pdf" else ([] if self.evidence_unit else ["comparison_evidence"]),
         }
         metadata = InvocationMetadata(
             "fake-id", "stage4_analysis_luna", "gpt-5.6-luna", "medium",
@@ -119,6 +120,46 @@ def test_authorized_output_is_bound_persisted_and_resume_skips_model(tmp_path: P
         ).fetchone()[0]
         assert "# 论文分析：one" in coordinator.artifact_store.read_bytes(markdown_sha).decode("utf-8")
         assert database.connection.execute("SELECT status FROM pipeline_runs").fetchone()[0] == "complete"
+    finally:
+        database.close()
+
+
+def test_authorized_output_is_registry_normalized_before_persistence(tmp_path: Path) -> None:
+    calls: list[object] = []
+    holder: dict[str, PaperAnalysisCoordinator] = {}
+    evidence = {
+        "claim": "ResNet-50 reached 91% accuracy.", "direction": "support",
+        "task_id": "image_classification", "dataset_id": "mnist", "dataset_version": "original",
+        "split_id": "test", "metric_id": "accuracy",
+        "metric_definition_hash": "677b87be65f571cd1027701cdc332cb607d8558e258f5de6431e34433742fab0",
+        "unit": "ratio", "optimization_direction": "maximize", "value": 91.0,
+        "uncertainty": None, "statistical_method": None, "protocol_id": "official_test",
+        "protocol_hash": "aa15debef3444b8ee215dd6043eaf89a00af76145ff2cfbf2a5f01bd6b67a9c3",
+        "sample_size": 10000, "baseline_id": "resnet50", "baseline_version": "torchvision",
+        "conditions": [
+            "source_task=image classification", "source_dataset=MNIST", "source_metric=accuracy",
+            "source_baseline=ResNet-50", "source_protocol=official test split", "source_unit=percent",
+        ],
+        "locator": {"kind": "page", "value": "7"},
+        "normalization_method": "model_candidate", "normalizer_version": "model_candidate",
+        "source_value": 91.0, "comparison_eligibility": "comparable", "missing_fields": [],
+    }
+    database, coordinator = _coordinator(
+        tmp_path, lambda: FakeInvoker(holder["coordinator"], calls=calls, evidence_unit=evidence),
+    )
+    holder["coordinator"] = coordinator
+    try:
+        result = coordinator.run("run-normalized", [AnalysisInput(
+            "one", "CC-BY-4.0", "open_license", normalized_text="normalized paper",
+        )])
+
+        unit = result.for_paper("one").output["evidence_units"][0]
+        assert unit["value"] == 0.91
+        assert unit["normalizer_version"] == "analysis-normalization-v1"
+        metadata = json.loads(database.connection.execute(
+            "SELECT invocation_metadata_json FROM analysis_runs",
+        ).fetchone()[0])
+        assert metadata["normalization_registry"]["registry_hash"] == coordinator.normalization_registry.registry_hash
     finally:
         database.close()
 
