@@ -51,11 +51,13 @@ from .report_plan import (
 from .reporting import (
     PAPER_MARKER,
     AnalysisRecord,
+    CorpusEvidenceAllowlist,
     ReduceNode,
     ReducePlan,
     ReportPlanner,
     SectionRule,
     SynthesisValidator,
+    corpus_evidence_allowlist,
 )
 from .schema import SchemaValidationError, schema_directory, validate
 from .storage import Database
@@ -70,7 +72,7 @@ STAGE4_SCHEMA = "paper-analysis.schema.json"
 STAGE4_PROMPT = "paper-analysis.md"
 STAGE4_MAX_RETRIES = FROZEN_PROFILES[STAGE4_PROFILE].max_retries
 PURPOSE = "research_synthesis"
-IMPLEMENTATION_VERSION = "stage4b-reduce-v1"
+IMPLEMENTATION_VERSION = "stage4b-reduce-v2"
 DERIVED_KINDS = frozenset({"analysis", "evidence", "claim_ledger", "report_draft"})
 PROMPT_TOKEN_ESTIMATOR = "utf8-byte-upper-bound-v1"
 OUTPUT_BYTES_PER_ESTIMATED_TOKEN = 15
@@ -347,6 +349,7 @@ class SolReduceCoordinator:
             corpus_snapshot=corpus_snapshot,
             search_audit_pack=search_audit_pack,
         )
+        corpus_evidence = corpus_evidence_allowlist(search_audit_pack)
         chunks = {chunk.node_id: chunk for chunk in reduce_plan.chunks}
         sources = self._source_map(chunks, source_artifacts, corpus_snapshot)
         self._verify_canonical_reduce_plan(approved_plan, reduce_plan)
@@ -358,6 +361,7 @@ class SolReduceCoordinator:
             sources,
             corpus_snapshot,
             search_audit_pack,
+            corpus_evidence,
         )
         self._ensure_run(
             report_run_id,
@@ -398,6 +402,7 @@ class SolReduceCoordinator:
                     approved_plan,
                     output_limits[node.node_id],
                     decision_now,
+                    corpus_evidence,
                 )
                 outputs[node.node_id] = output
                 output_artifacts[node.node_id] = artifact
@@ -427,6 +432,7 @@ class SolReduceCoordinator:
                 prompt_bounds[node.node_id],
                 output_limits[node.node_id],
                 audit_bounds,
+                corpus_evidence,
             )
             results.append(result)
             terminal_failure = terminal_failure or result.status == "failed"
@@ -1116,6 +1122,7 @@ class SolReduceCoordinator:
         sources: Mapping[str, FrozenDerivedArtifact],
         corpus_snapshot: Mapping[str, Any],
         search_audit_pack: Mapping[str, Any],
+        corpus_evidence: CorpusEvidenceAllowlist,
     ) -> tuple[dict[str, int], dict[str, int], Any]:
         from .report_audit import (
             ReportAuditBudgetError,
@@ -1129,7 +1136,9 @@ class SolReduceCoordinator:
             if not node.dependency_ids:
                 inputs = tuple(sources[value] for value in chunks[node.node_id].analysis_hashes)
                 prompt = canonical_json(
-                    self._prompt_payload(report_run_id, plan, node, inputs)
+                    self._prompt_payload(
+                        report_run_id, plan, node, inputs, corpus_evidence
+                    )
                 ).decode("utf-8")
                 prompt_bounds[node.node_id] = _prompt_token_upper_bound(
                     self._rendered_prompt(node.call_kind, prompt)
@@ -1144,7 +1153,9 @@ class SolReduceCoordinator:
                 }
                 for dependency in node.dependency_ids
             ]
-            payload = self._prompt_payload_document(report_run_id, plan, node, placeholders)
+            payload = self._prompt_payload_document(
+                report_run_id, plan, node, placeholders, corpus_evidence
+            )
             empty_prompt = canonical_json(payload).decode("utf-8")
             fixed = _prompt_token_upper_bound(self._rendered_prompt(node.call_kind, empty_prompt))
             # Canonical output JSON is embedded once in the node payload and the
@@ -1377,6 +1388,7 @@ class SolReduceCoordinator:
         prompt_token_bound: int,
         output_byte_limit: int,
         audit_bounds: Any,
+        corpus_evidence: CorpusEvidenceAllowlist,
     ) -> tuple[ReduceNodeResult, Mapping[str, Any] | None, FrozenDerivedArtifact | None]:
         decisions: list[ProcessingDecision] = []
         grant_papers: dict[str, set[str]] = {}
@@ -1405,7 +1417,9 @@ class SolReduceCoordinator:
             invocation = dispatched.result
             assert isinstance(invocation, ModelInvocation) and invocation.derived_bytes is not None
 
-        payload = self._prompt_payload(report_run_id, plan, node, inputs)
+        payload = self._prompt_payload(
+            report_run_id, plan, node, inputs, corpus_evidence
+        )
         prompt = canonical_json(payload).decode("utf-8")
         input_hash = sha256(prompt.encode("utf-8")).hexdigest()
         rendered_prompt = self._rendered_prompt(node.call_kind, prompt)
@@ -1459,6 +1473,7 @@ class SolReduceCoordinator:
                 result.output,
                 dependency_outputs,
                 output_byte_limit,
+                corpus_evidence,
             )
             output_payload = canonical_json(result.output)
             stored = self.artifact_store.put_bytes(
@@ -1500,6 +1515,7 @@ class SolReduceCoordinator:
         plan: Mapping[str, Any],
         node: ReduceNode,
         inputs: Sequence[FrozenDerivedArtifact],
+        corpus_evidence: CorpusEvidenceAllowlist,
     ) -> dict[str, Any]:
         documents = [
             {
@@ -1511,7 +1527,7 @@ class SolReduceCoordinator:
             for artifact in inputs
         ]
         return SolReduceCoordinator._prompt_payload_document(
-            report_run_id, plan, node, documents
+            report_run_id, plan, node, documents, corpus_evidence
         )
 
     @staticmethod
@@ -1520,8 +1536,9 @@ class SolReduceCoordinator:
         plan: Mapping[str, Any],
         node: ReduceNode,
         documents: Sequence[Mapping[str, Any]],
+        corpus_evidence: CorpusEvidenceAllowlist,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "report_run_id": report_run_id,
             "report_plan": dict(plan),
             "node": {
@@ -1534,6 +1551,9 @@ class SolReduceCoordinator:
             },
             "inputs": [dict(item) for item in documents],
         }
+        if node.call_kind == "section_reduce":
+            payload["corpus_evidence"] = corpus_evidence.document()
+        return payload
 
     def _validate_metadata(
         self,
@@ -1587,6 +1607,7 @@ class SolReduceCoordinator:
         output: Mapping[str, Any],
         dependency_outputs: Mapping[str, Mapping[str, Any]],
         output_byte_limit: int,
+        corpus_evidence: CorpusEvidenceAllowlist,
     ) -> None:
         if len(canonical_json(output)) > output_byte_limit:
             raise SolOutputError("Sol output exceeded the frozen node byte limit")
@@ -1601,6 +1622,7 @@ class SolReduceCoordinator:
                 analyses=self.analyses,
                 sections=self.sections,
                 memberships={paper: self.memberships[paper] for paper in node.paper_ids},
+                corpus_evidence=corpus_evidence,
             )
             validator.validate_section(output)
             _validate_section_coverage_dispositions(plan, output)
@@ -1824,6 +1846,7 @@ class SolReduceCoordinator:
         plan: Mapping[str, Any],
         output_byte_limit: int,
         now: str | None,
+        corpus_evidence: CorpusEvidenceAllowlist,
     ) -> tuple[Mapping[str, Any], FrozenDerivedArtifact]:
         required = (
             "output_artifact_id",
@@ -1868,7 +1891,9 @@ class SolReduceCoordinator:
             raise ReportReduceError(f"completed node artifact metadata has drifted: {node.node_id}")
         output = _json_document(payload)
         prompt = canonical_json(
-            self._prompt_payload(str(row["report_run_id"]), plan, node, inputs)
+            self._prompt_payload(
+                str(row["report_run_id"]), plan, node, inputs, corpus_evidence
+            )
         ).decode("utf-8")
         input_hash = sha256(prompt.encode("utf-8")).hexdigest()
         rendered = self._rendered_prompt(node.call_kind, prompt)
@@ -1920,6 +1945,7 @@ class SolReduceCoordinator:
             output,
             dependency_outputs,
             output_byte_limit,
+            corpus_evidence,
         )
         stored = StoredArtifact(
             artifact_hash=str(row["output_hash"]),

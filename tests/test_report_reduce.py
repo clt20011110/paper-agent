@@ -41,7 +41,13 @@ from paper_agent.report_reduce import (
     SolReduceCoordinator,
     stage4b_reduce_config_hash,
 )
-from paper_agent.reporting import AnalysisRecord, ReportPlanner, SectionRule, stable_claim_id
+from paper_agent.reporting import (
+    AnalysisRecord,
+    ReportPlanner,
+    SectionRule,
+    corpus_evidence_allowlist,
+    stable_claim_id,
+)
 from paper_agent.storage import Database
 
 
@@ -152,7 +158,7 @@ def _draft(max_input_tokens: int) -> dict:
             "subquestion_ids": ["rq1"],
             "target_words": 300,
             "evidence_requirements": ["Every claim has evidence"],
-            "allowed_evidence_levels": ["full_text_direct"],
+            "allowed_evidence_levels": ["full_text_direct", "corpus_stat"],
         }
         for section_id in REPORT_SECTION_IDS
     ]
@@ -252,6 +258,55 @@ def _claim(report_run_id: str, section_id: str, record: AnalysisRecord) -> dict:
     }
 
 
+def _corpus_claim(
+    report_run_id: str,
+    section_id: str,
+    corpus_evidence: dict,
+    *,
+    calculation: str | None = None,
+) -> dict:
+    statistic = next(
+        item for item in corpus_evidence["statistics"]
+        if item["statistic"] == "flow.included"
+    )
+    key = {
+        "subject_id": "frozen-corpus",
+        "predicate_id": "included_count",
+        "object_or_scope_id": section_id,
+        "qualifier_context_hash": content_hash({"statistic": "flow.included"}),
+        "comparison_group_id": None,
+    }
+    reference = {
+        "kind": "corpus_evidence",
+        "evidence_level": "corpus_stat",
+        "paper_id": None,
+        "analysis_run_id": None,
+        "evidence_unit": None,
+        "locator": None,
+        "search_plan_id": corpus_evidence["search_plan_ids"][0],
+        "source_run_id": corpus_evidence["source_run_ids"][0],
+        "query_id": corpus_evidence["query_ids"][0],
+        "statistic": statistic["statistic"],
+        "calculation": calculation or statistic["calculation"],
+    }
+    return {
+        "claim_id": stable_claim_id(key, report_run_id=report_run_id),
+        "claim_key": key,
+        "research_question_id": "rq1",
+        "report_section": section_id,
+        "claim_text": "The frozen search flow has two included papers.",
+        "claim_type": "corpus_stat",
+        "supporting_evidence": [reference],
+        "contradicting_evidence": [],
+        "evidence_level": "corpus_stat",
+        "comparison_group_id": None,
+        "confidence": "high",
+        "known_limitations": ["This count applies only to the frozen search audit."],
+        "status": "supported",
+        "mapping_status": "mapped",
+    }
+
+
 @dataclass
 class FakeSol:
     coordinator: SolReduceCoordinator
@@ -268,6 +323,8 @@ class FakeSol:
     misplace_final_claim: bool = False
     omit_paper: str | None = None
     reuse_invocation_id: str | None = None
+    add_corpus_stat: bool = False
+    corpus_calculation: str | None = None
 
     def invoke(self, request):
         self.calls.append(request)
@@ -288,10 +345,21 @@ class FakeSol:
             if self.oversized_once:
                 self.oversized_once = False
                 draft += "x" * 300_000
+            claims = [
+                _claim(payload["report_run_id"], section_id, self.records[paper_id])
+                for paper_id in paper_ids
+            ]
+            if self.add_corpus_stat and section_id == REPORT_SECTION_IDS[0]:
+                claims.append(_corpus_claim(
+                    payload["report_run_id"],
+                    section_id,
+                    payload["corpus_evidence"],
+                    calculation=self.corpus_calculation,
+                ))
             output = {
                 "section_id": section_id,
                 "draft": draft,
-                "claims": [_claim(payload["report_run_id"], section_id, self.records[paper_id]) for paper_id in paper_ids],
+                "claims": claims,
                 "citation_paper_ids": paper_ids,
                 "unresolved_conflicts": conflicts,
             }
@@ -898,6 +966,45 @@ def test_sol_tree_completes_and_resume_revalidates_every_node(tmp_path: Path) ->
         assert fixture.database.connection.execute(
             "SELECT status FROM report_runs WHERE report_run_id = 'report-1'"
         ).fetchone()[0] == "running"
+    finally:
+        fixture.database.close()
+
+
+def test_reduce_accepts_only_frozen_corpus_stat_and_supplies_its_inputs(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    fixture.fake.add_corpus_stat = True
+    try:
+        result = fixture.run()
+
+        assert result.status == "generation_complete"
+        expected = corpus_evidence_allowlist(fixture.audit).document()
+        section_payloads = [
+            json.loads(request.prompt)
+            for request in fixture.calls
+            if request.call_kind == "section_reduce"
+        ]
+        assert section_payloads
+        assert all(payload["corpus_evidence"] == expected for payload in section_payloads)
+    finally:
+        fixture.database.close()
+
+
+def test_reduce_rejects_corpus_stat_not_recomputed_from_frozen_audit(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    fixture.fake.add_corpus_stat = True
+    fixture.fake.corpus_calculation = "999"
+    try:
+        result = fixture.run()
+
+        assert result.status == "failed"
+        assert any(
+            "frozen search audit" in (node.error or "")
+            for node in result.nodes
+        )
     finally:
         fixture.database.close()
 

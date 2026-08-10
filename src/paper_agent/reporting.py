@@ -543,6 +543,45 @@ class CorpusEvidenceAllowlist:
     search_plan_ids: frozenset[str] = frozenset()
     source_run_ids: frozenset[str] = frozenset()
     query_ids: frozenset[str] = frozenset()
+    statistics: frozenset[tuple[str, str]] = frozenset()
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "search_plan_ids": sorted(self.search_plan_ids),
+            "source_run_ids": sorted(self.source_run_ids),
+            "query_ids": sorted(self.query_ids),
+            "statistics": [
+                {"statistic": statistic, "calculation": calculation}
+                for statistic, calculation in sorted(self.statistics)
+            ],
+        }
+
+
+def corpus_evidence_allowlist(
+    search_audit_pack: Mapping[str, Any],
+) -> CorpusEvidenceAllowlist:
+    """Expose only identifiers and scalar counts frozen in the search audit pack."""
+    source_audit = search_audit_pack["source_round_audit"]
+    search_plan_id = str(source_audit["search_plan_id"])
+    source_run_ids = frozenset(
+        str(source["source_run_id"])
+        for source in source_audit["sources"]
+    )
+    query_ids = frozenset(
+        str(query["query_id"])
+        for query in search_audit_pack["query_manifest"]
+    )
+    statistics = frozenset(
+        (f"{group}.{key}", str(value))
+        for group in (
+            "flow", "source_categories", "cohorts", "publication_status", "input_scope"
+        )
+        for key, value in search_audit_pack[group].items()
+        if isinstance(value, int) and not isinstance(value, bool)
+    )
+    return CorpusEvidenceAllowlist(
+        frozenset({search_plan_id}), source_run_ids, query_ids, statistics
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,8 +781,14 @@ class SynthesisValidator:
         for field, allowlist in bindings:
             if ref[field] not in allowlist:
                 raise EvidenceValidationError(f"corpus evidence has a non-allowlisted {field}")
-        if not ref.get("statistic") or not ref.get("calculation"):
-            raise EvidenceValidationError("corpus evidence requires statistic and calculation")
+        calculations = dict(self.corpus_evidence.statistics)
+        statistic = str(ref.get("statistic") or "")
+        if statistic not in calculations:
+            raise EvidenceValidationError("corpus evidence has a non-allowlisted statistic")
+        if ref.get("calculation") != calculations[statistic]:
+            raise EvidenceValidationError(
+                "corpus evidence calculation does not match the frozen search audit"
+            )
 
     @staticmethod
     def _validate_claim_level(claim_level: str, evidence_levels: Sequence[str]) -> None:

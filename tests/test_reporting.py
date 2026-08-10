@@ -16,6 +16,7 @@ from paper_agent.reporting import (
     ValidatedSection,
     build_coverage_ledger,
     comparison_assessment,
+    corpus_evidence_allowlist,
     require_parallel_comparison,
     stable_claim_id,
 )
@@ -295,6 +296,79 @@ def test_section_validation_binds_claim_ids_analysis_units_and_citations() -> No
     hallucinated_citation["draft"] += " [@unknown]"
     with pytest.raises(EvidenceValidationError, match="non-allowlisted paper marker"):
         _validator().validate_section(hallucinated_citation)
+
+
+def test_corpus_stat_uses_frozen_search_ids_and_recomputed_count() -> None:
+    audit = {
+        "source_round_audit": {
+            "search_plan_id": "search-plan-1",
+            "sources": [{"source_run_id": "source-run-1"}],
+        },
+        "query_manifest": [{"query_id": "query-1"}],
+        "flow": {"included": 3, "excluded": 2},
+        "source_categories": {"newly_discovered": 3},
+        "cohorts": {"recent": 2},
+        "publication_status": {"peer_reviewed": 3},
+        "input_scope": {"full_pdf": 2, "abstract_only": 1},
+    }
+    allowlist = corpus_evidence_allowlist(audit)
+    assert allowlist.document()["statistics"] == [
+        {"statistic": "cohorts.recent", "calculation": "2"},
+        {"statistic": "flow.excluded", "calculation": "2"},
+        {"statistic": "flow.included", "calculation": "3"},
+        {"statistic": "input_scope.abstract_only", "calculation": "1"},
+        {"statistic": "input_scope.full_pdf", "calculation": "2"},
+        {"statistic": "publication_status.peer_reviewed", "calculation": "3"},
+        {"statistic": "source_categories.newly_discovered", "calculation": "3"},
+    ]
+    reference = {
+        "kind": "corpus_evidence",
+        "evidence_level": "corpus_stat",
+        "paper_id": None,
+        "analysis_run_id": None,
+        "evidence_unit": None,
+        "locator": None,
+        "search_plan_id": "search-plan-1",
+        "source_run_id": "source-run-1",
+        "query_id": "query-1",
+        "statistic": "flow.included",
+        "calculation": "3",
+    }
+    claim = _claim(
+        section_id="s1",
+        question_id="rq1",
+        support=[reference],
+        claim_type="corpus_stat",
+        subject="frozen-corpus",
+    )
+    claim["evidence_level"] = "corpus_stat"
+    document = {
+        "section_id": "s1",
+        "draft": "The frozen corpus contains three included papers.",
+        "claims": [claim],
+        "citation_paper_ids": [],
+        "unresolved_conflicts": [],
+    }
+    sections = (
+        SectionRule(
+            "s1", frozenset({"rq1"}),
+            frozenset({"full_text_direct", "abstract_direct", "corpus_stat"}),
+        ),
+        _sections()[1],
+    )
+    validator = SynthesisValidator(
+        report_run_id="report-1",
+        analyses=_records(),
+        sections=sections,
+        memberships={"p1": ("s1", "s2"), "p2": ("s1",), "p3": ("s1",)},
+        corpus_evidence=allowlist,
+    )
+
+    assert validator.validate_section(document).claims[0]["claim_type"] == "corpus_stat"
+    tampered = deepcopy(document)
+    tampered["claims"][0]["supporting_evidence"][0]["calculation"] = "999"
+    with pytest.raises(EvidenceValidationError, match="frozen search audit"):
+        validator.validate_section(tampered)
 
 
 def test_abstract_evidence_cannot_be_labeled_as_full_text() -> None:

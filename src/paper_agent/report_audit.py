@@ -68,9 +68,11 @@ from .report_plan import (
 )
 from .reporting import (
     AnalysisRecord,
+    CorpusEvidenceAllowlist,
     EvidenceValidationError,
     ReportPlanner,
     ReportPlanningError,
+    corpus_evidence_allowlist,
     require_exact_comparison_groups,
 )
 from .schema import SchemaValidationError, schema_directory, validate
@@ -996,6 +998,7 @@ class ReportAuditCoordinator:
             source_lineages[artifact_hash] = lineages
 
         aggregation = plan["aggregation"]
+        corpus_evidence = corpus_evidence_allowlist(bundle["search_audit"])
         try:
             reduce_plan = ReportPlanner(
                 plan,
@@ -1050,7 +1053,9 @@ class ReportAuditCoordinator:
                     source_documents[value]
                     for value in chunks[node.node_id].analysis_hashes
                 ]
-                payload = _reduce_prompt_payload(report_run_id, plan, node, inputs)
+                payload = _reduce_prompt_payload(
+                    report_run_id, plan, node, inputs, corpus_evidence
+                )
                 prompt = canonical_json(payload).decode("utf-8")
                 prompt_bounds[node.node_id] = _token_upper_bound(
                     self._rendered_prompt(node.call_kind, prompt)
@@ -1072,7 +1077,9 @@ class ReportAuditCoordinator:
                     for dependency in node.dependency_ids
                 ]
                 empty_prompt = canonical_json(
-                    _reduce_prompt_payload(report_run_id, plan, node, placeholders)
+                    _reduce_prompt_payload(
+                        report_run_id, plan, node, placeholders, corpus_evidence
+                    )
                 ).decode("utf-8")
                 fixed = _token_upper_bound(
                     self._rendered_prompt(node.call_kind, empty_prompt)
@@ -1229,7 +1236,9 @@ class ReportAuditCoordinator:
                     for dependency in node.dependency_ids
                 ]
             prompt = canonical_json(
-                _reduce_prompt_payload(report_run_id, plan, node, input_documents)
+                _reduce_prompt_payload(
+                    report_run_id, plan, node, input_documents, corpus_evidence
+                )
             ).decode("utf-8")
             rendered = self._rendered_prompt(node.call_kind, prompt)
             if (
@@ -4581,8 +4590,9 @@ def _reduce_prompt_payload(
     plan: Mapping[str, Any],
     node: Any,
     documents: Sequence[Mapping[str, Any]],
+    corpus_evidence: CorpusEvidenceAllowlist,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "report_run_id": report_run_id,
         "report_plan": dict(plan),
         "node": {
@@ -4595,6 +4605,9 @@ def _reduce_prompt_payload(
         },
         "inputs": [dict(item) for item in documents],
     }
+    if node.call_kind == "section_reduce":
+        payload["corpus_evidence"] = corpus_evidence.document()
+    return payload
 
 
 def _search_limitations(bundle: Mapping[str, Any]) -> tuple[str, ...]:
