@@ -34,6 +34,15 @@ def _pdf(text: str) -> bytes:
     return output.getvalue()
 
 
+def _encrypted_pdf() -> bytes:
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.encrypt("fixture-password")
+    output = __import__("io").BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 def _prepared(tmp_path, *, license: str | None, access_basis: str):
     database = Database(tmp_path / "papers.sqlite3")
     database.migrate()
@@ -84,7 +93,8 @@ class FakeInvoker:
             "research_question_and_motivation": "Fixture.", "summary": "Fixture.", "methods": [], "key_techniques": [],
             "datasets": [], "experimental_setup": [], "metrics": [], "results": [], "limitations": [], "credibility": "Fixture.",
             "resources": [], "topic_relevance": "Relevant", "labels": {"subquestion": [], "theme": [], "method_family": [], "task": [], "dataset": [], "benchmark": [], "evidence_type": [], "publication_status": "unknown", "study_setting": "other"},
-            "label_evidence": [], "evidence_units": [], "comparison_eligibility": "not_comparable", "missing_fields": ["comparison_evidence"],
+            "label_evidence": [], "evidence_units": [], "comparison_eligibility": "not_comparable",
+            "missing_fields": (["full_text"] if payload["input_scope"] != "full_pdf" else ["comparison_evidence"]),
         }
         metadata = InvocationMetadata("fixture", "stage4_analysis_luna", "gpt-5.6-luna", "medium", "paper-analysis.schema.json", self.schema_hash, request.input_hash, "paper-analysis.md", self.prompt_hash, "rendered", None, 1, "gpt-5.6-luna", "stage4_analysis_luna")
         return CodexExecResult(output, metadata)
@@ -302,6 +312,66 @@ def test_dry_run_previews_extraction_without_writes_or_codex(tmp_path, monkeypat
         assert database.connection.execute("SELECT COUNT(*) FROM analysis_runs").fetchone()[0] == 0
         assert database.connection.execute("SELECT COUNT(*) FROM text_extractions").fetchone()[0] == 0
         assert sorted(path.relative_to(store.root) for path in store.root.rglob("*")) == before_files
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize(
+    ("pdf_bytes", "extraction_status"),
+    ((_pdf("scan"), "needs_ocr"), (_encrypted_pdf(), "extraction_failed")),
+)
+def test_unusable_pdf_falls_back_to_public_abstract_before_codex(
+    tmp_path: Path, pdf_bytes: bytes, extraction_status: str,
+) -> None:
+    database, store = _prepared(
+        tmp_path, license="CC-BY-4.0", access_basis="open_license"
+    )
+    replacement = store.put_bytes(
+        pdf_bytes, mime_type="application/pdf", metadata={"fixture": extraction_status}
+    )
+    database.connection.execute(
+        "UPDATE papers SET abstract = 'Public fallback abstract' WHERE paper_id = 'paper-1'"
+    )
+    database.connection.execute(
+        """UPDATE artifacts
+           SET relative_path = ?, byte_size = ?, sha256 = ?
+           WHERE artifact_id = 'pdf-1'""",
+        (replacement.relative_path, replacement.size_bytes, replacement.artifact_hash),
+    )
+    database.connection.commit()
+    calls: list[object] = []
+
+    try:
+        from paper_agent.analysis import PaperAnalysisCoordinator
+
+        template = PaperAnalysisCoordinator(
+            database, store, _service(database, store, None).gate
+        )
+        service = _service(
+            database,
+            store,
+            lambda: FakeInvoker(template.prompt_hash, template.schema_hash, calls),
+        )
+        result = service.run(
+            f"analysis-{extraction_status}",
+            AnalysisInputManifest(stage3_artifact_ids=("pdf-1",)),
+        )
+
+        assert result.input_scopes == ("abstract_only",)
+        assert result.result is not None
+        assert result.result.for_paper("paper-1").status == "complete"
+        assert len(calls) == 1
+        payload = json.loads(calls[0].prompt)
+        assert payload["input_scope"] == "abstract_only"
+        assert payload["content_encoding"] == "json"
+        assert payload["content"]["abstract"] == "Public fallback abstract"
+        row = database.connection.execute(
+            "SELECT status FROM text_extractions WHERE source_artifact_id = 'pdf-1'"
+        ).fetchone()
+        assert row["status"] == extraction_status
+        assert database.connection.execute(
+            "SELECT artifact_id FROM analysis_runs"
+        ).fetchone()["artifact_id"] is None
     finally:
         database.close()
 

@@ -335,12 +335,7 @@ class AnalysisCliService:
             str(paper["paper_id"]), source, download_run_id=download_run_id
         )
         if "artifact_id" not in source.keys():
-            metadata = _metadata(paper)
-            if paper["abstract"]:
-                return AnalysisInput(paper["paper_id"], facts["license"], "public_read_only",
-                                     abstract=paper["abstract"], metadata=metadata, domain=facts["domain"])
-            return AnalysisInput(paper["paper_id"], facts["license"], "public_read_only",
-                                 metadata=metadata, domain=facts["domain"])
+            return self._public_fallback_input(paper, facts)
         if source["artifact_kind"] == "text":
             return AnalysisInput(paper["paper_id"], facts["license"], facts["access_basis"],
                                  normalized_text=self.artifact_store.read_bytes(source["sha256"]),
@@ -353,6 +348,7 @@ class AnalysisCliService:
                 return AnalysisInput(paper["paper_id"], facts["license"], facts["access_basis"],
                                      normalized_text=self.artifact_store.read_bytes(extracted.normalized_text_sha256 or ""),
                                      artifact_id=extracted.output_artifact_id, domain=facts["domain"])
+            return self._public_fallback_input(paper, facts)
         return AnalysisInput(paper["paper_id"], facts["license"], facts["access_basis"],
                              full_pdf=self.artifact_store.read_bytes(source["sha256"]),
                              artifact_id=source["artifact_id"], domain=facts["domain"])
@@ -370,10 +366,22 @@ class AnalysisCliService:
                 normalized_text=extracted.normalized_text,
                 artifact_id=source["artifact_id"], domain=facts["domain"],
             )
+        return self._public_fallback_input(paper, facts)
+
+    @staticmethod
+    def _public_fallback_input(
+        paper: Any, facts: Mapping[str, str | None],
+    ) -> AnalysisInput:
+        """Use only public abstract/metadata when a PDF has no usable local text."""
+        metadata = _metadata(paper)
+        if paper["abstract"]:
+            return AnalysisInput(
+                paper["paper_id"], facts["license"], "public_read_only",
+                abstract=paper["abstract"], metadata=metadata, domain=facts["domain"],
+            )
         return AnalysisInput(
-            paper["paper_id"], facts["license"], facts["access_basis"],
-            full_pdf=self.artifact_store.read_bytes(source["sha256"]),
-            artifact_id=source["artifact_id"], domain=facts["domain"],
+            paper["paper_id"], facts["license"], "public_read_only",
+            metadata=metadata, domain=facts["domain"],
         )
 
     def _paper(self, paper_id: str):
