@@ -4,9 +4,9 @@ import json
 from dataclasses import dataclass
 
 from paper_agent.citations import DeterministicFakeScreener, citation_edge, reference_edge
-from paper_agent.domain import CitationBatch, CitationEdge, CitationEdgeType, EnvelopeStatus, FilterStatus, MembershipStatus, ProviderRole, SourceBatch, SourceEntry
+from paper_agent.domain import CitationBatch, CitationEdge, CitationEdgeType, EnvelopeStatus, FilterStatus, MembershipStatus, ProviderRole, SourceBatch, SourceEntry, VerificationStatus
 from paper_agent.query_plan import approve_query_plan, compile_query_plan
-from paper_agent.providers.api import CrawlWindow, SeedInput, VenueDescriptor
+from paper_agent.providers.api import CrawlWindow, EnrichmentResult, IdentityCandidate, SeedInput, VenueDescriptor, VerificationResult
 from paper_agent.providers.builtin import FixtureTransport, create_builtin
 from paper_agent.search_pipeline import SearchPipeline, VenueRun
 from paper_agent.storage import Database
@@ -706,3 +706,90 @@ def test_initial_and_citation_work_share_the_campaign_hard_budgets(tmp_path) -> 
         "reason": "budget_exhausted",
         "requests_made": 2,
     }
+
+
+def test_metadata_enrichment_and_verifier_follow_discovery_deterministically(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex"), _provider("crossref", ["metadata_enricher", "metadata_verifier"])],
+        required=["crossref"],
+    )
+    query_hash = next(item["native_query_hashes"][0] for item in plan["providers"] if item["provider"] == "openalex")
+
+    class MetadataClient:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def enrich(self, raw):
+            self.calls.append(f"enrich:{raw.doi}")
+            return EnrichmentResult(
+                SourceEntry("crossref", "doi:10.1000/enriched", raw.title, raw.authors, doi=raw.doi, year=raw.year),
+                "crossref",
+                "crossref:enrich",
+            )
+
+        def verify(self, candidate: IdentityCandidate, evidence):
+            self.calls.append(f"verify:{candidate.doi}")
+            return VerificationResult(candidate, VerificationStatus.VERIFIED, "crossref", ("crossref",))
+
+    metadata_client = MetadataClient()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        result = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={
+                "openalex": SearchFixture((_batch("openalex", query_hash, (
+                    SourceEntry("openalex", "work", "Paper", ("Ada",), doi="10.1000/enriched", year=2024),
+                )),)),
+                "crossref": metadata_client,
+            },
+            trusts={"openalex": _trust("openalex"), "crossref": _trust("crossref")},
+        ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+        paper = database.connection.execute("SELECT verification_status FROM papers").fetchone()[0]
+        events = database.connection.execute(
+            "SELECT provider, status FROM metadata_verification_events"
+        ).fetchall()
+
+    assert result.status == "complete"
+    assert metadata_client.calls == ["enrich:10.1000/enriched", "verify:10.1000/enriched"]
+    assert paper == VerificationStatus.VERIFIED
+    assert [tuple(event) for event in events] == [("crossref", VerificationStatus.VERIFIED)]
+
+
+def test_required_metadata_provider_failure_marks_the_campaign_incomplete(tmp_path) -> None:
+    plan = _plan(
+        [_provider("openalex"), _provider("crossref", ["metadata_enricher"])],
+        required=["crossref"],
+    )
+    query_hash = next(item["native_query_hashes"][0] for item in plan["providers"] if item["provider"] == "openalex")
+
+    class FailingMetadataClient:
+        def enrich(self, raw):
+            raise RuntimeError("metadata service unavailable")
+
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        result = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={
+                "openalex": SearchFixture((_batch("openalex", query_hash, (
+                    SourceEntry("openalex", "work", "Paper", ("Ada",), doi="10.1000/failure", year=2024),
+                )),)),
+                "crossref": FailingMetadataClient(),
+            },
+            trusts={"openalex": _trust("openalex"), "crossref": _trust("crossref")},
+        ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+        source = database.connection.execute(
+            "SELECT status, error_json FROM source_runs WHERE provider = 'crossref'"
+        ).fetchone()
+        crawl_status = database.connection.execute(
+            "SELECT status FROM crawl_runs WHERE crawl_run_id = 'crawl'"
+        ).fetchone()[0]
+
+    assert result.status == "incomplete"
+    assert source["status"] == "failed"
+    assert "metadata service unavailable" in source["error_json"]
+    assert crawl_status == "incomplete"

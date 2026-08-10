@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
+from .canonical import content_hash
 from .citations import (
     CitationRepository,
     CitationRequest,
@@ -49,7 +50,7 @@ from .identity import normalize_author, normalize_doi, normalize_title
 from .query_compilers import NativeQuery, compile_queries
 from .query_plan import assert_runtime_matches
 from .repository import PaperRepository
-from .providers.api import CrawlWindow, SeedInput, VenueDescriptor
+from .providers.api import CrawlWindow, IdentityCandidate, SeedInput, VenueDescriptor
 from .search_runs import SearchRunCoordinator, SourceMetrics
 from .storage import Database
 from .verification import MetadataCoordinator, ProviderTrust, VenueContext
@@ -152,7 +153,7 @@ class SearchPipeline:
         )
 
         campaign_deadline = time.monotonic() + float(self.plan["budgets"]["max_seconds"])
-        fanout = fan_out(self.plan, self._execution_clients(), deadline=campaign_deadline)
+        fanout = fan_out(self._discovery_plan(), self._execution_clients(), deadline=campaign_deadline)
         all_paper_ids: set[str] = set()
         non_arxiv_ids: set[str] = set()
         library_seed_ids: set[str] = set()
@@ -230,6 +231,19 @@ class SearchPipeline:
                 updated_at=observed_at,
             )
 
+        enrichment_requests, enrichment_candidates, metadata_failed, metadata_budget_exhausted = self._run_metadata(
+            run_id,
+            crawl_run_id,
+            observed_at,
+            tuple(sorted(all_paper_ids)),
+            request_budget=max(
+                0, int(self.plan["budgets"]["max_requests"]) - fanout.requests_made
+            ),
+            candidate_budget=max(
+                0, int(self.plan["budgets"]["max_candidates"]) - fanout.candidates_returned
+            ),
+            deadline=campaign_deadline,
+        )
         self._link_versions(observed_at)
         status = self.runs.finish_crawl(crawl_run_id, plan=self.plan, fanout=fanout, finished_at=observed_at)
         if fanout.budget_exhausted:
@@ -238,12 +252,28 @@ class SearchPipeline:
                 "UPDATE crawl_runs SET status = ? WHERE crawl_run_id = ?",
                 (status, crawl_run_id),
             )
+        if metadata_failed:
+            status = "incomplete"
+            self.database.connection.execute(
+                "UPDATE crawl_runs SET status = 'incomplete' WHERE crawl_run_id = ?",
+                (crawl_run_id,),
+            )
         round_ids, citation_requests_made, citation_candidates_returned = self._run_citations(
             crawl_run_id,
             observed_at,
             (*seed_paper_ids, *sorted(library_seed_ids)),
-            request_budget=max(0, int(self.plan["budgets"]["max_requests"]) - fanout.requests_made),
-            candidate_budget=max(0, int(self.plan["budgets"]["max_candidates"]) - fanout.candidates_returned),
+            request_budget=max(
+                0,
+                int(self.plan["budgets"]["max_requests"])
+                - fanout.requests_made
+                - enrichment_requests,
+            ),
+            candidate_budget=max(
+                0,
+                int(self.plan["budgets"]["max_candidates"])
+                - fanout.candidates_returned
+                - enrichment_candidates,
+            ),
             deadline=campaign_deadline,
         )
         citation_limited = self.database.connection.execute(
@@ -260,15 +290,15 @@ class SearchPipeline:
             "SELECT 1 FROM search_rounds WHERE crawl_run_id = ? AND stop_reason = 'budget_exhausted' LIMIT 1",
             (crawl_run_id,),
         ).fetchone()
-        if fanout.budget_exhausted or citation_budget_exhausted:
+        if fanout.budget_exhausted or metadata_budget_exhausted or citation_budget_exhausted:
             row = self.database.connection.execute(
                 "SELECT stats_json FROM crawl_runs WHERE crawl_run_id = ?", (crawl_run_id,)
             ).fetchone()
             stats = json.loads(row["stats_json"])
             stats["budget"] = {
                 "reason": "budget_exhausted",
-                "requests_made": fanout.requests_made + citation_requests_made,
-                "candidates_returned": fanout.candidates_returned + citation_candidates_returned,
+                "requests_made": fanout.requests_made + enrichment_requests + citation_requests_made,
+                "candidates_returned": fanout.candidates_returned + enrichment_candidates + citation_candidates_returned,
             }
             status = "incomplete"
             self.database.connection.execute(
@@ -326,6 +356,206 @@ class SearchPipeline:
                 continue
             clients[name] = InitialFanoutAdapter(client, runs, self.seed_inputs)
         return clients
+
+    def _discovery_plan(self) -> dict[str, Any]:
+        discovery_roles = {"venue_primary", "search", "library"}
+        providers = [
+            {
+                **provider,
+                "resolved": provider["resolved"] and bool(discovery_roles.intersection(provider["roles"])),
+            }
+            for provider in self.plan["providers"]
+        ]
+        execution = dict(self.plan["execution"])
+        execution["required_roles"] = [
+            role for role in execution["required_roles"] if role in discovery_roles
+        ]
+        execution["required_providers"] = [
+            provider["provider"]
+            for provider in providers
+            if provider["provider"] in execution["required_providers"] and provider["resolved"]
+        ]
+        return {**self.plan, "providers": providers, "execution": execution}
+
+    def _run_metadata(
+        self,
+        run_id: str,
+        crawl_run_id: str,
+        observed_at: str,
+        paper_ids: Sequence[str],
+        *,
+        request_budget: int,
+        candidate_budget: int,
+        deadline: float,
+    ) -> tuple[int, int, bool, bool]:
+        providers = tuple(
+            provider
+            for provider in sorted(self.plan["providers"], key=lambda item: str(item["provider"]))
+            if provider["resolved"]
+            and {"metadata_enricher", "metadata_verifier"}.intersection(provider["roles"])
+        )
+        requests = candidates = 0
+        failed = False
+        for paper_id in sorted(paper_ids):
+            paper = self.repository.get_paper(paper_id)
+            if paper is None:
+                continue
+            for provider in providers:
+                name = str(provider["provider"])
+                client = self.clients.get(name)
+                required = name in self.plan["execution"]["required_providers"]
+                if "metadata_enricher" in provider["roles"]:
+                    if requests >= request_budget or candidates >= candidate_budget or time.monotonic() >= deadline:
+                        return requests, candidates, True, True
+                    evidence = self.metadata._entries_for_paper(paper_id)
+                    if client is None or not hasattr(client, "enrich") or not evidence:
+                        self._record_metadata_failure(
+                            crawl_run_id,
+                            observed_at,
+                            provider,
+                            paper_id,
+                            "metadata_enricher",
+                            RuntimeError("metadata enrichment client or evidence is unavailable"),
+                        )
+                        failed = failed or required
+                    else:
+                        requests += 1
+                        try:
+                            result = client.enrich(evidence[0])
+                        except Exception as error:
+                            self._record_metadata_failure(
+                                crawl_run_id, observed_at, provider, paper_id, "metadata_enricher", error
+                            )
+                            failed = failed or required
+                        else:
+                            batch = SourceBatch(
+                                f"{crawl_run_id}:{name}:metadata_enricher",
+                                content_hash({"paper_id": paper_id, "provider": name}),
+                                (result.entry,),
+                                None,
+                                EnvelopeStatus.SUCCESS,
+                                raw_response_artifact_hash=result.raw_response_artifact_hash,
+                            )
+                            self.runs.record_batch(
+                                crawl_run_id=crawl_run_id,
+                                provider=name,
+                                provider_version=str(provider["version"]),
+                                role="metadata_enricher",
+                                query_text=paper_id,
+                                provider_params={"paper_id": paper_id},
+                                query_compiler_version="metadata-enrich-v1",
+                                batch=batch,
+                                requested_at=observed_at,
+                                completed_at=observed_at,
+                                page=paper_id,
+                            )
+                            self.metadata.merge_batch(batch)
+                            candidates += 1
+                if "metadata_verifier" in provider["roles"]:
+                    if requests >= request_budget or time.monotonic() >= deadline:
+                        return requests, candidates, True, True
+                    evidence = self.metadata._entries_for_paper(paper_id)
+                    if client is None or not hasattr(client, "verify"):
+                        self._record_metadata_failure(
+                            crawl_run_id,
+                            observed_at,
+                            provider,
+                            paper_id,
+                            "metadata_verifier",
+                            RuntimeError("metadata verifier client is unavailable"),
+                        )
+                        failed = failed or required
+                    else:
+                        requests += 1
+                        try:
+                            result = client.verify(
+                                IdentityCandidate(
+                                    title=paper.title,
+                                    authors=paper.authors,
+                                    year=paper.year,
+                                    doi=paper.doi,
+                                    arxiv_id=paper.arxiv_id,
+                                ),
+                                evidence,
+                            )
+                        except Exception as error:
+                            self._record_metadata_failure(
+                                crawl_run_id, observed_at, provider, paper_id, "metadata_verifier", error
+                            )
+                            failed = failed or required
+                        else:
+                            audit_batch = SourceBatch(
+                                f"{crawl_run_id}:{name}:metadata_verifier",
+                                content_hash({"paper_id": paper_id, "provider": name, "kind": "verify"}),
+                                (),
+                                None,
+                                EnvelopeStatus.SUCCESS,
+                            )
+                            self.runs.record_batch(
+                                crawl_run_id=crawl_run_id,
+                                provider=name,
+                                provider_version=str(provider["version"]),
+                                role="metadata_verifier",
+                                query_text=paper_id,
+                                provider_params={"paper_id": paper_id},
+                                query_compiler_version="metadata-verify-v1",
+                                batch=audit_batch,
+                                requested_at=observed_at,
+                                completed_at=observed_at,
+                                page=paper_id,
+                            )
+                            self.database.connection.execute(
+                                """INSERT INTO metadata_verification_events(
+                                    verification_event_id, run_id, paper_id, provider, status,
+                                    evidence_json, conflicts_json
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                                ON CONFLICT(run_id, paper_id, provider) DO UPDATE SET
+                                    status = excluded.status, evidence_json = excluded.evidence_json,
+                                    conflicts_json = excluded.conflicts_json""",
+                                (
+                                    f"metadata-verification-{uuid5(NAMESPACE_URL, f'{run_id}:{paper_id}:{name}').hex}",
+                                    run_id,
+                                    paper_id,
+                                    name,
+                                    result.status,
+                                    json.dumps(result.evidence, sort_keys=True),
+                                    json.dumps(result.conflicts, sort_keys=True),
+                                ),
+                            )
+        self.database.connection.commit()
+        return requests, candidates, failed, False
+
+    def _record_metadata_failure(
+        self,
+        crawl_run_id: str,
+        observed_at: str,
+        provider: Mapping[str, Any],
+        paper_id: str,
+        role: str,
+        error: Exception,
+    ) -> None:
+        name = str(provider["provider"])
+        batch = SourceBatch(
+            f"{crawl_run_id}:{name}:{role}",
+            content_hash({"paper_id": paper_id, "provider": name, "kind": role}),
+            (),
+            None,
+            EnvelopeStatus.FAILED,
+            str(error),
+        )
+        self.runs.record_batch(
+            crawl_run_id=crawl_run_id,
+            provider=name,
+            provider_version=str(provider["version"]),
+            role=role,
+            query_text=paper_id,
+            provider_params={"paper_id": paper_id},
+            query_compiler_version=f"{role}-v1",
+            batch=batch,
+            requested_at=observed_at,
+            completed_at=observed_at,
+            page=paper_id,
+        )
 
     def _venue_context(self, venue_id: str | None) -> VenueContext | None:
         if venue_id is None:
