@@ -1,0 +1,68 @@
+schema_version: "1"
+policy_version: artifact-processing-v1
+
+# Every rule names every input dimension.  There is intentionally no implicit
+# default: content which is not covered by one of these rules needs a frozen,
+# artifact-scoped remote_model_processing grant.
+license_aliases:
+  cc0: cc0-1.0
+  cc0-1.0: cc0-1.0
+  cc-by: cc-by
+  cc-by-4.0: cc-by-4.0
+  public-domain: public-domain
+
+matrix:
+  - artifact: [pdf]
+    input_scope: [full_pdf]
+    license: [cc0-1.0, cc-by-4.0, public-domain]
+    access_basis: [open_license]
+    provider: [codex_cli]
+    model: [gpt-5.6-luna]
+    purpose: [internal_analysis]
+    data_category: [full_text]
+    outcome: full_pdf
+  - artifact: [normalized_text]
+    input_scope: [full_pdf]
+    license: [cc0-1.0, cc-by-4.0, public-domain]
+    access_basis: [open_license]
+    provider: [codex_cli]
+    model: [gpt-5.6-luna]
+    purpose: [internal_analysis]
+    data_category: [normalized_text]
+    outcome: full_pdf
+  - artifact: [abstract]
+    input_scope: [abstract_only]
+    license: ["*"]
+    access_basis: [open_license, public_read_only]
+    provider: [codex_cli]
+    model: [gpt-5.6-luna]
+    purpose: [internal_analysis]
+    data_category: [abstract]
+    outcome: abstract_only
+  - artifact: [metadata]
+    input_scope: [metadata_only]
+    license: ["*"]
+    access_basis: [open_license, public_read_only]
+    provider: [codex_cli]
+    model: [gpt-5.6-luna]
+    purpose: [internal_analysis]
+    data_category: [metadata]
+    outcome: metadata_only
+  - artifact: [pdf]
+    input_scope: [full_pdf]
+    license: ["*"]
+    access_basis: [public_read_only, user_subscription, user_supplied, unknown]
+    provider: [codex_cli]
+    model: [gpt-5.6-luna]
+    purpose: [internal_analysis]
+    data_category: [full_text]
+    outcome: manual
+  - artifact: [normalized_text]
+    input_scope: [full_pdf]
+    license: ["*"]
+    access_basis: [public_read_only, user_subscription, user_supplied, unknown]
+    provider: [codex_cli]
+    model: [gpt-5.6-luna]
+    purpose: [internal_analysis]
+    data_category: [normalized_text]
+    outcome: manual
