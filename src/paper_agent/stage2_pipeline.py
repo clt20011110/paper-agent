@@ -114,6 +114,7 @@ class Stage2Profile:
     reranker_revision: str
     adjudicator_model_id: str
     adjudicator_revision: str
+    screening_scope_hash: str
     reranker_calibration: PathCalibration | None = None
     adjudicator_calibration: PathCalibration | None = None
     reranker_lock_hash: str | None = None
@@ -137,6 +138,15 @@ class Stage2Profile:
             raise ValueError("Stage 2 query and query_version are required")
         if not all((self.reranker_model_id, self.reranker_revision, self.adjudicator_model_id, self.adjudicator_revision)):
             raise ValueError("Stage 2 model provenance is required")
+        if (
+            not isinstance(self.screening_scope_hash, str)
+            or len(self.screening_scope_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.screening_scope_hash
+            )
+        ):
+            raise ValueError("Stage 2 screening scope hash must be a lowercase SHA-256")
         if self.include_document_types & self.exclude_document_types:
             raise ValueError("document types cannot be both included and excluded")
         if self.token_bucket_width < 1 or self.adjudicator_concurrency < 1:
@@ -156,9 +166,10 @@ class Stage2Profile:
     @property
     def base_runtime_config_hash(self) -> str:
         return _hash({
-            "kind": "stage2-base-runtime-v1",
+            "kind": "stage2-base-runtime-v2",
             "query": self.query,
             "query_version": self.query_version,
+            "screening_scope_hash": self.screening_scope_hash,
             "reranker": [self.reranker_model_id, self.reranker_revision],
             "adjudicator": [self.adjudicator_model_id, self.adjudicator_revision],
             "reranker_lock_hash": self.reranker_lock_hash,
@@ -863,6 +874,7 @@ class Stage2Pipeline:
                     "adjudicator_retry_outcome": decision.adjudicator_retry_outcome,
                     "prompt_version": self.profile.prompt_version,
                     "schema_version": self.profile.schema_version,
+                    "screening_scope_hash": self.profile.screening_scope_hash,
                     "base_runtime_config_hash": self.profile.base_runtime_config_hash,
                     "threshold_bundle_hash": self.profile.threshold_bundle_hash,
                     "full_profile_hash": self.profile.full_profile_hash,

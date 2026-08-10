@@ -16,6 +16,7 @@ from uuid import NAMESPACE_URL, uuid5
 from .approval import ApprovalError, require_valid_approval
 from .canonical import content_hash
 from .domain import FilterStatus
+from .query_plan import QueryPlanError, assert_screening_scope_hash
 from .repository import PaperRepository
 from .schema import SchemaValidationError, schema_directory, validate
 from .stage2_backends import (
@@ -51,7 +52,8 @@ _RELEASE_FIELDS = frozenset({
 })
 _BENCHMARK_CANDIDATE_FIELDS = _RELEASE_FIELDS - {"release_gate"}
 _RUNTIME_FIELDS = frozenset({
-    "query", "query_version", "include_document_types", "exclude_document_types",
+    "query", "query_version", "screening_scope_hash",
+    "include_document_types", "exclude_document_types",
     "token_bucket_width", "document_batch_size", "max_in_flight",
     "adjudicator_concurrency", "adjudicator_seed", "max_context_window",
     "omlx_base_url", "api_key_env", "prompt_version", "schema_version",
@@ -189,11 +191,13 @@ def _load_stage2_bundle(
     plan: Mapping[str, Any] | None,
 ) -> ReleasedStage2:
     released = plan is not None
+    expected_screening_scope_hash: str | None = None
     if plan is not None:
         try:
             validate(plan, "query-plan.schema.json")
             require_valid_approval(plan, "plan_hash")
-        except (ApprovalError, SchemaValidationError) as error:
+            expected_screening_scope_hash = assert_screening_scope_hash(plan)
+        except (ApprovalError, QueryPlanError, SchemaValidationError) as error:
             raise Stage2ReleaseError(f"Stage 2 requires an exact approved QueryPlan: {error}") from error
     if not path.is_file():
         label = "release" if released else "benchmark candidate"
@@ -204,8 +208,8 @@ def _load_stage2_bundle(
         raise Stage2ReleaseError("legacy raw-score thresholds are forbidden in production releases")
     expected_fields = _RELEASE_FIELDS if released else _BENCHMARK_CANDIDATE_FIELDS
     _exact_fields(document, expected_fields, "Stage 2 bundle")
-    if document.get("schema_version") != "1":
-        raise Stage2ReleaseError("Stage 2 bundle must use schema_version 1")
+    if document.get("schema_version") != "2":
+        raise Stage2ReleaseError("Stage 2 bundle must use schema_version 2")
 
     profile_name = _text(document, "profile")
     if plan is not None and profile_name != plan["filter"]["profile"]:
@@ -223,6 +227,14 @@ def _load_stage2_bundle(
 
     runtime = _object(document, "runtime")
     _exact_fields(runtime, _RUNTIME_FIELDS, "Stage 2 runtime")
+    runtime_screening_scope_hash = _sha256_text(runtime, "screening_scope_hash")
+    if (
+        expected_screening_scope_hash is not None
+        and runtime_screening_scope_hash != expected_screening_scope_hash
+    ):
+        raise Stage2ReleaseError(
+            "Stage 2 release screening scope does not match QueryPlan"
+        )
     base_url = _text(runtime, "omlx_base_url")
     _require_loopback(base_url)
     api_key_env = runtime.get("api_key_env")
@@ -241,6 +253,7 @@ def _load_stage2_bundle(
             reranker_revision=_runtime_revision(reranker_lock),
             adjudicator_model_id=adjudicator_lock.model_id,
             adjudicator_revision=_runtime_revision(adjudicator_lock),
+            screening_scope_hash=runtime_screening_scope_hash,
             reranker_lock_hash=reranker_hash,
             adjudicator_lock_hash=adjudicator_hash,
             release_gate_hash=(

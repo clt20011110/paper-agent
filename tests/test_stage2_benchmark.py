@@ -80,6 +80,7 @@ def _profile() -> Stage2Profile:
         reranker_revision="reranker-revision",
         adjudicator_model_id="fixture-qwen",
         adjudicator_revision="qwen-revision",
+        screening_scope_hash="0" * 64,
         token_bucket_width=10_000,
         document_batch_size=16,
         reranker_max_in_flight=1,

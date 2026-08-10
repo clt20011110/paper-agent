@@ -271,6 +271,7 @@ def test_measure_stage2_dry_run_validates_release_workload_and_macos_observation
         reranker_revision="reranker-revision",
         adjudicator_model_id="qwen",
         adjudicator_revision="qwen-revision",
+        screening_scope_hash="0" * 64,
         reranker_lock_hash="reranker-lock",
         adjudicator_lock_hash="qwen-lock",
         document_batch_size=32,

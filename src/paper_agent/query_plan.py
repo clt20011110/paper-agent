@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 from .approval import ApprovalError, approve, approved_content_hash, require_valid_approval
 from .canonical import canonical_json
 from .query_compilers import COMPILER_VERSION, compile_queries
+from .scope_filter import screening_scope_hash
 
 
 class QueryPlanError(ValueError):
@@ -76,6 +77,12 @@ def compile_query_plan(
     variants = list(source["query_variants"])
     scope = dict(source["scope"])
     scope.setdefault("include_arxiv_candidates", False)
+    filter_config = dict(source["filter"])
+    filter_config["screening_scope_hash"] = screening_scope_hash({
+        "research": source["research"],
+        "inclusion": source["inclusion"],
+        "scope": scope,
+    })
     compiled_providers = [
         _compile_provider(spec, variants, scope, page_size=_page_size(source), requirements=requirements)
         for spec in provider_specs
@@ -94,7 +101,7 @@ def compile_query_plan(
         "inclusion": source["inclusion"],
         "query_variants": variants,
         "providers": compiled_providers,
-        "filter": source["filter"],
+        "filter": filter_config,
         "citation_snowball": source["citation_snowball"],
         "budgets": source["budgets"],
         "execution": requirements,
@@ -113,6 +120,7 @@ def approve_query_plan(
     approved_by: str,
     approved_at: str,
 ) -> dict[str, Any]:
+    assert_screening_scope_hash(plan)
     return approve(
         plan,
         expected_hash,
@@ -124,6 +132,22 @@ def approve_query_plan(
 
 def runtime_requirements(plan: Mapping[str, Any]) -> dict[str, Any]:
     return _requirements(plan)
+
+
+def assert_screening_scope_hash(plan: Mapping[str, Any]) -> str:
+    """Require the frozen filter binding to match the plan's screening scope."""
+    try:
+        actual = plan["filter"]["screening_scope_hash"]
+        expected = screening_scope_hash(plan)
+    except (KeyError, TypeError) as error:
+        raise QueryPlanError("QueryPlan screening scope hash is missing") from error
+    if not _is_sha256(actual):
+        raise QueryPlanError("QueryPlan screening scope hash must be a lowercase SHA-256")
+    if actual != expected:
+        raise QueryPlanError(
+            "QueryPlan screening scope hash does not match research/inclusion/scope"
+        )
+    return actual
 
 
 def compile_runtime_providers(
@@ -158,6 +182,10 @@ def assert_runtime_matches(
     try:
         require_valid_approval(plan, "plan_hash")
     except ApprovalError as error:
+        raise QueryPlanDriftError(str(error)) from error
+    try:
+        assert_screening_scope_hash(plan)
+    except QueryPlanError as error:
         raise QueryPlanDriftError(str(error)) from error
     frozen_arxiv_setting = plan.get("scope", {}).get("include_arxiv_candidates")
     if not isinstance(frozen_arxiv_setting, bool):
@@ -222,6 +250,7 @@ class QueryPlanStore:
             require_valid_approval(plan, "plan_hash")
         except ApprovalError as error:
             raise QueryPlanError(str(error)) from error
+        assert_screening_scope_hash(plan)
         path = self.approved_path(str(plan["plan_id"]))
         payload = canonical_json(dict(plan))
         if path.exists():
@@ -236,7 +265,13 @@ class QueryPlanStore:
         return path
 
     def load_approved(self, plan_id: str) -> dict[str, Any]:
-        return json.loads(self.approved_path(plan_id).read_text(encoding="utf-8"))
+        plan = json.loads(self.approved_path(plan_id).read_text(encoding="utf-8"))
+        try:
+            require_valid_approval(plan, "plan_hash")
+        except ApprovalError as error:
+            raise QueryPlanError(str(error)) from error
+        assert_screening_scope_hash(plan)
+        return plan
 
     def _write_replacing(self, path: Path, document: Mapping[str, Any]) -> Path:
         self._atomic_write(path, canonical_json(dict(document)))
@@ -339,6 +374,14 @@ def _compile_provider(
         "query_compiler_version": COMPILER_VERSION,
         "native_query_hashes": [query.query_hash for query in queries],
     }
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _requirements(document: Mapping[str, Any]) -> dict[str, Any]:

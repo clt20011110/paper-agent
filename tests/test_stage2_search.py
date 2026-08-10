@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
 import json
@@ -7,9 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from paper_agent.approval import approved_content_hash
 from paper_agent.canonical import content_hash
 from paper_agent.domain import FilterStatus
 from paper_agent.query_plan import approve_query_plan, compile_query_plan
+from paper_agent.scope_filter import screening_scope_hash
 from paper_agent.stage2_backends import (
     OmlxResponse,
     load_model_lock,
@@ -45,9 +48,32 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
     adjudicator_hash = sha256(adjudicator_path.read_bytes()).hexdigest()
 
     evaluation_manifest_hash = "a" * 64
+    research = {
+        "objective": "screen graph learning papers",
+        "audience": "researchers",
+        "primary_question": "Which graph learning methods are relevant?",
+        "subquestions": [{"id": "sq1", "question": "Which methods are relevant?"}],
+    }
+    scope = {
+        "date_from": "2020-01-01",
+        "date_to": "2026-12-31",
+        "venues": [],
+        "fields": ["computer science"],
+        "languages": ["en"],
+        "document_types": ["article"],
+        "user_seeds": [],
+        "include_arxiv_candidates": False,
+    }
+    inclusion = {"criteria": ["topic match"], "exclusion_criteria": ["unrelated"]}
+    scope_hash = screening_scope_hash({
+        "research": research,
+        "inclusion": inclusion,
+        "scope": scope,
+    })
     runtime = {
         "query": "graph learning methods",
         "query_version": "screening-query-v1",
+        "screening_scope_hash": scope_hash,
         "include_document_types": [],
         "exclude_document_types": ["editorial", "retraction"],
         "token_bucket_width": 128,
@@ -69,6 +95,7 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
         reranker_revision=reranker.conversion_revision or reranker.source_revision,
         adjudicator_model_id=adjudicator.model_id,
         adjudicator_revision=adjudicator.conversion_revision or adjudicator.source_revision,
+        screening_scope_hash=runtime["screening_scope_hash"],
         reranker_lock_hash=reranker_hash,
         adjudicator_lock_hash=adjudicator_hash,
         release_gate_hash=None,
@@ -198,22 +225,9 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
     )
     plan_draft = {
         "created_at": "2026-08-09T00:00:00Z",
-        "research": {
-            "objective": "screen graph learning papers",
-            "audience": "researchers",
-            "primary_question": "Which graph learning methods are relevant?",
-            "subquestions": [{"id": "sq1", "question": "Which methods are relevant?"}],
-        },
-        "scope": {
-            "date_from": "2020-01-01",
-            "date_to": "2026-12-31",
-            "venues": [],
-            "fields": ["computer science"],
-            "languages": ["en"],
-            "document_types": ["article"],
-            "user_seeds": [],
-        },
-        "inclusion": {"criteria": ["topic match"], "exclusion_criteria": ["unrelated"]},
+        "research": research,
+        "scope": scope,
+        "inclusion": inclusion,
         "query_variants": [{
             "id": "q1",
             "subquestion_id": "sq1",
@@ -266,7 +280,7 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
         approved_at="2026-08-09T01:00:00Z",
     )
     release = {
-        "schema_version": "1",
+        "schema_version": "2",
         "profile": "local-winner",
         "reranker_lock": {"path": reranker_path.name, "sha256": reranker_hash},
         "adjudicator_lock": {"path": adjudicator_path.name, "sha256": adjudicator_hash},
@@ -282,6 +296,26 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
 def _evaluation_hash(value: object) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return sha256(encoded).hexdigest()
+
+
+def _approved_plan_with_screening_change(
+    plan: dict,
+    section: str,
+    field: str,
+    value: object,
+) -> dict:
+    changed = deepcopy(plan)
+    changed["status"] = "draft"
+    changed["approval"] = None
+    changed[section][field] = value
+    changed["filter"]["screening_scope_hash"] = screening_scope_hash(changed)
+    changed["plan_hash"] = approved_content_hash(changed)
+    return approve_query_plan(
+        changed,
+        changed["plan_hash"],
+        approved_by="owner",
+        approved_at="2026-08-09T02:00:00Z",
+    )
 
 
 class LocalOmlxFixture:
@@ -327,7 +361,7 @@ class AdjudicatingOmlxFixture:
 def test_benchmark_candidate_loads_before_throughput_release_gate_exists(
     tmp_path: Path,
 ) -> None:
-    release_path, _ = _release_bundle(tmp_path)
+    release_path, plan = _release_bundle(tmp_path)
     document = json.loads(release_path.read_text(encoding="utf-8"))
     document.pop("release_gate")
     candidate_path = tmp_path / "stage2-candidate.json"
@@ -336,6 +370,9 @@ def test_benchmark_candidate_loads_before_throughput_release_gate_exists(
     candidate = load_stage2_benchmark_candidate(candidate_path)
 
     assert candidate.profile.release_gate_hash is None
+    assert candidate.profile.screening_scope_hash == plan["filter"][
+        "screening_scope_hash"
+    ]
     assert candidate.profile.reranker_calibration is not None
     assert candidate.profile.adjudicator_calibration is not None
 
@@ -368,6 +405,9 @@ def test_released_stage2_screens_database_papers_and_persists_decisions(tmp_path
             ("relevant", "relevant", "bge-reranker-v2-m3"),
         ]
         provenance = json.loads(rows[0]["reason"])
+        assert provenance["screening_scope_hash"] == plan["filter"][
+            "screening_scope_hash"
+        ]
         assert provenance["release_gate_hash"] == released.profile.release_gate_hash
         assert provenance["reranker_lock_hash"] == released.profile.reranker_lock_hash
         assert provenance["reranker_score"] == 0.3
@@ -394,6 +434,49 @@ def test_released_stage2_screens_database_papers_and_persists_decisions(tmp_path
             (screener.run_ids[0],),
         ).fetchone()
         assert tuple(stage2_run) == ("stage-2", "complete", released.profile.config_hash)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    (
+        ("research", "objective", "changed research objective"),
+        ("inclusion", "criteria", ["replicated evidence"]),
+        ("scope", "languages", ["zh"]),
+    ),
+)
+def test_release_rejects_approved_plan_for_a_different_screening_scope(
+    tmp_path,
+    section,
+    field,
+    value,
+) -> None:
+    release_path, plan = _release_bundle(tmp_path)
+    changed_plan = _approved_plan_with_screening_change(
+        plan,
+        section,
+        field,
+        value,
+    )
+
+    with pytest.raises(Stage2ReleaseError, match="screening scope does not match"):
+        load_stage2_release(release_path, changed_plan)
+
+
+def test_release_runtime_requires_an_exact_lowercase_screening_scope_hash(tmp_path) -> None:
+    release_path, plan = _release_bundle(tmp_path / "missing")
+    document = json.loads(release_path.read_text())
+    document["runtime"].pop("screening_scope_hash")
+    release_path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(Stage2ReleaseError, match="runtime fields are not exact"):
+        load_stage2_release(release_path, plan)
+
+    for index, invalid in enumerate(("a" * 63, "A" * 64)):
+        release_path, plan = _release_bundle(tmp_path / f"invalid-{index}")
+        document = json.loads(release_path.read_text())
+        document["runtime"]["screening_scope_hash"] = invalid
+        release_path.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(Stage2ReleaseError, match="lowercase SHA-256"):
+            load_stage2_release(release_path, plan)
 
 
 def test_qwen_uses_its_calibrator_and_conflicts_fail_open(tmp_path) -> None:

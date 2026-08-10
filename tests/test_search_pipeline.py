@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -83,7 +83,14 @@ def _trust(name: str, *, primary: bool = False, upstream: str | None = None) -> 
 def _entry(provider: str, external_id: str, *, official: bool = False) -> SourceEntry:
     return SourceEntry(
         provider, external_id, "A Paper", ("Ada Lovelace",), doi="10.1000/a-paper", year=2024,
-        metadata={"official_membership": official, "venue_id": "testconf", "publication_version": "published"},
+        metadata={
+            "official_membership": official,
+            "venue_id": "testconf",
+            "publication_version": "published",
+            "fields": ["computer science"],
+            "language": "en",
+            "document_type": "article",
+        },
     )
 
 
@@ -99,7 +106,24 @@ class SearchFixture:
 
 
 def _batch(provider: str, query_hash: str, entries: tuple[SourceEntry, ...]) -> SourceBatch:
-    return SourceBatch(f"fixture:{provider}", query_hash, entries, None, EnvelopeStatus.SUCCESS, raw_response_artifact_hash=f"{provider}-raw")
+    scoped_entries = tuple(
+        _scoped(entry)
+        for entry in entries
+    )
+    return SourceBatch(f"fixture:{provider}", query_hash, scoped_entries, None, EnvelopeStatus.SUCCESS, raw_response_artifact_hash=f"{provider}-raw")
+
+
+def _scoped(entry: SourceEntry) -> SourceEntry:
+    return replace(
+        entry,
+        year=entry.year or 2024,
+        metadata={
+            "fields": ["computer science"],
+            "language": "en",
+            "document_type": "article",
+            **entry.metadata,
+        },
+    )
 
 
 def test_primary_failure_with_shared_fallbacks_is_incomplete_candidate_only(tmp_path) -> None:
@@ -207,6 +231,77 @@ def test_round_zero_arxiv_screening_uses_only_the_frozen_plan_policy(
 
     assert len(screener.calls) == 1
     assert len(screener.calls[0]) == expected_screened
+
+
+def test_canonical_scope_gate_filters_before_stage2_and_persists_reasons(tmp_path) -> None:
+    plan = _plan([_provider("openalex")], required=["openalex"])
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+    entries = (
+        SourceEntry(
+            "openalex",
+            "in-scope",
+            "In scope",
+            ("Ada",),
+            doi="10.1000/in-scope",
+            year=2024,
+        ),
+        SourceEntry(
+            "openalex",
+            "wrong-language",
+            "Wrong language",
+            ("Ada",),
+            doi="10.1000/wrong-language",
+            year=2024,
+            metadata={"language": "zh"},
+        ),
+        SourceEntry(
+            "openalex",
+            "unknown-language",
+            "Unknown language",
+            ("Ada",),
+            doi="10.1000/unknown-language",
+            year=2024,
+            metadata={"language": None},
+        ),
+    )
+
+    class RecordingScreener:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def screen(self, paper_ids):
+            self.calls.append(tuple(paper_ids))
+            return {paper_id: FilterStatus.RELEVANT for paper_id in paper_ids}
+
+        def reranker_score(self, paper_id):
+            return 1.0
+
+    screener = RecordingScreener()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        result = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, entries),))},
+            trusts={"openalex": _trust("openalex")},
+            screener=screener,
+        ).run(run_id="run", crawl_run_id="crawl", observed_at=NOW)
+        events = database.connection.execute(
+            """SELECT decision, reason_code FROM screening_events
+               WHERE implementation_version = 'query-scope-v1'
+               ORDER BY reason_code"""
+        ).fetchall()
+
+    assert len(screener.calls) == 1
+    assert len(screener.calls[0]) == 1
+    assert result.eligible_paper_ids == screener.calls[0]
+    assert result.status == "incomplete"
+    assert [tuple(row) for row in events] == [
+        ("excluded", "scope_language_mismatch"),
+        ("needs_review", "scope_language_unverified"),
+        ("included", "scope_match"),
+    ]
 
 
 def test_replay_has_the_same_canonical_ids_and_source_audit(tmp_path) -> None:
@@ -535,6 +630,10 @@ def test_exact_venue_provider_routes_discover_without_a_search_compiler(tmp_path
                             "id": "pmlr-v235-1",
                             "title": "Official ICML Paper",
                             "doi": "10.1000/icml.official",
+                            "year": 2024,
+                            "fields": ["computer science"],
+                            "language": "en",
+                            "document_type": "article",
                         }
                     ]
                 }
@@ -726,10 +825,10 @@ def test_citation_candidate_is_canonicalized_ingested_screened_and_persisted(tmp
                         provider="openalex",
                         observed_at=NOW,
                         raw_evidence={"native_id": "https://openalex.org/W-native-only"},
-                        candidate=SourceEntry(
+                        candidate=_scoped(SourceEntry(
                             "openalex", "https://openalex.org/W-native-only", "Discovered only by citation",
                             ("Ada",), doi="10.1000/discovered", year=2024,
-                        ),
+                        )),
                     ),
                 ), None, EnvelopeStatus.SUCCESS,
             )
@@ -746,8 +845,13 @@ def test_citation_candidate_is_canonicalized_ingested_screened_and_persisted(tmp
             citation_clients={"openalex": CandidateCitationFixture()},
             screener=DeterministicFakeScreener(frozenset()),
         )
-        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
-        pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
+        root = pipeline.repository.ingest(_scoped(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)))
+        result = pipeline.run(
+            run_id="run",
+            crawl_run_id="crawl",
+            observed_at=NOW,
+            seed_paper_ids=[root.paper_id],
+        )
 
         discovered = database.connection.execute(
             "SELECT paper_id FROM papers WHERE doi = '10.1000/discovered'"
@@ -761,9 +865,91 @@ def test_citation_candidate_is_canonicalized_ingested_screened_and_persisted(tmp
         ).fetchone()
 
     assert pipeline.screener.screened == [root.paper_id, discovered]
+    assert result.eligible_paper_ids == tuple(sorted((root.paper_id, discovered)))
     assert tuple(edge[:2]) == (root.paper_id, discovered)
     assert "W-native-only" in edge[2]
     assert tuple(round_paper) == (1, "q", "irrelevant")
+
+
+def test_out_of_scope_citation_is_not_stage2_screened_or_eligible(tmp_path) -> None:
+    plan = _plan([_provider("openalex", ["search", "citation"])], required=["openalex"])
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class CitationFixture:
+        def references(self, seed, cursor):
+            return CitationBatch(
+                "fixture",
+                "refs",
+                (
+                    CitationEdge(
+                        seed.paper_id,
+                        "native-wrong-language",
+                        CitationEdgeType.REFERENCES,
+                        "openalex",
+                        NOW,
+                        candidate=_scoped(
+                            SourceEntry(
+                                "openalex",
+                                "native-wrong-language",
+                                "Wrong language",
+                                ("Ada",),
+                                doi="10.1000/wrong-language-citation",
+                                year=2024,
+                                metadata={"language": "zh"},
+                            )
+                        ),
+                    ),
+                ),
+                None,
+                EnvelopeStatus.SUCCESS,
+            )
+
+        def citations(self, seed, cursor):
+            return CitationBatch("fixture", "cites", (), None, EnvelopeStatus.SUCCESS)
+
+    class RecordingScreener:
+        def __init__(self) -> None:
+            self.screened: list[str] = []
+
+        def screen(self, paper_ids):
+            self.screened.extend(paper_ids)
+            return {paper_id: FilterStatus.RELEVANT for paper_id in paper_ids}
+
+        def reranker_score(self, paper_id):
+            return 1.0
+
+    screener = RecordingScreener()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
+            trusts={"openalex": _trust("openalex")},
+            citation_clients={"openalex": CitationFixture()},
+            screener=screener,
+        )
+        root = pipeline.repository.ingest(
+            _scoped(
+                SourceEntry(
+                    "openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024
+                )
+            )
+        )
+        result = pipeline.run(
+            run_id="run",
+            crawl_run_id="crawl",
+            observed_at=NOW,
+            seed_paper_ids=[root.paper_id],
+        )
+        excluded = database.connection.execute(
+            "SELECT paper_id FROM papers WHERE doi = '10.1000/wrong-language-citation'"
+        ).fetchone()["paper_id"]
+
+    assert screener.screened == [root.paper_id]
+    assert result.eligible_paper_ids == (root.paper_id,)
+    assert excluded not in result.eligible_paper_ids
 
 
 def test_citation_pages_consume_the_global_request_budget(tmp_path) -> None:
@@ -795,14 +981,14 @@ def test_citation_pages_consume_the_global_request_budget(tmp_path) -> None:
                         CitationEdgeType.REFERENCES,
                         "openalex",
                         NOW,
-                        candidate=SourceEntry(
+                        candidate=_scoped(SourceEntry(
                             "openalex",
                             f"native-{number}",
                             f"Candidate {number}",
                             ("Ada",),
                             doi=f"10.1000/page-{number}",
                             year=2024,
-                        ),
+                        )),
                     ),
                 ),
                 "next" if cursor is None else None,
@@ -821,7 +1007,7 @@ def test_citation_pages_consume_the_global_request_budget(tmp_path) -> None:
             screener=DeterministicFakeScreener(frozenset()),
         )
         root = pipeline.repository.ingest(
-            SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)
+            _scoped(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
         )
         pipeline.run(
             run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id]
@@ -859,7 +1045,7 @@ def test_exact_citation_request_cap_with_complete_pages_exhausts_sources(tmp_pat
             citation_clients={"openalex": CompleteCitationFixture()},
         )
         root = pipeline.repository.ingest(
-            SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)
+            _scoped(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
         )
         result = pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
         round_state = database.connection.execute(
@@ -892,10 +1078,10 @@ def test_final_citation_page_larger_than_candidate_capacity_is_budget_exhausted(
                         CitationEdgeType.REFERENCES,
                         "openalex",
                         NOW,
-                        candidate=SourceEntry(
+                        candidate=_scoped(SourceEntry(
                             "openalex", f"native-{number}", f"Paper {number}",
                             ("Ada",), doi=f"10.1000/final-{number}", year=2024,
-                        ),
+                        )),
                     )
                     for number in (1, 2)
                 ),
@@ -914,7 +1100,7 @@ def test_final_citation_page_larger_than_candidate_capacity_is_budget_exhausted(
             citation_clients={"openalex": OversizedFinalPage()},
         )
         root = pipeline.repository.ingest(
-            SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)
+            _scoped(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
         )
         pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
         round_state = database.connection.execute(
@@ -947,7 +1133,7 @@ def test_partial_citation_page_without_error_is_unresolved_not_exhausted(tmp_pat
             citation_clients={"openalex": PartialPage()},
         )
         root = pipeline.repository.ingest(
-            SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)
+            _scoped(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
         )
         result = pipeline.run(
             run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id]
@@ -974,7 +1160,7 @@ def test_citation_depth_propagates_to_a_second_round_and_exact_candidate_cap_exh
                 "fixture", number, (
                     CitationEdge(
                         seed.paper_id, f"native-{number}", CitationEdgeType.REFERENCES, "openalex", NOW,
-                        candidate=SourceEntry("openalex", f"native-{number}", number, ("Ada",), doi=f"10.1000/{number}", year=2024),
+                        candidate=_scoped(SourceEntry("openalex", f"native-{number}", number, ("Ada",), doi=f"10.1000/{number}", year=2024)),
                     ),
                 ), None, EnvelopeStatus.SUCCESS,
             )
@@ -990,7 +1176,7 @@ def test_citation_depth_propagates_to_a_second_round_and_exact_candidate_cap_exh
             trusts={"openalex": _trust("openalex")}, citation_clients={"openalex": TwoDepthFixture()},
             screener=DeterministicFakeScreener(frozenset()),
         )
-        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
+        root = pipeline.repository.ingest(_scoped(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)))
 
         class RelevantScreener:
             screened: list[str] = []
@@ -1041,7 +1227,7 @@ def test_failed_citation_round_is_incomplete_and_never_sources_exhausted(tmp_pat
             clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
             trusts={"openalex": _trust("openalex")}, citation_clients={"openalex": FailedCitationFixture()},
         )
-        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
+        root = pipeline.repository.ingest(_scoped(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)))
         result = pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
         round_state = database.connection.execute(
             "SELECT stop_reason, limited_scope FROM search_rounds"
@@ -1070,7 +1256,7 @@ def test_time_budget_marks_the_citation_round_limited(tmp_path, monkeypatch) -> 
             clients={"openalex": SearchFixture((_batch("openalex", query_hash, ()),))},
             trusts={"openalex": _trust("openalex")}, citation_clients={"openalex": object()},
         )
-        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
+        root = pipeline.repository.ingest(_scoped(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)))
         result = pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
         row = database.connection.execute(
             "SELECT stop_reason, limited_scope FROM search_rounds"
@@ -1182,7 +1368,7 @@ def test_initial_and_citation_work_share_the_campaign_hard_budgets(tmp_path) -> 
             self.calls.append("search")
             return SourceBatch(
                 "openalex", query_spec.native_query_hash,
-                (SourceEntry("openalex", "initial", "Initial", ("Ada",), doi="10.1000/initial", year=2024),),
+                (_scoped(SourceEntry("openalex", "initial", "Initial", ("Ada",), doi="10.1000/initial", year=2024)),),
                 None, EnvelopeStatus.SUCCESS,
             )
 
@@ -1192,7 +1378,7 @@ def test_initial_and_citation_work_share_the_campaign_hard_budgets(tmp_path) -> 
                 "fixture", "cites", (
                     CitationEdge(
                         "native-citing", seed.paper_id, CitationEdgeType.CITATIONS, "openalex", NOW,
-                        candidate=SourceEntry("openalex", "citation", "Citation", ("Ada",), doi="10.1000/citation", year=2024),
+                        candidate=_scoped(SourceEntry("openalex", "citation", "Citation", ("Ada",), doi="10.1000/citation", year=2024)),
                     ),
                 ), None, EnvelopeStatus.SUCCESS,
             )
@@ -1208,7 +1394,7 @@ def test_initial_and_citation_work_share_the_campaign_hard_budgets(tmp_path) -> 
             database, plan, runtime_providers=plan["providers"], clients={"openalex": client},
             trusts={"openalex": _trust("openalex")}, citation_clients={"openalex": client},
         )
-        root = pipeline.repository.ingest(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024))
+        root = pipeline.repository.ingest(_scoped(SourceEntry("openalex", "root", "Root", ("Ada",), doi="10.1000/root", year=2024)))
         pipeline.run(run_id="run", crawl_run_id="crawl", observed_at=NOW, seed_paper_ids=[root.paper_id])
         citation_requests = database.connection.execute(
             "SELECT COUNT(*) FROM citation_requests WHERE status = 'complete'"

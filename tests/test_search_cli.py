@@ -264,7 +264,7 @@ def test_search_plan_approval_run_and_history_are_frozen(tmp_path, capsys, monke
     assert (tmp_path / "output" / "search" / second["plan_id"] / "QUERY_PLAN.draft.json").exists()
 
 
-def test_search_run_executes_library_provider_and_is_idempotent(tmp_path, capsys, monkeypatch) -> None:
+def test_search_run_fails_closed_for_unscoped_library_seed_and_is_idempotent(tmp_path, capsys, monkeypatch) -> None:
     _inject_test_screener(monkeypatch)
     document = _draft()
     document["providers"] = ["user_library"]
@@ -306,15 +306,17 @@ def test_search_run_executes_library_provider_and_is_idempotent(tmp_path, capsys
         str(database),
     ]
 
-    assert main(command) == 0
+    assert main(command) == 1
     first = json.loads(capsys.readouterr().out)
     assert (first["provider_invocation"], first["status"], first["paper_count"]) == (
         "completed",
-        "complete",
+        "incomplete",
         1,
     )
-    assert main(command) == 0
+    assert main(command) == 1
     assert json.loads(capsys.readouterr().out)["crawl_run_id"] == first["crawl_run_id"]
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM source_runs").fetchone()[0] == 1
 
     assert main(
         [
@@ -325,9 +327,9 @@ def test_search_run_executes_library_provider_and_is_idempotent(tmp_path, capsys
             "--crawl-run-id",
             first["crawl_run_id"],
         ]
-    ) == 0
+    ) == 1
     audit = json.loads(capsys.readouterr().out)
-    assert (audit["status"], audit["totals"]["sources"]["raw_discovered"]) == ("complete", 1)
+    assert (audit["status"], audit["totals"]["sources"]["raw_discovered"]) == ("incomplete", 1)
     assert audit["sources"][0]["provider"] == "user_library"
     assert audit["queries"][0]["returned_count"] == 1
     assert audit["rounds"] == []

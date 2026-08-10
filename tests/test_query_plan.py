@@ -1,7 +1,9 @@
+from copy import deepcopy
 import json
 
 import pytest
 
+from paper_agent.approval import approved_content_hash
 from paper_agent.query_plan import (
     QueryPlanDriftError,
     QueryPlanError,
@@ -11,6 +13,7 @@ from paper_agent.query_plan import (
     compile_query_plan,
 )
 from paper_agent.schema import validate
+from paper_agent.scope_filter import screening_scope_hash
 
 
 def _digest(character: str) -> str:
@@ -96,6 +99,80 @@ def test_compiled_plan_replays_and_approval_is_detached() -> None:
     )
     assert approved["plan_hash"] == first["plan_hash"]
     validate(approved, "query-plan.schema.json")
+
+
+def test_screening_scope_hash_is_derived_after_scope_defaults_and_overwrites_input() -> None:
+    document = draft()
+    document["filter"]["screening_scope_hash"] = "f" * 64
+    implicit = compile_query_plan(document, providers=[provider()])
+    explicit_document = draft()
+    explicit_document["scope"]["include_arxiv_candidates"] = False
+    explicit = compile_query_plan(explicit_document, providers=[provider()])
+
+    assert implicit["filter"]["screening_scope_hash"] == screening_scope_hash(implicit)
+    assert implicit["filter"]["screening_scope_hash"] != "f" * 64
+    assert implicit["filter"]["screening_scope_hash"] == explicit["filter"][
+        "screening_scope_hash"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    (
+        ("research", "objective", "changed objective"),
+        ("inclusion", "criteria", ["replicated evidence"]),
+        ("scope", "languages", ["zh"]),
+    ),
+)
+def test_screening_scope_hash_changes_only_with_screening_scope(
+    section: str,
+    field: str,
+    value: object,
+) -> None:
+    baseline = compile_query_plan(draft(), providers=[provider()])
+    changed_document = draft()
+    changed_document[section][field] = value
+    changed = compile_query_plan(changed_document, providers=[provider()])
+    budget_document = draft()
+    budget_document["budgets"]["max_requests"] = 101
+    budget_changed = compile_query_plan(budget_document, providers=[provider()])
+
+    assert changed["filter"]["screening_scope_hash"] != baseline["filter"][
+        "screening_scope_hash"
+    ]
+    assert budget_changed["filter"]["screening_scope_hash"] == baseline["filter"][
+        "screening_scope_hash"
+    ]
+
+
+def test_forged_screening_scope_hash_is_rejected_on_approval_and_load(tmp_path) -> None:
+    plan = compile_query_plan(draft(), providers=[provider()])
+    plan["filter"]["screening_scope_hash"] = "f" * 64
+    plan["plan_hash"] = approved_content_hash(plan)
+
+    with pytest.raises(QueryPlanError, match="screening scope hash does not match"):
+        approve_query_plan(
+            plan,
+            plan["plan_hash"],
+            approved_by="owner",
+            approved_at="2026-08-09T01:00:00Z",
+        )
+
+    forged = deepcopy(plan)
+    forged["status"] = "approved"
+    forged["approval"] = {
+        "approved_hash": forged["plan_hash"],
+        "approved_by": "owner",
+        "approved_at": "2026-08-09T01:00:00Z",
+        "approval_method": "cli_hash",
+    }
+    store = QueryPlanStore(tmp_path)
+    path = store.approved_path(str(forged["plan_id"]))
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(forged), encoding="utf-8")
+
+    with pytest.raises(QueryPlanError, match="screening scope hash does not match"):
+        store.load_approved(str(forged["plan_id"]))
 
 
 def test_arxiv_candidate_policy_is_frozen_and_runtime_drift_is_rejected() -> None:

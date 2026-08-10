@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
@@ -51,6 +51,7 @@ from .query_plan import assert_runtime_matches
 from .repository import PaperRepository
 from .providers.api import CrawlWindow, IdentityCandidate, SeedInput, VenueDescriptor
 from .search_runs import IncrementalScope, SearchRunCoordinator, SourceMetrics
+from .scope_filter import SCOPE_FILTER_VERSION, evaluate_scope, screening_scope_hash
 from .storage import Database
 from .verification import MetadataCoordinator, ProviderTrust, VenueContext
 
@@ -66,7 +67,7 @@ class PipelineResult:
     eligible_paper_ids: tuple[str, ...] = ()
 
 
-SEARCH_IMPLEMENTATION_VERSION = "phase2-search-v2"
+SEARCH_IMPLEMENTATION_VERSION = "phase2-search-v3"
 _OUTCOME_KEY = "pipeline_outcome_v1"
 
 
@@ -77,6 +78,48 @@ class VenueRun:
     context: VenueContext
     cursor: str | None = None
     historical_replay: bool = False
+
+
+@dataclass(slots=True)
+class _ScopeBoundScreener:
+    pipeline: Any
+    run_id: str
+    scope_statuses: dict[str, FilterStatus] = field(default_factory=dict, init=False)
+
+    def screen(self, paper_ids: Sequence[str]) -> Mapping[str, FilterStatus]:
+        ordered_ids = tuple(sorted(set(paper_ids)))
+        scope_decisions = self.pipeline._record_scope_screening(self.run_id, ordered_ids)
+        self.scope_statuses.update(scope_decisions)
+        eligible = tuple(
+            paper_id
+            for paper_id in ordered_ids
+            if scope_decisions[paper_id] is FilterStatus.RELEVANT
+        )
+        stage2_decisions = dict(self.pipeline.screener.screen(eligible))
+        if set(stage2_decisions) != set(eligible):
+            raise ValueError("Stage 2 must return one decision for every in-scope paper")
+        return {
+            paper_id: (
+                stage2_decisions[paper_id]
+                if scope_decisions[paper_id] is FilterStatus.RELEVANT
+                else scope_decisions[paper_id]
+            )
+            for paper_id in ordered_ids
+        }
+
+    def eligible_ids(self, paper_ids: Sequence[str]) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                paper_id
+                for paper_id in paper_ids
+                if self.scope_statuses.get(paper_id) is FilterStatus.RELEVANT
+            )
+        )
+
+    def reranker_score(self, paper_id: str) -> float:
+        if self.scope_statuses.get(paper_id) is not FilterStatus.RELEVANT:
+            return 0.0
+        return self.pipeline.screener.reranker_score(paper_id)
 
 
 class InitialFanoutAdapter:
@@ -295,9 +338,11 @@ class SearchPipeline:
             | library_seed_ids
             | {paper_id for paper_id in seed_paper_ids if self.repository.get_paper(paper_id)}
         ))
-        root_decisions = dict(self.screener.screen(root_paper_ids))
+        scope_screener = _ScopeBoundScreener(self, run_id)
+        root_decisions = dict(scope_screener.screen(root_paper_ids))
         if set(root_decisions) != set(root_paper_ids):
             raise ValueError("Stage 2 must return one decision for every root discovery")
+        eligible_root_paper_ids = scope_screener.eligible_ids(root_paper_ids)
 
         for source_run_id, source_metrics in metrics.items():
             entries = source_entries[source_run_id]
@@ -326,8 +371,12 @@ class SearchPipeline:
             crawl_run_id,
             observed_at,
             tuple(sorted(set(seed_paper_ids) | library_seed_ids)),
-            root_decisions,
+            {
+                paper_id: root_decisions[paper_id]
+                for paper_id in eligible_root_paper_ids
+            },
             paper_subquestions,
+            screener=scope_screener,
             request_budget=max(
                 0,
                 int(self.plan["budgets"]["max_requests"])
@@ -341,6 +390,9 @@ class SearchPipeline:
                 - enrichment_candidates,
             ),
             deadline=campaign_deadline,
+        )
+        eligible_paper_ids = scope_screener.eligible_ids(
+            tuple(scope_screener.scope_statuses)
         )
         status = self.runs.finish_crawl(crawl_run_id, plan=self.plan, fanout=fanout, finished_at=observed_at)
         if (
@@ -389,7 +441,7 @@ class SearchPipeline:
             tuple(sorted(all_paper_ids - non_arxiv_ids)),
             fanout,
             tuple(round_ids),
-            root_paper_ids,
+            eligible_paper_ids,
         )
         row = self.database.connection.execute(
             "SELECT stats_json FROM crawl_runs WHERE crawl_run_id = ?", (crawl_run_id,)
@@ -522,6 +574,57 @@ class SearchPipeline:
 
     def _provider(self, name: str) -> Mapping[str, Any]:
         return next(item for item in self.plan["providers"] if item["provider"] == name)
+
+    def _record_scope_screening(
+        self, run_id: str, paper_ids: Sequence[str]
+    ) -> dict[str, FilterStatus]:
+        criterion_id = f"{SCOPE_FILTER_VERSION}:{screening_scope_hash(self.plan)}"
+        decisions = {}
+        with self.database.transaction() as connection:
+            for paper_id in paper_ids:
+                paper = self.repository.get_paper(paper_id)
+                if paper is None:
+                    raise ValueError(f"scope filter paper does not exist: {paper_id}")
+                rows = connection.execute(
+                    """SELECT raw_metadata_json FROM paper_sources
+                       WHERE paper_id = ? ORDER BY provider, external_id""",
+                    (paper_id,),
+                ).fetchall()
+                decision = evaluate_scope(
+                    paper,
+                    tuple(json.loads(row["raw_metadata_json"]) for row in rows),
+                    self.plan["scope"],
+                )
+                decisions[paper_id] = decision.status
+                event_id = content_hash(
+                    {"run_id": run_id, "paper_id": paper_id, "criterion_id": criterion_id}
+                )
+                connection.execute(
+                    """INSERT INTO screening_events(
+                           screening_event_id, run_id, paper_id, criterion_id, decision,
+                           reason_code, input_hash, implementation_version
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(run_id, paper_id, criterion_id) DO UPDATE SET
+                           decision = excluded.decision,
+                           reason_code = excluded.reason_code,
+                           input_hash = excluded.input_hash,
+                           implementation_version = excluded.implementation_version""",
+                    (
+                        event_id,
+                        run_id,
+                        paper_id,
+                        criterion_id,
+                        {
+                            FilterStatus.RELEVANT: "included",
+                            FilterStatus.IRRELEVANT: "excluded",
+                            FilterStatus.NEEDS_REVIEW: "needs_review",
+                        }[decision.status],
+                        decision.reason_code,
+                        decision.input_hash,
+                        SCOPE_FILTER_VERSION,
+                    ),
+                )
+        return decisions
 
     def _filter_audit(self, query: NativeQuery | None) -> dict[str, object]:
         if query is not None:
@@ -1000,6 +1103,7 @@ class SearchPipeline:
         root_decisions: Mapping[str, FilterStatus],
         paper_subquestions: Mapping[str, set[str]],
         *,
+        screener: Any,
         request_budget: int,
         candidate_budget: int,
         deadline: float,
@@ -1028,7 +1132,7 @@ class SearchPipeline:
                 paper_id,
                 next(iter(sorted(paper_subquestions.get(paper_id, ()))), default_subquestion),
                 status,
-                self.screener.reranker_score(paper_id),
+                screener.reranker_score(paper_id),
                 self.repository.get_paper(paper_id).verification_status,
                 0,
                 0,
@@ -1081,7 +1185,7 @@ class SearchPipeline:
                 already_relevant=frozenset(
                     paper_id for paper_id, candidate in candidates.items() if candidate.status is FilterStatus.RELEVANT
                 ),
-                screener=self.screener,
+                screener=screener,
             )
             candidate_context = self._candidate_contexts(batches, requests, candidates)
             self._save_round_papers(round_id, decisions, candidate_context)
@@ -1091,7 +1195,7 @@ class SearchPipeline:
                 if paper:
                     depth, subquestion_id = candidate_context[paper_id]
                     candidates[paper_id] = SeedCandidate(
-                        paper_id, subquestion_id, decision, self.screener.reranker_score(paper_id), paper.verification_status,
+                        paper_id, subquestion_id, decision, screener.reranker_score(paper_id), paper.verification_status,
                         depth, round_index,
                     )
             expanded.update(seed.paper_id for seed in seeds)

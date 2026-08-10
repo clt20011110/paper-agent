@@ -244,10 +244,16 @@ def test_venue_only_execution_runs_descriptors_without_topic_search(tmp_path) ->
     specs = _provider_specs(["neurips_proceedings"], ROOT, venue_ids=("neurips",))
     plan = compile_query_plan(document, providers=specs)
     approved = approve_query_plan(plan, plan["plan_hash"], approved_by="owner", approved_at=NOW)
+    venue_page = json.loads(
+        (ROOT / "tests/fixtures/providers/venue-neurips.json").read_text(encoding="utf-8")
+    )
+    venue_page["entries"][0].update({
+        "fields": ["computer science"],
+        "language": "en",
+        "document_type": "article",
+    })
     responses = {
-        "neurips_proceedings:discover:first": json.loads(
-            (ROOT / "tests/fixtures/providers/venue-neurips.json").read_text(encoding="utf-8")
-        ),
+        "neurips_proceedings:discover:first": venue_page,
         "neurips_proceedings:discover:neurips:page-2": {"entries": []},
     }
     database = tmp_path / "crawl.sqlite3"

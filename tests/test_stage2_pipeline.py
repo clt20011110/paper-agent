@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
 from threading import Barrier, Event
@@ -129,9 +129,22 @@ def _profile() -> Stage2Profile:
         reranker_revision="reranker-revision",
         adjudicator_model_id="qwen-model",
         adjudicator_revision="qwen-revision",
+        screening_scope_hash="0" * 64,
         token_bucket_width=1_000,
         adjudicator_concurrency=2,
     )
+
+
+def test_stage2_profile_hash_binds_an_exact_screening_scope_hash() -> None:
+    profile = _profile()
+    changed = replace(profile, screening_scope_hash="1" * 64)
+
+    assert changed.base_runtime_config_hash != profile.base_runtime_config_hash
+    assert changed.full_profile_hash != profile.full_profile_hash
+
+    for invalid in ("0" * 63, "A" * 64, None):
+        with pytest.raises(ValueError, match="lowercase SHA-256"):
+            replace(profile, screening_scope_hash=invalid)
 
 
 def _papers() -> tuple[Stage2Paper, ...]:
