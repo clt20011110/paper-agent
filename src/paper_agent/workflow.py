@@ -56,6 +56,25 @@ class FileRef:
 
 
 @dataclass(frozen=True, slots=True)
+class DirectoryRef:
+    """A manifest-relative directory location frozen by the manifest hash."""
+
+    path: str
+    resolved_path: Path
+
+    def __post_init__(self) -> None:
+        if not self.path:
+            raise ValueError("workflow DirectoryRef is invalid")
+
+    def verify(self) -> None:
+        if not self.resolved_path.is_dir():
+            raise ValueError(f"workflow directory reference drifted: {self.path}")
+
+    def document(self) -> dict[str, str]:
+        return {"path": self.path}
+
+
+@dataclass(frozen=True, slots=True)
 class SnapshotRef:
     provider: str
     file: FileRef
@@ -178,10 +197,11 @@ class ReportStep:
     processing_grants: FileRef | None
     previous_report_run_id: str | None
     policy: FileRef | None
+    artifact_root: DirectoryRef | None = None
     stage: StageKind = StageKind.REPORT
 
     def document(self) -> dict[str, Any]:
-        return {
+        document = {
             "id": self.step_id,
             "stage": self.stage.value,
             "plan": self.plan.document(),
@@ -191,6 +211,9 @@ class ReportStep:
             "previous_report_run_id": self.previous_report_run_id,
             "policy": self.policy.document() if self.policy else None,
         }
+        if self.artifact_root is not None:
+            document["artifact_root"] = self.artifact_root.document()
+        return document
 
     def file_refs(self) -> tuple[FileRef, ...]:
         optional = tuple(
@@ -286,6 +309,8 @@ class WorkflowManifest:
         for step in self.steps:
             for reference in step.file_refs():
                 reference.verify()
+            if isinstance(step, ReportStep) and step.artifact_root is not None:
+                step.artifact_root.verify()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1053,10 +1078,16 @@ def _step(value: object, root: Path, schema_version: str) -> StageSpec:
             _optional_text(value["processing_grant_id"], "processing_grant_id"),
             _optional_file_ref(value["policy"], root, "analysis policy"),
         )
-    _exact(value, {
+    report_fields = {
         "id", "stage", "plan", "corpus_snapshot", "search_audit",
         "processing_grants", "previous_report_run_id", "policy",
-    })
+    }
+    actual_fields = set(value)
+    if actual_fields != report_fields and actual_fields != {
+        *report_fields,
+        "artifact_root",
+    }:
+        raise ValueError("workflow report step has unexpected or missing fields")
     return ReportStep(
         step_id,
         _file_ref(value["plan"], root, "report plan"),
@@ -1065,6 +1096,9 @@ def _step(value: object, root: Path, schema_version: str) -> StageSpec:
         _optional_file_ref(value["processing_grants"], root, "processing grants"),
         _optional_text(value["previous_report_run_id"], "previous_report_run_id"),
         _optional_file_ref(value["policy"], root, "report policy"),
+        _optional_directory_ref(
+            value.get("artifact_root"), root, "report artifact root"
+        ),
     )
 
 
@@ -1106,6 +1140,30 @@ def _file_ref(value: object, root: Path, label: str) -> FileRef:
 
 def _optional_file_ref(value: object, root: Path, label: str) -> FileRef | None:
     return None if value is None else _file_ref(value, root, label)
+
+
+def _optional_directory_ref(
+    value: object, root: Path, label: str
+) -> DirectoryRef | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"workflow {label} must be a DirectoryRef")
+    _exact(value, {"path"})
+    path = value["path"]
+    if not isinstance(path, str) or not path:
+        raise ValueError(f"workflow {label} DirectoryRef is invalid")
+    candidate = Path(path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(
+            f"workflow {label} DirectoryRef path must be relative to the manifest"
+        )
+    resolved = (root / candidate).resolve()
+    if root not in resolved.parents and resolved != root:
+        raise ValueError(f"workflow {label} DirectoryRef escapes the manifest directory")
+    reference = DirectoryRef(path, resolved)
+    reference.verify()
+    return reference
 
 
 def _selection_ref(

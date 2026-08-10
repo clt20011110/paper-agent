@@ -87,6 +87,11 @@ from .seed_import import import_seeds, inputs_from_files, validate_seed_inputs
 from .storage import Database
 from .workflow import SequentialWorkflowOrchestrator, StopToken, load_workflow_manifest
 from .workflow_adapters import default_stage_adapters
+from .workflow_report_handoff import (
+    WorkflowReportExecutionRequest,
+    WorkflowReportHandoffRequest,
+    WorkflowReportHandoffService,
+)
 
 
 class CliUsageError(ValueError):
@@ -298,6 +303,7 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     report.add_argument("--draft", type=Path)
     report.add_argument("--corpus-snapshot", type=Path)
     report.add_argument("--search-audit", type=Path)
+    report.add_argument("--handoff-id")
     report.add_argument("--output-root", type=Path)
     report.add_argument("--report-run-id")
     report.add_argument("--pipeline-run-id")
@@ -323,9 +329,10 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     report_inputs.add_argument("--database", type=Path)
     report_inputs.add_argument("--artifact-root", type=Path)
     report_inputs.add_argument("--output-root", type=Path)
-    report_inputs.add_argument("--crawl-run-id", required=True)
-    report_inputs.add_argument("--filter-run-id", required=True)
-    report_inputs.add_argument("--stage4-run-id", required=True)
+    report_inputs.add_argument("--workflow-run-id")
+    report_inputs.add_argument("--crawl-run-id")
+    report_inputs.add_argument("--filter-run-id")
+    report_inputs.add_argument("--stage4-run-id")
     report_inputs.add_argument("--recent-cutoff", required=True)
     report_inputs.add_argument("--created-at", required=True)
     report_inputs.add_argument("--include-needs-review", action="store_true")
@@ -339,6 +346,16 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     report_approve.add_argument("--corpus-snapshot", required=True, type=Path)
     report_approve.add_argument("--search-audit", required=True, type=Path)
     report_approve.add_argument("--output-root", required=True, type=Path)
+    report_approve.add_argument("--handoff-id")
+    report_approve.add_argument("--database", type=Path)
+    report_approve.add_argument("--artifact-root", type=Path)
+    report_approve.add_argument("--workflow-config", type=Path)
+    report_approve.add_argument("--workflow-manifest", type=Path)
+    report_approve.add_argument("--report-workflow-id")
+    report_approve.add_argument("--report-workflow-run-id")
+    report_approve.add_argument("--workflow-processing-grants", type=Path)
+    report_approve.add_argument("--workflow-policy", type=Path)
+    report_approve.add_argument("--previous-report-run-id")
 
     verify = subcommands.add_parser(
         "verify-report", help="run deterministic gates over a published report"
@@ -579,6 +596,21 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
     if args.report_command == "prepare-inputs":
         return _report_prepare_inputs(args, config=config)
     if args.report_command == "approve":
+        database_path: Path | None = None
+        if args.handoff_id is not None:
+            required = {
+                "--database": args.database,
+                "--workflow-config": args.workflow_config,
+                "--workflow-manifest": args.workflow_manifest,
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise CliUsageError(
+                    "report approve --handoff-id requires " + ", ".join(missing)
+                )
+            database_path = _database_path(args.database, config, args.config)
+            if not database_path.is_file():
+                raise FileNotFoundError(f"database does not exist: {database_path}")
         approved_at = args.approved_at or datetime.now(UTC).isoformat().replace(
             "+00:00", "Z"
         )
@@ -590,10 +622,10 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
             expected_hash=args.hash,
             approved_by=args.approved_by,
             approved_at=approved_at,
-            save_bundle=not args.dry_run,
+            save_bundle=not args.dry_run and args.handoff_id is None,
             resources=runtime.resources,
         )
-        return {
+        response: dict[str, Any] = {
             "command": "report.approve",
             "path": str(result.path),
             "plan_hash": result.plan["plan_hash"],
@@ -601,26 +633,77 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
             "status": "validated" if args.dry_run else "approved",
             "write_performed": result.saved,
         }
+        if args.handoff_id is not None:
+            assert database_path is not None
+            with Database(database_path, read_only=args.dry_run) as database:
+                if not args.dry_run:
+                    database.migrate()
+                execution = WorkflowReportHandoffService(
+                    database,
+                    ArtifactStore(args.artifact_root or args.output_root),
+                    args.output_root,
+                ).prepare_report_workflow(
+                    WorkflowReportExecutionRequest(
+                        args.handoff_id,
+                        result.path,
+                        args.workflow_config,
+                        args.workflow_manifest,
+                        processing_grants_path=args.workflow_processing_grants,
+                        previous_report_run_id=args.previous_report_run_id,
+                        policy_path=args.workflow_policy,
+                        workflow_id=args.report_workflow_id,
+                        workflow_run_id=args.report_workflow_run_id,
+                    ),
+                    save_manifest=not args.dry_run,
+                    approved_bundle=ReportPlanBundle(
+                        result.plan,
+                        _load_mapping(args.corpus_snapshot, "corpus snapshot"),
+                        _load_mapping(args.search_audit, "search audit"),
+                    ),
+                )
+            response["report_workflow"] = execution.document()
+            response["write_performed"] = execution.write_performed
+        return response
     if args.plan_only:
-        required = {
-            "--draft": args.draft,
-            "--corpus-snapshot": args.corpus_snapshot,
-            "--search-audit": args.search_audit,
-            "--output-root": args.output_root,
-        }
+        required = {"--draft": args.draft, "--output-root": args.output_root}
+        if args.handoff_id is None:
+            required.update({
+                "--corpus-snapshot": args.corpus_snapshot,
+                "--search-audit": args.search_audit,
+            })
         missing = [name for name, value in required.items() if value is None]
         if missing:
             raise CliUsageError(
                 "report --plan-only requires " + ", ".join(missing)
             )
-        result = compile_report_plan_from_files(
-            args.draft,
-            args.corpus_snapshot,
-            args.search_audit,
-            args.output_root,
-            save_draft=not args.dry_run,
-            resources=runtime.resources,
-        )
+        if args.handoff_id is not None:
+            if args.corpus_snapshot is not None or args.search_audit is not None:
+                raise CliUsageError(
+                    "handoff-bound report planning derives corpus/search audit from SQLite"
+                )
+            database_path = _database_path(args.database, config, args.config)
+            if not database_path.is_file():
+                raise FileNotFoundError(f"database does not exist: {database_path}")
+            with Database(database_path, read_only=True) as database:
+                result = WorkflowReportHandoffService(
+                    database,
+                    ArtifactStore(args.artifact_root or args.output_root),
+                    args.output_root,
+                ).compile_plan(
+                    args.handoff_id,
+                    args.draft,
+                    save_draft=not args.dry_run,
+                    resources=runtime.resources,
+                )
+        else:
+            result = compile_report_plan_from_files(
+                args.draft,
+                args.corpus_snapshot,
+                args.search_audit,
+                args.output_root,
+                save_draft=not args.dry_run,
+                resources=runtime.resources,
+            )
         return {
             "command": "report.plan",
             "draft_path": str(result.path),
@@ -663,6 +746,47 @@ def _report_prepare_inputs(
     if output_root is None:
         raise ConfigError(
             "report prepare-inputs requires --output-root or a v2 --config"
+        )
+    if args.workflow_run_id is not None:
+        if any(
+            value is not None
+            for value in (args.crawl_run_id, args.filter_run_id, args.stage4_run_id)
+        ) or args.include_needs_review:
+            raise CliUsageError(
+                "workflow report handoff derives run IDs and include_needs_review "
+                "from the completed workflow"
+            )
+        with Database(database_path, read_only=args.dry_run) as database:
+            if not args.dry_run:
+                database.migrate()
+            result = WorkflowReportHandoffService(
+                database,
+                ArtifactStore(args.artifact_root or output_root),
+                output_root,
+            ).prepare(
+                WorkflowReportHandoffRequest(
+                    args.workflow_run_id,
+                    args.recent_cutoff,
+                    args.created_at,
+                ),
+                save_bundle=not args.dry_run,
+            )
+        document = result.document()
+        return {
+            **document,
+            "command": "report.prepare-workflow-inputs",
+            "dry_run": args.dry_run,
+        }
+    required = {
+        "--crawl-run-id": args.crawl_run_id,
+        "--filter-run-id": args.filter_run_id,
+        "--stage4-run-id": args.stage4_run_id,
+    }
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        raise CliUsageError(
+            "report prepare-inputs requires --workflow-run-id or "
+            + ", ".join(missing)
         )
     with Database(database_path, read_only=True) as database:
         result = ReportInputService(

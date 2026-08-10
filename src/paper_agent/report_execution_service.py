@@ -13,10 +13,16 @@ from .processing import ProcessingGate
 from .report_artifacts import ReportArtifactStore
 from .report_audit import ReportAuditCoordinator, ReportAuditResult, ReportBundle, SolInvoker as AuditInvoker
 from .report_config import ReportRuntimeConfig
-from .report_plan import ReportPlanBundle, assert_report_runtime_matches, persist_approved_report_plan
+from .report_plan import (
+    ReportPlanBundle,
+    ReportPlanDriftError,
+    assert_report_runtime_matches,
+    persist_approved_report_plan,
+)
 from .report_reduce import FrozenDerivedArtifact, ReportReduceResult, SolInvoker as ReduceInvoker, SolReduceCoordinator
 from .reporting import AnalysisRecord, ReportPlanner, SectionRule, derive_comparison_groups
 from .storage import Database
+from .workflow_report_handoff import assert_report_handoff_runtime
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +70,15 @@ class ReportExecutionService:
         processing_grants: Mapping[str, str] | None = None,
         previous: Mapping[str, Any] | None = None,
         dry_run: bool = False,
+        workflow_run_id: str | None = None,
     ) -> ReportExecutionResult:
+        if (
+            bundle.plan.get("workflow_handoff") is not None
+            and workflow_run_id is None
+        ):
+            raise ReportPlanDriftError(
+                "handoff-bound ReportPlan requires its registered standalone workflow"
+            )
         if not self.runtime_config.enabled:
             return ReportExecutionResult(report_run_id, "complete", dry_run, skipped=True)
         self.runtime_config.validate_for_run(
@@ -76,6 +90,16 @@ class ReportExecutionService:
             corpus_snapshot=bundle.corpus_snapshot,
             search_audit_pack=bundle.search_audit,
         )
+        if workflow_run_id is not None:
+            assert_report_handoff_runtime(
+                self.database,
+                bundle.plan,
+                bundle.corpus_snapshot,
+                bundle.search_audit,
+                workflow_run_id=workflow_run_id,
+                report_run_id=report_run_id,
+                runtime_artifact_root=self.artifact_store.root,
+            )
         analyses, artifacts = self._analyses(bundle)
         planner = ReportPlanner(
             bundle.plan, analyses,

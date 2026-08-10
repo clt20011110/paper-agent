@@ -50,10 +50,17 @@ UTC 时钟，CLI 不接受可回拨的 `--now`。
 `--workflow` 和 `--workflow-run-id` 的 `resume`。
 
 schema version 2 可把 Analyze 精确绑定到当前 Download step，但完整动态链在 Analyze 结束。
-随后用这些子运行的精确 ID 执行 `report prepare-inputs`，人工完成 plan-only 与 approve，并将
-approved ReportPlan path/hash 固定到新 config，再启动独立的单阶段 Report workflow。ReportPlan
-要求 membership 与实际 corpus 完全一致，因此不能在 crawler 运行前把 Report 塞进同一 manifest；
-解析器会拒绝这种清单。Stage 4b 若在 `pipeline_runs=running` 时崩溃，workflow 会检查 reduce、
+随后以完成态原 workflow 的 ID 执行 `report prepare-inputs --workflow-run-id`；保存返回的
+`handoff_id`，用 `report --plan-only --handoff-id` 编译计划，再用
+`report approve --handoff-id --workflow-config --workflow-manifest` 同时批准计划并登记独立的单阶段
+Report workflow。新 config 必须启用 summary，固定 approved ReportPlan path/hash，并与 handoff 使用
+相同 database/output root；prepare 时使用的 artifact root 会作为 manifest-relative DirectoryRef
+冻结，Report adapter 不会把 report output root 猜成 analysis artifact root。最后以 approve 返回的
+`manifest_path` 和 `report_workflow_run_id` 调用
+普通 `run` 或 `resume`。handoff 只接受完整成功的 Search → Filter → Download → Analyze workflow；
+Stage 4 未完成或失败时必须先恢复上游。ReportPlan 要求 membership 与实际 corpus 完全一致，因此
+不能在 crawler 运行前把 Report 塞进同一 manifest；解析器会拒绝这种清单。Stage 4b 若在
+`pipeline_runs=running` 时崩溃，workflow 会检查 reduce、
 audit 与 audit-shard 的子租约：仍有效时保持 blocked，无有效租约时允许相同冻结输入进入协调器的
 故障恢复逻辑。
 

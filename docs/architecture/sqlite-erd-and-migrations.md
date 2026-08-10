@@ -22,6 +22,9 @@ erDiagram
   PAPERS ||--o{ ANALYSIS_RUNS : analyzed
   ARTIFACTS ||--o{ ANALYSIS_RUNS : input
   REPORT_PLANS ||--o{ REPORT_RUNS : drives
+  WORKFLOW_RUNS ||--o| WORKFLOW_REPORT_HANDOFFS : freezes
+  WORKFLOW_REPORT_HANDOFFS ||--o| WORKFLOW_REPORT_EXECUTIONS : launches
+  REPORT_PLANS ||--o| WORKFLOW_REPORT_EXECUTIONS : binds
   REPORT_RUNS ||--o{ REPORT_CLAIMS : emits
   REPORT_CLAIMS ||--o{ CLAIM_EVIDENCE : supported_by
   COMPARISON_GROUPS ||--o{ REPORT_CLAIMS : qualifies
@@ -52,6 +55,8 @@ erDiagram
 | `provider_registrations` | 绑定 distribution、精确 version、entry point、manifest、内容 digest、审计和信任状态。漂移不更新原记录，而是失效旧注册。 |
 | `authorization_grants` | grant 的 canonical content hash、detached approval、撤销事件、时间、action/purpose/scope、artifact/lineage/model/skill digest；YAML defaults 不进入运行时授权。 |
 | `download_scope_snapshots` | 下载 collection/selection 的排序 paper IDs、内容哈希和可恢复 snapshot ID；membership 校验从 SQLite 重建并重算哈希。 |
+| `workflow_report_handoffs` | migration 24 冻结完成态 Search→Analyze workflow、四个 child run、Stage 3/4 精确论文集合、artifact/output root 及 corpus/audit 文件 hash；完成后不可更新或删除。 |
+| `workflow_report_executions` | 每个 handoff 只允许一个 approved ReportPlan 与独立 Report workflow；plan 与 execution 在同一事务先登记，再幂等写不可变 bundle/manifest，冲突请求不会留下未登记文件。 |
 | `manual_queue` | 有类型、去重 key、关联 paper/run、原因、状态与人工处理结果；任何不能安全自动完成的条目都入队而非丢弃。 |
 | `schema_migrations` | `version` 主键、已应用时间、迁移名称和应用方；只追加。 |
 

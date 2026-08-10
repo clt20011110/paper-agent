@@ -128,6 +128,25 @@ class ReportResources:
             raise ReportConfigError(f"summary schema is not valid JSON: {path}") from error
         if not isinstance(value, dict):
             raise ReportConfigError(f"summary schema must be a JSON object: {path}")
+        if call_kind == "planning_assist":
+            properties = value.get("properties")
+            required = value.get("required")
+            if (
+                isinstance(properties, dict)
+                and "workflow_handoff" in properties
+                and isinstance(required, list)
+                and "workflow_handoff" not in required
+            ):
+                # Persisted v1 plans may predate workflow handoffs, while every
+                # newly generated Codex structured output must remain strict.
+                value = {
+                    **value,
+                    "required": [
+                        name
+                        for name in properties
+                        if name in required or name == "workflow_handoff"
+                    ],
+                }
         return value
 
     def prompt(self, call_kind: str) -> str:

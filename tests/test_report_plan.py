@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from paper_agent.approval import approved_content_hash
 from paper_agent.canonical import canonical_json, content_hash
 from paper_agent.report_plan import (
     CLASSIFICATION_AXES,
@@ -467,6 +468,31 @@ def test_store_keeps_approved_bundle_immutable_and_validates_on_load(tmp_path) -
     path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(ReportPlanError, match="drifted"):
         store.load_approved(approved["plan_id"])
+
+
+def test_legacy_v1_plan_without_workflow_handoff_remains_loadable(tmp_path) -> None:
+    plan, corpus, audit = _compiled()
+    plan.pop("workflow_handoff")
+    plan["plan_hash"] = approved_content_hash(plan)
+    plan["plan_id"] = f"legacy-report-plan-{plan['plan_hash'][:12]}"
+    approved = approve_report_plan(
+        plan,
+        plan["plan_hash"],
+        approved_by="legacy-owner",
+        approved_at="2026-08-10T00:03:00Z",
+    )
+    store = ReportPlanStore(tmp_path)
+
+    store.save_bundle(approved, corpus, audit)
+    loaded = store.load_bundle(approved["plan_id"])
+
+    assert "workflow_handoff" not in loaded.plan
+    assert_report_runtime_matches(
+        loaded.plan,
+        loaded.plan,
+        corpus_snapshot=loaded.corpus_snapshot,
+        search_audit_pack=loaded.search_audit,
+    )
 
 
 def test_approved_plan_has_an_idempotent_immutable_database_entrypoint(tmp_path) -> None:

@@ -321,6 +321,7 @@ def compile_report_plan(
     *,
     corpus_snapshot: Mapping[str, Any],
     search_audit_pack: Mapping[str, Any],
+    workflow_handoff: Mapping[str, Any] | None = None,
     plan_id: str | None = None,
     created_at: str | None = None,
     schema_root: Path | None = None,
@@ -371,6 +372,11 @@ def compile_report_plan(
         "query_plan_hash": corpus_snapshot["query_plan_hash"],
         "corpus_snapshot_hash": corpus_snapshot["snapshot_hash"],
         "search_audit_pack_hash": search_audit_pack["pack_hash"],
+        "workflow_handoff": (
+            deepcopy(dict(workflow_handoff))
+            if workflow_handoff is not None
+            else None
+        ),
         **{field: source[field] for field in fields[6:]},
         "schema_hash": content_hash(report_schema),
         "prompt_hashes": prompt_hashes,

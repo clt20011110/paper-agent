@@ -65,6 +65,7 @@ def compile_report_plan_from_files(
     *,
     save_draft: bool = True,
     resources: ReportResources | None = None,
+    workflow_handoff: Mapping[str, Any] | None = None,
 ) -> ReportPlanFileResult:
     """Compile a ReportPlan draft from three explicit JSON inputs."""
     plan = compile_report_plan(
@@ -72,6 +73,7 @@ def compile_report_plan_from_files(
         corpus_snapshot=_load_mapping(corpus_snapshot_path),
         search_audit_pack=_load_mapping(search_audit_path),
         resources=resources,
+        workflow_handoff=workflow_handoff,
     )
     store = ReportPlanStore(output_root)
     path = store.draft_path(str(plan["plan_id"]))

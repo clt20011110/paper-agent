@@ -54,6 +54,7 @@ from .workflow import (
     StepContext,
     StepObservation,
 )
+from .workflow_report_handoff import assert_report_handoff_runtime
 
 
 TStep = TypeVar("TStep", SearchStep, FilterStep, DownloadStep, AnalyzeStep, ReportStep)
@@ -509,6 +510,17 @@ class ReportStageAdapter(_WorkflowAdapter):
             corpus_snapshot=bundle.corpus_snapshot,
             search_audit_pack=bundle.search_audit,
         )
+        if context.database_path.is_file():
+            with Database(context.database_path, read_only=True) as database:
+                assert_report_handoff_runtime(
+                    database,
+                    bundle.plan,
+                    bundle.corpus_snapshot,
+                    bundle.search_audit,
+                    workflow_run_id=context.workflow_run_id,
+                    report_run_id=context.child_run_id,
+                    require_persisted_workflow=False,
+                )
         ArtifactProcessingPolicy.load(_policy_path(
             spec.policy.resolved_path if spec.policy else None,
             config,
@@ -560,9 +572,21 @@ class ReportStageAdapter(_WorkflowAdapter):
         if spec.previous_report_run_id is not None:
             previous = load_report_run_bundle(root, spec.previous_report_run_id).diff_input()
         with Database(context.database_path) as database:
+            assert_report_handoff_runtime(
+                database,
+                bundle.plan,
+                bundle.corpus_snapshot,
+                bundle.search_audit,
+                workflow_run_id=context.workflow_run_id,
+                report_run_id=context.child_run_id,
+            )
             service = self.service_factory(
                 database,
-                ArtifactStore(root),
+                ArtifactStore(
+                    spec.artifact_root.resolved_path
+                    if spec.artifact_root is not None
+                    else root
+                ),
                 ProcessingGate(policy, GrantStore(database)),
                 ReportArtifactStore(root),
                 runtime,
@@ -576,6 +600,7 @@ class ReportStageAdapter(_WorkflowAdapter):
                 if spec.processing_grants else None,
                 previous=previous,
                 dry_run=context.dry_run,
+                workflow_run_id=context.workflow_run_id,
             )
         payload: dict[str, Any] = {
             "report_run_id": result.report_run_id,

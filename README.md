@@ -139,13 +139,16 @@ Download 还必须显式冻结 `include_needs_review`；默认建议为 `false`�
 | `filter` | `plan`、`stage2_release`、`selection`（单阶段为 `FileRef`；v2 链为 Search output ref） |
 | `download` | `selection`、`authorization_grant_id`、`provider_terms`；v2 另需 `include_needs_review` |
 | `analyze` | `selection`（单阶段为 `FileRef`；v2 链为 Download output ref）、`processing_grant_id`、`policy` |
-| `report` | `plan`、`corpus_snapshot`、`search_audit`、`processing_grants`、`previous_report_run_id`、`policy` |
+| `report` | `plan`、`corpus_snapshot`、`search_audit`、`processing_grants`、`previous_report_run_id`、`policy`；handoff 生成的 manifest 另冻结 `artifact_root` DirectoryRef |
 
 ReportPlan 必须在实际 corpus 和 Stage 4 结果产生后编译、人工批准；它的 paper membership
 不能在 crawler 运行前猜测。因此完整分析 workflow 在 Analyze 结束，随后用
-`report prepare-inputs` 生成精确输入，编译并批准 ReportPlan，再用冻结 approved plan、corpus、
-search audit 和已 pin plan path/hash 的 config 启动独立单阶段 Report workflow。多阶段 manifest
-中直接追加 Report 会被拒绝。所有文件字段均为 `FileRef`，`snapshots` 元素为
+`report prepare-inputs --workflow-run-id` 从已完成 workflow 生成持久 handoff，基于该 handoff
+编译并批准 ReportPlan，再生成冻结 approved plan、corpus、search audit 和已 pin plan path/hash
+config 的独立单阶段 Report workflow。handoff 会冻结原 workflow 的 manifest、四个 child run、
+Stage 3/4 数据库论文集合、artifact root 和输入文件 hash；漂移后拒绝计划、执行或恢复。多阶段
+manifest 中直接追加 Report 会被拒绝。所有文件字段均为 `FileRef`，artifact root 使用受 manifest
+目录约束的 `DirectoryRef`，`snapshots` 元素为
 `{"provider":"...","file":<FileRef>}`；可选字段也必须显式写成 `null`。收到 SIGINT/SIGTERM
 时，已在运行的 step 会先返回到自己的安全点，工作流仅在 step 边界 checkpoint 为可恢复状态。
 
@@ -207,33 +210,48 @@ JSON 中的 `authorized_queue_path` 才是交给 `$download-authorized-papers` �
 只通过用户可见、已登录的浏览器会话处理它。CAPTCHA、403、429 或登录修复会停止受影响队列，
 不应把 cookie、密码、OTP 或 session 信息交给 CLI、skill 或日志。
 
-报告执行不是 `report --plan-only` 的别名：先生成并批准 ReportPlan，再以其 bundle 执行。
-执行时必须提供可解析的 policy（`--policy` 或同一 v2 config 的 summary policy）、数据库和
-输出根；`--processing-grant` 的格式是 `小写十六进制_ARTIFACT_SHA256=GRANT_ID`。
+报告执行不是 `report --plan-only` 的别名。推荐的 workflow-bound 链路要求原四阶段 workflow
+已经完整结束（包括成功完成 Stage 4）；未完成或失败的 Stage 4 应先恢复，不能交给报告阶段。
+下列命令输出的 `handoff_id`、输入路径、`plan_hash`、`manifest_path` 和
+`report_workflow_run_id` 由后续命令逐项复用。批准前，先在新 config 中启用 summary，令 database
+和 output root 与 handoff 相同，并把预期 `REPORT_PLAN.json` 路径及 `plan_hash` 固定到
+`summary.report_plan`。
 
 ```sh
 paper-agent report prepare-inputs \
   --database /absolute/path/to/papers.sqlite3 \
   --artifact-root /absolute/path/to/artifacts \
   --output-root /absolute/path/to/reports \
-  --crawl-run-id <crawl-run-id> --filter-run-id <stage2-run-id> \
-  --stage4-run-id <stage4-run-id> --recent-cutoff 2024-01-01 \
+  --workflow-run-id <completed-analysis-workflow-run-id> \
+  --recent-cutoff 2024-01-01 \
   --created-at 2026-08-10T00:00:00Z
-paper-agent report --plan-only --draft /absolute/path/to/REPORT_DRAFT.json \
-  --corpus-snapshot /absolute/path/to/CORPUS_SNAPSHOT.json \
-  --search-audit /absolute/path/to/SEARCH_AUDIT.json \
+paper-agent report --plan-only --handoff-id <handoff-id> \
+  --draft /absolute/path/to/REPORT_DRAFT.json \
+  --database /absolute/path/to/papers.sqlite3 \
+  --artifact-root /absolute/path/to/artifacts \
   --output-root /absolute/path/to/reports
 paper-agent report approve --plan /absolute/path/to/REPORT_PLAN.json \
   --hash <plan-hash> --approved-by <operator> \
-  --corpus-snapshot /absolute/path/to/CORPUS_SNAPSHOT.json \
-  --search-audit /absolute/path/to/SEARCH_AUDIT.json \
-  --output-root /absolute/path/to/reports
-paper-agent --config /absolute/path/to/research.yaml report \
-  --plan /absolute/path/to/REPORT_PLAN.json \
-  --database /absolute/path/to/papers.sqlite3 \
+  --corpus-snapshot <prepare-output-corpus-snapshot-path> \
+  --search-audit <prepare-output-search-audit-path> \
   --output-root /absolute/path/to/reports \
-  --processing-grant <artifact-sha256>=<grant-id>
+  --handoff-id <handoff-id> --database /absolute/path/to/papers.sqlite3 \
+  --artifact-root /absolute/path/to/artifacts \
+  --workflow-config /absolute/path/to/report-workflow.yaml \
+  --workflow-manifest /absolute/path/to/report-workflow.json \
+  --workflow-policy /absolute/path/to/artifact-processing-v1.yaml
+paper-agent run --workflow /absolute/path/to/report-workflow.json \
+  --database /absolute/path/to/papers.sqlite3 \
+  --workflow-run-id <report-workflow-run-id>
+paper-agent resume --workflow /absolute/path/to/report-workflow.json \
+  --database /absolute/path/to/papers.sqlite3 \
+  --workflow-run-id <report-workflow-run-id>
 ```
+
+需要远程处理授权时，把规范的 grant 映射文件传给 approve 的
+`--workflow-processing-grants`。直接 `report --plan` 不能绕过已登记 handoff 的独立 workflow
+绑定；保留的非 handoff 兼容命令仍使用
+`--processing-grant <ARTIFACT_SHA256>=<GRANT_ID>`。
 
 ## Codex skill
 

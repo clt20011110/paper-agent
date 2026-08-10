@@ -147,7 +147,10 @@ paper-agent --dry-run run --workflow /absolute/path/to/workflow.json \
 都不再可恢复，必须生成并批准新的冻结输入。
 
 报告不能直接追加到这条动态链：ReportPlan 的 paper membership 只有在实际 corpus 和 Stage 4
-结果产生后才能冻结。Analyze 完成后，先运行 `report prepare-inputs`，再执行 plan-only 与人工批准；
-把 approved plan path/hash 固定到新的 config 后，以 approved plan、corpus snapshot 和 search audit
-创建独立的单阶段 Report workflow。这样不会为了恢复报告而修改原 workflow 的 FileRef，也不会
-把一次人工批准伪装成无人值守执行。
+结果产生后才能冻结。Analyze 完成后，先运行
+`report prepare-inputs --workflow-run-id <completed-workflow-run-id>`，再用返回的 `handoff_id` 执行
+plan-only 与人工批准；approve 同时接收固定了 approved plan path/hash 的新 config 和目标 workflow
+manifest 路径，登记独立的单阶段 Report workflow。随后用返回的 manifest 与 report workflow run ID
+调用普通 `run`/`resume`。manifest 同时冻结 prepare 使用的 artifact root；执行不会依赖 report
+output root 与 analysis artifact root 恰好相同。这样不会为了恢复报告而修改原 workflow 的 FileRef，
+也不会把一次人工批准伪装成无人值守执行。
