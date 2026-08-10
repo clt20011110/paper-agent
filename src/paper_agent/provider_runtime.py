@@ -54,6 +54,7 @@ class ProviderRuntimePolicy:
     queries_per_second: float | None = None
     max_concurrency: int = 1
     cache_ttl_seconds: float | None = None
+    credentials_required: bool = False
     credential_environment_variables: tuple[str, ...] = ()
     terms_accepted: bool = True
     robots_allowed: bool = True
@@ -92,6 +93,7 @@ def policy_from_manifest(
         queries_per_second=manifest.rate_limit_policy.queries_per_second,
         max_concurrency=manifest.rate_limit_policy.max_concurrency,
         cache_ttl_seconds=manifest.rate_limit_policy.cache_ttl_seconds,
+        credentials_required=manifest.credential_policy.required,
         credential_environment_variables=manifest.credential_policy.environment_variables,
         terms_accepted=terms_accepted,
         robots_allowed=robots_allowed,
@@ -184,12 +186,14 @@ class ProviderRuntime:
         values = environment if environment is not None else os.environ
         return all(bool(values.get(name)) for name in policy.credential_environment_variables)
 
-    def assert_allowed(self, provider: str) -> None:
+    def assert_allowed(self, provider: str, environment: Mapping[str, str] | None = None) -> None:
         policy = self._policy(provider)
         if not policy.terms_accepted:
             raise ProviderPolicyDenied(f"{provider}: terms are not accepted")
         if not policy.robots_allowed:
             raise ProviderPolicyDenied(f"{provider}: robots policy forbids automated access")
+        if policy.credentials_required and not self.credentials_available(provider, environment):
+            raise ProviderPolicyDenied(f"{provider}: declared credentials are unavailable")
 
     def circuit_state(self, provider: str) -> CircuitState:
         state = self._state(provider)
@@ -207,13 +211,14 @@ class ProviderRuntime:
         mode: str = "api",
         snapshot: BulkSnapshot | None = None,
         expected_snapshot_hash: str | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> T | bytes:
         """Return a cached/API value or a verified user-supplied snapshot.
 
         Snapshot mode intentionally has no network fallback: callers must provide
         the exact approved content and hash.
         """
-        self.assert_allowed(provider)
+        self.assert_allowed(provider, environment)
         if mode in {"snapshot", "bulk_snapshot"}:
             if snapshot is None or expected_snapshot_hash is None:
                 raise ProviderPolicyDenied("snapshot mode requires approved snapshot content and hash")

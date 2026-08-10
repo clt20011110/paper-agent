@@ -7,7 +7,7 @@ from urllib.error import HTTPError
 import pytest
 
 from paper_agent.http_transport import ControlledHTTPTransport
-from paper_agent.provider_runtime import RetryableProviderError
+from paper_agent.provider_runtime import ProviderRuntime, ProviderRuntimePolicy, RetryableProviderError
 
 
 class Response:
@@ -82,3 +82,134 @@ def test_xml_metadata_response_is_decoded() -> None:
 
     payload = ControlledHTTPTransport("https://example.test/contact", opener=opener)("crossref", "search", {"query": "x", "page_size": 1})
     assert payload["root"]["record"] == "one"
+
+
+@pytest.mark.parametrize(
+    ("provider", "operation", "parameters", "expected_path"),
+    [
+        ("crossref", "enrich", {"doi": "10.1/example"}, "/works/10.1%2Fexample"),
+        ("dblp", "search", {"query": "graph learning", "page_size": 2}, "/search/publ/api"),
+        ("semantic_scholar", "search", {"query": "graph learning", "page_size": 2}, "/graph/v1/paper/search"),
+        ("semantic_scholar", "references", {"doi": "10.1/example"}, "/graph/v1/paper/DOI:10.1%2Fexample/references"),
+        ("semantic_scholar", "citations", {"doi": "10.1/example"}, "/graph/v1/paper/DOI:10.1%2Fexample/citations"),
+        ("openalex", "search", {"search": "graph learning", "page_size": 2}, "/works"),
+        ("openalex", "references", {"doi": "10.1/example"}, "/works/doi:10.1/example"),
+        ("europe_pmc", "search", {"query": "graph learning", "page_size": 2}, "/europepmc/webservices/rest/search"),
+        ("arxiv", "search", {"search_query": "all:graph", "page_size": 2}, "/api/query"),
+    ],
+)
+def test_public_metadata_operations_use_native_official_routes(
+    provider: str, operation: str, parameters: dict[str, object], expected_path: str
+) -> None:
+    urls: list[str] = []
+
+    def opener(request, timeout):
+        urls.append(request.full_url)
+        return Response(b"{}", {"Content-Type": "application/json"})
+
+    ControlledHTTPTransport("mailto:operator@example.test", opener=opener)(provider, operation, parameters)
+
+    assert expected_path in urls[0]
+
+
+def test_openalex_citations_resolve_external_id_before_filtering() -> None:
+    urls: list[str] = []
+
+    def opener(request, timeout):
+        urls.append(request.full_url)
+        if "/works/doi:" in request.full_url:
+            return Response(
+                b'{"id":"https://openalex.org/W42","referenced_works":[]}',
+                {"Content-Type": "application/json"},
+            )
+        return Response(b'{"meta":{},"results":[]}', {"Content-Type": "application/json"})
+
+    ControlledHTTPTransport("operator@example.test", opener=opener)(
+        "openalex", "citations", {"doi": "10.1/example"}
+    )
+
+    assert "/works/doi:10.1/example" in urls[0]
+    assert "filter=cites%3AW42" in urls[1]
+
+
+def test_pubmed_search_uses_esearch_then_esummary_without_full_text() -> None:
+    urls: list[str] = []
+
+    def opener(request, timeout):
+        urls.append(request.full_url)
+        if "esearch.fcgi" in request.full_url:
+            return Response(b'{"esearchresult":{"count":"1","idlist":["42"]}}', {"Content-Type": "application/json"})
+        return Response(b'{"result":{"uids":["42"],"42":{"uid":"42","title":"Metadata only"}}}', {"Content-Type": "application/json"})
+
+    payload = ControlledHTTPTransport("mailto:operator@example.test", opener=opener)(
+        "pubmed", "search", {"term": "metadata", "retmax": 1}
+    )
+
+    assert "esearch.fcgi" in urls[0]
+    assert "esummary.fcgi" in urls[1]
+    assert payload["result"]["uids"] == ["42"]
+    assert all("efetch" not in url and ".pdf" not in url for url in urls)
+
+
+def test_unpaywall_uses_operator_contact_and_never_fetches_the_returned_pdf() -> None:
+    urls: list[str] = []
+
+    def opener(request, timeout):
+        urls.append(request.full_url)
+        return Response(b'{"best_oa_location":{"url_for_pdf":"https://example.test/paper.pdf"}}', {"Content-Type": "application/json"})
+
+    payload = ControlledHTTPTransport("operator@example.test", opener=opener)(
+        "unpaywall", "resolve", {"doi": "10.1/example"}
+    )
+
+    assert "/v2/10.1%2Fexample" in urls[0]
+    assert "email=operator%40example.test" in urls[0]
+    assert payload["best_oa_location"]["url_for_pdf"].endswith(".pdf")
+    assert len(urls) == 1
+
+
+def test_transport_uses_injected_runtime_for_retries() -> None:
+    attempts = 0
+    runtime = ProviderRuntime(
+        {"crossref": ProviderRuntimePolicy("crossref", retry_attempts=2, initial_backoff_seconds=0, max_backoff_seconds=0)}
+    )
+
+    def opener(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise HTTPError(request.full_url, 503, "down", Message(), BytesIO())
+        return Response(b'{"message":{"items":[]}}', {"Content-Type": "application/json"})
+
+    payload = ControlledHTTPTransport("operator@example.test", opener=opener, runtime=runtime)(
+        "crossref", "search", {"query": "x", "page_size": 1}
+    )
+    assert payload["message"] == {"items": []}
+    assert attempts == 2
+
+
+def test_declared_environment_credentials_are_routed_without_scanning_environment() -> None:
+    calls = []
+    environment = {"S2_KEY": "s2-secret", "OA_KEY": "oa-secret", "UNPAYWALL_EMAIL": "oa@example.test", "UNDECLARED": "never"}
+
+    def opener(request, timeout):
+        calls.append(request)
+        return Response(b"{}", {"Content-Type": "application/json"})
+
+    transport = ControlledHTTPTransport("operator@example.test", opener=opener, environment=environment)
+    transport._credential_envs.update(
+        {
+            "semantic_scholar": {"api_key": "S2_KEY"},
+            "openalex": {"api_key": "OA_KEY"},
+            "unpaywall": {"email": "UNPAYWALL_EMAIL"},
+        }
+    )
+
+    transport("semantic_scholar", "search", {"query": "x"})
+    transport("openalex", "search", {"search": "x"})
+    transport("unpaywall", "resolve", {"doi": "10.1/example"})
+
+    assert calls[0].get_header("X-api-key") == "s2-secret"
+    assert "api_key=oa-secret" in calls[1].full_url
+    assert "email=oa%40example.test" in calls[2].full_url
+    assert "secret" not in (transport.last_request_url or "")

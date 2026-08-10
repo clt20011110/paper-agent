@@ -152,6 +152,27 @@ def test_credentials_return_availability_without_retaining_secret_values() -> No
     assert "secret" not in repr(client.__dict__)
 
 
+def test_required_credentials_use_the_injected_declared_environment() -> None:
+    client = runtime(
+        ProviderRuntimePolicy(
+            "semantic", credentials_required=True, credential_environment_variables=("DECLARED_TOKEN",)
+        )
+    )
+
+    assert client.request(
+        "semantic",
+        query_hash="q",
+        cursor=None,
+        api_version="v1",
+        send=lambda: "ok",
+        environment={"DECLARED_TOKEN": "secret", "UNDECLARED_TOKEN": "never read"},
+    ) == "ok"
+    with pytest.raises(ProviderPolicyDenied, match="credentials"):
+        client.request(
+            "semantic", query_hash="q2", cursor=None, api_version="v1", send=lambda: "never", environment={}
+        )
+
+
 @pytest.mark.parametrize("mode", ["snapshot", "bulk_snapshot"])
 def test_snapshot_mode_verifies_exact_content_and_never_calls_network(mode: str) -> None:
     content = b'{"records": []}'
