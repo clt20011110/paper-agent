@@ -126,6 +126,10 @@ paper-family 约束，字段为 `null`，不会用错误概率污染逆概率指
 均留在 evaluator custody（当前 provenance 也不公开）。`--private-labels` 只包含 manifest 的精确 600 条标签，不是
 snapshot 全量标签。
 
+当前真实语料已完成上述抽样并冻结无标签 600-pair manifest；公开安全的聚合记录见
+[stage2-real-curation-frame-20260812.json](docs/smoke/stage2-real-curation-frame-20260812.json)。其中本地
+9B 输出仅是抽样临时标签，人工双标与第三人仲裁仍未完成，不能作为 production release。
+
 两位标注者和第三人完成 ledger 后，先验证再生成 promotion 私有输入：
 
 ```sh

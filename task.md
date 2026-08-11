@@ -1,6 +1,6 @@
 # Paper Agent v2 — 可执行任务规格
 
-> 状态：核心实现与真实 Stage 1→4b 小规模验收已完成；Stage 2 生产 release gate 待完成
+> 状态：核心实现与真实 Stage 1→4b 小规模验收已完成；Stage 2 已冻结无标签 600-pair manifest，人工双标、隐藏晋级与性能门禁待完成
 > 规格日期：2026-08-09
 > 实施基线：feature/crawler-adapters
 > 本文用途：后续实现、验收和回归测试的唯一任务依据
@@ -488,6 +488,13 @@ paper-agent --dry-run stage2-sampling build \
   --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
   --provenance-output /secure/evaluator/provenance.json
 ```
+
+2026-08-12 已从真实 Crossref 自然语料框排除 HIDDEN_REAL paper-family 后生成 802 条 curation
+worklist，并用锁定的本地 Qwen3.5-9B 以 101 个一次性结构化批请求生成仅供抽样的
+`model_provisional` 标签；随后正式冻结 300 DEV、150 HIDDEN_HARD、150 HIDDEN_REAL 的无标签
+600-pair manifest。聚合证据见 `docs/smoke/stage2-real-curation-frame-20260812.json`。这些临时标签不是
+人工 gold，不得用于质量得分或勾选生产 release gate；下一步仍是对已选 600 pair 做两人独立标注和
+第三人分歧仲裁。
 
 `gold-manifest` 是不含标签的 600-pair 公共清单，可进入 release；private snapshot、HIDDEN_REAL freeze frame、curated annotations、抽样 provenance 和原始标注 ledger 均由 evaluator 托管（当前设计下 provenance 也不公开）。`--private-labels` 必须精确覆盖该 600-pair manifest，绝不是完整 snapshot 的全量标签。
 

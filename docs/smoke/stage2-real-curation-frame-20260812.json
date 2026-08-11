@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "evidence_type": "stage2_real_curation_frame",
+  "status": "gold_manifest_frozen_pending_human_annotation",
+  "source_commit": "3d7b5325667be7f3e41c1a0d86114bb2379ced11",
+  "inputs": {
+    "snapshot_hash": "4fad62156fb1461d30cecbd9f98f1f3699d64feda5778bfa364d4a63047dc774",
+    "corpus_hash": "be873d5a432b6b643fc94d92a0b23ab046bde5a90b88815b27f9c9508b1df4b3",
+    "hidden_real_freeze_frame_hash": "43b18fd289b8082b9f04126ac3d685269480e2a590897032815229013a11afa7"
+  },
+  "curation": {
+    "worklist_hash": "e33e2f881ab9f59f0d31f62984e58d7adb2b034ebce5d59094dfdaa5b781d2f4",
+    "worklist_file_sha256": "68907be7cd75bd4ba55aeff6934f2b783adbbde3d1a72ea4ea4cda5c84f33c77",
+    "case_count": 802,
+    "model_id": "qwen3.5-9b-8bit",
+    "model_lock_sha256": "ec9227eab52573a921d737a1b36e7b069975034d9f4a843baa4e5a56c53e9e2c",
+    "prompt_version": "stage2-curation-suggestion-v1",
+    "prompt_sha256": "9f3eb607f5531ea61acf8a5c1f92e5d8d62da1fd9bd307a27799bf7018cdc586",
+    "request_count": 101,
+    "batch_size": 8,
+    "client_concurrency": 4,
+    "label_counts": {
+      "0": 218,
+      "1": 114,
+      "2": 400,
+      "3": 70
+    },
+    "hard_negative_count": 332,
+    "hard_positive_count": 32,
+    "decisions_file_sha256": "a2c82b6b042d81ff665ae84c9b3703fed9a4853b6cc513a8e0274e8a9a05218c",
+    "curated_annotations_hash": "c3460fc62c64fa5947cb6381c9b37bc818ea4a08386f9083a8224d07937754d7",
+    "curation_receipt_hash": "35e44f13595b87dcfc01d7d580a464a056c0a67bf21934916d02a3a999e3a598",
+    "source_counts": {
+      "human_provisional": 0,
+      "human_reviewed_model_suggestion": 0,
+      "model_provisional": 802
+    },
+    "provisional_labels_are_gold": false
+  },
+  "gold_manifest": {
+    "reference": "local-evaluator-transfer:stage2/crossref-real-v1-20260812/gold-manifest.json",
+    "content_hash": "579ac1f30770066e02510885727bf818a4598d1415805bccdbda6fe3ca02381d",
+    "file_sha256": "a29ebf85fd8d2d11c154b1484cf8ff62219e2181b9451616a7ac96afca649f5e",
+    "file_size_bytes": 355003,
+    "pair_count": 600,
+    "split_counts": {
+      "dev": 300,
+      "hidden_hard": 150,
+      "hidden_real": 150
+    },
+    "topic_counts": {
+      "diffusion_molecular_design": 100,
+      "drug_discovery_deep_learning": 100,
+      "llm_scientific_discovery": 98,
+      "materials_discovery_generative_model": 97,
+      "molecular_generation": 110,
+      "protein_design_language_model": 95
+    },
+    "language_counts": {
+      "en": 442,
+      "zh": 158
+    },
+    "paper_family_count": 595,
+    "hidden_real_sampling_probability": 0.15625,
+    "non_hidden_real_sampling_probability": null,
+    "contains_labels": false
+  },
+  "custody": {
+    "private_reference": "local-evaluator:stage2/crossref-real-v1-20260812",
+    "private_artifacts_committed": false,
+    "gold_manifest_committed": false,
+    "file_mode": "0600",
+    "directory_mode": "0700"
+  },
+  "release_gate_claimed": false,
+  "remaining_requirements": [
+    "two independent human annotations for every selected pair",
+    "third-person adjudication for every disagreement and pre-adjudication QWK >= 0.75",
+    "private gold-label finalization",
+    "candidate calibration and hidden quality promotion",
+    "1,000-case structured replay and 100-case human rationale audit",
+    "normal and stress performance runs, 10,000-case soak and parity",
+    "one-shot hidden evaluator promotion and schema-v3 release assembly"
+  ]
+}
