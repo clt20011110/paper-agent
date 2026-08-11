@@ -889,7 +889,7 @@ class SystemDoctor:
     def _codex(self) -> DoctorCheck:
         executable = self.executable_finder("codex")
         if not executable:
-            return DoctorCheck("codex", "blocker", True, "codex CLI not found", True)
+            return DoctorCheck("codex", "warning", False, "codex CLI not found", True)
         diagnostics: dict[str, str] = {}
 
         def run(

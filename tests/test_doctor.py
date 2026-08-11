@@ -498,6 +498,24 @@ def test_codex_catalog_listing_is_not_production_availability(tmp_path: Path) ->
     assert auth.status == "blocker"
 
 
+def test_missing_codex_only_blocks_production_readiness(tmp_path: Path) -> None:
+    doctor = SystemDoctor(
+        _paths(tmp_path),
+        executable_finder=lambda _: None,
+        environment={},
+        disk_usage=lambda _: type("Disk", (), {"free": 2_000_000_000})(),
+    )
+
+    report = doctor.run()
+
+    check = _check(report, "codex")
+    assert check.status == "warning"
+    assert not check.required
+    assert check.production_required
+    assert report.ready
+    assert not report.production_ready
+
+
 def test_production_codex_probe_forwards_prompt_and_process_options(
     tmp_path: Path, monkeypatch
 ) -> None:

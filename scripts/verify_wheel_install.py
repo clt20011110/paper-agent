@@ -33,7 +33,7 @@ from paper_agent.schema import schema_directory
 from paper_agent.storage import Database
 
 
-EXPECTED_SCHEMA_VERSION = 25
+EXPECTED_SCHEMA_VERSION = 26
 
 
 def main() -> None:
