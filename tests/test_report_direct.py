@@ -4,10 +4,11 @@ from hashlib import sha256
 import json
 from threading import Thread
 from time import sleep
+from types import MappingProxyType
 
 from paper_agent.canonical import content_hash
 from paper_agent.codex_exec import CodexExecResult, InvocationMetadata
-from paper_agent.report_artifacts import ReportArtifactStore
+from paper_agent.report_artifacts import LOCAL_REFERENCES_NOTE, ReportArtifactStore
 from paper_agent.report_config import ReportResources, ReportRuntimeConfig
 from paper_agent.report_direct import (
     one_shot_config_hash,
@@ -19,6 +20,7 @@ from paper_agent.report_plan import (
     approve_report_plan,
     compile_report_plan,
 )
+from paper_agent.reporting import stable_claim_id
 
 from test_report_reduce import _claim, _draft, _fixture, _sol_grant
 
@@ -56,8 +58,9 @@ def _one_shot_bundle(fixture) -> ReportPlanBundle:
 
 
 class OneShotSol:
-    def __init__(self, fixture) -> None:
+    def __init__(self, fixture, mutate_output=None) -> None:
         self.fixture = fixture
+        self.mutate_output = mutate_output
         self.calls = []
 
     def invoke(self, request):
@@ -104,6 +107,8 @@ class OneShotSol:
             "unresolved_conflicts": [],
             "claim_relations": [],
         }
+        if self.mutate_output is not None:
+            self.mutate_output(output, payload)
         resources = ReportResources.defaults()
         rendered = (
             resources.prompt("one_shot_report").rstrip()
@@ -136,7 +141,70 @@ class OneShotSol:
             prompt_path=request.prompt_path,
             output_hash=content_hash(output),
         )
-        return CodexExecResult(output, metadata)
+        # Match the real CodexExec boundary, which freezes top-level output.
+        return CodexExecResult(MappingProxyType(output), metadata)
+
+
+def _one_shot_grants(fixture, prefix: str) -> dict[str, str]:
+    return {
+        artifact.artifact_hash: _sol_grant(
+            fixture,
+            artifact,
+            f"{prefix}-{index}",
+            expires_at="2026-09-11T00:00:00Z",
+        )
+        for index, artifact in enumerate(fixture.artifacts, start=1)
+    }
+
+
+def _one_shot_service(fixture, release, fake) -> ReportExecutionService:
+    return ReportExecutionService(
+        fixture.database,
+        fixture.store,
+        fixture.coordinator.gate,
+        ReportArtifactStore(release),
+        direct_invoker_factory=lambda: fake,
+        runtime_config=ReportRuntimeConfig(
+            True,
+            ReportResources.defaults(),
+            profile="stage4b_oneshot_sol",
+            execution_strategy="one_shot",
+        ),
+    )
+
+
+def _section_claim(output: dict, section_id: str) -> tuple[dict, dict]:
+    block = next(
+        item for item in output["blocks"] if item["section_id"] == section_id
+    )
+    claim_ref = str(block["claim_refs"][0])
+    claim = next(
+        item for item in output["claims"] if item["claim_ref"] == claim_ref
+    )
+    return claim, block
+
+
+def _make_procedural_reference_note(output: dict, *, mixed: bool = False) -> None:
+    claim, block = _section_claim(output, "references_and_appendices")
+    claim.update({
+        "subject_id": "report-renderer",
+        "predicate_id": "should_generate_canonical_references",
+        "object_or_scope_id": "local-reference-rendering",
+        "qualifier_context": "do not generate bibliography entries from memory",
+        "claim_text": "The coordinator should generate canonical references locally.",
+        "claim_type": "recommendation",
+        "supporting_evidence": [],
+        "contradicting_evidence": [],
+        "evidence_level": "corpus_stat",
+        "confidence": "high",
+        "known_limitations": ["This is a procedural note, not a paper claim."],
+        "status": "insufficient",
+    })
+    block["text"] = "这段模型生成的程序文本不应进入最终报告。"
+    block["citation_paper_ids"] = []
+    if mixed:
+        home_claim, _ = _section_claim(output, "executive_summary")
+        block["claim_refs"].append(home_claim["claim_ref"])
 
 
 def test_one_shot_report_uses_one_sol_call_and_resumes_without_another(tmp_path) -> None:
@@ -208,6 +276,234 @@ def test_one_shot_report_uses_one_sol_call_and_resumes_without_another(tmp_path)
         report = tmp_path / "release" / "reports" / "report-one-shot"
         assert (report / "REPORT.md").is_file()
         assert json.loads((report / "AUDIT.json").read_text())["audit_pass"] == "deterministic"
+    finally:
+        fixture.database.close()
+
+
+def test_cross_section_claim_is_derived_per_section_and_resume_does_not_redispatch(
+    tmp_path,
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    bundle = _one_shot_bundle(fixture)
+
+    def reuse_home_claim(output, _payload) -> None:
+        claim, _ = _section_claim(output, "executive_summary")
+        _, target = _section_claim(output, "scope_and_methods")
+        target["claim_refs"].append(claim["claim_ref"])
+        paper_id = claim["supporting_evidence"][0]["paper_id"]
+        if paper_id not in target["citation_paper_ids"]:
+            target["citation_paper_ids"].append(paper_id)
+            target["text"] += f" [@{paper_id}]"
+
+    fake = OneShotSol(fixture, reuse_home_claim)
+    grants = _one_shot_grants(fixture, "cross-section-grant")
+    report_run_id = "report-one-shot-cross-section"
+    try:
+        service = _one_shot_service(fixture, tmp_path / "release", fake)
+        first = service.run(
+            report_run_id,
+            "pipeline-one-shot-cross-section",
+            bundle,
+            processing_grants=grants,
+        )
+        second = service.run(
+            report_run_id,
+            "pipeline-one-shot-cross-section",
+            bundle,
+            processing_grants=grants,
+        )
+
+        assert first.status == second.status == "complete"
+        assert len(fake.calls) == 1
+        report = tmp_path / "release" / "reports" / report_run_id
+        claims = [
+            json.loads(line)
+            for line in (report / "CLAIMS_EVIDENCE.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        derived = [
+            claim
+            for claim in claims
+            if claim["claim_key"]["subject_id"] == "p1"
+            and claim["claim_key"]["object_or_scope_id"] == "executive_summary"
+        ]
+        assert {claim["report_section"] for claim in derived} == {
+            "executive_summary",
+            "scope_and_methods",
+        }
+        assert len({claim["claim_id"] for claim in derived}) == 2
+        assert all(
+            claim["claim_id"]
+            == stable_claim_id(claim["claim_key"], report_run_id=report_run_id)
+            for claim in derived
+        )
+
+        document = json.loads(
+            (report / "REPORT_DOCUMENT.json").read_text(encoding="utf-8")
+        )
+        claims_by_id = {claim["claim_id"]: claim for claim in claims}
+        for block in document["blocks"]:
+            assert all(
+                claims_by_id[claim_id]["report_section"] == block["section_id"]
+                for claim_id in block["claim_ids"]
+            )
+        derived_by_section = {
+            claim["report_section"]: claim["claim_id"] for claim in derived
+        }
+        blocks_by_section = {
+            block["section_id"]: block for block in document["blocks"]
+        }
+        assert (
+            derived_by_section["executive_summary"]
+            in blocks_by_section["executive_summary"]["claim_ids"]
+        )
+        assert (
+            derived_by_section["scope_and_methods"]
+            in blocks_by_section["scope_and_methods"]["claim_ids"]
+        )
+        assert fixture.database.connection.execute(
+            "SELECT dispatch_count FROM report_one_shot_runs WHERE report_run_id = ?",
+            (report_run_id,),
+        ).fetchone()[0] == 1
+    finally:
+        fixture.database.close()
+
+
+def test_exclusive_procedural_reference_note_becomes_exact_local_block(
+    tmp_path,
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    bundle = _one_shot_bundle(fixture)
+    fake = OneShotSol(
+        fixture,
+        lambda output, _payload: _make_procedural_reference_note(output),
+    )
+    grants = _one_shot_grants(fixture, "procedural-reference-grant")
+    report_run_id = "report-one-shot-procedural-reference"
+    try:
+        service = _one_shot_service(fixture, tmp_path / "release", fake)
+        first = service.run(
+            report_run_id,
+            "pipeline-one-shot-procedural-reference",
+            bundle,
+            processing_grants=grants,
+        )
+        second = service.run(
+            report_run_id,
+            "pipeline-one-shot-procedural-reference",
+            bundle,
+            processing_grants=grants,
+        )
+
+        assert first.status == second.status == "complete"
+        assert len(fake.calls) == 1
+        report = tmp_path / "release" / "reports" / report_run_id
+        document = json.loads(
+            (report / "REPORT_DOCUMENT.json").read_text(encoding="utf-8")
+        )
+        reference_block = next(
+            block
+            for block in document["blocks"]
+            if block["section_id"] == "references_and_appendices"
+        )
+        assert reference_block == {
+            "block_id": reference_block["block_id"],
+            "block_kind": "caption",
+            "section_id": "references_and_appendices",
+            "text": LOCAL_REFERENCES_NOTE,
+            "claim_ids": [],
+            "citation_paper_ids": [],
+        }
+        report_markdown = (report / "REPORT.md").read_text(encoding="utf-8")
+        assert LOCAL_REFERENCES_NOTE in report_markdown
+        assert "这段模型生成的程序文本不应进入最终报告。" not in report_markdown
+        claims_text = (report / "CLAIMS_EVIDENCE.jsonl").read_text(encoding="utf-8")
+        assert "should_generate_canonical_references" not in claims_text
+    finally:
+        fixture.database.close()
+
+
+def test_evidence_free_claim_outside_references_still_fails_locally(tmp_path) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    bundle = _one_shot_bundle(fixture)
+
+    def remove_evidence(output, _payload) -> None:
+        claim, block = _section_claim(output, "executive_summary")
+        claim.update({
+            "claim_type": "recommendation",
+            "supporting_evidence": [],
+            "contradicting_evidence": [],
+            "evidence_level": "corpus_stat",
+            "status": "insufficient",
+        })
+        block["text"] = "该章节中的无证据主张必须被拒绝。"
+        block["citation_paper_ids"] = []
+
+    fake = OneShotSol(fixture, remove_evidence)
+    grants = _one_shot_grants(fixture, "unsupported-claim-grant")
+    report_run_id = "report-one-shot-unsupported-claim"
+    try:
+        service = _one_shot_service(fixture, tmp_path / "release", fake)
+        first = service.run(
+            report_run_id,
+            "pipeline-one-shot-unsupported-claim",
+            bundle,
+            processing_grants=grants,
+        )
+        second = service.run(
+            report_run_id,
+            "pipeline-one-shot-unsupported-claim",
+            bundle,
+            processing_grants=grants,
+        )
+
+        assert first.status == second.status == "failed"
+        assert "every claim requires evidence" in str(first.direct.error)
+        assert len(fake.calls) == 1
+        assert not (
+            tmp_path / "release" / "reports" / report_run_id
+        ).exists()
+    finally:
+        fixture.database.close()
+
+
+def test_procedural_reference_note_mixed_with_evidence_claim_still_fails(
+    tmp_path,
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    bundle = _one_shot_bundle(fixture)
+    fake = OneShotSol(
+        fixture,
+        lambda output, _payload: _make_procedural_reference_note(
+            output, mixed=True
+        ),
+    )
+    grants = _one_shot_grants(fixture, "mixed-procedural-reference-grant")
+    report_run_id = "report-one-shot-mixed-procedural-reference"
+    try:
+        service = _one_shot_service(fixture, tmp_path / "release", fake)
+        first = service.run(
+            report_run_id,
+            "pipeline-one-shot-mixed-procedural-reference",
+            bundle,
+            processing_grants=grants,
+        )
+        second = service.run(
+            report_run_id,
+            "pipeline-one-shot-mixed-procedural-reference",
+            bundle,
+            processing_grants=grants,
+        )
+
+        assert first.status == second.status == "failed"
+        assert "must exclusively bind an uncited references block" in str(
+            first.direct.error
+        )
+        assert len(fake.calls) == 1
+        assert not (
+            tmp_path / "release" / "reports" / report_run_id
+        ).exists()
     finally:
         fixture.database.close()
 

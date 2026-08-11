@@ -35,6 +35,7 @@ from .processing import (
     ProcessingGate,
     ProcessingRequest,
 )
+from .report_artifacts import is_local_references_block
 from .report_budget import canonical_report_budget
 from .report_config import ReportResources
 from .report_invocations import (
@@ -2231,6 +2232,10 @@ def _validate_report_document(
         claim_ids = set(str(item) for item in block["claim_ids"])
         if not claim_ids.issubset(claims):
             raise SolOutputError("ReportDocument block introduced an unknown claim")
+        if not claim_ids and not is_local_references_block(block):
+            raise SolOutputError(
+                "claim-free ReportDocument block is not the deterministic references note"
+            )
         if any(
             str(claims[claim_id]["report_section"]) != str(block["section_id"])
             for claim_id in claim_ids

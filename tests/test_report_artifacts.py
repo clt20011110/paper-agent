@@ -475,12 +475,29 @@ def test_verifier_rejects_missing_claim_citation_limitation_and_ungrounded_numbe
 
     ungrounded = deepcopy(bundle)
     ungrounded["claims"][0]["supporting_evidence"][0]["evidence_unit"]["value"] = "not numeric"
+    ungrounded["claims"][0]["supporting_evidence"][0]["evidence_unit"]["source_value"] = "not numeric"
     with pytest.raises(ReportVerificationError, match="numeric"):
         verify_report(
             plan=ungrounded["plan"], document=ungrounded["document"], claims=ungrounded["claims"],
             coverage=ungrounded["coverage"], bibliography=ungrounded["bibliography"],
             corpus_snapshot=ungrounded["corpus_snapshot"],
         )
+
+    source_encoded = deepcopy(bundle)
+    unit = source_encoded["claims"][0]["supporting_evidence"][0]["evidence_unit"]
+    unit["value"] = "multiple reported metrics"
+    unit["source_value"] = "accuracy=91.0%"
+    unit["comparison_eligibility"] = "not_comparable"
+    unit["missing_fields"] = ["scalar value"]
+    verify_report(
+        plan=source_encoded["plan"],
+        document=source_encoded["document"],
+        claims=source_encoded["claims"],
+        coverage=source_encoded["coverage"],
+        bibliography=source_encoded["bibliography"],
+        search_audit=source_encoded["search_audit"],
+        corpus_snapshot=source_encoded["corpus_snapshot"],
+    )
 
 
 def test_verifier_rejects_corpus_coverage_scope_and_erased_conflicts() -> None:

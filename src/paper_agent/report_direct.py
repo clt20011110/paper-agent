@@ -26,6 +26,7 @@ from .codex_exec import (
 )
 from .processing import ProcessingDecision, ProcessingGate, SUMMARY_MODEL
 from .report_artifacts import (
+    LOCAL_REFERENCES_NOTE,
     RENDERER_VERSION,
     ReportArtifactError,
     ReportArtifactStore,
@@ -619,7 +620,11 @@ class DirectReportCoordinator:
             or metadata.output_hash != content_hash(dict(invoked.output))
         ):
             raise DirectReportError("one-shot Sol invocation metadata does not match its request")
-        self.resources.validate(invoked.output, CALL_KIND)
+        # ``CodexExec`` freezes its top-level output with ``MappingProxyType``.
+        # jsonschema's default object checker recognizes concrete dicts, not
+        # arbitrary Mapping implementations, so thaw the already-validated
+        # structured result before applying the configured resource schema.
+        self.resources.validate(dict(invoked.output), CALL_KIND)
         payload = canonical_json(dict(invoked.output))
         if len(payload) > MAX_OUTPUT_BYTES:
             raise DirectReportError("one-shot Sol output exceeds the frozen byte limit")
@@ -673,12 +678,10 @@ class DirectReportCoordinator:
         _require_allowed_evidence(
             output, _allowed_evidence_references(frozen, self.analyses)
         )
-        claims, document = self._normalize_output(report_run_id, output)
+        claims, document, claim_ids, procedural_refs = self._normalize_output(
+            report_run_id, output
+        )
         groups = derive_comparison_groups(claims)
-        claim_ids = {
-            str(draft["claim_ref"]): str(claim["claim_id"])
-            for draft, claim in zip(output["claims"], claims, strict=True)
-        }
         prior_claims = (
             {
                 str(claim["claim_id"]): claim
@@ -690,6 +693,10 @@ class DirectReportCoordinator:
         current_claims = {str(claim["claim_id"]): claim for claim in claims}
         relation_drafts = []
         for relation in output["claim_relations"]:
+            if str(relation["current_claim_ref"]) in procedural_refs:
+                raise DirectReportError(
+                    "one-shot claim relation cannot target a procedural reference note"
+                )
             current_id = claim_ids.get(str(relation["current_claim_ref"]))
             previous_id = str(relation["previous_claim_id"])
             if current_id is None or previous_id not in prior_claims:
@@ -816,13 +823,78 @@ class DirectReportCoordinator:
 
     def _normalize_output(
         self, report_run_id: str, output: Mapping[str, Any]
-    ) -> tuple[tuple[dict[str, Any], ...], dict[str, Any]]:
-        refs: dict[str, str] = {}
-        claims = []
+    ) -> tuple[
+        tuple[dict[str, Any], ...],
+        dict[str, Any],
+        dict[str, str],
+        frozenset[str],
+    ]:
+        drafts: dict[str, Mapping[str, Any]] = {}
+        procedural_refs: set[str] = set()
         for draft in output["claims"]:
             claim_ref = str(draft["claim_ref"])
-            if claim_ref in refs:
+            if claim_ref in drafts:
                 raise DirectReportError(f"duplicate one-shot claim_ref: {claim_ref}")
+            drafts[claim_ref] = draft
+            if _is_procedural_reference_note(draft):
+                procedural_refs.add(claim_ref)
+
+        resolved_blocks: list[
+            tuple[Mapping[str, Any], tuple[str, ...], bool]
+        ] = []
+        usage_sections: dict[str, set[str]] = defaultdict(set)
+        procedural_uses: dict[str, int] = defaultdict(int)
+        for block in output["blocks"]:
+            section_id = str(block["section_id"])
+            raw_refs = tuple(str(value) for value in block["claim_refs"])
+            if any(claim_ref not in drafts for claim_ref in raw_refs):
+                raise DirectReportError(
+                    "one-shot block references an unknown claim_ref"
+                )
+            local_procedural = [
+                claim_ref for claim_ref in raw_refs if claim_ref in procedural_refs
+            ]
+            if local_procedural:
+                if (
+                    len(local_procedural) != len(raw_refs)
+                    or section_id != "references_and_appendices"
+                    or block["citation_paper_ids"]
+                ):
+                    raise DirectReportError(
+                        "procedural reference notes must exclusively bind an uncited references block"
+                    )
+                for claim_ref in local_procedural:
+                    procedural_uses[claim_ref] += 1
+                resolved_blocks.append((block, (), True))
+                continue
+            resolved_refs: list[str] = []
+            for claim_ref in raw_refs:
+                if claim_ref not in resolved_refs:
+                    resolved_refs.append(claim_ref)
+                    usage_sections[claim_ref].add(section_id)
+            resolved_blocks.append((block, tuple(resolved_refs), False))
+        if set(procedural_uses) != procedural_refs or any(
+            count != 1 for count in procedural_uses.values()
+        ):
+            raise DirectReportError(
+                "each procedural reference note must bind exactly one references block"
+            )
+
+        claims = []
+        section_refs: dict[tuple[str, str], str] = {}
+        relation_refs: dict[str, str] = {}
+        for claim_ref, draft in drafts.items():
+            if claim_ref in procedural_refs:
+                continue
+            sections = sorted(usage_sections.get(claim_ref, ()))
+            if not sections:
+                raise DirectReportError(
+                    f"one-shot claim_ref is absent from every block: {claim_ref}"
+                )
+            if str(draft["report_section"]) not in sections:
+                raise DirectReportError(
+                    "one-shot claim must be used in its declared report_section"
+                )
             paper_units = [
                 reference["evidence_unit"]
                 for field in ("supporting_evidence", "contradicting_evidence")
@@ -839,50 +911,64 @@ class DirectReportCoordinator:
                 )
                 if len(comparable) >= 2 and len(set(comparable)) == 1:
                     group_id = comparable[0]
-            claim_key = {
-                "subject_id": draft["subject_id"],
-                "predicate_id": draft["predicate_id"],
-                "object_or_scope_id": draft["object_or_scope_id"],
-                "qualifier_context_hash": content_hash({
-                    "qualifier_context": draft["qualifier_context"]
-                }),
-                "comparison_group_id": group_id,
-            }
-            claim_id = stable_claim_id(claim_key, report_run_id=report_run_id)
-            refs[claim_ref] = claim_id
-            claims.append({
-                "claim_id": claim_id,
-                "claim_key": claim_key,
-                "research_question_id": draft["research_question_id"],
-                "report_section": draft["report_section"],
-                "claim_text": draft["claim_text"],
-                "claim_type": draft["claim_type"],
-                "supporting_evidence": draft["supporting_evidence"],
-                "contradicting_evidence": draft["contradicting_evidence"],
-                "evidence_level": draft["evidence_level"],
-                "comparison_group_id": group_id,
-                "confidence": draft["confidence"],
-                "known_limitations": draft["known_limitations"],
-                "status": draft["status"],
-                "mapping_status": "mapped",
-            })
+            for section_id in sections:
+                qualifier = {
+                    "qualifier_context": draft["qualifier_context"],
+                    "normalized_report_section": section_id,
+                }
+                claim_key = {
+                    "subject_id": draft["subject_id"],
+                    "predicate_id": draft["predicate_id"],
+                    "object_or_scope_id": draft["object_or_scope_id"],
+                    "qualifier_context_hash": content_hash(qualifier),
+                    "comparison_group_id": group_id,
+                }
+                claim_id = stable_claim_id(claim_key, report_run_id=report_run_id)
+                section_refs[(claim_ref, section_id)] = claim_id
+                relation_refs.setdefault(claim_ref, claim_id)
+                claims.append({
+                    "claim_id": claim_id,
+                    "claim_key": claim_key,
+                    "research_question_id": draft["research_question_id"],
+                    "report_section": section_id,
+                    "claim_text": draft["claim_text"],
+                    "claim_type": draft["claim_type"],
+                    "supporting_evidence": draft["supporting_evidence"],
+                    "contradicting_evidence": draft["contradicting_evidence"],
+                    "evidence_level": draft["evidence_level"],
+                    "comparison_group_id": group_id,
+                    "confidence": draft["confidence"],
+                    "known_limitations": draft["known_limitations"],
+                    "status": draft["status"],
+                    "mapping_status": "mapped",
+                })
         if len({claim["claim_id"] for claim in claims}) != len(claims):
             raise DirectReportError("one-shot claims collapse to a duplicate stable claim ID")
         blocks = []
-        for block in output["blocks"]:
-            try:
-                claim_ids = [refs[str(value)] for value in block["claim_refs"]]
-            except KeyError as error:
-                raise DirectReportError("one-shot block references an unknown claim_ref") from error
+        for block, resolved_refs, procedural in resolved_blocks:
+            section_id = str(block["section_id"])
+            claim_ids = (
+                []
+                if procedural
+                else [
+                    section_refs[(claim_ref, section_id)]
+                    for claim_ref in resolved_refs
+                ]
+            )
             blocks.append({
                 "block_id": block["block_id"],
-                "block_kind": block["block_kind"],
-                "section_id": block["section_id"],
-                "text": block["text"],
+                "block_kind": "caption" if procedural else block["block_kind"],
+                "section_id": section_id,
+                "text": LOCAL_REFERENCES_NOTE if procedural else block["text"],
                 "claim_ids": claim_ids,
-                "citation_paper_ids": block["citation_paper_ids"],
+                "citation_paper_ids": [] if procedural else block["citation_paper_ids"],
             })
-        return tuple(claims), {"report_run_id": report_run_id, "blocks": blocks}
+        return (
+            tuple(claims),
+            {"report_run_id": report_run_id, "blocks": blocks},
+            relation_refs,
+            frozenset(procedural_refs),
+        )
 
     def _mark_manual(
         self, report_run_id: str, decisions: Sequence[ProcessingDecision]
@@ -1417,6 +1503,23 @@ def _error(value: str | None) -> str | None:
         return None
     document = json.loads(value)
     return str(document.get("message") or document.get("error"))
+
+
+def _is_procedural_reference_note(claim: Mapping[str, Any]) -> bool:
+    """Recognize the sole evidence-free note allowed outside the claim ledger.
+
+    The references appendix is rendered from frozen local metadata, so a model
+    may describe that procedure without turning it into a research claim.  No
+    other evidence-free model output is normalized away.
+    """
+    return (
+        claim.get("report_section") == "references_and_appendices"
+        and claim.get("claim_type") == "recommendation"
+        and claim.get("status") == "insufficient"
+        and claim.get("evidence_level") == "corpus_stat"
+        and not claim.get("supporting_evidence")
+        and not claim.get("contradicting_evidence")
+    )
 
 
 def _timestamp(value: datetime) -> str:

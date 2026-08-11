@@ -35,6 +35,10 @@ from .schema import SchemaValidationError, validate
 
 RENDERER_VERSION = "report-markdown-v1"
 SUBSTANTIVE_KINDS = frozenset({"prose", "list_item", "table_cell", "caption"})
+LOCAL_REFERENCES_NOTE = (
+    "规范参考文献由本地协调器根据冻结的 canonical metadata 生成；"
+    "附录保留查询清单、排除原因、覆盖台账与主张台账。"
+)
 PAPER_MARKER = re.compile(r"@([A-Za-z0-9._:-]+)")
 NUMBER = re.compile(r"(?<![A-Za-z0-9._:-])\d+(?:\.\d+)?(?:\s*[%×x])?")
 CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -99,9 +103,28 @@ def _numeric_evidence(claim: Mapping[str, Any]) -> bool:
             if ref["kind"] == "corpus_evidence" and ref.get("statistic"):
                 return True
             unit = ref.get("evidence_unit")
-            if isinstance(unit, Mapping) and isinstance(unit.get("value"), (int, float)):
-                return True
+            if isinstance(unit, Mapping):
+                for key in ("value", "source_value"):
+                    value = unit.get(key)
+                    if (
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                    ) or (
+                        isinstance(value, str) and NUMBER.search(value) is not None
+                    ):
+                        return True
     return False
+
+
+def is_local_references_block(block: Mapping[str, Any]) -> bool:
+    """Recognize the sole coordinator-owned block allowed without claims."""
+    return (
+        block.get("block_kind") == "caption"
+        and block.get("section_id") == "references_and_appendices"
+        and block.get("text") == LOCAL_REFERENCES_NOTE
+        and list(block.get("claim_ids", ())) == []
+        and list(block.get("citation_paper_ids", ())) == []
+    )
 
 
 def _coverage_dict(coverage: CoverageLedger | Mapping[str, Any]) -> dict[str, Any]:
@@ -405,6 +428,10 @@ def verify_report(
         citations = tuple(str(item) for item in block["citation_paper_ids"])
         if len(set(claim_ids)) != len(claim_ids) or len(set(citations)) != len(citations):
             raise ReportVerificationError("ReportDocument block has duplicate claim or citation bindings")
+        if not claim_ids and not is_local_references_block(block):
+            raise ReportVerificationError(
+                "claim-free ReportDocument block is not the deterministic references note"
+            )
         markers = set(PAPER_MARKER.findall(str(block["text"])))
         if markers != set(citations):
             raise ReportVerificationError("block citation sidecar does not exactly match its Markdown markers")
