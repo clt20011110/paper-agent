@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "provider": "crossref",
+  "sampling_policy": {
+    "version": "stage2-crossref-benchmark-v1",
+    "seed": 1741
+  },
+  "scope": {
+    "from_pub_date": "2024-01-01",
+    "until_pub_date": "2026-08-12",
+    "type": "journal-article"
+  },
+  "topics": [
+    {
+      "id": "molecular_generation",
+      "language": "en",
+      "queries": [
+        {"language": "en", "query": "molecular generation", "rows": 400},
+        {"language": "zh", "query": "分子生成 机器学习", "rows": 100}
+      ]
+    },
+    {
+      "id": "protein_design_language_model",
+      "language": "en",
+      "queries": [
+        {"language": "en", "query": "protein design language model", "rows": 400},
+        {"language": "zh", "query": "蛋白质设计 语言模型", "rows": 100}
+      ]
+    },
+    {
+      "id": "materials_discovery_generative_model",
+      "language": "en",
+      "queries": [
+        {"language": "en", "query": "materials discovery generative model", "rows": 400},
+        {"language": "zh", "query": "材料发现 生成模型", "rows": 100}
+      ]
+    },
+    {
+      "id": "drug_discovery_deep_learning",
+      "language": "en",
+      "queries": [
+        {"language": "en", "query": "drug discovery deep learning", "rows": 400},
+        {"language": "zh", "query": "药物发现 深度学习", "rows": 100}
+      ]
+    },
+    {
+      "id": "llm_scientific_discovery",
+      "language": "en",
+      "queries": [
+        {"language": "en", "query": "large language model scientific discovery", "rows": 400},
+        {"language": "zh", "query": "大语言模型 科学发现", "rows": 100}
+      ]
+    },
+    {
+      "id": "diffusion_molecular_design",
+      "language": "en",
+      "queries": [
+        {"language": "en", "query": "diffusion molecular design", "rows": 400},
+        {"language": "zh", "query": "扩散模型 分子设计", "rows": 100}
+      ]
+    }
+  ]
+}
