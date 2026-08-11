@@ -877,7 +877,15 @@ def _resolver_runtime_config(
 ) -> dict[str, Mapping[str, Any]]:
     configured_lookup = download_config.get("metadata_lookup")
     lookup_config = (
-        dict(configured_lookup)
+        {
+            "enabled": configured_lookup.get("enabled"),
+            "user_agent": configured_lookup.get("user_agent"),
+            "timeout_seconds": configured_lookup.get("timeout_seconds"),
+            "contact_configured": bool(configured_lookup.get("contact")),
+            "unpaywall_email_configured": bool(
+                configured_lookup.get("unpaywall_email")
+            ),
+        }
         if isinstance(configured_lookup, Mapping)
         else {"enabled": False}
     )

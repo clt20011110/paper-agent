@@ -16,6 +16,7 @@ from paper_agent.providers.builtin import FixtureTransport, create_builtin
 from paper_agent.resources import (
     example_config_paths,
     paper_agent_skill_directory,
+    public_oa_terms_path,
     release_asset_root,
     stage2_model_lock_paths,
 )
@@ -68,7 +69,10 @@ def test_release_assets_use_one_versioned_source_and_wheel_layout() -> None:
 
     assert project["project"]["version"] == __version__
     assert data_files[installed_root] == ["example_config.yaml"]
-    assert data_files[f"{installed_root}/configs"] == ["configs/*.yaml"]
+    assert data_files[f"{installed_root}/configs"] == [
+        "configs/*.yaml",
+        "configs/*.json",
+    ]
     assert data_files[f"{installed_root}/configs/stage2/models"] == [
         "configs/stage2/models/*.json"
     ]
@@ -82,6 +86,7 @@ def test_release_assets_use_one_versioned_source_and_wheel_layout() -> None:
     assert release_asset_root() == ROOT
     assert all(path.is_file() for path in stage2_model_lock_paths())
     assert all(path.is_file() for path in example_config_paths())
+    assert public_oa_terms_path().is_file()
     assert (paper_agent_skill_directory() / "SKILL.md").is_file()
     assert (
         paper_agent_skill_directory() / "agents" / "openai.yaml"

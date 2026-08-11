@@ -24,6 +24,7 @@ from paper_agent.providers.builtin import FixtureTransport, create_builtin
 from paper_agent.resources import (
     example_config_paths,
     paper_agent_skill_directory,
+    public_oa_terms_path,
     release_asset_root,
     stage2_model_lock_paths,
 )
@@ -96,6 +97,7 @@ def main() -> None:
     configs = example_config_paths()
     assert all(path.is_file() for path in locks)
     assert all(path.is_file() for path in configs)
+    assert public_oa_terms_path().is_file()
     skill = paper_agent_skill_directory()
     assert (skill / "SKILL.md").is_file()
     assert (skill / "agents" / "openai.yaml").is_file()

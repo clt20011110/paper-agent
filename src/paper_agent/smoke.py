@@ -7,14 +7,30 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
+from urllib.parse import urlsplit, urlunsplit
 
-from paper_agent.domain import QuerySpec
+from paper_agent.config import load_config
+from paper_agent.download_cli_service import (
+    Stage3DownloadResult,
+    Stage3DownloadService,
+    load_provider_terms,
+)
+from paper_agent.domain import Paper, QuerySpec
 from paper_agent.http_transport import ControlledHTTPTransport
 from paper_agent.manifests import load_catalog
 from paper_agent.provider_runtime import ProviderRuntime, policy_from_manifest
 from paper_agent.providers.api import CrawlWindow
 from paper_agent.providers.builtin import create_builtin, load_builtin_manifest
+from paper_agent.repository import PaperRepository
+from paper_agent.resources import public_oa_terms_path, release_asset_root
+from paper_agent.stage3_metadata_lookup import Stage3MetadataLookup
+from paper_agent.storage import Database
+
+
+PUBLIC_OA_SMOKE_DOI = "10.3758/s13421-020-01060-2"
+PUBLIC_OA_SMOKE_PMCID = "PMC7683441"
+PUBLIC_OA_SMOKE_PAPER_ID = "paper-pmc7683441"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +54,13 @@ class VenueSmokeEvidence:
     mapped_entries: int
     request_audit: tuple[Mapping[str, Any], ...]
     snapshot_files: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PublicOASmokeResult:
+    evidence_path: Path
+    run_id: str
+    success: bool
 
 
 def run_crossref_smoke(
@@ -102,6 +125,202 @@ def write_smoke_evidence(evidence: SmokeEvidence, path: Path) -> None:
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def run_public_oa_download_smoke(
+    output_dir: Path,
+    *,
+    contact: str,
+    unpaywall_email: str,
+    source_commit: str,
+) -> PublicOASmokeResult:
+    """Run one fixed Europe PMC public-OA download through the production path.
+
+    The output directory must be new so a failed fetch can never resume an old
+    request.  The service receives no injected fetcher, lookup, or resolver
+    registry: metadata lookup and PDF retrieval therefore use the normal
+    ``ControlledHTTPTransport`` and ``urllib_fetch`` implementations.
+    """
+    if output_dir.exists():
+        raise ValueError("public OA smoke output directory must not already exist")
+    if not contact:
+        raise ValueError("public OA smoke requires a metadata contact")
+    if "@" not in unpaywall_email:
+        raise ValueError("public OA smoke requires an Unpaywall email")
+    if not source_commit:
+        raise ValueError("public OA smoke requires the source commit")
+
+    root = release_asset_root()
+    config = load_config(root / "configs" / "smoke_supported.yaml")
+    metadata = config["download"]["metadata_lookup"]
+    metadata["contact"] = contact
+    metadata["unpaywall_email"] = unpaywall_email
+    output_dir.mkdir(parents=True)
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0)
+    run_id = "public-oa-smoke-" + timestamp.strftime("%Y%m%dT%H%M%SZ")
+
+    with Database(output_dir / "papers.sqlite3") as database:
+        database.migrate()
+        PaperRepository(database).save_paper(
+            Paper(
+                PUBLIC_OA_SMOKE_PAPER_ID,
+                "Public OA smoke paper",
+                doi=PUBLIC_OA_SMOKE_DOI,
+            )
+        )
+        service = Stage3DownloadService(
+            database,
+            config,
+            config_root=root,
+            artifact_root=output_dir / "artifacts",
+            provider_terms=load_provider_terms(public_oa_terms_path(root)),
+        )
+        if not isinstance(service.lookup, Stage3MetadataLookup):
+            raise AssertionError("public OA smoke requires the production metadata lookup")
+        if not isinstance(service.lookup.transport, ControlledHTTPTransport):
+            raise AssertionError("public OA smoke requires ControlledHTTPTransport")
+        result = service.run(paper_ids=[PUBLIC_OA_SMOKE_PAPER_ID], run_id=run_id)
+        evidence = _public_oa_evidence(
+            database, service, result, run_id, timestamp, source_commit
+        )
+
+    evidence_path = output_dir / "public-oa-evidence.json"
+    evidence_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return PublicOASmokeResult(evidence_path, run_id, bool(evidence["success"]))
+
+
+def _public_oa_evidence(
+    database: Database,
+    service: Stage3DownloadService,
+    result: Stage3DownloadResult,
+    run_id: str,
+    timestamp: datetime,
+    source_commit: str,
+) -> dict[str, Any]:
+    row = database.connection.execute(
+        """SELECT candidate_id, host, license, access_basis, provenance_json,
+                  policy_decision, policy_reason_code
+           FROM download_candidates
+           WHERE paper_id = ? AND resolver = 'europe_pmc'""",
+        (PUBLIC_OA_SMOKE_PAPER_ID,),
+    ).fetchone()
+    candidate = None if row is None else {
+        "candidate_id": row["candidate_id"],
+        "resolver": "europe_pmc",
+        "host": row["host"],
+        "license": row["license"],
+        "access_basis": row["access_basis"],
+        "pmcid": json.loads(row["provenance_json"]).get("pmcid"),
+        "policy_decision": row["policy_decision"],
+        "policy_reason_code": row["policy_reason_code"],
+    }
+    request = None if row is None else database.connection.execute(
+        """SELECT request_id, status FROM fetch_requests
+           WHERE candidate_id = ? AND provider = 'europe_pmc'""",
+        (row["candidate_id"],),
+    ).fetchone()
+    attempt = None if request is None else database.connection.execute(
+        """SELECT result_status, failure_category, http_status, artifact_id
+           FROM download_attempts WHERE fetch_request_id = ?""",
+        (request["request_id"],),
+    ).fetchone()
+    artifact = None if attempt is None or attempt["artifact_id"] is None else database.connection.execute(
+        """SELECT artifact_id, relative_path, sha256, mime_type, byte_size
+           FROM artifacts WHERE artifact_id = ?""",
+        (attempt["artifact_id"],),
+    ).fetchone()
+    paper = result.run.for_paper(PUBLIC_OA_SMOKE_PAPER_ID) if result.run else None
+    artifact_path = (
+        service.artifact_root / artifact["relative_path"]
+        if artifact is not None else None
+    )
+    success = bool(
+        result.status == "complete"
+        and paper is not None
+        and paper.status.value == "downloaded"
+        and candidate is not None
+        and candidate["resolver"] == "europe_pmc"
+        and candidate["host"] == "europepmc.org"
+        and candidate["pmcid"] == PUBLIC_OA_SMOKE_PMCID
+        and candidate["access_basis"] == "open_license"
+        and candidate["policy_decision"] == "allow"
+        and candidate["policy_reason_code"] == "compatible_open_license"
+        and request is not None
+        and request["status"] == "consumed"
+        and attempt is not None
+        and attempt["result_status"] == "downloaded"
+        and artifact is not None
+        and artifact["mime_type"] == "application/pdf"
+        and len(artifact["sha256"]) == 64
+        and all(character in "0123456789abcdef" for character in artifact["sha256"])
+        and artifact["byte_size"] > 0
+        and artifact_path is not None
+        and artifact_path.is_file()
+        and artifact_path.stat().st_size == artifact["byte_size"]
+    )
+    transport = service.lookup.transport
+    return {
+        "purpose": "manual public OA PDF release smoke",
+        "source_commit": source_commit,
+        "timestamp": timestamp.isoformat(),
+        "fixed_paper": {"doi": PUBLIC_OA_SMOKE_DOI, "pmcid": PUBLIC_OA_SMOKE_PMCID},
+        "production_path": {
+            "metadata_transport": "ControlledHTTPTransport",
+            "resolver_registry": "default",
+            "pdf_fetcher": "urllib_fetch",
+        },
+        "metadata_requests": _sanitized_metadata_audit(transport.request_audit),
+        "run": {
+            "run_id": run_id,
+            "stage3_status": result.status,
+            "paper_status": paper.status.value if paper else None,
+            "paper_reason_code": paper.reason_code if paper else None,
+        },
+        "candidate": candidate,
+        "fetch_request": (
+            {"request_id": request["request_id"], "status": request["status"]}
+            if request is not None else None
+        ),
+        "attempt": (
+            {
+                "status": attempt["result_status"],
+                "failure_category": attempt["failure_category"],
+                "http_status": attempt["http_status"],
+            }
+            if attempt is not None else None
+        ),
+        "artifact": (
+            {
+                "artifact_id": artifact["artifact_id"],
+                "relative_path": artifact["relative_path"],
+                "sha256": artifact["sha256"],
+                "mime_type": artifact["mime_type"],
+                "byte_size": artifact["byte_size"],
+            }
+            if artifact is not None else None
+        ),
+        "success": success,
+    }
+
+
+def _sanitized_metadata_audit(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    operations = {"europe_pmc": "search", "unpaywall": "resolve", "arxiv": "search"}
+    output = []
+    for record in records:
+        parsed = urlsplit(str(record["url"]))
+        provider = str(record["provider"])
+        output.append({
+            "provider": provider,
+            "operation": record.get("operation", operations[provider]),
+            "status": record["status"],
+            "url": urlunsplit((parsed.scheme, parsed.hostname or "", parsed.path, "", "")),
+            "content_type": record.get("content_type"),
+            "response_size_bytes": record.get("response_size_bytes"),
+            "rate_limit": record.get("rate_limit", {}),
+        })
+    return output
 
 
 def run_venue_smoke(

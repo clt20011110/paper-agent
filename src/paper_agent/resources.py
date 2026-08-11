@@ -20,6 +20,7 @@ EXAMPLE_CONFIG_RELATIVE_PATHS = (
     Path("configs/smoke_supported.yaml"),
 )
 PAPER_AGENT_SKILL_RELATIVE_PATH = Path("skills/paper-agent")
+PUBLIC_OA_TERMS_RELATIVE_PATH = Path("configs/public-oa-europe-pmc-terms.json")
 
 
 def release_asset_root(override: str | Path | None = None) -> Path:
@@ -54,6 +55,10 @@ def example_config_paths(root: str | Path | None = None) -> tuple[Path, ...]:
 
 def paper_agent_skill_directory(root: str | Path | None = None) -> Path:
     return release_asset_root(root) / PAPER_AGENT_SKILL_RELATIVE_PATH
+
+
+def public_oa_terms_path(root: str | Path | None = None) -> Path:
+    return release_asset_root(root) / PUBLIC_OA_TERMS_RELATIVE_PATH
 
 
 def _source_checkout_root() -> Path | None:

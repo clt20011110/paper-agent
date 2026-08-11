@@ -35,5 +35,23 @@ public OA release smoke 保持未通过。不得放宽 SSRF guard，也不得把
 `urllib_fetch` 对一篇合法 public OA 论文重新执行 candidate → probe → fetch → PDF validation，
 并保存 request、attempt、artifact hash、MIME、大小和解析结果。
 
+仓库现提供固定 DOI/PMCID 的默认生产链入口；它不允许注入 fetcher、lookup、transport 或
+resolver registry。证据中的请求 URL 去掉 query/email，冻结 resolver snapshot 只记录
+contact/email 是否已配置，不保存其值：
+
+```bash
+PAPER_AGENT_RUN_LIVE_SMOKE=1 \
+PAPER_AGENT_SMOKE_CONTACT='mailto:operator@example.org' \
+PAPER_AGENT_SMOKE_UNPAYWALL_EMAIL='operator@example.org' \
+.venv/bin/python scripts/run_public_oa_smoke.py \
+  --output-dir /new/path/public-oa-smoke
+```
+
+`--output-dir` 必须尚不存在；只有 candidate、policy、request、attempt 和 PDF artifact 全部通过
+才返回 0。服务返回受控失败结果时仍会保存证据，但不会切换 curl、浏览器或其他备用传输。
+Europe PMC 的条款快照
+来自其[官方开放获取页面](https://europepmc.org/downloads/openaccess)，并作为版本化 release
+asset 随 wheel 安装；条款只声明下载与本地保存许可，重分发权限保持未知。
+
 学校订阅或出版社浏览器授权下载是独立门禁，仍需用户可见登录会话与 exact grant；本次诊断未
 使用任何凭据、cookie 或访问控制绕过。

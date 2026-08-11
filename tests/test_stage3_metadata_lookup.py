@@ -224,6 +224,35 @@ def test_default_metadata_transport_has_a_stable_implementation_identity(
     }
 
 
+def test_resolver_snapshot_redacts_metadata_contacts(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _save_paper(database)
+    result = _service(
+        tmp_path,
+        database,
+        FixtureMetadataTransport(),
+        metadata_lookup=True,
+    ).run(paper_ids=[paper_id], run_id="redacted-metadata-snapshot", dry_run=True)
+
+    assert result.resolver_snapshot is not None
+    document = result.resolver_snapshot.to_dict()
+    europe_pmc = next(
+        item for item in document["resolvers"] if item["name"] == "europe_pmc"
+    )
+    configuration = europe_pmc["runtime_config"]["metadata_lookup"]["configuration"]
+    assert configuration == {
+        "enabled": True,
+        "user_agent": "paper-agent-test/stage3",
+        "timeout_seconds": 7,
+        "contact_configured": True,
+        "unpaywall_email_configured": True,
+    }
+    serialized = str(document)
+    assert "operator@example.test" not in serialized
+    assert "mailto:" not in serialized
+
+
 def test_injected_metadata_transport_requires_identity_before_network(
     tmp_path: Path, database: Database,
 ) -> None:
