@@ -1,0 +1,187 @@
+{
+  "captured_at": "2026-08-11T13:24:46Z",
+  "durability": {
+    "committed_report": {
+      "file_sha256": "c284b2f319fc0aede58ca97693b04a31eec78639399965de50aaea25fd939c2e",
+      "link": "../smoke/neurips-2025-molecular-one-shot-report-20260811.md",
+      "manifest_logical_hash": "6cd2c6e9edbcac624a1a3c82283638a6c4ef0c4b8ad391980767594636dda0bf",
+      "path": "docs/smoke/neurips-2025-molecular-one-shot-report-20260811.md",
+      "size_bytes": 11459
+    },
+    "hash_only_not_copied": [
+      {
+        "artifact": "raw one-shot Sol structured output",
+        "reason": "raw model output is retained in the runtime CAS, not in Git",
+        "sha256": "6cf6799196ae83b0cade5da87d3bf69bde36eb089a50076ced95c39c7aa537cf",
+        "size_bytes": 61522
+      },
+      {
+        "artifact": "SEARCH_AUDIT.json",
+        "manifest_logical_hash": "6e44a353fa8d7afd818f4fd5b4bcd7ca0303a8e6592e9c22382e6fe60e1e9741",
+        "reason": "large generated audit remains in the runtime output and is represented here by hash",
+        "size_bytes": 926288
+      },
+      {
+        "artifact": "runtime SQLite database and 15 source PDFs",
+        "reason": "large or source artifacts are intentionally excluded from Git"
+      }
+    ],
+    "selected_published_manifest_hashes": {
+      "AUDIT.json": "06eb416671a75f47ad7ef2b16b323f0473091c72f37a6fc19762c8e91727cce0",
+      "BIBLIOGRAPHY.json": "21d09a7b3c8c822188d5c1f2dd235c7dee9c791e8900790c308a11f24604aa94",
+      "CLAIMS_EVIDENCE.jsonl": "f41a37bf0f5a60bbec1c9fbe4da1a81c545871c1be404b367ebd331cd2670fc6",
+      "CORPUS_SNAPSHOT.json": "318f01588376ab3b89be3da6610075d5c4ae60356bc48f05dfbf01859a25d2d0",
+      "COVERAGE.json": "9a1f7e274809459bf0046bb0bc56beb36ebb3d77a9dce89ec91fa19fef1ff3d3",
+      "REPORT.md": "6cd2c6e9edbcac624a1a3c82283638a6c4ef0c4b8ad391980767594636dda0bf",
+      "REPORT_DOCUMENT.json": "d4a3a51ea2e8b3d4604911defd3e1150ccbb341e32076fd1efd907ad738b69eb",
+      "REPORT_PLAN.json": "eaa8345584cdccfa1ea4d170bcf04a3b8374d39eee0b321b5f6b9f4b5dc88fc0",
+      "VERIFICATION.json": "0fd8e6d0b333d21710c24615c12a5bff25eff220e4262731ba214c56d6aebfc7"
+    }
+  },
+  "pipeline": {
+    "stage1": {
+      "audit": {
+        "excluded": 5807,
+        "preliminary_included": 16,
+        "raw_discovered": 5823,
+        "screened": 5823,
+        "unique_after_dedup": 5823
+      },
+      "crawl_run_id": "crawl-8eb7996ee96a5c7e8224c7a7dd1e0772",
+      "run_id": "neurips-2025-molecular-e2e-stage1-test-v2",
+      "status": "complete"
+    },
+    "stage2": {
+      "evaluated_decisions": 5823,
+      "irrelevant": 5808,
+      "model_id": "TEST_ONLY/title-rule-adjudicator",
+      "needs_review": 0,
+      "production_release": false,
+      "qualification": "test-only selector evidence; not production Stage 2 model-quality evidence",
+      "relevant_selected_for_downstream": 15,
+      "run_id": "stage2-neurips-2025-molecular-e2e-test-v1",
+      "status": "complete",
+      "test_only": true
+    },
+    "stage3": {
+      "access_basis": "public_read_only",
+      "attempts": 15,
+      "authorized_browser_download_skill_used": false,
+      "downloaded": 15,
+      "host": "proceedings.neurips.cc",
+      "http_status": 200,
+      "policy_decision": "allow",
+      "policy_grant_id": "grant-neurips-2025-molecular-public-direct-20260811-v1",
+      "provider": "public_direct",
+      "qualification": "the internal download policy grant records scope; no publisher-login or authorized browser download workflow was used",
+      "run_id": "stage3-neurips-2025-molecular-e2e-v4",
+      "status": "complete"
+    },
+    "stage4": {
+      "complete": 15,
+      "input_scope": "full_pdf",
+      "markdown_artifacts": 15,
+      "model_id": "gpt-5.6-luna",
+      "output_artifacts": 15,
+      "papers": 15,
+      "run_id": "stage4-neurips-2025-molecular-e2e-v2",
+      "status": "complete"
+    },
+    "stage4b": {
+      "actual_input_tokens_db_field": 493749,
+      "actual_input_tokens_field_semantics": "The current implementation stores len(rendered_prompt.encode('utf-8')); this value is UTF-8 bytes, not provider-tokenizer tokens.",
+      "audit_shard_steps": 0,
+      "audit_steps": 0,
+      "budget_calls_reserved": 1,
+      "budget_tokens_reserved": 493749,
+      "dispatch_count": 1,
+      "input_hash": "a4d17d53aa1b79ebb8e564551f4dbb3c87d3da1ec0b2c69cf30dbf6093860609",
+      "model_id": "gpt-5.6-sol",
+      "model_revision": "codex-cli-managed",
+      "one_shot_status": "complete",
+      "output_hash": "6cf6799196ae83b0cade5da87d3bf69bde36eb089a50076ced95c39c7aa537cf",
+      "pipeline_run_id": "pipeline-report-neurips-2025-molecular-one-shot-v1",
+      "profile": "stage4b_oneshot_sol",
+      "reasoning_effort": "high",
+      "reduce_nodes": 0,
+      "rendered_prompt_hash": "63361b4d05f763c7fded5294968f2b44246529eaaaba58619d3f93b670c940dc",
+      "report_plan_content_hash": "a16a3bb2f2c7142154edd70cadbf697e39731e703759f34bccc2442ff5892ca4",
+      "report_plan_id": "report-plan-a16a3bb2f2c7",
+      "report_run_id": "report-neurips-2025-molecular-one-shot-v1",
+      "report_status": "complete",
+      "sol_invocation_ledger_count": 1,
+      "sol_invocation_ledger_phase": "reduce",
+      "sol_invocation_phase_note": "The legacy ledger enum records the one-shot call under phase=reduce; no reduce node was executed.",
+      "strategy": "one_shot"
+    }
+  },
+  "purpose": "durable evidence for the real NeurIPS 2025 molecular-generation Stage 1 through Stage 4b end-to-end run",
+  "recovery_disclosure": {
+    "actual_provider_invocation_id_available": false,
+    "additional_model_calls_during_recovery": 0,
+    "defect": "CodexExecResult freezes its top-level structured output as MappingProxyType, while the configured jsonschema object checker expected a concrete dict at the post-dispatch resource-validation boundary.",
+    "local_fix": "Thaw the already structured top-level result with dict(invoked.output) before resource-schema validation, then replay local validation, normalization, publication, and verification.",
+    "normalization": {
+      "model_claim_drafts": 18,
+      "published_section_local_claims": 26,
+      "reason": "Claims reused across report sections were deterministically materialized as section-local stable claims; the evidence-free procedural references note was replaced by the coordinator-owned canonical note and was not entered into the research-claim ledger."
+    },
+    "qualification": "The recovered-* value is a local surrogate ledger identity, not the unavailable provider invocation ID. The persisted structured output was reused and Sol was not called again.",
+    "recovery_kind": "local_post_dispatch_schema_adapter_recovery",
+    "recovery_source": "immutable_error_json",
+    "surrogate_invocation_id": "recovered-a110eab136a4b3bd8a7b2d5e6d1c51f700c9"
+  },
+  "schema_version": "1",
+  "scope": {
+    "paper_count": 15,
+    "topic": "molecular generation and molecular design",
+    "venue": "NeurIPS",
+    "year": 2025
+  },
+  "source_revision": {
+    "base_commit": "cd433a61ca30ef4b03e50ef270420b4e08f04815",
+    "capture_worktree_dirty": true,
+    "local_uncommitted_runtime_fix_paths": [
+      "schemas/report-document.schema.json",
+      "src/paper_agent/report_artifacts.py",
+      "src/paper_agent/report_direct.py",
+      "src/paper_agent/report_reduce.py"
+    ],
+    "qualification": "Stage 4b completion includes the documented local adapter and deterministic-normalization fixes; this attestation is not clean-commit reproducibility evidence."
+  },
+  "verification": {
+    "audit": {
+      "audit_pass": "deterministic",
+      "coverage_complete": true,
+      "findings": [],
+      "report_artifact_hash": "21118b4067a5155e85b8e9ace7ef44eda1171be9ed4dfc7304b527c463dd31c6",
+      "report_document_hash": "d4a3a51ea2e8b3d4604911defd3e1150ccbb341e32076fd1efd907ad738b69eb",
+      "report_plan_hash": "a16a3bb2f2c7142154edd70cadbf697e39731e703759f34bccc2442ff5892ca4",
+      "rubric_hash": "3561eeb64efb986ed105546c3c747066f36b03c2e54962590ae08327345d6eae",
+      "search_limitations_hash": "0353e5e8ef2962f9077ea142156137a5c496f7027907b2c62c9a527bdf08e66e"
+    },
+    "block_count": 11,
+    "checks": {
+      "citation_coverage": true,
+      "extraction_scope": true,
+      "no_fabricated_statistics": true,
+      "no_unsupported_claims": true,
+      "search_limitations": true,
+      "table_provenance": true
+    },
+    "cited_paper_count": 15,
+    "claim_count": 26,
+    "coverage": {
+      "complete": true,
+      "missing_paper_ids": [],
+      "paper_count": 15,
+      "uncovered_claim_ids": []
+    },
+    "coverage_complete": true,
+    "renderer_version": "report-markdown-v1",
+    "search_limitations_disclosed": [
+      "抽取范围：full_pdf=15；全文、摘要和元数据证据已分层，缺失全文不作全文事实表述。"
+    ],
+    "status": "passed"
+  }
+}

@@ -1,6 +1,6 @@
 # Paper Agent v2 — 可执行任务规格
 
-> 状态：已确认，等待实现
+> 状态：核心实现与真实 Stage 1→4b 小规模验收已完成；Stage 2 生产 release gate 待完成
 > 规格日期：2026-08-09
 > 实施基线：feature/crawler-adapters
 > 本文用途：后续实现、验收和回归测试的唯一任务依据
@@ -33,10 +33,10 @@
 | Stage 2 | 批量 reranker 粗筛 + Qwen3.5-9B 疑难裁决 |
 | Stage 3 | DownloadProvider 链；浏览器授权流程使用 gpt-5.6-luna |
 | Stage 4 | codex exec -m gpt-5.6-luna |
-| Stage 4b | codex exec -m gpt-5.6-sol |
+| Stage 4b | 全部 Luna 逐篇报告一次打包，codex exec -m gpt-5.6-sol 严格调用一次 |
 | 报告语言 | 中文 Markdown |
 | 默认 arXiv 行为 | 独立候选集，默认不进入最终报告 |
-| 错误策略 | 可恢复、可重试、fail-open；禁止静默丢论文 |
+| 错误策略 | 通用阶段可恢复、可重试、fail-open；Stage 4b approved run 为一次性 dispatch，超时或结果不确定时禁止同 run 重发；禁止静默丢论文 |
 
 整体数据流：
 
@@ -62,7 +62,13 @@ Research questions / user seeds / venue descriptors
        Luna per-paper analysis
                  |
                  v
-        Sol aggregate report
+ freeze every Luna report into one complete payload
+                 |
+                 v
+       exactly one Sol one_shot_report
+                 |
+                 v
+ deterministic local normalize -> verify -> audit -> publish
 ~~~
 
 ## 3. 统一领域模型与存储
@@ -81,7 +87,7 @@ JSONL 和 CSV 只用于导入、导出和人工检查，不能作为单节点并
 - filter_decisions：规则、模型分数、阈值版本、理由和最终状态。
 - download_attempts：provider 尝试顺序、HTTP/浏览器结果和失败类别。
 - analysis_runs：Stage 4 输入范围、模型、prompt/schema hash 和输出。
-- report_runs：Stage 4b 覆盖清单、聚合树、模型和输出。
+- report_runs / report_one_shot_runs：Stage 4b 覆盖清单、唯一 dispatch 预约、模型输入输出 hash、本地验证和发布状态。
 - search_plans：已冻结的研究问题、范围、查询族、来源选择、预算和停止条件。
 - source_runs / search_queries：逐来源请求、游标、原始查询、过滤条件、时间、结果数、错误和 query hash。
 - citation_edges：引用、被引和版本关系及其来源 provenance。
@@ -668,7 +674,7 @@ Stage 4b 读取冻结的 QueryPlan、检索审计、入选集合 snapshot 和全
 - cohort rules：recent cutoff、foundational paper 判定/显式种子、peer-review 状态和 real/simulation/theory 分类规则；不能事后为配合结论改阈值。
 - 每篇论文的预定 section membership；允许一篇进入多章，但必须指定 primary section。
 - 计划生成的对比表、趋势统计、资源表和附录。
-- Sol 调用数、输入 token、重试和最终审计/修复预算。
+- execution_strategy=one_shot，以及冻结预算 max_sol_calls=1、max_retries=0、audit_calls=0、repair_calls=0 和完整输入 token 上限。
 - plan hash、schema/prompt hash、状态（draft/approved/superseded）和 approval record（approved_hash、approved_by、approved_at、approval_method）。
 
 CLI 必须提供 report --plan-only、report approve --plan <path> --hash <sha256> 和 report --plan <path>。有人值守运行也必须写入显式 approval record；无人值守运行必须同时配置 approved plan path/hash。执行前重算 corpus、QueryPlan、schema/prompt 和配置 hash，任一偏差即拒绝运行并生成新 draft。改变研究问题或纳入范围会创建新 report_run，不能覆盖旧计划。
@@ -684,13 +690,14 @@ ReportPlan 使用与 4.4 相同的 canonical JSON/content hash 与 detached appr
 - foundational/recent、peer_reviewed/workshop/preprint、full_pdf/abstract_only、real/simulation/theory 分层统计。
 - 附录引用 search audit 和全部 query variants；required provider 失败或 budget_exhausted 必须在执行摘要和限制章节显式出现。
 
-### 8.3 语义分组与稳定分层聚合
+### 8.3 全量输入冻结与单次聚合
 
 - Stage 4 分析是唯一的逐篇模型 map artifact；Stage 4b 不重复逐篇调用。
-- 协调端先按 ReportPlan 和 Stage 4 规范标签，把完整论文 analysis 分配到语义 section，再按 classification key、稳定 paper_id 和 token budget 分块；禁止先按 token 长度任意切碎后再决定主题。
-- 每个 evidence pack 同时携带支持、反对和未知证据、paper metadata、evidence locator、publication/full-text 状态及比较条件。
+- 协调端按 stable paper_id 确定性排序，把冻结语料中每篇论文的完整 Luna 报告、canonical metadata、evidence locator、publication/full-text 状态、比较条件、ReportPlan、corpus snapshot 和 search audit 一次打包为唯一 `one_shot_report` 输入；每篇 Luna 报告必须且只能出现一次。
+- 输入包同时携带支持、反对和未知证据，不允许为节省 token 丢弃冲突、限制、abstract_only 或 not_comparable 信息。
 - 单篇论文可以服务多个子问题，但 coverage ledger 只按 stable paper_id 计一次总体覆盖，并记录所有消费节点。
-- corpus 过大时采用 section reduce -> cross-section reduce -> final reduce 的稳定树；树结构、输入 hash 和输出 hash 写入 report_runs，resume 必须复用成功节点。
+- dispatch 前必须使用冻结 tokenizer/估算器对完整 prompt 做预算门禁；若完整输入超过 ReportPlan 或模型上下文上限，则状态为 incomplete/manual_required，记录预算证据并保持 Sol 调用数为 0。
+- 禁止 shard、section/cross-section/final reduce、抽样、取前 N 篇、截断单篇 Luna 报告或静默缩小 approved corpus。需要缩小范围时必须创建并批准新的 ReportPlan 和新的 report_run。
 
 ### 8.4 Claims-Evidence Matrix
 
@@ -701,9 +708,9 @@ ReportPlan 使用与 4.4 相同的 canonical JSON/content hash 与 detached appr
 - evidence_level：full_text_direct、full_text_inferred、abstract_direct、metadata_only 或 corpus_stat。
 - comparison_group_id、confidence、known_limitations 和 status（supported/mixed/insufficient）。
 
-每个 section reduce 必须返回结构化 SectionSynthesis（章节草稿、claim records、引用 paper_id、未解决冲突），协调端通过 schema、controlled vocabulary/claim-key registry 和 paper/citation allowlist 后才写入 Claims-Evidence Matrix；无法稳定规范化的 claim 使用 run-scoped ID 并标 unmapped_new，不能猜成历史 claim。后续 reduce 只消费通过校验的 claim/evidence，模型不得凭标题或记忆新增论文。
+唯一一次 `one_shot_report` 必须返回结构化 one-shot draft：章节 blocks、draft claim records、supporting/contradicting evidence refs、未解决冲突和 claim relation 候选。Sol 只能引用输入 allowlist 中已经存在的 stable paper_id、analysis/evidence ref 和 ReportPlan section/subquestion；不得凭标题、记忆或常识新增论文、定位、数值、claim ID、hash 或书目。
 
-final_reduce 不直接返回自由格式 Markdown，而返回 ReportDocument AST：block_kind 枚举冻结为 prose、list_item、table_cell、caption；每个模型生成 block 必须具有 block_id、section_id、text、至少一个 claim_id 和 citation paper_ids。heading、布局、目录、参考文献等非实质性块只允许协调端从 ReportPlan/metadata 生成，模型不能通过设置 is_substantive=false 逃避绑定。协调端由 AST 确定性渲染 Markdown，并在机器可读 sidecar 保存 block↔claim↔citation 绑定；任一模型文本/表格单元没有 claim_id、正文与 sidecar 不一致，或绑定到不存在 claim 的 block 都使 verifier 失败。
+模型返回的 claim/block 引用只是草稿引用；协调端在本地通过 schema、controlled vocabulary/claim-key registry 和 paper/citation/evidence allowlist 后，确定性生成 stable claim UUID、comparison group、block ID、Claims-Evidence Matrix 与 ReportDocument AST。block_kind 枚举冻结为 prose、list_item、table_cell、caption；每个实质性 block 必须具有 section_id、至少一个 claim_id 和 citation paper_ids。heading、布局、目录、参考文献等非实质性块只允许协调端从 ReportPlan/metadata 生成。协调端由 AST 确定性渲染 Markdown，并在机器可读 sidecar 保存 block↔claim↔citation 绑定；任一模型文本/表格单元没有有效 claim、正文与 sidecar 不一致，或绑定到不存在 claim 的 block 都使 verifier 失败。
 
 增量 run 先按 stable claim_id 对齐；措辞变化不改变 ID。split/merged/refined/superseded/retired 必须写入 claim_relations，绑定 previous/current claim IDs、reason 和 evidence diff；无法确认的映射保持 unmapped，不得仅靠文本相似度静默继承历史结论。
 
@@ -741,33 +748,28 @@ final_reduce 不直接返回自由格式 Markdown，而返回 ReportDocument AST
 codex exec -m gpt-5.6-sol
 ~~~
 
-Stage 4b 使用同一个冻结 Sol security/model profile，但 call_kind 必须各自绑定 prompt 和 output schema：
+approved Stage 4b 执行使用冻结的 `stage4b_oneshot_sol` security/model profile，并且只允许一个模型 call_kind：
 
 | call_kind | 输出 schema |
 |---|---|
-| planning_assist（可选） | report-plan.schema.json |
-| section_reduce | section-synthesis.schema.json |
-| cross_section_reduce | cross-section-synthesis.schema.json |
-| final_reduce | report-document.schema.json |
-| quality_audit | report-audit.schema.json |
-| repair | report-repair.schema.json |
+| one_shot_report（approved run 必须且只能一次） | one-shot-report.schema.json |
+
+`planning_assist` 仅可在 ReportPlan 批准前作为可选的规划辅助，不能接收 Stage 4 analysis/evidence，不属于 approved Stage 4b 执行，也不能在执行期间或失败后用于追加调用。旧 `section_reduce`、`cross_section_reduce`、`final_reduce`、`quality_audit` 和 `repair` 资源只允许为 legacy 配置迁移保留；`execution_strategy=one_shot` 时调度器必须拒绝调用它们。
 
 Stage 4 analysis/evidence 仍是论文内容的派生数据。任何 analysis、evidence pack、claim ledger 或报告草稿进入 Sol 前，必须用其 lineage/source artifact hashes 对 remote_model_processing action 重新评估 provider=codex_cli、model=gpt-5.6-sol；Luna processing grant 不自动覆盖 Sol。无兼容许可或精确授权的论文不能把其全文派生内容发送给 Sol；若只允许 metadata/abstract，则降到相应 evidence level 并在 ReportPlan/corpus snapshot 中冻结，否则 report 为 incomplete。network=false 同样不代表模型载荷留在本机。
 
 要求：
 
 - 不得以降低成本为由静默改成 Luna。
-- Stage 4 已生成的逐篇分析就是 map artifact；Stage 4b 默认不新增模型 map 调用，只做确定性分组和证据打包。所有 Stage 4b 的 planning assist、reduce、quality audit 和 repair 调用统一使用冻结的 stage4b_summary_sol 基础 profile，但 invocation 必须额外冻结 call_kind、prompt path/hash、schema path/hash 和输入 artifact hash；不同 call_kind 不得共用一个 output schema。
-- stage4b_summary_sol 固定 model=gpt-5.6-sol、reasoning_effort=high、只读输入、网络关闭和报告输出 schema；模型字段使用 const 校验并核对实际 invocation metadata。
-- 开始前按 reduce tree 估算 Sol 调用数和输入上限，并预留两次 audit 加一次 repair 的最坏情况预算；超过用户配置预算则在调用前停止或缩小经用户确认的范围，不能通过跳过论文、降级模型或省略复审来凑预算。
-- 不得截断或仅取前 N 篇。
-- 超出上下文时使用上述语义分组和稳定分层 reduce；不得用“取前 N 篇”或随机抽样替代覆盖。
+- Stage 4 已生成的全部逐篇 Luna 分析就是唯一模型输入语料；approved run 只做确定性全量打包，并严格 dispatch 一次 `one_shot_report`。不得新增模型 map、reduce、audit 或 repair 调用。
+- `stage4b_oneshot_sol` 固定 model=gpt-5.6-sol、reasoning_effort=high、只读输入、网络关闭、max_retries=0 和 one-shot output schema；模型字段使用 const 校验并核对实际 invocation metadata。
+- ReportPlan 和运行时都必须冻结 `max_sol_calls=1`、`max_retries=0`、`audit_calls=0`、`repair_calls=0`。完整输入超过 token/context 预算、缺少任一输入或授权不完整时，必须在 dispatch 前停止，Sol 调用数为 0；禁止通过 shard、reduce、抽样、截断、降级模型或省略论文来凑预算。
+- 数据库必须先以唯一约束原子预约该 report_run 的唯一 dispatch，再启动 codex exec。并发 worker/resume 只能观察并复用 `pending/running/complete/manual_required/failed_terminal` 状态，不能获得第二个 dispatch 权限。
+- Codex 启动后的 timeout、连接中断、进程丢失或无法证明“尚未发送”的 uncertain outcome 一律终止该 report_run，不得自动或人工 resume 重发。若确需再次调用，必须创建新的 report_run 并重新批准其不可变输入；旧 run 保留完整审计记录。
 - Sol 只能发出 allowlist 中的 `[@paper_id]` 引用标记；协调端从已校验 canonical metadata 按冻结 CSL/style 确定性生成参考文献，一个 canonical paper 只生成一条，未知/重复/缺字段引用均使校验失败，禁止让模型自由生成书目。
-- 发布前先运行确定性 report verifier：检查 plan 章节、paper coverage、claim-evidence、stable paper_id、citation target、重复引用、evidence level、comparison group 和未完成来源。
-- quality audit rubric 冻结检查 unsupported/mis-cited claim、核心论文/章节遗漏、冲突抹平、不可比数值、abstract/preprint 过度概括、搜索限制和 plan 偏离；finding severity 枚举为 blocker、major、minor、note。complete 必须 deterministic verifier 通过且最终 audit 的 blocker=0、major=0。
-- audit 输入必须覆盖 ReportDocument 的全部实质性 block/claim 及其 evidence refs、ReportPlan 和 search limitations；超出上下文时按稳定 section/claim 分片做独立 Sol audit shards，再由独立 Sol audit reduce 合并，并维护 audit coverage ledger，禁止抽样代替全覆盖。
-- repair 不得直接修改 REPORT.md/sidecar；report-repair schema 返回绑定旧 artifact hash 的 typed patch set，只能更新 REPORT_DOCUMENT/CLAIMS_EVIDENCE/COVERAGE 的允许字段。协调端验证 precondition 后生成新结构化 artifacts，用冻结 renderer 重新生成 Markdown/sidecar，并核对 renderer version、AST/input hash 与 rendered output hash；任何直接 Markdown patch 或渲染不一致都拒绝。
-- 确定性校验通过后，用全新独立 Sol audit pass A 审计。若存在 blocker/major，最多允许独立 Sol 会话 B 做一次有界 repair；repair 必须生成新 artifact hash，随后重新运行完整 deterministic verifier，并用另一组全新 Sol 会话执行 audit pass C 复审新 hash。第二次仍有 blocker/major、audit coverage 不完整或任一确定性硬门失败时状态为 incomplete，保留草稿/审计且不更新 latest。
+- 唯一 Sol 输出落盘后，全部后处理在本地完成：schema 校验、draft ref→stable ID normalize、Claims-Evidence/AST/comparison/coverage 构建、确定性 renderer、report verifier、确定性 audit 和 publish；禁止把失败输出再次发送给 Sol 修复。
+- 本地 report verifier 检查 plan 章节、paper/claim coverage、claim-evidence、stable paper_id、citation target、重复引用、evidence level、comparison group、冲突/不可比披露和未完成来源。本地 deterministic audit 使用冻结 rubric 产生机器可读 finding，severity 枚举为 blocker、major、minor、note。
+- complete 必须 schema、normalize、verifier 和 deterministic audit 全部通过且 blocker=0、major=0；任何失败都保留原始输出和本地审计，状态为 incomplete/failed_terminal，不更新 latest，也不触发第二次 Sol 调用。
 - 最终事实陈述使用 stable paper_id/claim_id，并链接对应分析、证据定位或来源；不能把摘要推断表述成全文事实。
 - 输出写入不可变 reports/<report_run_id>/，至少包含 REPORT_PLAN.json、SEARCH_AUDIT.json、CLAIMS_EVIDENCE.jsonl、COMPARISON_GROUPS.json、CLAIM_RELATIONS.json、REPORT_DOCUMENT.json、COVERAGE.json、REPORT.md、AUDIT.json 和 artifact manifest；校验完成后才原子更新 reports/latest.md。历史 run 不删除。
 - 增量报告另生成 REPORT_DIFF.md/json，列出 query/范围变化、added/removed/changed papers、正式版/撤稿变化、按 stable claim_id 对齐的 added/changed/retired/split/merged claims、evidence diff、受影响 section 和未变化章节；无法映射的 claim 显式列为 unmapped，禁止无说明地整篇覆盖。
@@ -962,7 +964,8 @@ analysis:
 
 summary:
   enabled: true
-  profile: "stage4b_summary_sol"
+  execution_strategy: one_shot
+  profile: "stage4b_oneshot_sol"
   provider: codex_exec
   model: "gpt-5.6-sol"
   reasoning_effort: high
@@ -975,6 +978,7 @@ summary:
     final_reduce: "./schemas/report-document.schema.json"
     quality_audit: "./schemas/report-audit.schema.json"
     repair: "./schemas/report-repair.schema.json"
+    one_shot_report: "./schemas/one-shot-report.schema.json"
   prompts:
     planning_assist: "./prompts/report-plan.md"
     section_reduce: "./prompts/section-synthesis.md"
@@ -982,6 +986,7 @@ summary:
     final_reduce: "./prompts/final-report.md"
     quality_audit: "./prompts/report-audit.md"
     repair: "./prompts/report-repair.md"
+    one_shot_report: "./prompts/one-shot-report.md"
   format: markdown
   language: "zh-CN"
   report_plan:
@@ -992,7 +997,7 @@ summary:
   require_search_audit: true
   require_complete_coverage: true
   require_claim_evidence: true
-  semantic_chunking: true
+  semantic_chunking: false
   remote_model_processing:
     policy_matrix: "./policies/artifact-processing-v1.yaml"
     processing_grant_id: null
@@ -1003,12 +1008,12 @@ summary:
     bibliography_from_canonical_metadata: true
   final_audit:
     deterministic: true
-    independent_sol_session: true
+    independent_sol_session: false
     rubric: "./policies/report-audit-rubric-v1.yaml"
     max_blocker_findings: 0
     max_major_findings: 0
-    max_repair_calls: 1
-    reverify_and_reaudit_after_repair: true
+    max_repair_calls: 0
+    reverify_and_reaudit_after_repair: false
   immutable_run_directories: true
   update_latest_after_pass: true
   emit_incremental_diff: true
@@ -1024,7 +1029,7 @@ summary:
 - OpenAlex API 模式必须预估当前 cost/credit；若用户已预置固定日期和 hash 的 CC0 snapshot，大规模运行可显式改用，但系统不得自动下载全量快照或新增基础设施。Semantic Scholar 优先 batch/bulk endpoint，DBLP/PubMed/Europe PMC 大规模回放优先用户已配置的官方 bulk snapshot/FTP；不得用并发绕过全局 provider 限流。
 - arXiv legacy API/OAI/RSS 的全局限流按用户控制下所有 worker/机器汇总执行，默认单连接且请求间隔至少 3 秒；多机分片不能各自独立放大速率。
 - QueryPlan、ReportPlan、provider acceptance manifest 和 corpus snapshot 都必须保存 schema version 与 hash；resume 时 hash 不一致必须创建新 run 或显式迁移。
-- summary.schemas/prompts 的六个 call_kind 必须齐全且逐项保存 hash；quality_audit/repair 不得回退到 final_reduce schema，repair 后的 verifier/audit 必须绑定新 artifact hash。
+- 新配置默认 `execution_strategy=one_shot` 和 `profile=stage4b_oneshot_sol`；approved run 只解析并调用独立的 `one_shot_report` prompt/schema。legacy reduce 资源即使为迁移兼容而存在，也不得被 one-shot 调度器调用。
 - v2 schema 将 authorized_skill.codex_model、analysis.model 和 summary.model 分别约束为 gpt-5.6-luna、gpt-5.6-luna 和 gpt-5.6-sol；环境变量和用户默认配置不得覆盖。
 - 环境变量只允许覆盖 secret、端点和机器相关参数；业务配置仍写入运行快照。
 - 每次 run 保存解析后的完整配置及其 hash。
@@ -1127,20 +1132,20 @@ Codex skill：
 - OpenAccessResolver 与 DownloadProvider 分离，purpose×access_basis×license×version×terms policy matrix；allow/needs_grant/manual/deny 全状态与 grant 后 re-probe 转换；URL/非空 access_basis 不自动等于授权测试。
 - 授权下载默认关闭；grant canonical hash/approval/revocation、paper/collection/domain/purpose/action scope、skill ZIP/installed digest 漂移、attended/unattended、过期，以及篡改 YAML grant_defaults 不能扩大已批准 scope 的测试。
 - Stage 4/4b artifact-processing policy/processing grant 测试；无兼容许可/grant 时 spy codex exec 断言 PDF/normalized text 或其受限派生 analysis/evidence 进入 Luna/Sol 调用次数为 0，只能走获准 abstract_only/metadata-only 或 analysis/report incomplete。
-- Codex/oMLX 客户端使用 fake server 验证超时、schema、重试、profile 常量和实际模型核对。
-- ReportPlan approval/hash/运行时漂移、Claims-Evidence Matrix、ReportDocument block_kind 与 AST block↔claim↔citation 绑定、renderer/sidecar hash、stable claim UUID/lineage、semantic section assignment、持久 comparison key/not_comparable、paper/claim coverage、逐 call_kind prompt/schema、确定性 report verifier、audit severity、结构化 typed repair 后重渲染/reverify/fresh reaudit、不可变版本和增量 diff 测试。
+- Codex/oMLX 客户端使用 fake server 验证超时、schema、profile 常量和实际模型核对；Stage 4b 另须证明 `max_retries=0`，timeout/uncertain outcome 不重发。
+- ReportPlan approval/hash/运行时漂移、完整 Luna 报告一次打包、`one_shot_report` 唯一 prompt/schema、预算或授权失败时 0 dispatch、唯一 dispatch 数据库约束、并发 resume 不重复调用、Claims-Evidence Matrix、ReportDocument block_kind 与 AST block↔claim↔citation 绑定、renderer/sidecar hash、stable claim UUID/lineage、持久 comparison key/not_comparable、paper/claim coverage、本地 deterministic normalize/verifier/audit、不可变版本和增量 diff 测试。
 
 ### 12.2 集成测试
 
 - 从 user seed + 多源 fixture search/crawl 到 SQLite、citation expansion、filter、mock download、mock analysis、mock report 的完整流水线。
 - 同一配置运行两次不重复数据。
-- 中途终止后 resume 得到与一次完成相同结果。
+- 中途终止后 resume 得到与一次完成相同结果；Stage 4b 只有在尚未 dispatch 时可继续，已 dispatch 的 running/timeout/uncertain 状态只能观察或终止，不能再次调用 Sol。
 - 一个 venue、PDF 或模型请求失败不影响其他工作项。
 - arXiv 默认不进入最终报告，显式开启后才进入。
 - search audit 的逐来源/逐轮数字能与原始 fixture、去重、排除原因和最终集合对账。
 - 报告 paper coverage 与最终入选集合完全一致；每个实质性 claim 都有有效 evidence，漏论文/漏证据/坏引用/不可比数值会使 verifier 失败。
-- 同一 corpus 和 ReportPlan 在打乱输入顺序后仍产生相同 section membership、reduce tree 和 coverage ledger。
-- 冲突证据、abstract_only 和 incomplete source 在报告中按合同披露；不得被 final reduce 抹去。
+- 同一 corpus 和 ReportPlan 在打乱输入顺序后仍产生相同 one-shot input hash、确定性 section/claim normalization 和 coverage ledger，且 fake Codex 计数严格为 1。
+- 冲突证据、abstract_only 和 incomplete source 在报告中按合同披露；不得被 one-shot 输出或本地 normalize 抹去。
 - 增量 run 正确输出 added/removed/changed papers 与受影响 claim/section，旧报告仍可读取。
 
 ### 12.3 CI
@@ -1154,7 +1159,7 @@ Codex skill：
 ### Phase 0：基线与设计冻结
 
 1. 确认 feature/crawler-adapters 为实现基线。
-2. 生成 v2 配置、compiled QueryPlan/approval、VenueDescriptor/provider manifest、ReportPlan/approval、paper analysis、claim-evidence、各 Stage 4b call_kind 与 report schema，以及 SQLite ERD、状态机和 migration 设计。
+2. 生成 v2 配置、compiled QueryPlan/approval、VenueDescriptor/provider manifest、ReportPlan/approval、paper analysis、claim-evidence、Stage 4b `one_shot_report` 与 report schema，以及 SQLite ERD、唯一 dispatch 状态机和 migration 设计。
 3. 审计 download-authorized-papers skill 压缩包。
 4. 建立 ADR，记录模型路由、插件 trust/digest/子进程边界、下载 policy matrix、报告 audit gate 和 fail-open 决策。
 
@@ -1216,13 +1221,13 @@ Codex skill：
 
 1. 实现 ReportPlan 冻结、plan-only/approved hash 和 search/corpus audit pack。
 2. 实现派生 analysis/evidence lineage 的 Sol remote_model_processing policy/grant pre-dispatch gate。
-3. 实现语义 section membership、Claims-Evidence Matrix、结构化 comparison groups/not_comparable 和 paper/claim coverage ledger。
-4. 实现各 call_kind 独立 prompt/schema 且可恢复的 section -> cross-section -> final Sol 聚合树。
+3. 实现稳定输入排序、完整 Luna 报告单包、Claims-Evidence Matrix、结构化 comparison groups/not_comparable 和 paper/claim coverage ledger。
+4. 实现 `stage4b_oneshot_sol` 与独立 `one_shot_report` prompt/schema；approved run 严格一次 dispatch，0 retry、0 Sol audit、0 repair，并以数据库唯一约束阻止并发或 resume 重发。
 5. 实现矛盾/不可比/evidence-level 规则及固定中文章节合同。
-6. 实现冻结 audit rubric/severity、确定性 report verifier、独立 Sol 审计，以及最多一次 repair 后的完整 reverify + 新会话 reaudit。
+6. 实现全本地 deterministic normalize、renderer、report verifier 和 audit；失败保留输出并停止发布，不调用 Sol repair 或 reaudit。
 7. 实现不可变报告目录、原子 latest 和增量 REPORT_DIFF。
 
-门禁：全部入选论文有效覆盖率 100%，全部实质性 claim 有证据，矛盾与不可比项未被抹平，搜索限制完整披露，无静默截断；无许可/grant 的受限派生内容进入 Sol 次数为 0，verifier 与 Sol 审计均通过后才标 complete。
+门禁：全部入选论文的完整 Luna 报告在唯一输入包中各出现一次，全部入选论文有效覆盖率 100%，全部实质性 claim 有证据，矛盾与不可比项未被抹平，搜索限制完整披露，无 shard/抽样/截断；预算或许可/grant 门禁失败时 Sol 调用为 0，通过门禁时严格为 1，且仅本地 verifier/audit 通过后才标 complete。
 
 ### Phase 7：产品化
 
@@ -1255,10 +1260,10 @@ Codex skill：
 - [x] 不可变 grant/approval hash 是下载与数据共享的唯一授权事实源；YAML grant_defaults 不能覆盖 scope，撤销/过期/digest 漂移即时生效。
 - [x] Stage 4 固定使用 gpt-5.6-luna，区分 full_pdf/abstract_only，并为数值比较输出规范化 dataset/split/metric/protocol/baseline 字段或 not_comparable。
 - [x] PDF/正文进入远程 Luna、受限派生 analysis/evidence 进入 Sol 前，分别通过 remote_model_processing policy 或 artifact/lineage-hash-scoped grant；无授权内容进入对应远程调用次数为 0。
-- [x] Stage 4b 固定使用 gpt-5.6-sol；ReportPlan、search audit、Claims-Evidence Matrix、comparison groups 和 paper/claim coverage 完整。
+- [x] Stage 4b 固定使用 gpt-5.6-sol；approved run 将全部 Luna 报告一次打包并严格调用一次 `one_shot_report`，ReportPlan、search audit、Claims-Evidence Matrix、comparison groups 和 paper/claim coverage 完整。
 - [x] ReportDocument AST 的每个实质性 block 可机检绑定 claim/citation；stable claim/comparison IDs 与 split/merge/retire lineage 支持可信增量 diff。
 - [x] 中文报告按语义主题综合而非论文顺序堆叠；冲突、不可比、abstract_only、preprint 和未完成来源均显式披露。
-- [x] 各 Stage 4b call_kind 的 prompt/schema 独立冻结；repair 后新 hash 重新通过 deterministic verifier 和全新 Sol reaudit 才可标 complete。
+- [x] Stage 4b 的 `one_shot_report` prompt/schema 独立冻结；预算/授权失败为 0 调用，已 dispatch 后并发、resume、超时或 uncertain outcome 不会重发；normalize/verifier/audit/publish 全部在本地确定性完成。
 - [x] 报告 run 不可变，latest 原子更新，增量 diff 可定位受影响 claim/section。
 - [x] Stage 3/4/4b 的 CodexExecProfile、reasoning、sandbox、网络及 call-specific prompt/output schema 均被冻结并核对实际调用。
 - [x] OpenRouter/OpenCode 运行时依赖和配置已移除或迁移。
@@ -1271,8 +1276,9 @@ Codex skill：
 以下项目按当前 source commit 验收；离线 fixture、历史 snapshot、`--dry-run` 和 `doctor` 不得替代。
 
 - [x] 受控小预算真实 provider smoke 已通过并保存 QueryPlan、provider manifest、response、search-audit 和 rate/credit evidence；2026-08-11 的 Crossref `search → enrich → verify` 三请求完整链路证据见 `docs/smoke/crossref-full-pipeline-20260811.md`，未返回的 quota/credit header 已明确记录为 `unavailable`。其中 Stage 2 使用 fake screener，只证明 provider 链路，不得用于勾选 §14 的 Stage 2 release gate。
-- [ ] public OA 真实 PDF smoke 已使用默认生产传输走完 candidate → probe → fetch → PDF validation。当前桌面网络把 `europepmc.org` 解析到 `198.18.0.0/15` 代理假 IP，默认 SSRF guard 正确 fail-closed；curl/注入 transport 不得替代本门禁。诊断与解除条件见 `docs/smoke/public-oa-20260811-blocker.md`。
+- [x] public OA 真实 PDF smoke 已使用默认生产传输走完 candidate → probe → fetch → PDF validation；2026-08-11 从 NeurIPS 官方 proceedings 以 `public_direct` 完成 15/15 篇公开 PDF 下载和校验，未调用 authorized browser/download skill，证据见 `docs/acceptance/neurips-2025-molecular-e2e-20260811-evidence.json`。此前 Europe PMC 的默认 SSRF fail-closed 诊断保留于 `docs/smoke/public-oa-20260811-blocker.md`，但不再阻塞本门禁。
 - [x] authorized browser 真实 PDF smoke 已使用 exact grant 与用户可见的已登录授权会话成功下载允许域名和 selection scope 内的一篇论文；2026-08-11 的 Edge/Nature 运行、Luna 决策、skill audit、artifact 与 Stage 3 数据库证据见 `docs/smoke/authorized-browser-20260811.md`。
+- [x] NeurIPS 2025 分子生成主题的真实 Stage 1→4b E2E 已将全部 15 篇入选论文的 Luna 全文报告一次打包，并完成一次且仅一次 `one_shot_report`；dispatch=1、Sol invocation ledger=1、reduce/audit/repair=0，本地 deterministic verifier/audit 通过。完整证据见 `docs/acceptance/neurips-2025-molecular-e2e-20260811-evidence.json`，最终中文报告见 `docs/smoke/neurips-2025-molecular-one-shot-report-20260811.md`。本次 Stage 2 明确使用 test-only selector，只验证 E2E 数据流，不满足也不影响上方 Stage 2 生产 release gate 的未勾选状态。
 
 ## 15. 实施停止条件
 
