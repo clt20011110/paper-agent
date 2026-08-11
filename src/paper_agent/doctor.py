@@ -39,7 +39,7 @@ from .storage import Database
 
 
 CheckStatus = Literal["pass", "warning", "blocker"]
-CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 HttpProbe = Callable[[str], tuple[int, str]]
 ExecutableFinder = Callable[[str], str | None]
 BrowserSessionProbe = Callable[[], tuple[bool, str]]
@@ -145,6 +145,7 @@ class SystemDoctor:
         self.paths = paths or DoctorPaths.defaults()
         self.environment = dict(os.environ if environment is None else environment)
         self.command_runner = command_runner or self._run_command
+        self._default_command_runner = command_runner is None
         self.executable_finder = executable_finder
         self.http_probe = http_probe
         self.browser_session_probe = browser_session_probe
@@ -891,8 +892,14 @@ class SystemDoctor:
             return DoctorCheck("codex", "blocker", True, "codex CLI not found", True)
         diagnostics: dict[str, str] = {}
 
-        def run(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
-            completed = self.command_runner(argv)
+        def run(
+            argv: Sequence[str], **options: object
+        ) -> subprocess.CompletedProcess[str]:
+            completed = (
+                self.command_runner(argv, **options)
+                if self._default_command_runner
+                else self.command_runner(argv)
+            )
             if tuple(argv[-2:]) == ("login", "status"):
                 diagnostics["login"] = f"{completed.stdout}\n{completed.stderr}".strip()
             return completed
@@ -900,7 +907,7 @@ class SystemDoctor:
         try:
             adapter = CodexExec(
                 executable=executable,
-                runner=lambda argv, **_: run(argv),
+                runner=run,
                 environment=self.environment,
             )
             report = adapter.doctor(prove_model_availability=self.prove_codex_models)
@@ -1057,7 +1064,11 @@ class SystemDoctor:
         return tuple(checks)
 
     @staticmethod
-    def _run_command(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    def _run_command(
+        argv: Sequence[str], **options: object
+    ) -> subprocess.CompletedProcess[str]:
+        if options:
+            return subprocess.run(tuple(argv), **options)  # type: ignore[arg-type]
         return subprocess.run(tuple(argv), text=True, capture_output=True, check=False)
 
 

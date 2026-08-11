@@ -497,6 +497,49 @@ def test_codex_catalog_listing_is_not_production_availability(tmp_path: Path) ->
     assert auth.status == "blocker"
 
 
+def test_production_codex_probe_forwards_prompt_and_process_options(
+    tmp_path: Path, monkeypatch
+) -> None:
+    probes: list[tuple[str, str]] = []
+
+    def production_runner(command, **options):
+        argv = tuple(command)
+        if argv[-1] == "--version":
+            return subprocess.CompletedProcess(argv, 0, "codex 1.2.3\n", "")
+        if argv[-2:] == ("login", "status"):
+            return subprocess.CompletedProcess(argv, 0, "logged in\n", "")
+        if argv[-2:] == ("debug", "models"):
+            return subprocess.CompletedProcess(
+                argv, 0,
+                '{"models":[{"slug":"gpt-5.6-luna"},{"slug":"gpt-5.6-sol"}]}',
+                "",
+            )
+        prompt = str(options["input"])
+        model = argv[argv.index("-m") + 1]
+        probes.append((model, prompt))
+        assert options["cwd"]
+        assert options["env"]
+        assert options["timeout"] > 0
+        Path(argv[argv.index("-o") + 1]).write_text('{"ok":true}')
+        return subprocess.CompletedProcess(
+            argv, 0,
+            '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n',
+            "",
+        )
+
+    monkeypatch.setattr(subprocess, "run", production_runner)
+    check = SystemDoctor(
+        _paths(tmp_path),
+        executable_finder=_executable,
+        environment={},
+        prove_codex_models=True,
+    )._codex()
+
+    assert check.status == "pass"
+    assert [model for model, _ in probes] == ["gpt-5.6-luna", "gpt-5.6-sol"]
+    assert all("structured confirmation" in prompt for _, prompt in probes)
+
+
 @dataclass
 class _SkillResult:
     ready: bool = True
