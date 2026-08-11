@@ -744,6 +744,22 @@ def _one_shot_summary(
     return {"invocations": 1, "model": "gpt-5.6-sol", "strategy": "one_shot"}
 
 
+def _claim_evidence_paper_ids(
+    corpus_snapshot: Mapping[str, Any], artifact_store: ArtifactStore
+) -> frozenset[str]:
+    paper_ids = set()
+    for paper in corpus_snapshot["papers"]:
+        analysis = json.loads(
+            artifact_store.read_bytes(str(paper["analysis_artifact_hash"]))
+        )
+        if any(
+            unit["direction"] in {"support", "contradict"}
+            for unit in analysis["evidence_units"]
+        ):
+            paper_ids.add(str(paper["paper_id"]))
+    return frozenset(paper_ids)
+
+
 def build_one_shot_report_draft(
     *,
     corpus_snapshot: Mapping[str, Any],
@@ -754,6 +770,7 @@ def build_one_shot_report_draft(
     policy_hash: str,
     resources: ReportResources,
     max_input_tokens: int,
+    claim_evidence_paper_ids: frozenset[str],
 ) -> dict[str, Any]:
     """Build the complete zh-CN one-shot plan consumed by the existing compiler."""
     paper_ids = [str(paper["paper_id"]) for paper in corpus_snapshot["papers"]]
@@ -816,8 +833,16 @@ def build_one_shot_report_draft(
                 "paper_id": paper_id,
                 "section_ids": all_sections,
                 "primary_section_id": "evidence_synthesis",
-                "coverage_disposition": "evidence",
-                "coverage_reason": None,
+                "coverage_disposition": (
+                    "evidence"
+                    if paper_id in claim_evidence_paper_ids
+                    else "background_only"
+                ),
+                "coverage_reason": (
+                    None
+                    if paper_id in claim_evidence_paper_ids
+                    else "Stage 4 analysis has no support or contradict evidence unit."
+                ),
                 "resource_table_ids": [],
             }
             for paper_id in paper_ids
@@ -1209,6 +1234,9 @@ def execute_stage4_and_4b(
                 policy_hash=policy.hash,
                 resources=resources,
                 max_input_tokens=max_report_input_tokens,
+                claim_evidence_paper_ids=_claim_evidence_paper_ids(
+                    corpus_snapshot, artifact_store
+                ),
             )
             _write_immutable(
                 selected_run_dir / "stage4b" / "REPORT_DRAFT_ONE_SHOT.json",

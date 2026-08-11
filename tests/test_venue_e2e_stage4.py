@@ -148,6 +148,7 @@ def test_one_shot_draft_freezes_one_sol_call_and_all_required_sections() -> None
         policy_hash="f" * 64,
         resources=ReportResources.defaults(),
         max_input_tokens=8_000_000,
+        claim_evidence_paper_ids=frozenset({"paper-1"}),
     )
 
     assert draft["execution_strategy"] == "one_shot"
@@ -164,6 +165,38 @@ def test_one_shot_draft_freezes_one_sol_call_and_all_required_sections() -> None
         membership["section_ids"] == list(REPORT_SECTION_IDS)
         for membership in draft["paper_memberships"]
     )
+    assert draft["paper_memberships"][0]["coverage_disposition"] == "evidence"
+    assert draft["paper_memberships"][1]["coverage_disposition"] == "background_only"
+    assert draft["paper_memberships"][1]["coverage_reason"]
+
+
+def test_claim_evidence_membership_requires_directional_stage4_units(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    store = ArtifactStore(tmp_path / "artifacts")
+    papers = []
+    for paper_id, directions in (
+        ("support", ["support"]),
+        ("mixed", ["neutral", "contradict"]),
+        ("neutral", ["neutral"]),
+    ):
+        stored = store.put_bytes(
+            json.dumps({
+                "evidence_units": [
+                    {"direction": direction} for direction in directions
+                ]
+            }).encode(),
+            mime_type="application/json",
+        )
+        papers.append({
+            "paper_id": paper_id,
+            "analysis_artifact_hash": stored.artifact_hash,
+        })
+
+    assert module._claim_evidence_paper_ids(
+        {"papers": papers}, store
+    ) == frozenset({"support", "mixed"})
 
 
 def test_one_shot_summary_requires_exact_ledger_and_cas_binding(tmp_path: Path) -> None:

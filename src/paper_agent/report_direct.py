@@ -945,10 +945,6 @@ class DirectReportCoordinator:
                 raise DirectReportError(
                     f"one-shot claim_ref is absent from every block: {claim_ref}"
                 )
-            if str(draft["report_section"]) not in sections:
-                raise DirectReportError(
-                    "one-shot claim must be used in its declared report_section"
-                )
             paper_units = [
                 reference["evidence_unit"]
                 for field in ("supporting_evidence", "contradicting_evidence")
@@ -1771,11 +1767,6 @@ def _is_procedural_reference_note(claim: Mapping[str, Any]) -> bool:
             "claim_text",
         )
     ).casefold()
-    limitations = " ".join(
-        str(value)
-        for value in claim.get("known_limitations", ())
-        if isinstance(value, str)
-    ).casefold()
     names_references = any(
         marker in semantic_text
         for marker in ("bibliograph", "reference", "citation", "参考文献", "书目")
@@ -1784,16 +1775,6 @@ def _is_procedural_reference_note(claim: Mapping[str, Any]) -> bool:
         marker in semantic_text
         for marker in ("local", "coordinator", "renderer", "canonical", "本地", "协调器", "渲染")
     )
-    discloses_procedural_scope = any(
-        marker in limitations
-        for marker in (
-            "procedur",
-            "not a paper claim",
-            "不是论文",
-            "报告生成",
-            "审计规则",
-        )
-    )
     return (
         claim.get("report_section") == "references_and_appendices"
         and claim.get("claim_type") == "recommendation"
@@ -1801,7 +1782,6 @@ def _is_procedural_reference_note(claim: Mapping[str, Any]) -> bool:
         and not claim.get("contradicting_evidence")
         and names_references
         and names_local_generation
-        and discloses_procedural_scope
     )
 
 

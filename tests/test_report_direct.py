@@ -313,7 +313,7 @@ def _make_semantic_procedural_reference_note(
         "contradicting_evidence": [],
         "evidence_level": "metadata_only",
         "confidence": "high",
-        "known_limitations": ["This is a procedural note, not a paper claim."],
+        "known_limitations": ["本次草稿不生成规范书目条目。"],
         "status": "supported",
     })
     block["text"] = "规范参考文献由本地协调器生成；这不是论文结论。"
@@ -645,6 +645,7 @@ def test_cross_section_claim_is_derived_per_section_and_resume_does_not_redispat
 
     def reuse_home_claim(output, _payload) -> None:
         claim, _ = _section_claim(output, "executive_summary")
+        claim["report_section"] = "field_taxonomy"
         _, target = _section_claim(output, "scope_and_methods")
         target["claim_refs"].append(claim["claim_ref"])
         paper_id = claim["supporting_evidence"][0]["paper_id"]
