@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "evidence_type": "stage2_real_workload_frame",
+  "status": "candidate_independent_frame_frozen",
+  "source_commit": "2e1edcae538e7d74b77e98757e87a31f88a4d353",
+  "live_network": true,
+  "sources": {
+    "neurips_2024": {
+      "provider": "neurips_proceedings",
+      "year": 2024,
+      "captured_at": "2026-08-11T20:27:00.866286+00:00",
+      "paper_count": 4493,
+      "page_count": 5,
+      "abstract_present_count": 0,
+      "papers_corpus_hash": "803ec96a9de5103698195908c995d14a94e20ce274c1193e1f88db1b68c313f5",
+      "papers_file_sha256": "f781a7825e4f8c382e58202d3713573864b974c09648ef1dad85b2ddd4968e7e",
+      "papers_file_size_bytes": 1644009,
+      "capture_manifest_sha256": "aae74e70816f3b9b6f2b368dee36998aec9631a2014392c1d5856701e2488066",
+      "raw_html_sha256": "ac65f5128bc1d94f514dda1825dfb9429b5bfa1d1a2830261737c9a5334a7439",
+      "raw_html_size_bytes": 3149193
+    },
+    "neurips_2025": {
+      "provider": "neurips_proceedings",
+      "year": 2025,
+      "paper_count": 5823,
+      "abstract_present_count": 0,
+      "sqlite_sha256": "f6ec726536b9a54c3b6b507eef73b713180f269d334ee5c5232f63f9b1bd222c",
+      "sqlite_size_bytes": 60624896
+    },
+    "crossref": {
+      "provider": "crossref",
+      "captured_at": "2026-08-11T20:27:13.666076+00:00",
+      "query_spec_path": "configs/stage2/benchmark-crossref-v1.json",
+      "query_spec_file_sha256": "83f82921dd1e86cfc57fdaf5f94db3e371aaaf2d16a7206615fd9c525a3d7249",
+      "query_spec_hash": "57386eb0063db7f16e943f048268f6f3c061ffbfb1bb87cd8bcbbe3d176101b0",
+      "topic_count": 6,
+      "query_count": 12,
+      "natural_pair_count": 3000,
+      "unique_paper_count": 2858,
+      "abstract_present_pair_count": 1344,
+      "abstract_missing_pair_count": 1656,
+      "cross_language_match_count": 594,
+      "corpus_hash": "5e04b635c532cf996c73752a3bc5e0493cb5b80fa4c4ec0d29276efee3b819e0",
+      "snapshot_hash": "b3189e83b8d6a2daaf5956a960bb863154943756e1b10706ca3d5891f7a2bd0a",
+      "snapshot_file_sha256": "a8da9928a3abe26bc92e0e109171f62a8037b8f3a1336fe787e51c8586c86c70",
+      "snapshot_file_size_bytes": 78049820,
+      "raw_response_count": 12,
+      "raw_response_bytes": 45261862,
+      "capture_manifest_sha256": "570513c8132657737f3284065825ab1c3ca619754b7a010594ebc551effb106b"
+    }
+  },
+  "workload": {
+    "seed": 1741,
+    "candidate_independent": true,
+    "universe": {
+      "paper_count": 13174,
+      "abstract_present_count": 1290,
+      "abstract_missing_count": 11884,
+      "paper_ids_hash": "69780318cc5f05c77f60dacadb7f9f3dc1064a3c812c69aedffae7e510199171"
+    },
+    "performance": {
+      "paper_count": 1000,
+      "abstract_present_count": 900,
+      "abstract_missing_count": 100,
+      "normal_qwen_count": 150,
+      "stress_qwen_count": 300,
+      "papers_corpus_hash": "1506bcb81b3b00985f75b34971f66e281d01fedbf4356f9e8933b104fd5f529a",
+      "file_sha256": "633938fafa9a075f36a1e6f4c9c938ce0578a3d816375234cba83199bc32deb6",
+      "file_size_bytes": 1517410
+    },
+    "soak_and_parity": {
+      "paper_count": 10000,
+      "papers_corpus_hash": "e6d779803faad7789582d500aad00858f1e44aeeaf9ccb4c86e6454a2fcfb002",
+      "file_sha256": "4e6072630f52a6456aa304620ef38cc54eff1021777fa13c097880ab87617e68",
+      "file_size_bytes": 4826086
+    },
+    "selection_receipt": {
+      "file_sha256": "9642eaf922a682bcf79d3866e4d3a7fcdc0bbc72a8e20a5a9d75412afbb4c992",
+      "file_size_bytes": 1030651,
+      "omitted_bindings": [
+        "stage2_config_hash",
+        "threshold_artifact_hashes",
+        "model_lock_hashes"
+      ]
+    }
+  },
+  "custody": {
+    "references": [
+      "local-evaluator:stage2/neurips-2024-v1-20260812",
+      "local-evaluator:stage2/neurips-2025-v1-20260812",
+      "local-evaluator:stage2/crossref-benchmark-v1-20260812",
+      "local-evaluator:stage2/workload-frame-v1-20260812"
+    ],
+    "private_artifacts_committed": false,
+    "file_mode": "0600",
+    "directory_mode": "0700"
+  },
+  "release_gate_claimed": false,
+  "remaining_requirements": [
+    "released Stage 2 candidate and threshold bindings",
+    "normal and stress benchmark runs",
+    "10,000-case soak and parity runs",
+    "600-pair double annotation and third-person adjudication",
+    "structured replay and human rationale audit"
+  ]
+}
