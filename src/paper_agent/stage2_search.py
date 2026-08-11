@@ -128,6 +128,81 @@ class ReleasedStage2:
         return Stage2SearchScreener(database, pipeline, campaign_id)
 
 
+def stage2_base_profile(
+    runtime: Mapping[str, Any],
+    reranker_lock: ModelLock,
+    adjudicator_lock: ModelLock,
+    *,
+    reranker_lock_hash: str,
+    adjudicator_lock_hash: str,
+    release_gate_hash: str | None = None,
+) -> Stage2Profile:
+    """Build the uncalibrated profile shared by candidate creation and loading."""
+
+    _validate_locks(reranker_lock, adjudicator_lock)
+    if any(
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+        for value in (reranker_lock_hash, adjudicator_lock_hash)
+    ):
+        raise Stage2ReleaseError(
+            "Stage 2 model lock hashes must be lowercase SHA-256 values"
+        )
+    _exact_fields(runtime, _RUNTIME_FIELDS, "Stage 2 runtime")
+    screening_scope_hash = _sha256_text(runtime, "screening_scope_hash")
+    base_url = _text(runtime, "omlx_base_url")
+    _require_loopback(base_url)
+    api_key_env = runtime.get("api_key_env")
+    if api_key_env is not None and (
+        not isinstance(api_key_env, str) or not api_key_env
+    ):
+        raise Stage2ReleaseError(
+            "Stage 2 api_key_env must be a non-empty string or null"
+        )
+    prompt_version = _text(runtime, "prompt_version")
+    schema_version = _text(runtime, "schema_version")
+    if (
+        prompt_version != "stage2-adjudication-v1"
+        or schema_version != "filter-decision.schema.json"
+    ):
+        raise Stage2ReleaseError(
+            "Stage 2 release uses an unsupported prompt or schema version"
+        )
+    try:
+        return Stage2Profile(
+            query=_text(runtime, "query"),
+            query_version=_text(runtime, "query_version"),
+            thresholds=None,
+            reranker_model_id=reranker_lock.model_id,
+            reranker_revision=_runtime_revision(reranker_lock),
+            adjudicator_model_id=adjudicator_lock.model_id,
+            adjudicator_revision=_runtime_revision(adjudicator_lock),
+            screening_scope_hash=screening_scope_hash,
+            reranker_lock_hash=reranker_lock_hash,
+            adjudicator_lock_hash=adjudicator_lock_hash,
+            release_gate_hash=release_gate_hash,
+            include_document_types=frozenset(
+                _string_list(runtime, "include_document_types")
+            ),
+            exclude_document_types=frozenset(
+                _string_list(runtime, "exclude_document_types")
+            ),
+            token_bucket_width=_integer(runtime, "token_bucket_width"),
+            document_batch_size=_integer(runtime, "document_batch_size"),
+            reranker_max_in_flight=_integer(runtime, "max_in_flight"),
+            adjudicator_concurrency=_integer(runtime, "adjudicator_concurrency"),
+            adjudicator_seed=_integer(runtime, "adjudicator_seed"),
+            adjudicator_max_context_window=_integer(runtime, "max_context_window"),
+            omlx_base_url=base_url,
+            api_key_env=api_key_env,
+            prompt_version=prompt_version,
+            schema_version=schema_version,
+        )
+    except (OSError, ValueError) as error:
+        raise Stage2ReleaseError(f"Stage 2 runtime is invalid: {error}") from error
+
+
 @dataclass(slots=True)
 class Stage2SearchScreener:
     """Adapt canonical database papers to the existing Stage 2 cascade."""
@@ -337,59 +412,25 @@ def _load_stage2_bundle(
         adjudicator_lock = ModelLock(**_json_object_bytes(adjudicator_bytes, "Stage 2 qwen model lock"))
     except (TypeError, ValueError, json.JSONDecodeError) as error:
         raise Stage2ReleaseError(f"Stage 2 model lock is invalid: {error}") from error
-    _validate_locks(reranker_lock, adjudicator_lock)
-
     runtime = _object(document, "runtime")
-    _exact_fields(runtime, _RUNTIME_FIELDS, "Stage 2 runtime")
-    runtime_screening_scope_hash = _sha256_text(runtime, "screening_scope_hash")
+    release_gate_hash = (
+        content_hash(gate_document) if gate_document is not None else None
+    )
+    base_profile = stage2_base_profile(
+        runtime,
+        reranker_lock,
+        adjudicator_lock,
+        reranker_lock_hash=reranker_hash,
+        adjudicator_lock_hash=adjudicator_hash,
+        release_gate_hash=release_gate_hash,
+    )
     if (
         expected_screening_scope_hash is not None
-        and runtime_screening_scope_hash != expected_screening_scope_hash
+        and base_profile.screening_scope_hash != expected_screening_scope_hash
     ):
         raise Stage2ReleaseError(
             "Stage 2 release screening scope does not match QueryPlan"
         )
-    base_url = _text(runtime, "omlx_base_url")
-    _require_loopback(base_url)
-    api_key_env = runtime.get("api_key_env")
-    if api_key_env is not None and (not isinstance(api_key_env, str) or not api_key_env):
-        raise Stage2ReleaseError("Stage 2 api_key_env must be a non-empty string or null")
-    prompt_version = _text(runtime, "prompt_version")
-    schema_version = _text(runtime, "schema_version")
-    if prompt_version != "stage2-adjudication-v1" or schema_version != "filter-decision.schema.json":
-        raise Stage2ReleaseError("Stage 2 release uses an unsupported prompt or schema version")
-    try:
-        base_profile = Stage2Profile(
-            query=_text(runtime, "query"),
-            query_version=_text(runtime, "query_version"),
-            thresholds=None,
-            reranker_model_id=reranker_lock.model_id,
-            reranker_revision=_runtime_revision(reranker_lock),
-            adjudicator_model_id=adjudicator_lock.model_id,
-            adjudicator_revision=_runtime_revision(adjudicator_lock),
-            screening_scope_hash=runtime_screening_scope_hash,
-            reranker_lock_hash=reranker_hash,
-            adjudicator_lock_hash=adjudicator_hash,
-            release_gate_hash=(
-                content_hash(gate_document) if gate_document is not None else None
-            ),
-            include_document_types=frozenset(_string_list(runtime, "include_document_types")),
-            exclude_document_types=frozenset(_string_list(runtime, "exclude_document_types")),
-            token_bucket_width=_integer(runtime, "token_bucket_width"),
-            document_batch_size=_integer(runtime, "document_batch_size"),
-            reranker_max_in_flight=_integer(runtime, "max_in_flight"),
-            adjudicator_concurrency=_integer(runtime, "adjudicator_concurrency"),
-            adjudicator_seed=_integer(runtime, "adjudicator_seed"),
-            adjudicator_max_context_window=_integer(runtime, "max_context_window"),
-            omlx_base_url=base_url,
-            api_key_env=api_key_env,
-            prompt_version=prompt_version,
-            schema_version=schema_version,
-        )
-    except Stage2ReleaseError:
-        raise
-    except (OSError, ValueError) as error:
-        raise Stage2ReleaseError(f"Stage 2 runtime is invalid: {error}") from error
     calibration = _object(document, "calibration")
     if set(calibration) != _PATH_NAMES:
         raise Stage2ReleaseError("Stage 2 release must bind reranker and qwen probability calibrations")
@@ -439,8 +480,8 @@ def _load_stage2_bundle(
         profile_name,
         profile,
         sha256(release_bytes).hexdigest(),
-        base_url,
-        api_key_env,
+        base_profile.omlx_base_url,
+        base_profile.api_key_env,
     )
 
 

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-dev-raw-scores.schema.json",
+  "title": "Stage 2 DEV unlabelled raw model scores",
+  "description": "Evaluator-private raw DEV scores. This artifact is calibration input and must not be included in a candidate or release bundle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "gold_manifest_hash", "dev_manifest_hash", "private_snapshot_hash", "private_snapshot_corpus_hash", "stage2_config_hash", "model_lock_hashes", "topic_queries", "scores"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "kind": {"const": "stage2_dev_raw_scores"},
+    "gold_manifest_hash": {"$ref": "#/$defs/sha256"},
+    "dev_manifest_hash": {"$ref": "#/$defs/sha256"},
+    "private_snapshot_hash": {"$ref": "#/$defs/sha256"},
+    "private_snapshot_corpus_hash": {"$ref": "#/$defs/sha256"},
+    "stage2_config_hash": {"$ref": "#/$defs/sha256"},
+    "model_lock_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reranker", "qwen"],
+      "properties": {
+        "reranker": {"$ref": "#/$defs/sha256"},
+        "qwen": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "topic_queries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["topic", "language", "query"],
+        "properties": {
+          "topic": {"type": "string", "minLength": 1},
+          "language": {"type": "string", "minLength": 1},
+          "query": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reranker", "qwen"],
+      "properties": {
+        "reranker": {"$ref": "#/$defs/pathScores"},
+        "qwen": {"$ref": "#/$defs/pathScores"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "pathScores": {
+      "type": "array",
+      "minItems": 300,
+      "maxItems": 300,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pair_id", "raw_score"],
+        "properties": {
+          "pair_id": {"type": "string", "pattern": "^pair-[a-f0-9]{64}$"},
+          "raw_score": {"type": "number"}
+        }
+      }
+    }
+  }
+}
