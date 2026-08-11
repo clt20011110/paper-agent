@@ -221,6 +221,57 @@ def test_read_only_codex_output_validates_as_a_json_object(tmp_path: Path) -> No
         database.close()
 
 
+def test_unverifiable_label_evidence_is_pruned_without_changing_analysis(
+    tmp_path: Path,
+) -> None:
+    calls: list[object] = []
+    holder: dict[str, PaperAnalysisCoordinator] = {}
+
+    class Invoker:
+        def invoke(self, request):
+            result = FakeInvoker(holder["coordinator"], calls=calls).invoke(request)
+            output = dict(result.output)
+            output["labels"] = {
+                **output["labels"],
+                "theme": ["unsupported label"],
+            }
+            output["label_evidence"] = [
+                {
+                    "axis": "theme",
+                    "value": "unsupported label",
+                    "source_text": "text absent from the cited page",
+                    "locator": {"kind": "page", "value": "1"},
+                }
+            ]
+            return CodexExecResult(
+                output,
+                replace(result.metadata, output_hash=content_hash(output)),
+            )
+
+    database, coordinator = _coordinator(tmp_path, Invoker)
+    holder["coordinator"] = coordinator
+    try:
+        result = coordinator.run(
+            "run-pruned-label",
+            [
+                AnalysisInput(
+                    "one",
+                    "CC-BY-4.0",
+                    "open_license",
+                    normalized_text="\n\n===== PAGE 1 =====\n\nauthorized page text",
+                )
+            ],
+        ).for_paper("one")
+
+        assert result.status == "complete", result.error
+        assert result.output is not None
+        assert result.output["labels"]["theme"] == []
+        assert result.output["label_evidence"] == []
+        assert result.output["summary"] == "Bounded summary."
+    finally:
+        database.close()
+
+
 def test_parallel_workers_bound_peak_preserve_order_isolate_failure_and_resume(
     tmp_path: Path,
 ) -> None:

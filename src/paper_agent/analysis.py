@@ -732,6 +732,7 @@ class PaperAnalysisCoordinator:
         if any(output[key] != value for key, value in bindings.items()):
             raise AnalysisValidationError("analysis output does not match its paper/artifact/model/prompt/schema binding")
         normalized = self.normalization_registry.normalize_analysis(output)
+        normalized = _prune_unverifiable_label_evidence(normalized, request)
         try:
             validate(normalized, ANALYSIS_SCHEMA)
         except SchemaValidationError as error:
@@ -1284,6 +1285,39 @@ def _field_text(value: Any) -> str:
 
 def _contains_text(source: str, cited: str) -> bool:
     return " ".join(cited.split()).casefold() in " ".join(source.split()).casefold()
+
+
+def _prune_unverifiable_label_evidence(
+    output: Mapping[str, Any], request: ProcessingRequest,
+) -> dict[str, Any]:
+    normalized = dict(output)
+    if request.input_scope != "full_pdf" or not normalized["label_evidence"]:
+        return normalized
+    pages = _authorized_pages(request)
+    document = "\n".join(pages.values())
+
+    def supported(item: Mapping[str, Any]) -> bool:
+        locator = item["locator"]
+        if locator["kind"] == "page":
+            if not locator["value"].isdigit():
+                return False
+            source = pages.get(int(locator["value"]))
+        elif locator["kind"] == "section":
+            source = document if _contains_text(document, locator["value"]) else None
+        else:
+            source = None
+        return source is not None and _contains_text(source, item["source_text"])
+
+    evidence = [item for item in normalized["label_evidence"] if supported(item)]
+    cited = {(item["axis"], item["value"]) for item in evidence}
+    normalized["label_evidence"] = evidence
+    normalized["labels"] = {
+        axis: [value for value in values if (axis, value) in cited]
+        if isinstance(values, list)
+        else values
+        for axis, values in normalized["labels"].items()
+    }
+    return normalized
 
 
 def _timestamp(value: datetime | str | None) -> str:
