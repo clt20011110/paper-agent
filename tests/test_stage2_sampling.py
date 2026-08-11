@@ -15,13 +15,17 @@ from paper_agent.stage2_sampling import (
     SamplingPolicy,
     build_gold_sampling,
     gold_sampling_provenance_from_document,
+    hidden_real_selection_from_document,
+    load_hidden_real_selection,
     load_gold_sampling_provenance,
     load_private_corpus_snapshot,
     load_private_sampling_annotations,
     private_corpus_snapshot_from_document,
     private_sampling_annotations_from_document,
+    select_hidden_real,
     write_gold_sampling_manifest,
     write_gold_sampling_provenance,
+    write_hidden_real_selection,
     write_private_corpus_snapshot,
     write_private_sampling_annotations,
 )
@@ -213,6 +217,26 @@ def test_hidden_real_selection_ignores_labels_and_keeps_recorded_natural_probabi
     assert {
         pair.sampling_probability for pair in first.manifest.pairs if pair.split is GoldSplit.HIDDEN_REAL
     } == {policy.hidden_real_size / natural_frame_size}
+
+
+def test_hidden_real_freeze_frame_round_trips_and_binds_snapshot_and_policy(tmp_path) -> None:
+    snapshot, _, policy = _inputs()
+    selection = select_hidden_real(snapshot, policy)
+    path = tmp_path / "hidden-real-freeze-frame.json"
+
+    write_hidden_real_selection(path, selection)
+    restored = load_hidden_real_selection(path, snapshot=snapshot, policy=policy)
+
+    assert restored == selection
+    assert restored.hash() == selection.hash()
+    document = selection.document()
+    document["snapshot_hash"] = "0" * 64
+    with pytest.raises(ValueError, match="does not match"):
+        hidden_real_selection_from_document(
+            document,
+            snapshot=snapshot,
+            policy=policy,
+        )
 
 
 def test_producer_rejects_nonuniform_natural_probability() -> None:

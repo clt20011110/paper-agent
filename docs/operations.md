@@ -25,8 +25,13 @@ pool 构建 DEV/HIDDEN_HARD。curated annotations 中的标签和难例标记只
 600 个 pair 选定后，全部样本才进行权威的两位独立标注和第三人仲裁：
 
 ```sh
+paper-agent --dry-run stage2-sampling freeze-frame \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --output /secure/evaluator/hidden-real-freeze-frame.json
+
 paper-agent --dry-run stage2-sampling build \
   --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
   --curated-annotations /secure/evaluator/curated-annotations.json \
   --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
   --provenance-output /secure/evaluator/provenance.json

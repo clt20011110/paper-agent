@@ -85,8 +85,13 @@ curated annotations 是只用于配额与难例分层的临时 curation 标签�
 选中 600 个 pair 后，全部样本才进入权威的双人独立标注和第三人仲裁。构建命令（`--dry-run` 是全局选项）为：
 
 ```sh
+paper-agent --dry-run stage2-sampling freeze-frame \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --output /secure/evaluator/hidden-real-freeze-frame.json
+
 paper-agent --dry-run stage2-sampling build \
   --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
   --curated-annotations /secure/evaluator/curated-annotations.json \
   --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
   --provenance-output /secure/evaluator/provenance.json
@@ -95,7 +100,7 @@ paper-agent --dry-run stage2-sampling build \
 manifest 只给 HIDDEN_REAL 记录可解释的 `sampling_probability=150/N`；DEV/HIDDEN_HARD 受配额、权重和
 paper-family 约束，字段为 `null`，不会用错误概率污染逆概率指标。
 
-无标签的 600-pair gold manifest 可放入 release；private snapshot、curated annotations、provenance 与原始标注 ledger
+无标签的 600-pair gold manifest 可放入 release；private snapshot、HIDDEN_REAL freeze frame、curated annotations、provenance 与原始标注 ledger
 均留在 evaluator custody（当前 provenance 也不公开）。`--private-labels` 只包含 manifest 的精确 600 条标签，不是
 snapshot 全量标签。
 

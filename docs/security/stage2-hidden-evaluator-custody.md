@@ -7,8 +7,13 @@ Production Stage 2 release schema v3 has two independently verified inputs: publ
 Build the 600-pair set before creating authoritative gold labels. The complete natural frame marked inside the private snapshot does not require exhaustive pre-labeling. Under a frozen seed, draw 150 HIDDEN_REAL rows from that frame **without reading curated labels** and record their true inclusion probability, 150/N; then build DEV and HIDDEN_HARD from the curated pool of remaining paper families. The curated labels and difficulty flags are provisional sampling strata only, not gold. After all 600 pairs are selected, two annotators independently label every pair and a third adjudicates disagreements:
 
 ```sh
+paper-agent --dry-run stage2-sampling freeze-frame \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --output /secure/evaluator/hidden-real-freeze-frame.json
+
 paper-agent --dry-run stage2-sampling build \
   --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
   --curated-annotations /secure/evaluator/curated-annotations.json \
   --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
   --provenance-output /secure/evaluator/provenance.json

@@ -454,17 +454,24 @@ evidence_fields[]
 - 同一论文的 arXiv、会议、期刊或预印本家族必须使用 paper-family 分组切分，不能跨 dev/hidden 泄漏。
 - 冻结 sampling manifest，记录 topic、language、source、paper-family 和语料 hash；HIDDEN_REAL 记录真实纳入概率 150/N，受配额、权重和 family 约束的 DEV/HIDDEN_HARD 没有可解释的单一纳入概率，必须记录 `null`，不得借用 HIDDEN_REAL 概率。
 
-抽样与权威 gold 标注必须分两阶段：先由 evaluator 保管的完整自然语料框生成 private snapshot（不要求对全量 snapshot 预标）。使用冻结 seed，在**不读取 curated labels**的情况下从完整自然框抽取 150 条 HIDDEN_REAL，并记录真实纳入概率 150/N；再从剩余 paper-family 的 curated pool 构建 DEV 与 HIDDEN_HARD。curated annotations 的临时标签和难例标记只用于抽样配额与分层，绝不是 gold label。仅当这 600 个 pair 已被选中后，全部样本才由两位标注者独立标注，并交由第三人仲裁。构建命令为：
+抽样与权威 gold 标注必须分两阶段：先由 evaluator 保管的完整自然语料框生成 private snapshot（不要求对全量 snapshot 预标）。使用冻结 seed，在**不读取 curated labels**的情况下从完整自然框抽取 150 条 HIDDEN_REAL，冻结为 evaluator-only freeze frame，并记录真实纳入概率 150/N；再从剩余 paper-family 的 curated pool 构建 DEV 与 HIDDEN_HARD。curated annotations 的临时标签和难例标记只用于抽样配额与分层，绝不是 gold label。仅当这 600 个 pair 已被选中后，全部样本才由两位标注者独立标注，并交由第三人仲裁。构建命令为：
+
+```sh
+paper-agent --dry-run stage2-sampling freeze-frame \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --output /secure/evaluator/hidden-real-freeze-frame.json
+```
 
 ```sh
 paper-agent --dry-run stage2-sampling build \
   --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
   --curated-annotations /secure/evaluator/curated-annotations.json \
   --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
   --provenance-output /secure/evaluator/provenance.json
 ```
 
-`gold-manifest` 是不含标签的 600-pair 公共清单，可进入 release；private snapshot、curated annotations、抽样 provenance 和原始标注 ledger 均由 evaluator 托管（当前设计下 provenance 也不公开）。`--private-labels` 必须精确覆盖该 600-pair manifest，绝不是完整 snapshot 的全量标签。
+`gold-manifest` 是不含标签的 600-pair 公共清单，可进入 release；private snapshot、HIDDEN_REAL freeze frame、curated annotations、抽样 provenance 和原始标注 ledger 均由 evaluator 托管（当前设计下 provenance 也不公开）。`--private-labels` 必须精确覆盖该 600-pair manifest，绝不是完整 snapshot 的全量标签。
 
 原始 ledger 完成后必须通过受控转换生成 promotion 私有标签，不得手工拼装：
 

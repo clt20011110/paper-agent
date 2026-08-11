@@ -104,11 +104,13 @@ from .stage2_release_assembly import (
 from .stage2_sampling import (
     SamplingPolicy,
     build_gold_sampling,
+    load_hidden_real_selection,
     load_private_corpus_snapshot,
     load_private_sampling_annotations,
     select_hidden_real,
     write_gold_sampling_manifest,
     write_gold_sampling_provenance,
+    write_hidden_real_selection,
 )
 from .stage2_commands import (
     evaluate_benchmark_artifacts,
@@ -297,11 +299,21 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     stage2_sampling_commands = stage2_sampling.add_subparsers(
         dest="stage2_sampling_command", required=True
     )
+    stage2_sampling_freeze = stage2_sampling_commands.add_parser(
+        "freeze-frame", help="freeze HIDDEN_REAL before opening curated annotations"
+    )
+    stage2_sampling_freeze.add_argument(
+        "--private-snapshot", required=True, type=Path
+    )
+    stage2_sampling_freeze.add_argument("--output", required=True, type=Path)
     stage2_sampling_build = stage2_sampling_commands.add_parser(
         "build", help="sample 600 pairs from frozen private inputs"
     )
     stage2_sampling_build.add_argument(
         "--private-snapshot", required=True, type=Path
+    )
+    stage2_sampling_build.add_argument(
+        "--hidden-real-freeze-frame", required=True, type=Path
     )
     stage2_sampling_build.add_argument(
         "--curated-annotations", required=True, type=Path
@@ -636,6 +648,11 @@ def main(
         )
     if args.command == "filter":
         return _finish(args, _filter(args))
+    if (
+        args.command == "stage2-sampling"
+        and args.stage2_sampling_command == "freeze-frame"
+    ):
+        return _finish(args, _stage2_sampling_freeze_frame(args))
     if args.command == "stage2-sampling" and args.stage2_sampling_command == "build":
         return _finish(args, _stage2_sampling_build(args))
     if (
@@ -737,7 +754,11 @@ def _stage2_sampling_build(args: argparse.Namespace) -> dict[str, Any]:
         snapshot.sampling_policy_version,
         snapshot.sampling_seed,
     )
-    hidden_real_selection = select_hidden_real(snapshot, policy)
+    hidden_real_selection = load_hidden_real_selection(
+        args.hidden_real_freeze_frame,
+        snapshot=snapshot,
+        policy=policy,
+    )
     annotations = load_private_sampling_annotations(
         args.curated_annotations, snapshot=snapshot
     )
@@ -762,11 +783,34 @@ def _stage2_sampling_build(args: argparse.Namespace) -> dict[str, Any]:
         "dry_run": args.dry_run,
         "gold_manifest_hash": result.manifest.hash(),
         "gold_manifest_output": str(args.gold_manifest_output),
+        "hidden_real_freeze_frame_hash": hidden_real_selection.hash(),
         "provenance_hash": result.provenance.hash(),
         "provenance_output": str(args.provenance_output),
         "sampling_annotations_hash": annotations.hash(),
         "snapshot_hash": snapshot.hash(),
         "split_counts": split_counts,
+        "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
+    }
+
+
+def _stage2_sampling_freeze_frame(args: argparse.Namespace) -> dict[str, Any]:
+    if os.path.lexists(args.output):
+        raise FileExistsError(f"Stage 2 hidden_real freeze-frame output already exists: {args.output}")
+    snapshot = load_private_corpus_snapshot(args.private_snapshot)
+    policy = SamplingPolicy(snapshot.sampling_policy_version, snapshot.sampling_seed)
+    selection = select_hidden_real(snapshot, policy)
+    if not args.dry_run:
+        write_hidden_real_selection(args.output, selection)
+    return {
+        "command": "stage2-sampling.freeze-frame",
+        "corpus_hash": snapshot.corpus_hash,
+        "dry_run": args.dry_run,
+        "hidden_real_count": len(selection.pair_keys),
+        "hidden_real_freeze_frame_hash": selection.hash(),
+        "output": str(args.output),
+        "sampling_probability": selection.sampling_probability,
+        "snapshot_hash": snapshot.hash(),
         "status": "validated" if args.dry_run else "complete",
         "written": not args.dry_run,
     }

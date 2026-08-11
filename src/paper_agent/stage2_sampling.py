@@ -385,6 +385,65 @@ class HiddenRealSelection:
         ):
             raise ValueError("hidden_real selection requires one unique frozen pair set")
 
+    def document(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "snapshot_hash": self.snapshot_hash,
+            "sampling_policy_version": self.sampling_policy_version,
+            "sampling_seed": self.sampling_seed,
+            "sampling_probability": self.sampling_probability,
+            "pair_keys": [
+                {"topic": topic, "paper_id": paper_id}
+                for topic, paper_id in self.pair_keys
+            ],
+        }
+
+    def hash(self) -> str:
+        return content_hash(self.document())
+
+
+def hidden_real_selection_from_document(
+    document: object,
+    *,
+    snapshot: PrivateCorpusSnapshot,
+    policy: SamplingPolicy,
+) -> HiddenRealSelection:
+    """Load a frozen HIDDEN_REAL draw and bind it to its snapshot and policy."""
+
+    _validate_document(document, "stage2-hidden-real-freeze-frame.schema.json")
+    assert isinstance(document, dict)
+    selection = HiddenRealSelection(
+        document["snapshot_hash"],
+        document["sampling_policy_version"],
+        document["sampling_seed"],
+        document["sampling_probability"],
+        tuple((row["topic"], row["paper_id"]) for row in document["pair_keys"]),
+    )
+    if selection != select_hidden_real(snapshot, policy):
+        raise ValueError("hidden_real freeze frame does not match the supplied snapshot and policy")
+    return selection
+
+
+def write_hidden_real_selection(path: Path, selection: HiddenRealSelection) -> None:
+    """Atomically write the evaluator-private HIDDEN_REAL freeze frame."""
+
+    _write_json_atomically(path, selection.document())
+
+
+def load_hidden_real_selection(
+    path: Path,
+    *,
+    snapshot: PrivateCorpusSnapshot,
+    policy: SamplingPolicy,
+) -> HiddenRealSelection:
+    """Load and verify one evaluator-private HIDDEN_REAL freeze frame."""
+
+    return hidden_real_selection_from_document(
+        _read_json_object(path, "hidden_real freeze frame"),
+        snapshot=snapshot,
+        policy=policy,
+    )
+
 
 class _StratifiedSampler:
     def __init__(self, snapshot: PrivateCorpusSnapshot, annotations: Mapping[tuple[str, str], PrivateSamplingAnnotation], seed: int) -> None:

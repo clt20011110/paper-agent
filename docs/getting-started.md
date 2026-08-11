@@ -85,8 +85,13 @@ HIDDEN_HARD。curated annotations 只保存为抽样配额和难例分层准备�
 600 个 pair 选中后，全部样本才由两人独立标注并由第三人仲裁：
 
 ```sh
+paper-agent --dry-run stage2-sampling freeze-frame \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --output /secure/evaluator/hidden-real-freeze-frame.json
+
 paper-agent --dry-run stage2-sampling build \
   --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
   --curated-annotations /secure/evaluator/curated-annotations.json \
   --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
   --provenance-output /secure/evaluator/provenance.json
