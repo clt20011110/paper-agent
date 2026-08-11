@@ -21,7 +21,9 @@ def _manifest() -> GoldManifest:
         for index in range(size):
             pairs.append(GoldPair(
                 f"paper-{split.value}-{index}", f"topic-{index % 6}", "zh" if index % 2 else "en",
-                "synthetic-corpus", 0.2, f"family-{split.value}-{index}", "a" * 64, split,
+                "synthetic-corpus",
+                0.2 if split is GoldSplit.HIDDEN_REAL else None,
+                f"family-{split.value}-{index}", "a" * 64, split,
                 abstract_incomplete=split is not GoldSplit.HIDDEN_REAL and index < size // 10,
                 sampled_from_natural_distribution=split is GoldSplit.HIDDEN_REAL,
                 cross_language_match=index % 20 == 0,

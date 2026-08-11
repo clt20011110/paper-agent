@@ -62,7 +62,9 @@ def _gold_manifest() -> GoldManifest:
                 topic=f"topic-{index % 6}",
                 language="zh" if index % 2 else "en",
                 source="frozen-crawler-snapshot",
-                sampling_probability=0.2,
+                sampling_probability=(
+                    0.2 if split is GoldSplit.HIDDEN_REAL else None
+                ),
                 paper_family=f"family-{split.value}-{index}",
                 corpus_hash="corpus-v1",
                 split=split,

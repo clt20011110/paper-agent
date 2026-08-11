@@ -69,7 +69,9 @@ def _gold() -> tuple[GoldManifest, GoldLabelStore]:
             pairs.append(
                 GoldPair(
                     f"paper-{split.value}-{index}", f"topic-{index % 6}", "zh" if index % 2 else "en",
-                    "frozen-crawler-snapshot", 0.2, f"family-{split.value}-{index}", "corpus-v1", split,
+                    "frozen-crawler-snapshot",
+                    0.2 if split is GoldSplit.HIDDEN_REAL else None,
+                    f"family-{split.value}-{index}", "corpus-v1", split,
                     abstract_incomplete=split is not GoldSplit.HIDDEN_REAL and index < size // 10,
                     sampled_from_natural_distribution=split is GoldSplit.HIDDEN_REAL,
                     cross_language_match=index % 20 == 0,
@@ -203,6 +205,9 @@ def test_public_manifest_is_exact_has_stable_pair_ids_and_never_serializes_priva
 
 def test_manifest_enforces_pair_family_language_cross_match_and_equal_probability_real_sampling() -> None:
     manifest, _ = _gold()
+    with pytest.raises(ValueError, match="targeted dev"):
+        replace(manifest.pairs[0], sampling_probability=0.2)
+
     duplicate = replace(manifest.pairs[1], paper_id=manifest.pairs[0].paper_id, topic=manifest.pairs[0].topic)
     with pytest.raises(ValueError, match="pair_ids"):
         GoldManifest(1, "corpus-v1", (manifest.pairs[0], duplicate))

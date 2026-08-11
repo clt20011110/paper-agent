@@ -9,12 +9,17 @@ manifest together with a small binding artifact.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from math import isclose, isfinite, log
+import os
 from random import Random
+from pathlib import Path
+from tempfile import mkstemp
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from .canonical import content_hash
+from .schema import SchemaValidationError, validate
 from .stage2_evaluation import GoldManifest, GoldPair, GoldSplit, make_pair_id
 
 
@@ -119,6 +124,7 @@ class PrivateCorpusSnapshot:
 def private_corpus_snapshot_from_document(document: object) -> PrivateCorpusSnapshot:
     """Parse the exact private snapshot document and verify its corpus binding."""
 
+    _validate_document(document, "stage2-private-corpus-snapshot.schema.json")
     if not isinstance(document, dict) or set(document) != {
         "schema_version", "sampling_policy_version", "sampling_seed", "corpus_hash", "papers",
     }:
@@ -144,9 +150,21 @@ def private_corpus_snapshot_from_document(document: object) -> PrivateCorpusSnap
     return snapshot
 
 
+def write_private_corpus_snapshot(path: Path, snapshot: PrivateCorpusSnapshot) -> None:
+    """Atomically write a private frozen crawler snapshot."""
+
+    _write_json_atomically(path, snapshot.document())
+
+
+def load_private_corpus_snapshot(path: Path) -> PrivateCorpusSnapshot:
+    """Load and verify a private frozen crawler snapshot."""
+
+    return private_corpus_snapshot_from_document(_read_json_object(path, "private corpus snapshot"))
+
+
 @dataclass(frozen=True, slots=True)
 class PrivateSamplingAnnotation:
-    """Private label and difficulty stratum for one snapshot pair."""
+    """Provisional curation label and difficulty stratum used only for sampling."""
 
     topic: str
     paper_id: str
@@ -181,7 +199,7 @@ class PrivateSamplingAnnotation:
 
 @dataclass(frozen=True, slots=True)
 class PrivateSamplingAnnotations:
-    """Private labels for the curated candidates in a corpus snapshot."""
+    """Provisional sampling strata for curated candidates, never final gold labels."""
 
     rows: tuple[PrivateSamplingAnnotation, ...]
 
@@ -196,6 +214,48 @@ class PrivateSamplingAnnotations:
 
     def hash(self) -> str:
         return content_hash([row.document() for row in sorted(self.rows, key=lambda item: item.key)])
+
+    def document(self, *, snapshot: PrivateCorpusSnapshot) -> dict[str, Any]:
+        """Return the versioned private annotation artifact bound to ``snapshot``."""
+
+        return {
+            "schema_version": 1,
+            "snapshot_hash": snapshot.hash(),
+            "rows": [row.document() for row in sorted(self.rows, key=lambda item: item.key)],
+        }
+
+
+def private_sampling_annotations_from_document(
+    document: object, *, snapshot: PrivateCorpusSnapshot
+) -> PrivateSamplingAnnotations:
+    """Parse private sampling labels and require their exact snapshot binding."""
+
+    _validate_document(document, "stage2-private-sampling-annotations.schema.json")
+    assert isinstance(document, dict)
+    if document["snapshot_hash"] != snapshot.hash():
+        raise ValueError("private sampling annotations do not bind the supplied corpus snapshot")
+    rows = tuple(PrivateSamplingAnnotation(**row) for row in document["rows"])
+    if not {row.key for row in rows} <= {paper.key for paper in snapshot.papers}:
+        raise ValueError("private sampling annotations contain rows outside the supplied corpus snapshot")
+    return PrivateSamplingAnnotations(rows)
+
+
+def write_private_sampling_annotations(
+    path: Path, annotations: PrivateSamplingAnnotations, *, snapshot: PrivateCorpusSnapshot
+) -> None:
+    """Atomically write private sampling labels bound to a frozen snapshot."""
+
+    _write_json_atomically(path, annotations.document(snapshot=snapshot))
+
+
+def load_private_sampling_annotations(
+    path: Path, *, snapshot: PrivateCorpusSnapshot
+) -> PrivateSamplingAnnotations:
+    """Load private sampling labels bound to a frozen snapshot."""
+
+    return private_sampling_annotations_from_document(
+        _read_json_object(path, "private sampling annotations"), snapshot=snapshot
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,10 +310,80 @@ class GoldSamplingProvenance:
         return content_hash(self.document())
 
 
+def gold_sampling_provenance_from_document(
+    document: object,
+    *,
+    snapshot: PrivateCorpusSnapshot,
+    annotations: PrivateSamplingAnnotations,
+    manifest: GoldManifest,
+) -> GoldSamplingProvenance:
+    """Parse provenance and verify all producer and public-manifest bindings."""
+
+    _validate_document(document, "stage2-gold-sampling-provenance.schema.json")
+    assert isinstance(document, dict)
+    provenance = GoldSamplingProvenance(**document)
+    if provenance.snapshot_hash != snapshot.hash() or provenance.corpus_hash != snapshot.corpus_hash:
+        raise ValueError("gold sampling provenance does not bind the supplied corpus snapshot")
+    if (provenance.sampling_policy_version, provenance.sampling_seed) != (
+        snapshot.sampling_policy_version,
+        snapshot.sampling_seed,
+    ):
+        raise ValueError("gold sampling provenance does not bind the supplied sampling policy")
+    if provenance.sampling_annotations_hash != annotations.hash():
+        raise ValueError("gold sampling provenance does not bind the supplied sampling annotations")
+    if provenance.gold_manifest_hash != manifest.hash() or manifest.corpus_hash != snapshot.corpus_hash:
+        raise ValueError("gold sampling provenance does not bind the supplied gold manifest")
+    return provenance
+
+
+def write_gold_sampling_provenance(path: Path, provenance: GoldSamplingProvenance) -> None:
+    """Atomically write the private producer-to-manifest binding artifact."""
+
+    _write_json_atomically(path, provenance.document())
+
+
+def load_gold_sampling_provenance(
+    path: Path,
+    *,
+    snapshot: PrivateCorpusSnapshot,
+    annotations: PrivateSamplingAnnotations,
+    manifest: GoldManifest,
+) -> GoldSamplingProvenance:
+    """Load provenance and verify its snapshot, annotation, and manifest bindings."""
+
+    return gold_sampling_provenance_from_document(
+        _read_json_object(path, "gold sampling provenance"),
+        snapshot=snapshot,
+        annotations=annotations,
+        manifest=manifest,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class GoldSamplingResult:
     manifest: GoldManifest
     provenance: GoldSamplingProvenance
+
+
+@dataclass(frozen=True, slots=True)
+class HiddenRealSelection:
+    """Natural-distribution rows frozen before curated labels are opened."""
+
+    snapshot_hash: str
+    sampling_policy_version: str
+    sampling_seed: int
+    sampling_probability: float
+    pair_keys: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pair_keys", tuple(self.pair_keys))
+        if (
+            not self.snapshot_hash
+            or not self.sampling_policy_version
+            or not self.pair_keys
+            or len(set(self.pair_keys)) != len(self.pair_keys)
+        ):
+            raise ValueError("hidden_real selection requires one unique frozen pair set")
 
 
 class _StratifiedSampler:
@@ -336,42 +466,37 @@ def _select_stratified_split(sampler: _StratifiedSampler, split: GoldSplit, size
     sampler.take(split, size - len(sampler.selected[split]), curated(lambda paper: True), "curated quota")
 
 
-def build_gold_sampling(
+def _draw_hidden_real(
     snapshot: PrivateCorpusSnapshot,
-    annotations: PrivateSamplingAnnotations,
     policy: SamplingPolicy,
-) -> GoldSamplingResult:
-    """Construct an exact, reproducible 600-pair Stage 2 gold-set artifact.
-
-    HIDDEN_REAL is selected first from the complete natural crawler population
-    without consulting annotations.  DEV and HIDDEN_HARD are then drawn from
-    the remaining curated annotations.  The selected 600 rows are labelled in
-    a separate post-selection ledger before ``manifest.validate(labels)``.
-    """
-
-    if (snapshot.sampling_policy_version, snapshot.sampling_seed) != (policy.version, policy.seed):
+    annotations: Mapping[tuple[str, str], PrivateSamplingAnnotation],
+) -> tuple[_StratifiedSampler, tuple[str, ...], float]:
+    if (snapshot.sampling_policy_version, snapshot.sampling_seed) != (
+        policy.version,
+        policy.seed,
+    ):
         raise ValueError("sampling policy must match the frozen private corpus snapshot")
     topics = tuple(sorted({paper.topic for paper in snapshot.papers}))
     if not 6 <= len(topics) <= 8:
         raise ValueError("private corpus snapshot must cover 6..8 topics")
-    by_key = annotations.by_key
-    snapshot_keys = {paper.key for paper in snapshot.papers}
-    if not set(by_key) <= snapshot_keys:
-        raise ValueError("private sampling annotations contain rows outside the private corpus snapshot")
-
     natural = [paper for paper in snapshot.papers if paper.natural_crawler_population]
     if len(natural) < policy.hidden_real_size:
         raise ValueError("insufficient natural crawler rows for hidden_real")
-    hidden_real_probability = policy.hidden_real_size / len(natural)
+    sampling_probability = policy.hidden_real_size / len(natural)
     if any(
-        not isclose(paper.sampling_probability, hidden_real_probability, rel_tol=1e-9, abs_tol=1e-12)
+        not isclose(
+            paper.sampling_probability,
+            sampling_probability,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        )
         for paper in natural
     ):
         raise ValueError(
             "natural crawler rows must record hidden_real_size / natural frame size as sampling_probability"
         )
 
-    sampler = _StratifiedSampler(snapshot, by_key, policy.seed)
+    sampler = _StratifiedSampler(snapshot, annotations, policy.seed)
     sampler.take(
         GoldSplit.HIDDEN_REAL,
         policy.hidden_real_size,
@@ -379,6 +504,59 @@ def build_gold_sampling(
         "natural crawler population",
         weighted=False,
     )
+    return sampler, topics, sampling_probability
+
+
+def select_hidden_real(
+    snapshot: PrivateCorpusSnapshot,
+    policy: SamplingPolicy,
+) -> HiddenRealSelection:
+    """Freeze HIDDEN_REAL without receiving or opening curated annotations."""
+
+    sampler, _, sampling_probability = _draw_hidden_real(snapshot, policy, {})
+    return HiddenRealSelection(
+        snapshot.hash(),
+        policy.version,
+        policy.seed,
+        sampling_probability,
+        tuple(paper.key for paper in sampler.selected[GoldSplit.HIDDEN_REAL]),
+    )
+
+
+def build_gold_sampling(
+    snapshot: PrivateCorpusSnapshot,
+    annotations: PrivateSamplingAnnotations,
+    policy: SamplingPolicy,
+    *,
+    hidden_real_selection: HiddenRealSelection | None = None,
+) -> GoldSamplingResult:
+    """Construct an exact, reproducible 600-pair Stage 2 gold-set artifact.
+
+    HIDDEN_REAL is selected first from the complete natural crawler population
+    without consulting annotations.  DEV and HIDDEN_HARD are then drawn from
+    the remaining provisional curation strata.  All selected rows receive
+    authoritative double annotation in a separate post-selection ledger before
+    ``manifest.validate(labels)``.
+    """
+
+    expected_hidden_real = select_hidden_real(snapshot, policy)
+    if hidden_real_selection is None:
+        hidden_real_selection = expected_hidden_real
+    elif hidden_real_selection != expected_hidden_real:
+        raise ValueError("hidden_real selection does not match the frozen snapshot and policy")
+
+    by_key = annotations.by_key
+    snapshot_keys = {paper.key for paper in snapshot.papers}
+    if not set(by_key) <= snapshot_keys:
+        raise ValueError("private sampling annotations contain rows outside the private corpus snapshot")
+
+    sampler, topics, hidden_real_probability = _draw_hidden_real(
+        snapshot, policy, by_key
+    )
+    if tuple(
+        paper.key for paper in sampler.selected[GoldSplit.HIDDEN_REAL]
+    ) != hidden_real_selection.pair_keys:
+        raise ValueError("hidden_real selection changed after curated annotations were opened")
     _select_stratified_split(sampler, GoldSplit.DEV, policy.dev_size, topics)
     _select_stratified_split(sampler, GoldSplit.HIDDEN_HARD, policy.hidden_hard_size, topics)
 
@@ -388,7 +566,7 @@ def build_gold_sampling(
             paper.topic,
             paper.language,
             paper.source,
-            hidden_real_probability if split is GoldSplit.HIDDEN_REAL else paper.sampling_probability,
+            hidden_real_probability if split is GoldSplit.HIDDEN_REAL else None,
             paper.paper_family,
             snapshot.corpus_hash,
             split,
@@ -411,3 +589,40 @@ def build_gold_sampling(
         manifest.hash(),
     )
     return GoldSamplingResult(manifest, provenance)
+
+
+def write_gold_sampling_manifest(path: Path, manifest: GoldManifest) -> None:
+    """Validate and atomically publish one public, label-free gold manifest."""
+
+    manifest.validate_sampling_structure()
+    document = manifest.document()
+    _validate_document(document, "stage2-gold-manifest.schema.json")
+    _write_json_atomically(path, document)
+
+
+def _validate_document(document: object, schema_name: str) -> None:
+    try:
+        validate(document, schema_name)
+    except SchemaValidationError as error:
+        raise ValueError(str(error)) from error
+
+
+def _read_json_object(path: Path, artifact_name: str) -> dict[str, Any]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError(f"{artifact_name} must be a JSON object")
+    return document
+
+
+def _write_json_atomically(path: Path, document: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)

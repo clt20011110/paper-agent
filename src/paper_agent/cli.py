@@ -96,6 +96,15 @@ from .stage2_release_assembly import (
     assemble_stage2_release,
     validate_stage2_release_assembly,
 )
+from .stage2_sampling import (
+    SamplingPolicy,
+    build_gold_sampling,
+    load_private_corpus_snapshot,
+    load_private_sampling_annotations,
+    select_hidden_real,
+    write_gold_sampling_manifest,
+    write_gold_sampling_provenance,
+)
 from .stage2_commands import (
     evaluate_benchmark_artifacts,
     filter_database,
@@ -275,6 +284,29 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     filter_command.add_argument("--database", type=Path)
     filter_command.add_argument("--campaign-id")
     filter_command.add_argument("--paper-id", action="append", default=[])
+
+    stage2_sampling = subcommands.add_parser(
+        "stage2-sampling",
+        help="build the frozen public Stage 2 gold manifest inside evaluator custody",
+    )
+    stage2_sampling_commands = stage2_sampling.add_subparsers(
+        dest="stage2_sampling_command", required=True
+    )
+    stage2_sampling_build = stage2_sampling_commands.add_parser(
+        "build", help="sample 600 pairs from frozen private inputs"
+    )
+    stage2_sampling_build.add_argument(
+        "--private-snapshot", required=True, type=Path
+    )
+    stage2_sampling_build.add_argument(
+        "--curated-annotations", required=True, type=Path
+    )
+    stage2_sampling_build.add_argument(
+        "--gold-manifest-output", required=True, type=Path
+    )
+    stage2_sampling_build.add_argument(
+        "--provenance-output", required=True, type=Path
+    )
 
     benchmark = subcommands.add_parser(
         "benchmark-stage2", help="measure or evaluate frozen Stage 2 benchmark records"
@@ -586,6 +618,8 @@ def main(
         )
     if args.command == "filter":
         return _finish(args, _filter(args))
+    if args.command == "stage2-sampling" and args.stage2_sampling_command == "build":
+        return _finish(args, _stage2_sampling_build(args))
     if args.command == "benchmark-stage2":
         if args.benchmark_command == "measure":
             result = measure_stage2_benchmark(
@@ -665,6 +699,54 @@ def _filter(args: argparse.Namespace) -> dict[str, Any]:
         paper_ids=args.paper_id,
         dry_run=args.dry_run,
     )
+
+
+def _stage2_sampling_build(args: argparse.Namespace) -> dict[str, Any]:
+    outputs = (args.gold_manifest_output, args.provenance_output)
+    if outputs[0].resolve() == outputs[1].resolve():
+        raise CliUsageError("Stage 2 sampling outputs must use different paths")
+    existing = [path for path in outputs if os.path.lexists(path)]
+    if existing:
+        raise FileExistsError(f"Stage 2 sampling output already exists: {existing[0]}")
+
+    snapshot = load_private_corpus_snapshot(args.private_snapshot)
+    policy = SamplingPolicy(
+        snapshot.sampling_policy_version,
+        snapshot.sampling_seed,
+    )
+    hidden_real_selection = select_hidden_real(snapshot, policy)
+    annotations = load_private_sampling_annotations(
+        args.curated_annotations, snapshot=snapshot
+    )
+    result = build_gold_sampling(
+        snapshot,
+        annotations,
+        policy,
+        hidden_real_selection=hidden_real_selection,
+    )
+
+    if not args.dry_run:
+        write_gold_sampling_provenance(args.provenance_output, result.provenance)
+        write_gold_sampling_manifest(args.gold_manifest_output, result.manifest)
+
+    split_counts = {
+        split: sum(pair.split.value == split for pair in result.manifest.pairs)
+        for split in ("dev", "hidden_hard", "hidden_real")
+    }
+    return {
+        "command": "stage2-sampling.build",
+        "corpus_hash": snapshot.corpus_hash,
+        "dry_run": args.dry_run,
+        "gold_manifest_hash": result.manifest.hash(),
+        "gold_manifest_output": str(args.gold_manifest_output),
+        "provenance_hash": result.provenance.hash(),
+        "provenance_output": str(args.provenance_output),
+        "sampling_annotations_hash": annotations.hash(),
+        "snapshot_hash": snapshot.hash(),
+        "split_counts": split_counts,
+        "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
+    }
 
 
 def _stage2_release_assemble(args: argparse.Namespace) -> dict[str, Any]:

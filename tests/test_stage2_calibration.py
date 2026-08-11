@@ -29,7 +29,9 @@ def _manifest_and_dev_labels() -> tuple[GoldManifest, GoldLabelStore]:
         for index in range(size):
             pairs.append(GoldPair(
                 f"paper-{split.value}-{index}", f"topic-{index % 6}", "en" if index % 2 else "zh",
-                "crawler-v1", 0.5, f"family-{split.value}-{index}", "corpus-v1", split,
+                "crawler-v1",
+                0.5 if split is GoldSplit.HIDDEN_REAL else None,
+                f"family-{split.value}-{index}", "corpus-v1", split,
                 abstract_incomplete=split is not GoldSplit.HIDDEN_REAL and index < size // 10,
                 sampled_from_natural_distribution=split is GoldSplit.HIDDEN_REAL,
                 cross_language_match=index == 0,

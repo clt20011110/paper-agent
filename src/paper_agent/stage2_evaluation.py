@@ -74,7 +74,7 @@ class GoldPair:
     topic: str
     language: str
     source: str
-    sampling_probability: float
+    sampling_probability: float | None
     paper_family: str
     corpus_hash: str
     split: GoldSplit
@@ -88,8 +88,19 @@ class GoldPair:
         required = (self.paper_id, self.topic, self.language, self.source, self.paper_family, self.corpus_hash)
         if not all(required):
             raise ValueError("gold pair sampling fields are required")
-        if not isfinite(self.sampling_probability) or not 0 < self.sampling_probability <= 1:
-            raise ValueError("sampling_probability must be finite and in (0, 1]")
+        if self.split is GoldSplit.HIDDEN_REAL:
+            if (
+                self.sampling_probability is None
+                or not isfinite(self.sampling_probability)
+                or not 0 < self.sampling_probability <= 1
+            ):
+                raise ValueError(
+                    "hidden_real sampling_probability must be finite and in (0, 1]"
+                )
+        elif self.sampling_probability is not None:
+            raise ValueError(
+                "targeted dev and hidden_hard rows must use null sampling_probability"
+            )
         if (self.split is GoldSplit.HIDDEN_REAL) != self.sampled_from_natural_distribution:
             raise ValueError("hidden_real is exactly the natural-distribution sample")
 
@@ -817,7 +828,9 @@ def inverse_probability_metrics(
     pairs: Sequence[GoldPair], labels: GoldLabelStore, predictions: Sequence[Prediction], *, use_inverse_probability_weights: bool = False
 ) -> InverseProbabilityMetrics:
     if not use_inverse_probability_weights:
-        raise ValueError("cross-set metrics require explicit inverse-probability weighting")
+        raise ValueError("inverse-probability metrics require explicit weighting")
+    if any(pair.split is not GoldSplit.HIDDEN_REAL for pair in pairs):
+        raise ValueError("inverse-probability metrics require hidden_real pairs only")
     by_id = {item.pair_id: item for item in predictions}
     if len(by_id) != len(predictions) or set(by_id) != {pair.pair_id for pair in pairs}:
         raise ValueError("predictions must exactly cover weighted pair_ids once")
@@ -825,6 +838,7 @@ def inverse_probability_metrics(
     for pair in pairs:
         prediction = by_id[pair.pair_id]
         positive = labels.labels[pair.pair_id] >= 2
+        assert pair.sampling_probability is not None
         weight = 1 / pair.sampling_probability
         total_weight += weight
         positives += weight * positive

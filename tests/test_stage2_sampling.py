@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 
 import pytest
 
-from paper_agent.stage2_evaluation import GoldLabelStore, GoldSplit, make_pair_id
+from paper_agent.schema import SchemaValidationError, validate
+from paper_agent.stage2_evaluation import GoldLabelStore, GoldSplit
 from paper_agent.stage2_sampling import (
     CorpusPaper,
     PrivateCorpusSnapshot,
@@ -12,7 +14,16 @@ from paper_agent.stage2_sampling import (
     PrivateSamplingAnnotations,
     SamplingPolicy,
     build_gold_sampling,
+    gold_sampling_provenance_from_document,
+    load_gold_sampling_provenance,
+    load_private_corpus_snapshot,
+    load_private_sampling_annotations,
     private_corpus_snapshot_from_document,
+    private_sampling_annotations_from_document,
+    write_gold_sampling_manifest,
+    write_gold_sampling_provenance,
+    write_private_corpus_snapshot,
+    write_private_sampling_annotations,
 )
 
 
@@ -54,19 +65,24 @@ def test_producer_builds_reproducible_valid_gold_manifest_and_private_binding() 
     second = build_gold_sampling(snapshot, annotations, policy)
 
     assert first.manifest.hash() == second.manifest.hash()
-    annotation_by_pair_id = {
-        make_pair_id(row.topic, row.paper_id): row
-        for row in annotations.rows
-    }
-    selected_annotations = {
-        pair.pair_id: annotation_by_pair_id[pair.pair_id]
-        for pair in first.manifest.pairs
-    }
+    final_labels: dict[str, int] = {}
+    hard_negatives: set[str] = set()
+    hard_positives: set[str] = set()
+    for pair in first.manifest.pairs:
+        index = int(pair.paper_id.rsplit("-", 1)[1])
+        if index % 4 == 0:
+            final_labels[pair.pair_id] = 0
+            hard_negatives.add(pair.pair_id)
+        elif index % 9 == 1:
+            final_labels[pair.pair_id] = 3
+            hard_positives.add(pair.pair_id)
+        else:
+            final_labels[pair.pair_id] = 2
     labels = GoldLabelStore(
-        {pair_id: row.label for pair_id, row in selected_annotations.items()},
-        annotations.hash(),
-        frozenset(pair_id for pair_id, row in selected_annotations.items() if row.hard_negative),
-        frozenset(pair_id for pair_id, row in selected_annotations.items() if row.hard_positive),
+        final_labels,
+        "post-selection-double-annotation-fixture",
+        frozenset(hard_negatives),
+        frozenset(hard_positives),
     )
     assert first.manifest.validate(labels) is None
     assert {pair.split for pair in first.manifest.pairs} == set(GoldSplit)
@@ -75,6 +91,11 @@ def test_producer_builds_reproducible_valid_gold_manifest_and_private_binding() 
     assert {pair.language for pair in first.manifest.pairs} >= {"en", "zh"}
     assert all(
         pair.sampled_from_natural_distribution is (pair.split is GoldSplit.HIDDEN_REAL)
+        for pair in first.manifest.pairs
+    )
+    assert all(
+        (pair.sampling_probability is not None)
+        is (pair.split is GoldSplit.HIDDEN_REAL)
         for pair in first.manifest.pairs
     )
     families: dict[str, GoldSplit] = {}
@@ -100,6 +121,63 @@ def test_private_snapshot_round_trip_keeps_text_metadata_and_corpus_hash() -> No
     document["papers"][0]["title"] = "changed"
     with pytest.raises(ValueError, match="corpus_hash"):
         private_corpus_snapshot_from_document(document)
+
+
+def test_private_sampling_artifacts_round_trip_bind_inputs_and_keep_public_manifest_safe(tmp_path) -> None:
+    snapshot, annotations, policy = _inputs()
+    snapshot_path = tmp_path / "private-snapshot.json"
+    annotations_path = tmp_path / "private-annotations.json"
+    provenance_path = tmp_path / "sampling-provenance.json"
+    manifest_path = tmp_path / "gold-manifest.json"
+
+    write_private_corpus_snapshot(snapshot_path, snapshot)
+    restored_snapshot = load_private_corpus_snapshot(snapshot_path)
+    write_private_sampling_annotations(annotations_path, annotations, snapshot=restored_snapshot)
+    restored_annotations = load_private_sampling_annotations(annotations_path, snapshot=restored_snapshot)
+    result = build_gold_sampling(restored_snapshot, restored_annotations, policy)
+    write_gold_sampling_provenance(provenance_path, result.provenance)
+    restored_provenance = load_gold_sampling_provenance(
+        provenance_path,
+        snapshot=restored_snapshot,
+        annotations=restored_annotations,
+        manifest=result.manifest,
+    )
+
+    assert restored_snapshot.hash() == snapshot.hash()
+    assert restored_annotations.hash() == annotations.hash()
+    assert restored_provenance.hash() == result.provenance.hash()
+
+    unknown = annotations.document(snapshot=snapshot)
+    unknown["label"] = 3
+    with pytest.raises(ValueError, match="Additional properties"):
+        private_sampling_annotations_from_document(unknown, snapshot=snapshot)
+    wrong_binding = annotations.document(snapshot=snapshot)
+    wrong_binding["snapshot_hash"] = "0" * 64
+    with pytest.raises(ValueError, match="do not bind"):
+        private_sampling_annotations_from_document(wrong_binding, snapshot=snapshot)
+    bad_provenance = result.provenance.document()
+    bad_provenance["gold_manifest_hash"] = "0" * 64
+    with pytest.raises(ValueError, match="gold manifest"):
+        gold_sampling_provenance_from_document(
+            bad_provenance,
+            snapshot=snapshot,
+            annotations=annotations,
+            manifest=result.manifest,
+        )
+
+    write_gold_sampling_manifest(manifest_path, result.manifest)
+    with pytest.raises(FileExistsError):
+        write_gold_sampling_manifest(manifest_path, result.manifest)
+    with pytest.raises(FileExistsError):
+        write_gold_sampling_provenance(provenance_path, result.provenance)
+    public_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    validate(public_manifest, "stage2-gold-manifest.schema.json")
+    assert "labels" not in public_manifest
+    assert all(not {"title", "abstract", "labels"} & set(pair) for pair in public_manifest["pairs"])
+    dev_pair = next(pair for pair in public_manifest["pairs"] if pair["split"] == "dev")
+    dev_pair["sampling_probability"] = 0.2
+    with pytest.raises(SchemaValidationError):
+        validate(public_manifest, "stage2-gold-manifest.schema.json")
 
 
 def test_hidden_real_selection_ignores_labels_and_keeps_recorded_natural_probability() -> None:
