@@ -556,6 +556,49 @@ paper-agent --dry-run stage2-sampling finalize-annotations \
 
 dry-run 必须重算双人完整覆盖、第三人分歧仲裁、仲裁前 QWK ≥ 0.75 与最终 gold 配额；正式执行只生成 no-replace 私有 label artifact，不复制 annotator 身份或原始标注/仲裁行。
 
+DEV 模型评分与人工标签必须保持两段式边界。第一段不打开任何 label artifact，按冻结的
+`(topic, language) -> query` 映射分别让 BGE 与 Qwen 覆盖精确 300 个 DEV topic-paper pair；输出包含
+两条 raw score、manifest/snapshot/runtime/model-lock provenance，但不包含 label、hard flag 或 hidden pair：
+
+```sh
+paper-agent --dry-run stage2-calibration freeze-dev-scores \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --topic-queries configs/stage2/real-sampling-crossref-v1.json \
+  --runtime configs/stage2/runtime-crossref-v1.json \
+  --reranker-lock configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json \
+  --adjudicator-lock configs/stage2/models/qwen3.5-9b-8bit.lock.json \
+  --output /secure/evaluator/dev-raw-scores-v1.json
+```
+
+dry-run 必须在零模型调用下验证 DEV universe、topic query、runtime、schema 与 lock；正式执行遇到任一路径
+缺失、非有限分数、错误 response model、schema/paper_id 错配或运行中 schema/config 漂移时不得发布半份
+artifact。raw-score artifact 留在 evaluator custody，不得引用进 candidate/release bundle。
+
+第二段只在正式人工 `private-gold-labels.json` 可用后执行。命令先验证完整 600 labels 与采样配额，再只取
+DEV 300 条拟合 reranker/Qwen 两条 `P(gold_label >= 2)` calibrator 和 recall-first threshold；candidate
+目录内的固定 candidate 文件是最后发布标记：
+
+```sh
+paper-agent --dry-run stage2-calibration build-candidate \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-labels /secure/evaluator/private-gold-labels.json \
+  --raw-scores /secure/evaluator/dev-raw-scores-v1.json \
+  --runtime configs/stage2/runtime-crossref-v1.json \
+  --reranker-lock configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json \
+  --adjudicator-lock configs/stage2/models/qwen3.5-9b-8bit.lock.json \
+  --candidate-id crossref-stage2-v1 \
+  --output-dir /secure/release/crossref-stage2-v1
+```
+
+schema-v2 candidate 只表示 DEV 校准候选，仍须完成 structured replay、rationale、parity、hidden promotion、
+normal/stress 与 soak 后才能组装 schema-v3 production release。
+
+2026-08-12 已实现上述两段命令、无标签 raw-score schema、多 topic/language query 绑定、candidate 最后发布
+标记和离线回归测试，并以现有真实 manifest/snapshot 完成 300 DEV、12 topic-language query 的零模型调用
+dry-run，记录见 `docs/smoke/stage2-dev-calibration-dry-run-20260812.json`；真实 DEV 模型评分尚未执行，
+人工双标/仲裁与 private labels 仍是 candidate 构建硬门。
+
 标注 rubric：
 
 - 0：明确无关。

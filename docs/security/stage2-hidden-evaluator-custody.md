@@ -130,6 +130,19 @@ The current CLI cannot address an HSM or secret-manager signing API directly. A 
 
 Transfer only the corresponding canonical padded-base64 32-byte public key to the deployment trust-manifest maintainer.
 
+## DEV calibration custody
+
+`stage2-calibration freeze-dev-scores` runs before opening labels. Its output freezes only the exact DEV 300-pair
+reranker/Qwen raw scores and the topic-query/runtime/model provenance. Keep that file under evaluator custody: it is
+an input to calibration, not a release artifact. After the verified human annotation workflow creates the complete
+private label artifact, `stage2-calibration build-candidate` validates all 600 labels but joins only the DEV subset to
+those raw scores. Neither raw scores nor private labels may be copied into the schema-v2 candidate directory.
+
+The candidate directory is claimed without replacement. Its six dependency files are not a published candidate by
+themselves; only the final `stage2-candidate-v2.json` leaf is the commit marker. If a failed build leaves a directory
+without that marker, preserve it for diagnosis or move it aside before choosing a new output directory. Do not hand
+assemble the missing marker.
+
 ## Preferred sealed promotion
 
 `stage2-evaluator promote` is the preferred production path. It validates the public 600-pair sampling manifest and every schema-v2 benchmark candidate before opening private labels or submissions. Candidate and submission mappings are repeatable `ID=PATH` arguments and must name exactly the same candidate IDs.

@@ -1,0 +1,49 @@
+{
+  "schema_version": "1",
+  "kind": "stage2_dev_calibration_dry_run",
+  "run_date": "2026-08-12",
+  "command": "stage2-calibration.freeze-dev-scores",
+  "status": "validated",
+  "written": false,
+  "model_calls": 0,
+  "case_count": 300,
+  "topic_query_count": 12,
+  "gold_manifest_hash": "579ac1f30770066e02510885727bf818a4598d1415805bccdbda6fe3ca02381d",
+  "dev_manifest_hash": "a214b4f8dc99a637eaf1ef897758694acc70957162b72c8ba07358bea46ca765",
+  "stage2_config_hash": "960f18211a05df6f4cbc902d3ead766ce63c9c0beab8b70acbdca96932756ae7",
+  "inputs": {
+    "gold_manifest": {
+      "private_reference": "local-evaluator-transfer:stage2/crossref-real-v1-20260812/gold-manifest.json",
+      "sha256": "a29ebf85fd8d2d11c154b1484cf8ff62219e2181b9451616a7ac96afca649f5e"
+    },
+    "private_snapshot": {
+      "private_reference": "local-evaluator:stage2/crossref-real-v1-20260812/private-snapshot.json",
+      "sha256": "868a6956a011b34a8973e0b1c2ee4f2fd9226d21cf37a064eae439edf5ed320b"
+    },
+    "topic_queries": {
+      "path": "configs/stage2/real-sampling-crossref-v1.json",
+      "sha256": "cbbfe0be89f11b026b3e6a3962d708dc0c47c45776b2dbed9751efea2402cfa5"
+    },
+    "runtime": {
+      "path": "configs/stage2/runtime-crossref-v1.json",
+      "sha256": "211370e5447d94205632c2b9f242ee7478c4095c55c440a1e58c4e955eb95722"
+    },
+    "reranker_lock": {
+      "path": "configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json",
+      "sha256": "ad6774a493a3575ca551f78db65152d60a43016ef87422e0dccd8c1c1a737d1f"
+    },
+    "adjudicator_lock": {
+      "path": "configs/stage2/models/qwen3.5-9b-8bit.lock.json",
+      "sha256": "ec9227eab52573a921d737a1b36e7b069975034d9f4a843baa4e5a56c53e9e2c"
+    }
+  },
+  "output": {
+    "private_reference": "local-evaluator:stage2/crossref-real-v1-20260812/dev-raw-scores-v1.json",
+    "exists_after_dry_run": false
+  },
+  "release_gate_claim": false,
+  "notes": [
+    "This dry-run validates the exact real 300-pair DEV universe and 12 topic-language queries.",
+    "It does not invoke oMLX, consume human labels, create a schema-v2 candidate, or satisfy any production release gate."
+  ]
+}

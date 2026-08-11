@@ -1,0 +1,20 @@
+{
+  "query": "molecular generation; protein design with language models; generative models for materials discovery; deep learning for drug discovery; large language models for scientific discovery; diffusion models for molecular design",
+  "query_version": "crossref-stage2-six-topic-v1",
+  "screening_scope_hash": "c6fc973eadf4ea5b2eb95ff894def92a284c6a191cbe3ee17c2c026812514ca8",
+  "include_document_types": [],
+  "exclude_document_types": [
+    "editorial",
+    "retraction"
+  ],
+  "token_bucket_width": 128,
+  "document_batch_size": 32,
+  "max_in_flight": 2,
+  "adjudicator_concurrency": 4,
+  "adjudicator_seed": 42,
+  "max_context_window": 16384,
+  "omlx_base_url": "http://127.0.0.1:8000",
+  "api_key_env": null,
+  "prompt_version": "stage2-adjudication-v1",
+  "schema_version": "filter-decision.schema.json"
+}

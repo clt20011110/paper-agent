@@ -130,8 +130,10 @@ from .stage2_sampling import (
     write_private_sampling_annotations,
 )
 from .stage2_commands import (
+    build_stage2_candidate,
     evaluate_benchmark_artifacts,
     filter_database,
+    freeze_stage2_dev_scores,
     measure_stage2_benchmark,
     run_structured_replay,
 )
@@ -403,6 +405,37 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     stage2_sampling_finalize.add_argument(
         "--private-labels-output", required=True, type=Path
     )
+
+    stage2_calibration = subcommands.add_parser(
+        "stage2-calibration",
+        help="freeze DEV model scores and build a calibrated benchmark candidate",
+    )
+    stage2_calibration_commands = stage2_calibration.add_subparsers(
+        dest="stage2_calibration_command", required=True
+    )
+    stage2_freeze_scores = stage2_calibration_commands.add_parser(
+        "freeze-dev-scores",
+        help="score the exact unlabelled 300-pair DEV split with both local models",
+    )
+    stage2_freeze_scores.add_argument("--gold-manifest", required=True, type=Path)
+    stage2_freeze_scores.add_argument("--private-snapshot", required=True, type=Path)
+    stage2_freeze_scores.add_argument("--topic-queries", required=True, type=Path)
+    stage2_freeze_scores.add_argument("--runtime", required=True, type=Path)
+    stage2_freeze_scores.add_argument("--reranker-lock", required=True, type=Path)
+    stage2_freeze_scores.add_argument("--adjudicator-lock", required=True, type=Path)
+    stage2_freeze_scores.add_argument("--output", required=True, type=Path)
+    stage2_build_candidate = stage2_calibration_commands.add_parser(
+        "build-candidate",
+        help="join frozen DEV scores to authoritative human labels and calibrate",
+    )
+    stage2_build_candidate.add_argument("--gold-manifest", required=True, type=Path)
+    stage2_build_candidate.add_argument("--private-labels", required=True, type=Path)
+    stage2_build_candidate.add_argument("--raw-scores", required=True, type=Path)
+    stage2_build_candidate.add_argument("--runtime", required=True, type=Path)
+    stage2_build_candidate.add_argument("--reranker-lock", required=True, type=Path)
+    stage2_build_candidate.add_argument("--adjudicator-lock", required=True, type=Path)
+    stage2_build_candidate.add_argument("--candidate-id", required=True)
+    stage2_build_candidate.add_argument("--output-dir", required=True, type=Path)
 
     replay = subcommands.add_parser(
         "stage2-replay",
@@ -766,6 +799,35 @@ def main(
         and args.stage2_sampling_command == "finalize-annotations"
     ):
         return _finish(args, _stage2_annotations_finalize(args))
+    if (
+        args.command == "stage2-calibration"
+        and args.stage2_calibration_command == "freeze-dev-scores"
+    ):
+        return _finish(args, freeze_stage2_dev_scores(
+            manifest_path=args.gold_manifest,
+            snapshot_path=args.private_snapshot,
+            topic_queries_path=args.topic_queries,
+            runtime_path=args.runtime,
+            reranker_lock_path=args.reranker_lock,
+            adjudicator_lock_path=args.adjudicator_lock,
+            output_path=args.output,
+            dry_run=args.dry_run,
+        ))
+    if (
+        args.command == "stage2-calibration"
+        and args.stage2_calibration_command == "build-candidate"
+    ):
+        return _finish(args, build_stage2_candidate(
+            manifest_path=args.gold_manifest,
+            private_labels_path=args.private_labels,
+            raw_scores_path=args.raw_scores,
+            runtime_path=args.runtime,
+            reranker_lock_path=args.reranker_lock,
+            adjudicator_lock_path=args.adjudicator_lock,
+            candidate_id=args.candidate_id,
+            output_dir=args.output_dir,
+            dry_run=args.dry_run,
+        ))
     if args.command == "stage2-replay":
         return _finish(args, run_structured_replay(
             papers_path=args.papers,
@@ -3315,6 +3377,7 @@ def _command_from_argv(argv: Sequence[str]) -> str:
         "grant",
         "search",
         "report",
+        "stage2-calibration",
         "stage2-evaluator",
         "stage2-release",
     } and index + 1 < len(argv):

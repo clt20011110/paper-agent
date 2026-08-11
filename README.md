@@ -145,6 +145,41 @@ paper-agent --dry-run stage2-sampling finalize-annotations \
 该命令要求每个 pair 恰好两份独立标注、所有分歧恰好一次第三人仲裁、仲裁前 quadratic-weighted kappa
 至少为 0.75，并重新验证语言正例与 hard-case 配额。移除 `--dry-run` 后只写 label artifact，不复制标注者身份或原始仲裁记录，且拒绝覆盖已有输出。
 
+DEV 原始分数与人工标签分两段处理。第一段不读取任何标签，按冻结的 `(topic, language) → query`
+映射让 BGE 和 Qwen 都精确覆盖 300 个 DEV pair；原始分数仍是 evaluator-private，不能放入 candidate
+或 release bundle：
+
+```sh
+paper-agent --dry-run stage2-calibration freeze-dev-scores \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --topic-queries configs/stage2/real-sampling-crossref-v1.json \
+  --runtime configs/stage2/runtime-crossref-v1.json \
+  --reranker-lock configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json \
+  --adjudicator-lock configs/stage2/models/qwen3.5-9b-8bit.lock.json \
+  --output /secure/evaluator/dev-raw-scores-v1.json
+```
+
+dry-run 只核对 300-pair universe、topic query、runtime 和模型锁，不调用 oMLX。移除 `--dry-run`
+才执行模型并发布 no-replace 分数产物。当前真实 300 DEV/12 query 的 dry-run 记录见
+[stage2-dev-calibration-dry-run-20260812.json](docs/smoke/stage2-dev-calibration-dry-run-20260812.json)。
+第二段必须等正式 `private-gold-labels.json` 产生后才能执行；
+它只取其中的 DEV 300 条拟合两条 path-specific calibrator，并把 candidate 文件作为目录内最后的发布标记：
+
+```sh
+paper-agent --dry-run stage2-calibration build-candidate \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-labels /secure/evaluator/private-gold-labels.json \
+  --raw-scores /secure/evaluator/dev-raw-scores-v1.json \
+  --runtime configs/stage2/runtime-crossref-v1.json \
+  --reranker-lock configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json \
+  --adjudicator-lock configs/stage2/models/qwen3.5-9b-8bit.lock.json \
+  --candidate-id crossref-stage2-v1 \
+  --output-dir /secure/release/crossref-stage2-v1
+```
+
+schema-v2 candidate 只是 replay、性能和 hidden promotion 的候选输入，不是 production release。
+
 结构化输出专项回放直接复用冻结的 1,000 篇 workload 与 schema-v2 candidate；模型、并发、seed、
 endpoint、prompt 和 schema 均从 candidate 读取，命令不提供运行时覆盖：
 

@@ -7,10 +7,11 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Callable, Mapping, Sequence
 
 from .schema import schema_directory
-from .stage2_backends import OmlxTransport, UrlLibOmlxTransport
+from .stage2_backends import ModelLock, OmlxTransport, UrlLibOmlxTransport
 from .stage2_benchmark import (
     BenchmarkRunSpec,
     MacOSMemoryObserver,
@@ -22,6 +23,7 @@ from .stage2_benchmark_inputs import (
 )
 from .stage2_evaluation import (
     BenchmarkEnvironment,
+    CalibrationPath,
     PerformanceCase,
     PerformanceRoutingManifest,
     PerformanceRunRecord,
@@ -30,13 +32,28 @@ from .stage2_evaluation import (
     performance_gate,
     performance_summary,
     soak_gate,
+    load_gold_manifest,
 )
-from .stage2_pipeline import ERROR_RATE_ALARM, MEMORY_WATERMARK_ALARM, Stage2Paper
+from .stage2_candidate import build_stage2_candidate_bundle
+from .stage2_dev_calibration import (
+    Stage2DevRawScoreRunner,
+    dev_scoring_cases,
+    load_frozen_dev_raw_scores,
+)
+from .stage2_pipeline import (
+    ERROR_RATE_ALARM,
+    MEMORY_WATERMARK_ALARM,
+    Stage2Paper,
+    Stage2Profile,
+)
 from .stage2_search import (
     ReleasedStage2,
     load_stage2_benchmark_candidate,
     load_stage2_release,
+    stage2_base_profile,
 )
+from .stage2_promotion_artifacts import load_private_gold_labels
+from .stage2_sampling import load_private_corpus_snapshot
 from .stage2_structured_replay import (
     StructuredReplayRunner,
     freeze_structured_replay_manifest,
@@ -145,6 +162,147 @@ def evaluate_benchmark_artifacts(
         }
     result["status"] = "passed" if performance.passed and result.get("soak", {}).get("passed", True) else "failed"
     return result
+
+
+def freeze_stage2_dev_scores(
+    *,
+    manifest_path: Path,
+    snapshot_path: Path,
+    topic_queries_path: Path,
+    runtime_path: Path,
+    reranker_lock_path: Path,
+    adjudicator_lock_path: Path,
+    output_path: Path,
+    dry_run: bool = False,
+    transport: OmlxTransport | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Freeze both unlabelled DEV score paths under evaluator custody."""
+
+    if os.path.lexists(output_path):
+        raise FileExistsError(f"DEV raw-score output already exists: {output_path}")
+    manifest = load_gold_manifest(manifest_path)
+    snapshot = load_private_corpus_snapshot(snapshot_path)
+    runtime = _object(runtime_path)
+    profile, model_lock_hashes = _stage2_input_profile(
+        runtime,
+        reranker_lock_path,
+        adjudicator_lock_path,
+    )
+    topic_queries = _topic_queries(_object(topic_queries_path))
+    cases = dev_scoring_cases(manifest, snapshot)
+    expected_query_keys = {(case.topic, case.language) for case in cases}
+    if set(topic_queries) != expected_query_keys:
+        raise ValueError(
+            "topic query input must exactly cover DEV topic-language combinations"
+        )
+    if dry_run:
+        return {
+            "case_count": len(cases),
+            "command": "stage2-calibration.freeze-dev-scores",
+            "dev_manifest_hash": manifest.dev_hash(),
+            "gold_manifest_hash": manifest.hash(),
+            "output": str(output_path),
+            "stage2_config_hash": profile.base_runtime_config_hash,
+            "status": "validated",
+            "topic_query_count": len(topic_queries),
+            "written": False,
+        }
+
+    values = environment if environment is not None else os.environ
+    api_key = values.get(profile.api_key_env) if profile.api_key_env else None
+    if profile.api_key_env and not api_key:
+        raise ValueError(
+            f"DEV scoring requires environment variable {profile.api_key_env}"
+        )
+    local_transport = transport or UrlLibOmlxTransport(
+        profile.omlx_base_url,
+        api_key=api_key,
+    )
+    artifact = Stage2DevRawScoreRunner(
+        profile,
+        local_transport,
+        model_lock_hashes,
+        topic_queries,
+    ).run(manifest, snapshot, output_path=output_path)
+    return {
+        "artifact_hash": artifact.hash(),
+        "case_count": len(cases),
+        "command": "stage2-calibration.freeze-dev-scores",
+        "dev_manifest_hash": artifact.dev_manifest_hash,
+        "gold_manifest_hash": artifact.gold_manifest_hash,
+        "output": str(output_path),
+        "output_sha256": sha256(output_path.read_bytes()).hexdigest(),
+        "stage2_config_hash": artifact.stage2_config_hash,
+        "status": "complete",
+        "topic_query_count": len(artifact.topic_queries),
+        "written": True,
+    }
+
+
+def build_stage2_candidate(
+    *,
+    manifest_path: Path,
+    private_labels_path: Path,
+    raw_scores_path: Path,
+    runtime_path: Path,
+    reranker_lock_path: Path,
+    adjudicator_lock_path: Path,
+    candidate_id: str,
+    output_dir: Path,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Build the DEV-calibrated schema-v2 candidate, without opening hidden labels."""
+
+    if os.path.lexists(output_dir):
+        raise FileExistsError(f"Stage 2 candidate output already exists: {output_dir}")
+    manifest = load_gold_manifest(manifest_path)
+    private_labels = load_private_gold_labels(
+        private_labels_path,
+        manifest=manifest,
+    )
+    raw_scores = load_frozen_dev_raw_scores(raw_scores_path)
+    runtime = _object(runtime_path)
+
+    if dry_run:
+        with TemporaryDirectory(prefix="paper-agent-stage2-candidate-") as directory:
+            result = build_stage2_candidate_bundle(
+                manifest=manifest,
+                private_labels=private_labels,
+                raw_scores=raw_scores,
+                runtime=runtime,
+                reranker_lock_path=reranker_lock_path,
+                adjudicator_lock_path=adjudicator_lock_path,
+                candidate_id=candidate_id,
+                output_dir=Path(directory) / "candidate",
+            )
+    else:
+        result = build_stage2_candidate_bundle(
+            manifest=manifest,
+            private_labels=private_labels,
+            raw_scores=raw_scores,
+            runtime=runtime,
+            reranker_lock_path=reranker_lock_path,
+            adjudicator_lock_path=adjudicator_lock_path,
+            candidate_id=candidate_id,
+            output_dir=output_dir,
+        )
+    return {
+        "candidate_id": result.release.profile_name,
+        "candidate_path": str(output_dir / "stage2-candidate-v2.json"),
+        "command": "stage2-calibration.build-candidate",
+        "dev_label_hash": result.dev_label_hash,
+        "gold_manifest_hash": manifest.hash(),
+        "raw_score_hash": result.raw_score_hash,
+        "release_hash": result.release.release_hash,
+        "selections": {
+            path.value: dict(result.selections[path])
+            for path in sorted(result.selections, key=str)
+        },
+        "stage2_config_hash": result.release.profile.base_runtime_config_hash,
+        "status": "validated" if dry_run else "complete",
+        "written": not dry_run,
+    }
 
 
 def run_structured_replay(
@@ -369,6 +527,67 @@ def _object(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected a JSON object: {path}")
     return value
+
+
+def _stage2_input_profile(
+    runtime: Mapping[str, Any],
+    reranker_lock_path: Path,
+    adjudicator_lock_path: Path,
+) -> tuple[Stage2Profile, Mapping[CalibrationPath, str]]:
+    reranker_bytes = reranker_lock_path.read_bytes()
+    adjudicator_bytes = adjudicator_lock_path.read_bytes()
+    reranker_document = json.loads(reranker_bytes)
+    adjudicator_document = json.loads(adjudicator_bytes)
+    if not isinstance(reranker_document, dict) or not isinstance(
+        adjudicator_document, dict
+    ):
+        raise ValueError("Stage 2 model locks must be JSON objects")
+    reranker_hash = sha256(reranker_bytes).hexdigest()
+    adjudicator_hash = sha256(adjudicator_bytes).hexdigest()
+    profile = stage2_base_profile(
+        runtime,
+        ModelLock(**reranker_document),
+        ModelLock(**adjudicator_document),
+        reranker_lock_hash=reranker_hash,
+        adjudicator_lock_hash=adjudicator_hash,
+    )
+    return profile, {
+        CalibrationPath.RERANKER: reranker_hash,
+        CalibrationPath.QWEN: adjudicator_hash,
+    }
+
+
+def _topic_queries(document: Mapping[str, Any]) -> dict[tuple[str, str], str]:
+    topics = document.get("topics")
+    if not isinstance(topics, list) or not topics:
+        raise ValueError("topic query input requires a non-empty topics array")
+    result: dict[tuple[str, str], str] = {}
+    for topic in topics:
+        if not isinstance(topic, dict):
+            raise ValueError("topic query entries must be objects")
+        topic_id = topic.get("id")
+        queries = topic.get("queries")
+        if not isinstance(topic_id, str) or not topic_id or not isinstance(
+            queries, list
+        ):
+            raise ValueError("topic query entry requires id and queries")
+        for query in queries:
+            if not isinstance(query, dict):
+                raise ValueError("topic query variants must be objects")
+            language = query.get("language")
+            text = query.get("query")
+            if (
+                not isinstance(language, str)
+                or not language
+                or not isinstance(text, str)
+                or not text.strip()
+            ):
+                raise ValueError("topic query variants require language and query")
+            key = topic_id, language
+            if key in result:
+                raise ValueError("topic query input contains a duplicate topic-language")
+            result[key] = text
+    return result
 
 
 def _objects(path: Path) -> tuple[dict[str, Any], ...]:
