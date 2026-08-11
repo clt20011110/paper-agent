@@ -50,6 +50,7 @@ class CrossrefTransport(Protocol):
 @dataclass(frozen=True, slots=True)
 class Capture:
     topic: str
+    topic_language: str
     query_language: str
     query: str
     parameters: Mapping[str, Any]
@@ -137,7 +138,7 @@ def _family_by_doi(relations: Mapping[str, set[str]]) -> Mapping[str, str]:
     }
 
 
-def _query_spec(document: object) -> tuple[str, int, str, str, str, tuple[tuple[str, str, str, int], ...]]:
+def _query_spec(document: object) -> tuple[str, int, str, str, str, tuple[tuple[str, str, str, str, int], ...]]:
     if not isinstance(document, dict) or set(document) != {
         "schema_version", "provider", "sampling_policy", "scope", "topics"
     }:
@@ -155,13 +156,14 @@ def _query_spec(document: object) -> tuple[str, int, str, str, str, tuple[tuple[
         raise ValueError("query spec must declare a Crossref work type")
     if not isinstance(topics, list) or not 6 <= len(topics) <= 8:
         raise ValueError("query spec must contain six to eight bilingual topics")
-    queries: list[tuple[str, str, str, int]] = []
+    queries: list[tuple[str, str, str, str, int]] = []
     for topic in topics:
         if (
             not isinstance(topic, dict)
-            or set(topic) != {"id", "queries"}
+            or set(topic) != {"id", "language", "queries"}
             or not isinstance(topic["id"], str)
             or not _TOPIC_ID.fullmatch(topic["id"])
+            or topic["language"] not in {"en", "zh"}
         ):
             raise ValueError("query spec topic is invalid")
         rows = topic["queries"]
@@ -183,8 +185,8 @@ def _query_spec(document: object) -> tuple[str, int, str, str, str, tuple[tuple[
             ):
                 raise ValueError("query spec must use unique EN/ZH queries with positive rows")
             seen.add(language)
-            queries.append((topic["id"], language, query, count))
-    if len({topic for topic, _, _, _ in queries}) != len(topics):
+            queries.append((topic["id"], topic["language"], language, query, count))
+    if len({topic for topic, _, _, _, _ in queries}) != len(topics):
         raise ValueError("query spec topic ids must be unique")
     return (
         str(policy["version"]),
@@ -203,7 +205,7 @@ def freeze_snapshot(document: object, transport: CrossrefTransport) -> FrozenSna
     captures: list[Capture] = []
     by_topic: dict[str, dict[str, dict[str, Any]]] = {}
     relations: dict[str, set[str]] = {}
-    for topic, query_language, query, rows in queries:
+    for topic, topic_language, query_language, query, rows in queries:
         parameters = {
             "query.title": query,
             "page_size": rows,
@@ -215,7 +217,7 @@ def freeze_snapshot(document: object, transport: CrossrefTransport) -> FrozenSna
         body = transport.last_response_body
         if not isinstance(body, bytes):
             raise ValueError("Crossref transport did not retain raw response bytes")
-        captures.append(Capture(topic, query_language, query, parameters, body))
+        captures.append(Capture(topic, topic_language, query_language, query, parameters, body))
         raw_response_sha256 = sha256(body).hexdigest()
         topic_rows = by_topic.setdefault(topic, {})
         for item in _crossref_items(payload):
@@ -231,6 +233,7 @@ def freeze_snapshot(document: object, transport: CrossrefTransport) -> FrozenSna
                 doi,
                 {
                     "topic": topic,
+                    "topic_language": topic_language,
                     "doi": doi,
                     "title": title,
                     "abstract": abstract,
@@ -250,6 +253,7 @@ def freeze_snapshot(document: object, transport: CrossrefTransport) -> FrozenSna
             abstract=row["abstract"],
             metadata={
                 "topic": row["topic"],
+                "topic_language": row["topic_language"],
                 "query": row["query"],
                 "query_language": row["query_language"],
                 "title_language": row["title_language"],
@@ -264,7 +268,7 @@ def freeze_snapshot(document: object, transport: CrossrefTransport) -> FrozenSna
             sampling_probability=1.0,
             abstract_incomplete=row["abstract"] is None,
             natural_crawler_population=True,
-            cross_language_match=row["query_language"] != row["title_language"],
+            cross_language_match=row["topic_language"] != row["title_language"],
         )
         for topic in sorted(by_topic)
         for row in by_topic[topic].values()
@@ -311,6 +315,7 @@ def _capture_manifest(frozen: FrozenSnapshot) -> dict[str, Any]:
         "responses": [
             {
                 "topic": capture.topic,
+                "topic_language": capture.topic_language,
                 "query_language": capture.query_language,
                 "query": capture.query,
                 "parameters": dict(capture.parameters),

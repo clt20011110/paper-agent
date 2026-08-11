@@ -87,6 +87,7 @@ def test_freezes_deduplicated_valid_crossref_frame_and_raw_captures(tmp_path: Pa
     assert related["10.1000/0-1"].paper_family == related["10.1000/0-2"].paper_family
     sampled = next(paper for paper in first.snapshot.papers if paper.metadata["doi"] == "10.1000/0-1")
     assert sampled.metadata["topic"] == "molecular_generation"
+    assert sampled.metadata["topic_language"] == "en"
     assert sampled.metadata["query_language"] == "en"
     assert sampled.metadata["raw_response_sha256"] == freeze.sha256(first.captures[0].body).hexdigest()
     assert sampled.metadata["crossref_record"]["DOI"] == "10.1000/0-1"

@@ -13,6 +13,7 @@
   "topics": [
     {
       "id": "molecular_generation",
+      "language": "en",
       "queries": [
         {"language": "en", "query": "molecular generation", "rows": 120},
         {"language": "zh", "query": "分子生成 机器学习", "rows": 40}
@@ -20,6 +21,7 @@
     },
     {
       "id": "protein_design_language_model",
+      "language": "en",
       "queries": [
         {"language": "en", "query": "protein design language model", "rows": 120},
         {"language": "zh", "query": "蛋白质设计 语言模型", "rows": 40}
@@ -27,6 +29,7 @@
     },
     {
       "id": "materials_discovery_generative_model",
+      "language": "en",
       "queries": [
         {"language": "en", "query": "materials discovery generative model", "rows": 120},
         {"language": "zh", "query": "材料发现 生成模型", "rows": 40}
@@ -34,6 +37,7 @@
     },
     {
       "id": "drug_discovery_deep_learning",
+      "language": "en",
       "queries": [
         {"language": "en", "query": "drug discovery deep learning", "rows": 120},
         {"language": "zh", "query": "药物发现 深度学习", "rows": 40}
@@ -41,6 +45,7 @@
     },
     {
       "id": "llm_scientific_discovery",
+      "language": "en",
       "queries": [
         {"language": "en", "query": "large language model scientific discovery", "rows": 120},
         {"language": "zh", "query": "大语言模型 科学发现", "rows": 40}
@@ -48,6 +53,7 @@
     },
     {
       "id": "diffusion_molecular_design",
+      "language": "en",
       "queries": [
         {"language": "en", "query": "diffusion molecular design", "rows": 120},
         {"language": "zh", "query": "扩散模型 分子设计", "rows": 40}
