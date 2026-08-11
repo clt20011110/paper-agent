@@ -208,14 +208,15 @@ download:
 analysis: {profile: stage4_analysis_luna, provider: codex_exec, model: gpt-5.6-luna, reasoning_effort: medium, sandbox: read_only, network: false, output_schema: paper-analysis.schema.json, workers: 1, allow_abstract_only: true, remote_model_processing: {policy_matrix: policies/artifact-processing-v1.yaml, processing_grant_id: null}}
 summary:
   enabled: false
+  execution_strategy: reduce_tree
   profile: stage4b_summary_sol
   provider: codex_exec
   model: gpt-5.6-sol
   reasoning_effort: high
   sandbox: read_only
   network: false
-  schemas: {planning_assist: a, section_reduce: a, cross_section_reduce: a, final_reduce: a, quality_audit: a, repair: a}
-  prompts: {planning_assist: a, section_reduce: a, cross_section_reduce: a, final_reduce: a, quality_audit: a, repair: a}
+  schemas: {planning_assist: a, section_reduce: a, cross_section_reduce: a, final_reduce: a, quality_audit: a, repair: a, one_shot_report: a}
+  prompts: {planning_assist: a, section_reduce: a, cross_section_reduce: a, final_reduce: a, quality_audit: a, repair: a, one_shot_report: a}
   format: markdown
   language: zh-CN
   report_plan: {input_path: null, content_hash: null, required_for_unattended: true, classification_axes: [x]}

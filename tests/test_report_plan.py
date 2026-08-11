@@ -245,7 +245,9 @@ def test_compiled_report_plan_binds_frozen_inputs_prompts_and_required_contract(
         "final_reduce",
         "quality_audit",
         "repair",
+        "one_shot_report",
     }
+    assert plan["execution_strategy"] == "reduce_tree"
     assert set(REPORT_SECTION_IDS).issubset(section["id"] for section in plan["sections"])
     assert audit["source_audit_hash"] == corpus["search_audit_source_hash"]
 
@@ -367,6 +369,67 @@ def test_plan_rejects_silent_corpus_omission_and_section_contract_drift() -> Non
     draft["sections"] = draft["sections"][:-1]
     with pytest.raises(ReportPlanError, match="missing required report sections"):
         compile_report_plan(draft, corpus_snapshot=corpus, search_audit_pack=audit, created_at="2026-08-10T00:02:00Z")
+
+
+def test_one_shot_plan_freezes_exactly_one_sol_call_without_retry_or_audit() -> None:
+    corpus, audit = _inputs()
+    draft = _draft()
+    draft["execution_strategy"] = "one_shot"
+    for section in draft["sections"]:
+        section["subquestion_ids"] = ["rq1"]
+    draft["budget"] = {
+        "max_sol_calls": 1,
+        "max_input_tokens": 100_000,
+        "max_retries": 0,
+        "audit_calls": 0,
+        "repair_calls": 0,
+    }
+
+    compiled = compile_report_plan(
+        draft,
+        corpus_snapshot=corpus,
+        search_audit_pack=audit,
+        created_at="2026-08-10T00:02:00Z",
+    )
+
+    assert compiled["execution_strategy"] == "one_shot"
+    assert compiled["budget"] == draft["budget"]
+
+    for field, value in (
+        ("max_sol_calls", 2),
+        ("max_retries", 1),
+        ("audit_calls", 1),
+        ("repair_calls", 1),
+    ):
+        invalid = deepcopy(draft)
+        invalid["budget"][field] = value
+        with pytest.raises(ReportPlanError, match="one_shot"):
+            compile_report_plan(
+                invalid,
+                corpus_snapshot=corpus,
+                search_audit_pack=audit,
+                created_at="2026-08-10T00:02:00Z",
+            )
+
+    missing_section_question = deepcopy(draft)
+    missing_section_question["sections"][0]["subquestion_ids"] = []
+    with pytest.raises(ReportPlanError, match="every section"):
+        compile_report_plan(
+            missing_section_question,
+            corpus_snapshot=corpus,
+            search_audit_pack=audit,
+            created_at="2026-08-10T00:02:00Z",
+        )
+
+    english_objective = deepcopy(draft)
+    english_objective["objective"] = "English-only objective"
+    with pytest.raises(ReportPlanError, match="Chinese objective"):
+        compile_report_plan(
+            english_objective,
+            corpus_snapshot=corpus,
+            search_audit_pack=audit,
+            created_at="2026-08-10T00:02:00Z",
+        )
 
 
 @pytest.mark.parametrize(

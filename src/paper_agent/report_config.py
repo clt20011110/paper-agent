@@ -133,20 +133,22 @@ class ReportResources:
             required = value.get("required")
             if (
                 isinstance(properties, dict)
-                and "workflow_handoff" in properties
                 and isinstance(required, list)
-                and "workflow_handoff" not in required
             ):
-                # Persisted v1 plans may predate workflow handoffs, while every
-                # newly generated Codex structured output must remain strict.
+                # Persisted plans may predate these fields, while every newly
+                # compiled structured plan must remain a strict Codex schema.
                 value = {
                     **value,
-                    "required": [
-                        name
-                        for name in properties
-                        if name in required or name == "workflow_handoff"
-                    ],
+                    "required": list(properties),
                 }
+                prompt_hashes = value["properties"].get("prompt_hashes")
+                if isinstance(prompt_hashes, dict) and isinstance(
+                    prompt_hashes.get("properties"), dict
+                ):
+                    value["properties"]["prompt_hashes"] = {
+                        **prompt_hashes,
+                        "required": list(prompt_hashes["properties"]),
+                    }
         return value
 
     def prompt(self, call_kind: str) -> str:
@@ -227,6 +229,8 @@ class ReportRuntimeConfig:
     report_plan_hash: str | None = None
     require_plan_for_unattended: bool = True
     rubric_path: Path | None = None
+    profile: str = "stage4b_summary_sol"
+    execution_strategy: str = "reduce_tree"
 
     def __post_init__(self) -> None:
         if not self.require_plan_for_unattended:
@@ -238,6 +242,19 @@ class ReportRuntimeConfig:
         ):
             raise ReportConfigError(
                 "summary report plan hash must be a lowercase SHA-256"
+            )
+        if self.profile not in {"stage4b_summary_sol", "stage4b_oneshot_sol"}:
+            raise ReportConfigError("summary profile is unsupported")
+        if self.execution_strategy not in {"reduce_tree", "one_shot"}:
+            raise ReportConfigError("summary execution strategy is unsupported")
+        expected_profile = (
+            "stage4b_oneshot_sol"
+            if self.execution_strategy == "one_shot"
+            else "stage4b_summary_sol"
+        )
+        if self.profile != expected_profile:
+            raise ReportConfigError(
+                f"{self.execution_strategy} summary requires profile {expected_profile}"
             )
 
     @classmethod
@@ -281,6 +298,8 @@ class ReportRuntimeConfig:
             ),
             require_plan_for_unattended=bool(plan.get("required_for_unattended", True)),
             rubric_path=rubric_path,
+            profile=str(summary["profile"]),
+            execution_strategy=str(summary["execution_strategy"]),
         )
         if runtime.enabled:
             runtime.resources.validate_files()
@@ -299,6 +318,11 @@ class ReportRuntimeConfig:
             )
         if not self.enabled:
             return
+        strategy = str(plan.get("execution_strategy", "reduce_tree"))
+        if self.execution_strategy != strategy:
+            raise ReportConfigError(
+                f"summary configuration strategy {self.execution_strategy} does not match {strategy} report plan"
+            )
         self.resources.validate_files()
         if self.rubric_path is not None and not self.rubric_path.is_file():
             raise ReportConfigError(f"summary audit rubric is unavailable: {self.rubric_path}")

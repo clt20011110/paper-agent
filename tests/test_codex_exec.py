@@ -89,7 +89,10 @@ def test_frozen_profiles_are_exact_and_cannot_be_replaced_by_request_values() ->
         ("stage3_authorized_luna", "gpt-5.6-luna", "low"),
         ("stage4_analysis_luna", "gpt-5.6-luna", "medium"),
         ("stage4b_summary_sol", "gpt-5.6-sol", "high"),
+        ("stage4b_oneshot_sol", "gpt-5.6-sol", "high"),
     ]
+    assert FROZEN_PROFILES["stage4b_oneshot_sol"].max_retries == 0
+    assert FROZEN_PROFILES["stage4b_oneshot_sol"].timeout_seconds == 900
     with pytest.raises(TypeError):
         FROZEN_PROFILES["stage4_analysis_luna"] = FROZEN_PROFILES["stage3_authorized_luna"]  # type: ignore[index]
     with pytest.raises(ValueError, match="frozen output schema"):
@@ -274,6 +277,42 @@ def test_stage4b_requires_its_call_kind_schema_and_hashes() -> None:
             profile="stage4b_summary_sol", call_kind="quality_audit",
             schema_name=CALL_KIND_SCHEMAS["quality_audit"], prompt_name="report-repair.md",
         )
+
+
+def test_one_shot_stage4b_accepts_only_one_shot_report_and_never_retries() -> None:
+    request = _request(
+        profile="stage4b_oneshot_sol",
+        call_kind="one_shot_report",
+        schema_name=CALL_KIND_SCHEMAS["one_shot_report"],
+        prompt_name=CALL_KIND_PROMPTS["one_shot_report"],
+    )
+    runner = FakeRunner([0])
+
+    result = CodexExec(runner=runner).invoke(request)
+
+    assert runner.calls[0]["argv"][3] == "gpt-5.6-sol"
+    assert result.metadata.call_kind == "one_shot_report"
+    assert result.metadata.attempts == 1
+
+    with pytest.raises(ValueError, match="one_shot_report"):
+        _request(
+            profile="stage4b_oneshot_sol",
+            call_kind="quality_audit",
+            schema_name=CALL_KIND_SCHEMAS["quality_audit"],
+            prompt_name=CALL_KIND_PROMPTS["quality_audit"],
+        )
+    with pytest.raises(ValueError, match="one_shot_report requires"):
+        _request(
+            profile="stage4b_summary_sol",
+            call_kind="one_shot_report",
+            schema_name=CALL_KIND_SCHEMAS["one_shot_report"],
+            prompt_name=CALL_KIND_PROMPTS["one_shot_report"],
+        )
+
+    failed_runner = FakeRunner([2])
+    with pytest.raises(CodexProcessError):
+        CodexExec(runner=failed_runner).invoke(request)
+    assert len(failed_runner.calls) == 1
 
 
 def test_stage4b_invocation_uses_explicit_configured_resource_paths(tmp_path: Path) -> None:

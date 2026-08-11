@@ -1115,6 +1115,21 @@ def _report_dispatch_is_live(
     connection: sqlite3.Connection, report_run_id: str, now: str
 ) -> bool:
     """Return whether any fenced Stage 4b model dispatch still owns a live lease."""
+    one_shot_table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'report_one_shot_runs'"
+    ).fetchone()
+    if one_shot_table is not None:
+        # A one-shot Sol call deliberately has no retry lease: while its only
+        # dispatch is unresolved, automatic resume must never claim it again
+        # or mark it failed underneath the process that owns the invocation.
+        one_shot = connection.execute(
+            """SELECT 1 FROM report_one_shot_runs
+               WHERE report_run_id = ? AND status = 'running'
+                 AND dispatch_count = 1 AND dispatch_expires_at > ? LIMIT 1""",
+            (report_run_id, now),
+        ).fetchone()
+        if one_shot is not None:
+            return True
     row = connection.execute(
         """SELECT 1 FROM (
                SELECT report_run_id, status, lease_expires_at

@@ -441,6 +441,7 @@ def _analysis(legacy: dict[str, Any]) -> dict[str, Any]:
 def _summary(legacy: dict[str, Any]) -> dict[str, Any]:
     return {
         "enabled": bool(legacy.get("generate_summary", True)),
+        "execution_strategy": "reduce_tree",
         "profile": "stage4b_summary_sol",
         "provider": "codex_exec",
         "model": "gpt-5.6-sol",
@@ -454,6 +455,7 @@ def _summary(legacy: dict[str, Any]) -> dict[str, Any]:
             "final_reduce": "./schemas/report-document.schema.json",
             "quality_audit": "./schemas/report-audit.schema.json",
             "repair": "./schemas/report-repair.schema.json",
+            "one_shot_report": "./schemas/one-shot-report.schema.json",
         },
         "prompts": {
             "planning_assist": "./prompts/report-plan.md",
@@ -462,6 +464,7 @@ def _summary(legacy: dict[str, Any]) -> dict[str, Any]:
             "final_reduce": "./prompts/final-report.md",
             "quality_audit": "./prompts/report-audit.md",
             "repair": "./prompts/report-repair.md",
+            "one_shot_report": "./prompts/one-shot-report.md",
         },
         "format": "markdown",
         "language": "zh-CN",

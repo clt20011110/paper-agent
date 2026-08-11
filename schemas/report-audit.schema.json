@@ -16,7 +16,7 @@
     "findings"
   ],
   "properties": {
-    "audit_pass": {"type": "string", "enum": ["A", "C"]},
+    "audit_pass": {"type": "string", "enum": ["A", "C", "deterministic"]},
     "report_document_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "report_artifact_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "report_plan_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},

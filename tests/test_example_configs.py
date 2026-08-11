@@ -31,8 +31,13 @@ def test_v2_example_configs_validate_and_use_frozen_model_routes() -> None:
         assert config["download"]["metadata_lookup"]["timeout_seconds"] > 0
         assert config["analysis"]["profile"] == "stage4_analysis_luna"
         assert config["analysis"]["model"] == "gpt-5.6-luna"
-        assert config["summary"]["profile"] == "stage4b_summary_sol"
+        assert config["summary"]["execution_strategy"] == "one_shot"
+        assert config["summary"]["profile"] == "stage4b_oneshot_sol"
         assert config["summary"]["model"] == "gpt-5.6-sol"
+        assert config["summary"]["semantic_chunking"] is False
+        assert config["summary"]["final_audit"]["independent_sol_session"] is False
+        assert config["summary"]["final_audit"]["max_repair_calls"] == 0
+        assert config["summary"]["final_audit"]["reverify_and_reaudit_after_repair"] is False
 
 
 def test_example_configs_are_templates_without_credentials_or_retired_runtime_names() -> None:

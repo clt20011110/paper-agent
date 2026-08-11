@@ -186,7 +186,8 @@ analysis:
     require_artifact_hash_scope: true
 summary:
   enabled: true
-  profile: stage4b_summary_sol
+  execution_strategy: one_shot
+  profile: stage4b_oneshot_sol
   provider: codex_exec
   model: gpt-5.6-sol
   reasoning_effort: high
@@ -199,6 +200,7 @@ summary:
     final_reduce: ./schemas/report-document.schema.json
     quality_audit: ./schemas/report-audit.schema.json
     repair: ./schemas/report-repair.schema.json
+    one_shot_report: ./schemas/one-shot-report.schema.json
   prompts:
     planning_assist: ./prompts/report-plan.md
     section_reduce: ./prompts/section-synthesis.md
@@ -206,6 +208,7 @@ summary:
     final_reduce: ./prompts/final-report.md
     quality_audit: ./prompts/report-audit.md
     repair: ./prompts/report-repair.md
+    one_shot_report: ./prompts/one-shot-report.md
   format: markdown
   language: zh-CN
   report_plan:
@@ -216,7 +219,7 @@ summary:
   require_search_audit: true
   require_complete_coverage: true
   require_claim_evidence: true
-  semantic_chunking: true
+  semantic_chunking: false
   remote_model_processing:
     policy_matrix: ./policies/artifact-processing-v1.yaml
     processing_grant_id: null
@@ -224,12 +227,12 @@ summary:
   citations: {marker: stable_paper_id, style: ieee, bibliography_from_canonical_metadata: true}
   final_audit:
     deterministic: true
-    independent_sol_session: true
+    independent_sol_session: false
     rubric: ./policies/report-audit-rubric-v1.yaml
     max_blocker_findings: 0
     max_major_findings: 0
-    max_repair_calls: 1
-    reverify_and_reaudit_after_repair: true
+    max_repair_calls: 0
+    reverify_and_reaudit_after_repair: false
   immutable_run_directories: true
   update_latest_after_pass: true
   emit_incremental_diff: true

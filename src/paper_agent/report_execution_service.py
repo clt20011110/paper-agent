@@ -19,6 +19,12 @@ from .report_audit import (
     SolInvoker as AuditInvoker,
 )
 from .report_config import ReportRuntimeConfig
+from .report_direct import (
+    DirectReportBudgetError,
+    DirectReportCoordinator,
+    DirectReportInvoker,
+    DirectReportResult,
+)
 from .report_plan import (
     ReportPlanBundle,
     ReportPlanDriftError,
@@ -61,6 +67,7 @@ class ReportExecutionResult:
     dry_run: bool
     reduce: ReportReduceResult | None = None
     audit: ReportAuditResult | None = None
+    direct: DirectReportResult | None = None
     skipped: bool = False
     codex_budget: ReportCodexBudget | None = None
     alarm_codes: tuple[str, ...] = ()
@@ -79,6 +86,7 @@ class ReportExecutionService:
         *,
         reduce_invoker_factory: Callable[[], ReduceInvoker] | None = None,
         audit_invoker_factory: Callable[[], AuditInvoker] | None = None,
+        direct_invoker_factory: Callable[[], DirectReportInvoker] | None = None,
         execution_mode: str = "attended",
         runtime_config: ReportRuntimeConfig | None = None,
     ) -> None:
@@ -88,6 +96,7 @@ class ReportExecutionService:
         self.report_store = report_store
         self.reduce_invoker_factory = reduce_invoker_factory
         self.audit_invoker_factory = audit_invoker_factory
+        self.direct_invoker_factory = direct_invoker_factory
         self.execution_mode = execution_mode
         self.runtime_config = runtime_config or ReportRuntimeConfig.defaults()
         self.last_reduce: SolReduceCoordinator | None = None
@@ -133,6 +142,67 @@ class ReportExecutionService:
                 runtime_artifact_root=self.artifact_store.root,
             )
         analyses, artifacts = self._analyses(bundle)
+        if self.runtime_config.execution_strategy == "one_shot":
+            direct_options: dict[str, Any] = {
+                "resources": self.runtime_config.resources,
+                "execution_mode": self.execution_mode,
+            }
+            if self.direct_invoker_factory is not None:
+                direct_options["invoker_factory"] = self.direct_invoker_factory
+            coordinator = DirectReportCoordinator(
+                self.database,
+                self.artifact_store,
+                self.gate,
+                self.report_store,
+                analyses,
+                artifacts,
+                self._sections(bundle.plan),
+                self._memberships(bundle.plan),
+                **direct_options,
+            )
+            if dry_run:
+                try:
+                    coordinator.preflight(
+                        report_run_id, bundle, previous=previous
+                    )
+                except DirectReportBudgetError as error:
+                    return self._result(
+                        report_run_id,
+                        "incomplete",
+                        True,
+                        codex_budget=self._codex_budget(report_run_id, bundle.plan),
+                        alarm_codes=(CODEX_BUDGET_ALARM,),
+                        error={
+                            "type": type(error).__name__,
+                            "message": str(error),
+                            "event_code": CODEX_BUDGET_ALARM,
+                        },
+                    )
+                return self._result(
+                    report_run_id,
+                    "validated",
+                    True,
+                    codex_budget=self._codex_budget(report_run_id, bundle.plan),
+                )
+            direct = coordinator.run(
+                report_run_id,
+                pipeline_run_id,
+                bundle,
+                processing_grants=processing_grants or {},
+                previous=previous,
+            )
+            return self._result(
+                report_run_id,
+                direct.status,
+                False,
+                direct=direct,
+                codex_budget=self._codex_budget(report_run_id, bundle.plan),
+                error=(
+                    {"type": "DirectReportError", "message": direct.error}
+                    if direct.error is not None
+                    else None
+                ),
+            )
         planner = ReportPlanner(
             bundle.plan, analyses,
             max_chunk_input_tokens=int(bundle.plan["aggregation"]["max_chunk_input_tokens"]),
@@ -263,6 +333,7 @@ class ReportExecutionService:
         *,
         reduce: ReportReduceResult | None = None,
         audit: ReportAuditResult | None = None,
+        direct: DirectReportResult | None = None,
         skipped: bool = False,
         codex_budget: ReportCodexBudget | None = None,
         alarm_codes: tuple[str, ...] = (),
@@ -274,6 +345,7 @@ class ReportExecutionService:
             dry_run=dry_run,
             reduce=reduce,
             audit=audit,
+            direct=direct,
             skipped=skipped,
             codex_budget=codex_budget,
             alarm_codes=alarm_codes,
@@ -316,8 +388,11 @@ class ReportExecutionService:
                    UNION ALL
                    SELECT budget_calls_reserved, budget_tokens_reserved
                      FROM report_audit_shard_steps WHERE report_run_id = ?
+                   UNION ALL
+                   SELECT budget_calls_reserved, budget_tokens_reserved
+                     FROM report_one_shot_runs WHERE report_run_id = ?
                )""",
-            (report_run_id, report_run_id, report_run_id),
+            (report_run_id, report_run_id, report_run_id, report_run_id),
         ).fetchone()
         budget = plan["budget"]
         return ReportCodexBudget(

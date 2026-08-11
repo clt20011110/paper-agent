@@ -10,6 +10,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 from .approval import ApprovalError, approve, approved_content_hash, require_valid_approval
@@ -56,6 +57,7 @@ EVIDENCE_LEVELS = frozenset({
     "abstract_direct",
     "metadata_only",
 })
+CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 class ReportPlanError(ValueError):
@@ -350,6 +352,7 @@ def compile_report_plan(
         "subquestions",
         "synthesis_question",
         "scope",
+        "execution_strategy",
         "stage4b_config_hash",
         "stage4b_audit_config_hash",
         "aggregation",
@@ -361,6 +364,7 @@ def compile_report_plan(
         "budget",
     )
     source.setdefault("report_language", "zh-CN")
+    source.setdefault("execution_strategy", "reduce_tree")
     missing = [field for field in fields if field not in source]
     if missing:
         raise ReportPlanError(f"ReportPlan draft is missing fields: {missing}")
@@ -592,6 +596,41 @@ class ReportPlanStore:
 def _validate_plan_semantics(plan: Mapping[str, Any], corpus_snapshot: Mapping[str, Any]) -> None:
     if plan.get("report_language") != "zh-CN":
         raise ReportPlanError("ReportPlan report_language must be zh-CN")
+    strategy = plan.get("execution_strategy", "reduce_tree")
+    if strategy not in {"reduce_tree", "one_shot"}:
+        raise ReportPlanError("ReportPlan execution_strategy is unsupported")
+    budget = plan["budget"]
+    if strategy == "one_shot" and (
+        int(budget["max_sol_calls"]) != 1
+        or int(budget["max_retries"]) != 0
+        or int(budget["audit_calls"]) != 0
+        or int(budget["repair_calls"]) != 0
+    ):
+        raise ReportPlanError(
+            "one_shot ReportPlan requires exactly one Sol call and no retries, audits, or repairs"
+        )
+    if strategy == "reduce_tree" and (
+        int(budget["audit_calls"]) != 2 or int(budget["repair_calls"]) != 1
+    ):
+        raise ReportPlanError(
+            "reduce_tree ReportPlan requires audit_calls=2 and repair_calls=1"
+        )
+    if strategy == "one_shot" and any(
+        not section["subquestion_ids"] for section in plan["sections"]
+    ):
+        raise ReportPlanError(
+            "one_shot ReportPlan requires every section to name at least one subquestion"
+        )
+    if strategy == "one_shot" and (
+        CJK_TEXT.search(str(plan.get("objective") or "")) is None
+        or any(
+            CJK_TEXT.search(str(section.get("title") or "")) is None
+            for section in plan["sections"]
+        )
+    ):
+        raise ReportPlanError(
+            "one_shot zh-CN ReportPlan requires a Chinese objective and section titles"
+        )
     subquestions = tuple(str(item["id"]) for item in plan["subquestions"])
     if len(set(subquestions)) != len(subquestions):
         raise ReportPlanError("ReportPlan subquestion IDs must be unique")

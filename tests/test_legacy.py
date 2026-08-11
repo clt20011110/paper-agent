@@ -50,6 +50,7 @@ def test_migrates_legacy_configuration_to_schema_valid_v2(tmp_path: Path) -> Non
     validate(converted, "config-v2.schema.json", SCHEMAS)
     assert converted["analysis"]["model"] == "gpt-5.6-luna"
     assert converted["summary"]["model"] == "gpt-5.6-sol"
+    assert converted["summary"]["execution_strategy"] == "reduce_tree"
     assert converted["analysis"]["workers"] == 7
     assert converted["sources"]["plan_defaults"]["arxiv"]["include_arxiv_candidates"] is True
     assert converted["sources"]["plan_defaults"]["venues"][1] == {

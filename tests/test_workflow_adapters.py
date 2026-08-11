@@ -1493,6 +1493,46 @@ def test_report_live_dispatch_detection_covers_every_stage4b_queue(
         connection.close()
 
 
+def test_report_live_dispatch_detection_covers_one_shot_without_a_retry_lease() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        for name in (
+            "report_reduce_nodes",
+            "report_audit_steps",
+            "report_audit_shard_steps",
+        ):
+            connection.execute(
+                f"""CREATE TABLE {name}(
+                    report_run_id TEXT, status TEXT, lease_expires_at TEXT
+                )"""
+            )
+        connection.execute(
+            """CREATE TABLE report_one_shot_runs(
+                   report_run_id TEXT, status TEXT, dispatch_count INTEGER,
+                   dispatch_expires_at TEXT
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO report_one_shot_runs(
+                   report_run_id, status, dispatch_count, dispatch_expires_at
+               ) VALUES ('workflow-7:step', 'running', 1,
+                         '2099-01-01T00:05:00.000000Z')"""
+        )
+
+        assert _report_dispatch_is_live(
+            connection,
+            "workflow-7:step",
+            "2099-01-01T00:00:00.000000Z",
+        )
+        assert not _report_dispatch_is_live(
+            connection,
+            "workflow-7:step",
+            "2099-01-01T00:10:00.000000Z",
+        )
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize(
     ("live", "expected"),
     ((True, StepObservation.RUNNING), (False, StepObservation.SAFE_TO_RESUME)),

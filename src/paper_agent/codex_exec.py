@@ -55,6 +55,7 @@ ProfileName = Literal[
     "stage3_authorized_luna",
     "stage4_analysis_luna",
     "stage4b_summary_sol",
+    "stage4b_oneshot_sol",
 ]
 
 CallKind = Literal[
@@ -64,6 +65,7 @@ CallKind = Literal[
     "final_reduce",
     "quality_audit",
     "repair",
+    "one_shot_report",
 ]
 
 
@@ -90,10 +92,18 @@ STAGE4_ANALYSIS_LUNA = CodexExecProfile(
 STAGE4B_SUMMARY_SOL = CodexExecProfile(
     "stage4b_summary_sol", "gpt-5.6-sol", "high", "paper-agent-read", False, 300, 1,
 )
+STAGE4B_ONESHOT_SOL = CodexExecProfile(
+    "stage4b_oneshot_sol", "gpt-5.6-sol", "high", "paper-agent-read", False, 900, 0,
+)
 
 FROZEN_PROFILES: Mapping[ProfileName, CodexExecProfile] = MappingProxyType({
     profile.name: profile
-    for profile in (STAGE3_AUTHORIZED_LUNA, STAGE4_ANALYSIS_LUNA, STAGE4B_SUMMARY_SOL)
+    for profile in (
+        STAGE3_AUTHORIZED_LUNA,
+        STAGE4_ANALYSIS_LUNA,
+        STAGE4B_SUMMARY_SOL,
+        STAGE4B_ONESHOT_SOL,
+    )
 })
 
 CALL_KIND_SCHEMAS: Mapping[CallKind, str] = MappingProxyType({
@@ -103,12 +113,14 @@ CALL_KIND_SCHEMAS: Mapping[CallKind, str] = MappingProxyType({
     "final_reduce": "report-document.schema.json",
     "quality_audit": "report-audit.schema.json",
     "repair": "report-repair.schema.json",
+    "one_shot_report": "one-shot-report.schema.json",
 })
 
 PROFILE_PROMPTS: Mapping[ProfileName, str | None] = MappingProxyType({
     "stage3_authorized_luna": "authorized-browser.md",
     "stage4_analysis_luna": "paper-analysis.md",
     "stage4b_summary_sol": None,
+    "stage4b_oneshot_sol": None,
 })
 
 CALL_KIND_PROMPTS: Mapping[CallKind, str] = MappingProxyType({
@@ -118,7 +130,10 @@ CALL_KIND_PROMPTS: Mapping[CallKind, str] = MappingProxyType({
     "final_reduce": "final-report.md",
     "quality_audit": "report-audit.md",
     "repair": "report-repair.md",
+    "one_shot_report": "one-shot-report.md",
 })
+
+STAGE4B_PROFILES = frozenset({"stage4b_summary_sol", "stage4b_oneshot_sol"})
 
 # None of these names carry credentials.  In particular, do not inherit every
 # parent variable: API keys, browser tokens and prompt-bearing tracing settings
@@ -163,7 +178,7 @@ def _validate_strict_schema(schema: Mapping[str, Any]) -> None:
             return
         if not isinstance(value, Mapping):
             return
-        if "properties" in value:
+        if value.get("type") == "object" and "properties" in value:
             properties = set(value["properties"])
             required = set(value.get("required", ()))
             if value.get("additionalProperties") is not False or required != properties:
@@ -301,9 +316,23 @@ class CodexExecRequest:
         if len(self.input_hash) != 64 or any(character not in "0123456789abcdef" for character in self.input_hash):
             raise ValueError("input_hash must be a lowercase SHA-256 digest")
         Draft202012Validator.check_schema(dict(self.output_schema))
-        if self.profile == "stage4b_summary_sol":
+        if self.profile in STAGE4B_PROFILES:
             if self.call_kind is None:
                 raise ValueError("Stage 4b calls require call_kind")
+            if (
+                self.profile == "stage4b_oneshot_sol"
+                and self.call_kind != "one_shot_report"
+            ):
+                raise ValueError(
+                    "stage4b_oneshot_sol requires the one_shot_report call kind"
+                )
+            if (
+                self.profile == "stage4b_summary_sol"
+                and self.call_kind == "one_shot_report"
+            ):
+                raise ValueError(
+                    "one_shot_report requires the stage4b_oneshot_sol profile"
+                )
             if self.schema_name != CALL_KIND_SCHEMAS[self.call_kind]:
                 raise ValueError("Stage 4b call_kind requires its frozen output schema")
             if self.prompt_name != CALL_KIND_PROMPTS[self.call_kind]:
@@ -316,10 +345,10 @@ class CodexExecRequest:
             raise ValueError("profile requires its frozen prompt")
         if (self.schema_path is None) != (self.prompt_path is None):
             raise ValueError("custom schema and prompt paths must be supplied together")
-        if self.schema_path is not None and self.profile != "stage4b_summary_sol":
+        if self.schema_path is not None and self.profile not in STAGE4B_PROFILES:
             raise ValueError("only Stage 4b calls may use configured resource paths")
         if self.schema_resource_paths is not None:
-            if self.profile != "stage4b_summary_sol" or self.schema_path is None:
+            if self.profile not in STAGE4B_PROFILES or self.schema_path is None:
                 raise ValueError(
                     "only configured Stage 4b calls may map schema resources"
                 )

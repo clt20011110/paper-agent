@@ -362,11 +362,11 @@ def test_sharded_sol_audit_is_independent_persisted_and_free_on_resume(
     original_draft = test_report_reduce._draft
 
     def roomy_draft(_limit: int) -> dict:
-        value = original_draft(200_000_000)
+        value = original_draft(250_000_000)
         value["budget"] = {
             **value["budget"],
-            "max_sol_calls": 2_100,
-            "max_input_tokens": 200_000_000,
+            "max_sol_calls": 2_500,
+            "max_input_tokens": 250_000_000,
         }
         value["stage4b_audit_config_hash"] = _fixture_audit_config_hash()
         return value
@@ -423,11 +423,11 @@ def test_sharded_audit_invocation_cannot_be_reused_by_repair(
     original_draft = test_report_reduce._draft
 
     def roomy_draft(_limit: int) -> dict:
-        value = original_draft(200_000_000)
+        value = original_draft(250_000_000)
         value["budget"] = {
             **value["budget"],
-            "max_sol_calls": 2_100,
-            "max_input_tokens": 200_000_000,
+            "max_sol_calls": 2_500,
+            "max_input_tokens": 250_000_000,
         }
         value["stage4b_audit_config_hash"] = _fixture_audit_config_hash()
         return value
@@ -506,11 +506,11 @@ def test_uncertain_shard_dispatch_is_terminal_and_never_repaid(
     original_draft = test_report_reduce._draft
 
     def roomy_draft(_limit: int) -> dict:
-        value = original_draft(200_000_000)
+        value = original_draft(250_000_000)
         value["budget"] = {
             **value["budget"],
-            "max_sol_calls": 2_100,
-            "max_input_tokens": 200_000_000,
+            "max_sol_calls": 2_500,
+            "max_input_tokens": 250_000_000,
         }
         value["stage4b_audit_config_hash"] = _fixture_audit_config_hash()
         return value

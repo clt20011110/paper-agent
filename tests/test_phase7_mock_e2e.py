@@ -565,6 +565,14 @@ def test_offline_user_seed_workflow_handoff_and_report_are_end_to_end_resumable(
     report_config["project"]["output_dir"] = str(release)
     report_config["storage"]["sqlite_path"] = str(database_path)
     report_config["summary"]["enabled"] = True
+    report_config["summary"]["execution_strategy"] = "reduce_tree"
+    report_config["summary"]["profile"] = "stage4b_summary_sol"
+    report_config["summary"]["semantic_chunking"] = True
+    report_config["summary"]["final_audit"].update({
+        "independent_sol_session": True,
+        "max_repair_calls": 1,
+        "reverify_and_reaudit_after_repair": True,
+    })
     report_config["summary"]["report_plan"]["input_path"] = str(approved_path)
     report_config["summary"]["report_plan"]["content_hash"] = planned["plan_hash"]
     report_config_path = tmp_path / "report-config.yaml"

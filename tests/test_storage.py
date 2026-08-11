@@ -11,8 +11,8 @@ def test_migrate_new_database_and_is_idempotent(tmp_path) -> None:
     with Database(tmp_path / "papers.sqlite3") as database:
         applied = database.migrate(applied_by="test")
 
-        assert [migration.version for migration in applied] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
-        assert database.current_version() == 25
+        assert [migration.version for migration in applied] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+        assert database.current_version() == 26
         assert database.migrate() == ()
         assert database.connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'report_sol_invocations'"
@@ -68,6 +68,7 @@ def test_dry_run_does_not_create_schema(tmp_path) -> None:
             "download_scope_snapshots",
             "workflow_report_handoffs",
             "search_request_attempts",
+            "report_one_shot_runs",
         ]
         assert database.current_version() == 0
 
