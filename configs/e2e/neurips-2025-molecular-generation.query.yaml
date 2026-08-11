@@ -1,0 +1,67 @@
+# Frozen scope for the first live Stage 1 -> Stage 4b engineering run.
+# Stage 2 must remain explicitly labelled as a test profile until a signed
+# schema-v3 production release exists for this screening scope.
+created_at: "2026-08-11T00:00:00Z"
+research:
+  objective: "Review NeurIPS 2025 work on generative models for molecular generation and design"
+  audience: "researchers in molecular machine learning"
+  primary_question: "What model families, representations, controls, evaluation protocols, and limitations characterize NeurIPS 2025 molecular generation research?"
+  subquestions:
+    - id: sq-methods
+      question: "Which generative model families and molecular representations are used?"
+    - id: sq-control
+      question: "How do the methods control validity, geometry, properties, or interactions?"
+    - id: sq-evidence
+      question: "Which datasets, baselines, metrics, and empirical limitations support the claims?"
+scope:
+  date_from: "2025-01-01"
+  date_to: "2025-12-31"
+  venues: [neurips]
+  # The official proceedings index does not publish field tags. Topic scope is
+  # enforced by Stage 2 instead of treating missing index metadata as evidence.
+  fields: []
+  languages: [en]
+  document_types: [proceedings-article]
+  user_seeds: []
+inclusion:
+  criteria:
+    - "NeurIPS 2025 conference paper whose central contribution generates, designs, edits, or samples molecules, molecular conformations, protein-ligand complexes, or atomistic structures"
+    - "Includes a learned generative model such as diffusion, flow matching, autoregressive, energy-based, or neural-field generation"
+  exclusion_criteria:
+    - "Molecular property prediction, representation learning, simulation, or docking without a central generative-model contribution"
+    - "Non-molecular generative modeling and workshop-only material"
+query_variants:
+  - id: q-molecule-generation
+    subquestion_id: sq-methods
+    alias_group: molecular-generation
+    raw_query: 'NeurIPS 2025 (molecule OR molecular OR ligand OR atomistic) (generation OR generative OR design)'
+    synonyms: [molecular generation, molecule generation, molecular design, de novo drug design]
+  - id: q-3d-generation
+    subquestion_id: sq-control
+    alias_group: three-dimensional-generation
+    raw_query: 'NeurIPS 2025 (3D molecule OR molecular conformation OR protein-ligand) (diffusion OR flow matching OR generative)'
+    synonyms: [3D molecular generation, conformer generation, structure-based drug design]
+providers: [neurips_proceedings]
+filter:
+  profile: e2e_test_neurips_molecular_v1
+  config_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+  thresholds_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+  seed_selector_version: relevant_topk_by_subquestion_v1
+  seed_selector_config_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+  round_state_machine_version: search-stage2-rounds-v1
+citation_snowball:
+  enabled: false
+  directions: [references, citations]
+  max_depth: 0
+  max_rounds: 0
+  max_per_seed_per_source: 20
+budgets:
+  max_requests: 80
+  max_candidates: 6000
+  max_seconds: 900
+  saturation:
+    min_unique_included_yield: 0.01
+    consecutive_low_yield_rounds: 1
+provider_policy: all_resolved
+required_roles: [venue_primary]
+required_providers: [neurips_proceedings]

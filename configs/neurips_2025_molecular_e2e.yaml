@@ -1,0 +1,164 @@
+# Live engineering profile for the NeurIPS 2025 molecular-generation review.
+# Stage 2 remains test-only until a signed schema-v3 production release exists.
+version: 2
+project: {topic: "NeurIPS 2025 molecular generative models", output_dir: ./paper_research_neurips_2025_molecular, report_language: zh-CN}
+storage:
+  sqlite_path: ./paper_research_neurips_2025_molecular/papers.sqlite3
+  wal: true
+  exports:
+    - {format: jsonl, path: ./paper_research_neurips_2025_molecular/exports/papers.jsonl}
+    - {format: csv, path: ./paper_research_neurips_2025_molecular/exports/papers.csv}
+sources:
+  approved_plan: {input_path: ./paper_research_neurips_2025_molecular/search/latest-approved.json, content_hash: null, required: true}
+  plan_defaults:
+    required_roles: [venue_primary]
+    provider_policy: all_resolved
+    user_seeds: {inputs: []}
+    venues: [{descriptor: venues/neurips.yaml, years: [2025]}]
+    arxiv:
+      enabled: false
+      roles: [search, metadata_enricher, metadata_verifier, oa_resolver]
+      categories: []
+      include_arxiv_candidates: false
+      use_matched_arxiv_as_download_source: false
+      global_min_interval_seconds: 3
+    providers:
+      crossref: {enabled: false, roles: [search, metadata_enricher, metadata_verifier], mailto_env: CROSSREF_MAILTO, rate_policy: response_headers}
+      dblp: {enabled: false, roles: [search, metadata_enricher, metadata_verifier], bulk_snapshot_preferred: true}
+      semantic_scholar: {enabled: false, roles: [search, citation, metadata_enricher, metadata_verifier], api_key_env: SEMANTIC_SCHOLAR_API_KEY, use_batch_endpoints: true}
+      openalex: {enabled: false, roles: [search, citation, metadata_enricher, metadata_verifier], api_key_env: OPENALEX_API_KEY, mode: api, snapshot_path: null}
+      pubmed: {enabled: false, roles: [search, metadata_enricher, metadata_verifier], api_key_env: NCBI_API_KEY, tool: paper-agent, email_env: NCBI_EMAIL}
+      europe_pmc: {enabled: false, roles: [search, metadata_enricher, metadata_verifier, oa_resolver]}
+      unpaywall: {enabled: false, roles: [oa_resolver], email_env: UNPAYWALL_EMAIL}
+    verification: {prefer_formal_version: true, require_two_sources_when_feasible: false, preserve_conflicts: true}
+    citation_snowball: {enabled: false, directions: [references, citations], max_depth: 0, max_rounds: 0, seed_selector: relevant_topk_by_subquestion_v1, seeds_per_subquestion: 20, max_per_seed_per_source: 20, max_candidates_per_round: 100, max_seconds_per_round: 300}
+    saturation: {min_unique_included_yield: 0.01, consecutive_low_yield_rounds: 1, max_candidates: 6000, max_requests: 80}
+  plugin_allowlist: []
+filter:
+  mode: cascade
+  deterministic: {include: [molecular, generation], exclude_document_types: [editorial, retraction]}
+  reranker:
+    backend: omlx_rerank
+    model: BAAI/bge-reranker-v2-m3
+    source_repo: BAAI/bge-reranker-v2-m3
+    source_revision: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
+    format: fp32
+    document_batch_size: 32
+    candidate_batch_sizes: [16, 32, 64]
+    max_in_flight: 2
+    thresholds_artifact: ./paper_research_neurips_2025_molecular/models/stage2-thresholds.json
+  adjudicator:
+    backend: omlx_chat
+    model: mlx-community/Qwen3.5-9B-8bit
+    revision: 16daa4818c54ce5f5436f929d52542eb65bbed9d
+    chat_template_kwargs: {enable_thinking: false}
+    temperature: 0
+    seed: 42
+    stream: false
+    max_tokens: 256
+    max_context_window: 16384
+    structured_output: {transport: extra_body.structured_outputs.json, schema: ./schemas/filter-decision.schema.json}
+    client_concurrency: 4
+    server_max_concurrent_requests: 8
+    benchmark_concurrency_pairs: [[4, 8], [8, 8], [8, 16], [16, 16]]
+    expected_max_share: 0.15
+  fail_open: true
+download:
+  include_supplements: false
+  resolvers: [publisher_public, europe_pmc, unpaywall, arxiv]
+  providers: [public_direct, europe_pmc, unpaywall_location, arxiv, authorized_skill, manual]
+  purpose: personal_research
+  policy_matrix: ./policies/download-access-v2.yaml
+  require_access_basis: true
+  treat_unknown_license_as_open: false
+  allow_rfc2544_fake_ip_dns: true
+  metadata_lookup:
+    enabled: false
+    contact: "mailto:operator@example.invalid"
+    user_agent: "paper-agent/2.0 neurips-public-direct"
+    timeout_seconds: 15
+    unpaywall_email: "operator@example.invalid"
+  grant_defaults:
+    provider: public_direct
+    allowed_domains: [proceedings.neurips.cc]
+    paper_ids:
+      - paper-0c4a0e599ab95669bedcdf02c194d35b
+      - paper-227836fa5cb95d6b8146851c69fa3ed5
+      - paper-38e0375ff7fa527090876cc4301a330d
+      - paper-3b243975c39c51a2b7e8385b26ef5691
+      - paper-545719f013a6564ea169585b1df47ebb
+      - paper-5de4af5c958a5ab693fe71abc1961e10
+      - paper-6838bd00496350ea93c919bb5a3af4d6
+      - paper-6b0b363aaa775ce5b7c0f4b3f6af7925
+      - paper-71f47a1543d058e3850ee1c543c5943f
+      - paper-76c14309115452ebb0f2eb41b2173a02
+      - paper-79fa03d04ea15f028e3e58a47b374b33
+      - paper-932bf5002d015ba99e4ff4b3eb2fe4cf
+      - paper-c951acbd919f5885ab836cc2652d3efd
+      - paper-d7efc018e794559dbcc5c8bd0246fcb9
+      - paper-f333918e7f6f5ec197053046bbfc7bfb
+    collection_snapshot_hash: null
+    selection_snapshot_hash: null
+    max_papers: 15
+    actions: [download, store, extract]
+    purpose: personal_research
+    mode: attended
+    allow_unattended: false
+    authorization_expires_at: "2026-08-13T00:00:00Z"
+  authorized_skill:
+    enabled: false
+    skill_name: download-authorized-papers
+    authorization_grant_id: null
+    data_sharing_grant_id: null
+    profile: stage3_authorized_luna
+    codex_model: gpt-5.6-luna
+    reasoning_effort: low
+    grant_defaults:
+      source_zip_sha256: ee69308c98ad8e564ee8098acc56628866c45657da259aa08bb29f8732874d5e
+      installed_content_sha256: e1f13e3634afb26f47aa4a3b342dde5009218b1bf03b99c789268af61e1a553e
+      dependency_lock_sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+      provider: authorized_skill
+      allowed_domains: []
+      paper_ids: []
+      collection_snapshot_hash: null
+      selection_snapshot_hash: null
+      max_papers: null
+      actions: [download, store, extract]
+      purpose: personal_research
+      mode: attended
+      allow_unattended: false
+      authorization_expires_at: null
+analysis:
+  profile: stage4_analysis_luna
+  provider: codex_exec
+  model: gpt-5.6-luna
+  reasoning_effort: medium
+  sandbox: read_only
+  network: false
+  output_schema: ./schemas/paper-analysis.schema.json
+  workers: 4
+  allow_abstract_only: true
+  remote_model_processing: {policy_matrix: ./policies/artifact-processing-v1.yaml, processing_grant_id: null, require_artifact_hash_scope: true}
+summary:
+  enabled: true
+  profile: stage4b_summary_sol
+  provider: codex_exec
+  model: gpt-5.6-sol
+  reasoning_effort: high
+  sandbox: read_only
+  network: false
+  schemas: {planning_assist: ./schemas/report-plan.schema.json, section_reduce: ./schemas/section-synthesis.schema.json, cross_section_reduce: ./schemas/cross-section-synthesis.schema.json, final_reduce: ./schemas/report-document.schema.json, quality_audit: ./schemas/report-audit.schema.json, repair: ./schemas/report-repair.schema.json}
+  prompts: {planning_assist: ./prompts/report-plan.md, section_reduce: ./prompts/section-synthesis.md, cross_section_reduce: ./prompts/cross-section-synthesis.md, final_reduce: ./prompts/final-report.md, quality_audit: ./prompts/report-audit.md, repair: ./prompts/report-repair.md}
+  format: markdown
+  language: zh-CN
+  report_plan: {input_path: null, content_hash: null, required_for_unattended: true, classification_axes: [subquestion, theme, method_family, task, dataset, benchmark, time, publication_status, evidence_type, study_setting]}
+  require_search_audit: true
+  require_complete_coverage: true
+  require_claim_evidence: true
+  semantic_chunking: true
+  remote_model_processing: {policy_matrix: ./policies/artifact-processing-v1.yaml, processing_grant_id: null, require_lineage_hash_scope: true}
+  citations: {marker: stable_paper_id, style: ieee, bibliography_from_canonical_metadata: true}
+  final_audit: {deterministic: true, independent_sol_session: true, rubric: ./policies/report-audit-rubric-v1.yaml, max_blocker_findings: 0, max_major_findings: 0, max_repair_calls: 1, reverify_and_reaudit_after_repair: true}
+  immutable_run_directories: true
+  update_latest_after_pass: true
+  emit_incremental_diff: true
