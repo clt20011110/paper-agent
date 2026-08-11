@@ -1268,8 +1268,9 @@ Codex skill：
 
 以下项目按当前 source commit 验收；离线 fixture、历史 snapshot、`--dry-run` 和 `doctor` 不得替代。
 
-- [ ] 受控小预算真实 provider smoke 已通过并保存 QueryPlan、provider manifest、response、search-audit 和 rate/credit evidence；provider 未返回额度 header 时明确记录 `unavailable`。
-- [ ] 真实 PDF smoke 已通过：public OA 链成功；若发布 authorized browser 能力，另有 exact grant 与用户可见授权会话的成功下载证据。Cloudflare、CAPTCHA 或登录未就绪时保持未勾选并报告 external gate。
+- [x] 受控小预算真实 provider smoke 已通过并保存 QueryPlan、provider manifest、response、search-audit 和 rate/credit evidence；2026-08-11 的 Crossref `search → enrich → verify` 三请求完整链路证据见 `docs/smoke/crossref-full-pipeline-20260811.md`，未返回的 quota/credit header 已明确记录为 `unavailable`。其中 Stage 2 使用 fake screener，只证明 provider 链路，不得用于勾选 §14 的 Stage 2 release gate。
+- [ ] public OA 真实 PDF smoke 已使用默认生产传输走完 candidate → probe → fetch → PDF validation。当前桌面网络把 `europepmc.org` 解析到 `198.18.0.0/15` 代理假 IP，默认 SSRF guard 正确 fail-closed；curl/注入 transport 不得替代本门禁。诊断与解除条件见 `docs/smoke/public-oa-20260811-blocker.md`。
+- [ ] authorized browser 真实 PDF smoke 已使用 exact grant 与用户可见的已登录授权会话成功下载允许域名和 selection scope 内的一篇论文。Cloudflare、CAPTCHA 或学校登录未就绪时保持未勾选并报告 external gate。
 
 ## 15. 实施停止条件
 
