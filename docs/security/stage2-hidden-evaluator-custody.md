@@ -18,6 +18,17 @@ Only HIDDEN_REAL has an interpretable `sampling_probability=150/N`. DEV and HIDD
 
 The label-free 600-pair gold manifest may enter the release bundle. The snapshot, curated annotations, sampling provenance (private in the current design), and raw annotation ledger remain in evaluator custody. `--private-labels` is exactly the labels for those 600 manifest pairs, never a full-snapshot label export.
 
+After the human ledger is complete, derive the private promotion input inside the same custody boundary:
+
+```sh
+paper-agent --dry-run stage2-sampling finalize-annotations \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --annotation-ledger /secure/evaluator/annotation-ledger.json \
+  --private-labels-output /secure/evaluator/private-gold-labels.json
+```
+
+Validation requires exactly two fixed annotators per pair, exactly one fixed third-person ruling for every disagreement, pre-adjudication quadratic-weighted kappa of at least 0.75, and all final gold quotas. The non-dry run creates the private label artifact without replacement; it omits annotator identities and raw annotation/adjudication rows.
+
 The evaluator and the deployment verifier share only a reviewed Ed25519 public-key trust manifest. A release bundle cannot select or replace that trust root. The evaluator uses an explicit `--trust-manifest` for `stage2-evaluator attest`, `stage2-evaluator promote`, and `stage2-release assemble`. Commands that load an already assembled production release instead use the deployment environment variable `PAPER_AGENT_STAGE2_HIDDEN_TRUST`, or the equivalent `hidden_trust_path` Python argument. The environment variable does not replace the explicit evaluator or assembler option.
 
 ## Trust-root deployment

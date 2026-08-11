@@ -37,6 +37,17 @@ HIDDEN_REAL 在 manifest 中记录真实 `sampling_probability=150/N`；DEV/HIDD
 
 无标签的 600-pair gold manifest 可进入 release；private snapshot、curated annotations、抽样 provenance（当前设计为 private）和原始标注 ledger 必须留在 evaluator custody。传给 promotion 的 `--private-labels` 精确覆盖这 600 条 manifest pair，不得以 snapshot 全量标签代替。
 
+完成原始 ledger 后，在同一 evaluator custody 内运行：
+
+```sh
+paper-agent --dry-run stage2-sampling finalize-annotations \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --annotation-ledger /secure/evaluator/annotation-ledger.json \
+  --private-labels-output /secure/evaluator/private-gold-labels.json
+```
+
+只有每个 pair 恰好两份固定标注者记录、每个分歧恰好一次固定第三人仲裁、仲裁前 QWK ≥ 0.75，且最终 gold 配额全部通过时，dry-run 才返回 `validated`。正式执行生成 no-replace 私有 labels；控制台和输出文件均不复制 annotator 身份或原始仲裁明细。
+
 隔离 evaluator 优先运行 `stage2-evaluator promote`，而不是手工构造 hidden gate 结论。先在全局
 `--dry-run` 下提供完整的 `--manifest`、`--private-labels`、重复的 `--candidate ID=PATH` 与
 `--submission ID=PATH`、重复的 `--public-evidence ID=PATH`、incumbent/evaluator/run IDs、`--state-root`、key ID、RFC 3339

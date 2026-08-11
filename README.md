@@ -99,6 +99,18 @@ paper-family 约束，字段为 `null`，不会用错误概率污染逆概率指
 均留在 evaluator custody（当前 provenance 也不公开）。`--private-labels` 只包含 manifest 的精确 600 条标签，不是
 snapshot 全量标签。
 
+两位标注者和第三人完成 ledger 后，先验证再生成 promotion 私有输入：
+
+```sh
+paper-agent --dry-run stage2-sampling finalize-annotations \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --annotation-ledger /secure/evaluator/annotation-ledger.json \
+  --private-labels-output /secure/evaluator/private-gold-labels.json
+```
+
+该命令要求每个 pair 恰好两份独立标注、所有分歧恰好一次第三人仲裁、仲裁前 quadratic-weighted kappa
+至少为 0.75，并重新验证语言正例与 hard-case 配额。移除 `--dry-run` 后只写 label artifact，不复制标注者身份或原始仲裁记录，且拒绝覆盖已有输出。
+
 生产 release 的顺序是 `promote → assemble → load`。优先在隔离 evaluator 中使用一次性
 `promote`；`--candidate` 与 `--submission` 是可重复的 `ID=PATH`，两边 ID 集合必须完全一致：
 

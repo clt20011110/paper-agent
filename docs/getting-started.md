@@ -98,6 +98,17 @@ paper-agent --dry-run stage2-sampling build \
 无标签 gold manifest 的 600 pair 可进入 release；snapshot、curated annotations、provenance（当前为 private）和原始
 标注 ledger 均不得离开 evaluator custody。promotion 的 `--private-labels` 只精确覆盖这 600 个 manifest pair。
 
+人工标注 ledger 完成后，在 evaluator 内生成 promotion 所需的私有 label artifact：
+
+```sh
+paper-agent --dry-run stage2-sampling finalize-annotations \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --annotation-ledger /secure/evaluator/annotation-ledger.json \
+  --private-labels-output /secure/evaluator/private-gold-labels.json
+```
+
+dry-run 会重算 600-pair 双人覆盖、第三人仲裁、仲裁前 QWK ≥ 0.75 以及 gold 配额；正式执行拒绝覆盖已有文件，输出不含 annotator/adjudication 原始记录。
+
 schema-v3 release 不能手写或仅修改 schema version。隔离 evaluator 优先用一次性的
 `stage2-evaluator promote` 同时执行 hidden gate、创建持久 marker 并签名。先做 public-only
 dry-run；虽然 private/key/state/output 参数仍为必填，但这一步不读取 private labels、submission

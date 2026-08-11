@@ -466,6 +466,17 @@ paper-agent --dry-run stage2-sampling build \
 
 `gold-manifest` 是不含标签的 600-pair 公共清单，可进入 release；private snapshot、curated annotations、抽样 provenance 和原始标注 ledger 均由 evaluator 托管（当前设计下 provenance 也不公开）。`--private-labels` 必须精确覆盖该 600-pair manifest，绝不是完整 snapshot 的全量标签。
 
+原始 ledger 完成后必须通过受控转换生成 promotion 私有标签，不得手工拼装：
+
+```sh
+paper-agent --dry-run stage2-sampling finalize-annotations \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --annotation-ledger /secure/evaluator/annotation-ledger.json \
+  --private-labels-output /secure/evaluator/private-gold-labels.json
+```
+
+dry-run 必须重算双人完整覆盖、第三人分歧仲裁、仲裁前 QWK ≥ 0.75 与最终 gold 配额；正式执行只生成 no-replace 私有 label artifact，不复制 annotator 身份或原始标注/仲裁行。
+
 标注 rubric：
 
 - 0：明确无关。
