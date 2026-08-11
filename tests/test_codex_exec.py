@@ -131,6 +131,19 @@ def test_invocation_uses_exact_isolated_argv_and_sanitized_environment() -> None
     assert result.metadata.cost_usd is None
 
 
+def test_invocation_uses_frozen_labels_when_jsonl_omits_them() -> None:
+    class UnlabelledRunner(FakeRunner):
+        def __call__(self, *args, **kwargs):
+            result = super().__call__(*args, **kwargs)
+            result.stdout = json.dumps({"type": "thread.started", "thread_id": "thread-1"}) + "\n"
+            return result
+
+    result = CodexExec(runner=UnlabelledRunner([0])).invoke(_request())
+
+    assert result.metadata.actual_model == "gpt-5.6-luna"
+    assert result.metadata.actual_profile == "stage4_analysis_luna"
+
+
 def test_invocation_records_only_jsonl_usage_facts_and_keeps_missing_cost_unknown() -> None:
     class UsageRunner(FakeRunner):
         def __call__(self, *args, **kwargs):

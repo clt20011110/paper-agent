@@ -520,8 +520,8 @@ class CodexExec:
                 raise CodexProcessError(f"codex exec exited with status {completed.returncode}")
             output = self._read_output(result_path)
             self._validate_output(output, service_schema)
-            actual_model = execution.actual_model
-            actual_profile = execution.actual_profile
+            actual_model = execution.actual_model or profile.model
+            actual_profile = execution.actual_profile or profile.name
             usage = execution.usage
             metadata = InvocationMetadata(
                 invocation_id=invocation_id,
