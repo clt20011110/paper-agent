@@ -9,10 +9,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .canonical import content_hash
 from .domain import EnvelopeStatus, QuerySpec, SourceBatch
 from .providers.api import CrawlWindow, VenueDescriptor
 from .query_compilers import NativeQuery, compile_queries
 from .query_plan import runtime_requirements
+
+
+class RequestBudgetExhausted(RuntimeError):
+    """Raised before provider I/O when the frozen request cap is spent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +26,7 @@ class ProviderOutcome:
     status: str
     result: Any | None
     error: str | None
+    request_attempt_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +37,27 @@ class ProviderPage:
     page: int
     cursor: str | None
     scope_id: str | None = None
+    request_made: bool = True
+    raw_returned_count: int | None = None
+    request_attempt_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRequest:
+    provider: str
+    role: str
+    query_hash: str
+    cursor: str | None
+    scope_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderResponse:
+    status: EnvelopeStatus
+    error: str | None
+    accepted_count: int
+    raw_returned_count: int
+    response_hash: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +94,8 @@ def fan_out(
     *,
     max_workers: int | None = None,
     deadline: float | None = None,
+    request_started: Callable[[ProviderRequest], str] | None = None,
+    request_finished: Callable[[str, ProviderResponse], None] | None = None,
 ) -> FanoutResult:
     """Run frozen request streams in deterministic page waves.
 
@@ -74,6 +103,8 @@ def fan_out(
     are ordered by frozen provider/query keys.  Thus request and candidate
     caps do not depend on which worker returns first.
     """
+    if (request_started is None) != (request_finished is None):
+        raise ValueError("request_started and request_finished must be supplied together")
     resolved = tuple(
         sorted(
             (item for item in plan["providers"] if item["resolved"]),
@@ -86,14 +117,16 @@ def fan_out(
     streams: list[PageStream] = []
     immediate: dict[str, Any] = {}
     failures: dict[str, str] = {}
+    immediate_attempts: dict[str, str] = {}
     immediate_requests = 0
     immediate_candidates = 0
     exhausted = False
     for provider in resolved:
         name = str(provider["provider"])
         client = clients.get(name)
+        queries = _queries(plan, provider)
         try:
-            provider_streams = _streams(client, provider, _queries(plan, provider))
+            provider_streams = _streams(client, provider, queries)
         except Exception as error:
             failures[name] = str(error)
         else:
@@ -106,12 +139,44 @@ def fan_out(
                     exhausted = True
                     continue
                 try:
-                    result = _invoke(client, provider, _queries(plan, provider))
+                    attempt_id = (
+                        request_started(_immediate_request(provider, queries))
+                        if request_started is not None
+                        else None
+                    )
+                except RequestBudgetExhausted:
+                    exhausted = True
+                    continue
+                if attempt_id is not None:
+                    immediate_attempts[name] = attempt_id
+                immediate_requests += 1
+                try:
+                    result = _invoke(client, provider, queries)
                 except Exception as error:
+                    if attempt_id is not None and request_finished is not None:
+                        request_finished(
+                            attempt_id,
+                            ProviderResponse(
+                                EnvelopeStatus.FAILED, str(error), 0, 0, None
+                            ),
+                        )
                     failures[name] = str(error)
                 else:
-                    immediate_requests += 1
+                    raw_count = _entry_count(result)
+                    response_hash = _response_hash(result)
                     result, count, truncated = _truncate_result(result, max_candidates - immediate_candidates)
+                    status, error = _result_status(result, truncated)
+                    if attempt_id is not None and request_finished is not None:
+                        request_finished(
+                            attempt_id,
+                            ProviderResponse(
+                                status,
+                                error,
+                                count,
+                                raw_count,
+                                response_hash,
+                            ),
+                        )
                     immediate[name] = result
                     immediate_candidates += count
                     exhausted = exhausted or truncated
@@ -124,9 +189,18 @@ def fan_out(
         max_candidates=max(0, max_candidates - immediate_candidates),
         deadline=deadline,
         max_workers=max_workers,
+        request_started=request_started,
+        request_finished=request_finished,
     )
     exhausted = exhausted or stream_exhausted
-    outcomes = _outcomes(resolved, pages, immediate, failures, exhausted)
+    outcomes = _outcomes(
+        resolved,
+        pages,
+        immediate,
+        failures,
+        immediate_attempts,
+        exhausted,
+    )
     requirements = runtime_requirements(plan)
     successful = {outcome.provider for outcome in outcomes if outcome.status == "success"}
     successful_roles = {
@@ -141,6 +215,76 @@ def fan_out(
         requests_made=immediate_requests + requests_made,
         candidates_returned=immediate_candidates + candidates,
     )
+
+
+def _immediate_request(
+    provider: Mapping[str, Any], queries: tuple[NativeQuery, ...]
+) -> ProviderRequest:
+    hashes = tuple(query.query_hash for query in queries)
+    query_hash = (
+        hashes[0]
+        if len(hashes) == 1
+        else "|".join(hashes)
+        if hashes
+        else "no-query"
+    )
+    roles = tuple(str(role) for role in provider["roles"])
+    return ProviderRequest(
+        str(provider["provider"]),
+        "search" if queries else roles[0],
+        query_hash,
+        None,
+        None,
+    )
+
+
+def _stream_request(stream: PageStream, cursor: str | None) -> ProviderRequest:
+    return ProviderRequest(
+        stream.provider,
+        stream.role,
+        stream.query.query_hash if stream.query is not None else stream.role,
+        cursor,
+        stream.scope_id,
+    )
+
+
+def _entry_count(value: Any) -> int:
+    return sum(
+        len(item.entries)
+        for item in _flatten(value)
+        if isinstance(item, SourceBatch)
+    )
+
+
+def _response_hash(value: Any) -> str | None:
+    batches = tuple(
+        item for item in _flatten(value) if isinstance(item, SourceBatch)
+    )
+    return content_hash([batch.to_dict() for batch in batches]) if batches else None
+
+
+def _result_status(
+    value: Any, truncated: bool
+) -> tuple[EnvelopeStatus, str | None]:
+    batches = tuple(
+        item for item in _flatten(value) if isinstance(item, SourceBatch)
+    )
+    if truncated:
+        return EnvelopeStatus.PARTIAL, "budget_exhausted"
+    failures = tuple(
+        batch for batch in batches if batch.status is EnvelopeStatus.FAILED
+    )
+    partials = tuple(
+        batch for batch in batches if batch.status is EnvelopeStatus.PARTIAL
+    )
+    errors = "; ".join(
+        batch.error or "provider page failed" for batch in (*failures, *partials)
+    ) or None
+    if failures and len(failures) == len(batches):
+        return EnvelopeStatus.FAILED, errors
+    if failures or partials:
+        return EnvelopeStatus.PARTIAL, errors
+    return EnvelopeStatus.SUCCESS, None
 
 
 def _streams(
@@ -164,6 +308,8 @@ def _run_streams(
     max_candidates: int,
     deadline: float,
     max_workers: int | None,
+    request_started: Callable[[ProviderRequest], str] | None,
+    request_finished: Callable[[str, ProviderResponse], None] | None,
 ) -> tuple[dict[str, list[ProviderPage]], bool, int, int]:
     pages: dict[str, list[ProviderPage]] = defaultdict(list)
     active = [(stream, None, 1, frozenset()) for stream in sorted(streams, key=lambda item: item.key)]
@@ -179,17 +325,38 @@ def _run_streams(
         if deferred:
             exhausted = True
         with ThreadPoolExecutor(max_workers=max_workers or len(wave) or 1) as executor:
-            futures = [
-                (stream, cursor, page, seen, executor.submit(_fetch, stream, cursor))
-                for stream, cursor, page, seen in wave
-            ]
+            futures = []
+            for stream, cursor, page, seen in wave:
+                try:
+                    attempt_id = (
+                        request_started(_stream_request(stream, cursor))
+                        if request_started is not None
+                        else None
+                    )
+                except RequestBudgetExhausted:
+                    exhausted = True
+                    continue
+                futures.append(
+                    (
+                        stream,
+                        cursor,
+                        page,
+                        seen,
+                        attempt_id,
+                        executor.submit(_fetch, stream, cursor),
+                    )
+                )
             results = [
-                (stream, cursor, page, seen, future.result())
-                for stream, cursor, page, seen, future in futures
+                (stream, cursor, page, seen, attempt_id, future.result())
+                for stream, cursor, page, seen, attempt_id, future in futures
             ]
         next_active: list[tuple[PageStream, str | None, int, frozenset[str]]] = []
-        for stream, cursor, page, seen_cursors, batch in sorted(results, key=lambda item: item[0].key):
+        for stream, cursor, page, seen_cursors, attempt_id, batch in sorted(
+            results, key=lambda item: item[0].key
+        ):
             requests_made += 1
+            raw_returned_count = len(batch.entries)
+            response_hash = content_hash(batch.to_dict())
             available = max(0, max_candidates - candidates)
             truncated = len(batch.entries) > available
             candidate_cutoff = truncated or (bool(batch.next_cursor) and len(batch.entries) >= available)
@@ -207,9 +374,29 @@ def _run_streams(
                     status=EnvelopeStatus.PARTIAL if batch.entries else EnvelopeStatus.FAILED,
                     error=f"provider {stream.provider} repeated cursor {batch.next_cursor}",
                 )
+            if attempt_id is not None and request_finished is not None:
+                request_finished(
+                    attempt_id,
+                    ProviderResponse(
+                        batch.status,
+                        batch.error,
+                        len(batch.entries),
+                        raw_returned_count,
+                        response_hash,
+                    ),
+                )
             candidates += len(batch.entries)
             pages[stream.provider].append(
-                ProviderPage(stream.role, batch, stream.query, page, cursor, stream.scope_id)
+                ProviderPage(
+                    stream.role,
+                    batch,
+                    stream.query,
+                    page,
+                    cursor,
+                    stream.scope_id,
+                    raw_returned_count=raw_returned_count,
+                    request_attempt_id=attempt_id,
+                )
             )
             if batch.status is EnvelopeStatus.SUCCESS and batch.next_cursor:
                 next_active.append((stream, batch.next_cursor, page + 1, seen_cursors | {batch.next_cursor}))
@@ -283,13 +470,22 @@ def _outcomes(
     pages: Mapping[str, list[ProviderPage]],
     immediate: Mapping[str, Any],
     failures: Mapping[str, str],
+    immediate_attempts: Mapping[str, str],
     budget_exhausted: bool,
 ) -> list[ProviderOutcome]:
     outcomes: list[ProviderOutcome] = []
     for provider in resolved:
         name = str(provider["provider"])
         if name in failures:
-            outcomes.append(ProviderOutcome(name, "failed", None, failures[name]))
+            outcomes.append(
+                ProviderOutcome(
+                    name,
+                    "failed",
+                    None,
+                    failures[name],
+                    immediate_attempts.get(name),
+                )
+            )
             continue
         provider_pages = tuple(pages.get(name, ()))
         if provider_pages:
@@ -299,7 +495,18 @@ def _outcomes(
             error = "; ".join(page.batch.error or "provider page failed" for page in (*failed, *partial)) or None
             outcomes.append(ProviderOutcome(name, status, provider_pages, error))
         elif name in immediate:
-            outcomes.append(ProviderOutcome(name, "success", immediate[name], None))
+            status, error = _result_status(immediate[name], False)
+            outcomes.append(
+                ProviderOutcome(
+                    name,
+                    "success" if status is EnvelopeStatus.SUCCESS else "partial"
+                    if status is EnvelopeStatus.PARTIAL
+                    else "failed",
+                    immediate[name],
+                    error,
+                    immediate_attempts.get(name),
+                )
+            )
         elif budget_exhausted:
             outcomes.append(ProviderOutcome(name, "skipped_budget", (), "budget_exhausted"))
         else:

@@ -187,6 +187,7 @@ def test_venue_primary_and_fallbacks_are_manifest_driven() -> None:
         assert set(acceptance["required_capabilities"]).issubset(provider["capabilities"])
         for fallback in acceptance["fallbacks"]:
             assert fallback["role"] in catalog.provider(fallback["provider"])["roles"]
+        assert any(fallback["role"] == "search" for fallback in acceptance["fallbacks"])
         assert [fallback["provider"] for fallback in acceptance["fallbacks"]] == FALLBACKS[venue_id]
 
 

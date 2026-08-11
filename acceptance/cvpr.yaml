@@ -10,4 +10,4 @@ transport_fixture_routes:
 transport_expected_stable_ids: [/content/CVPR2024/html/Lovelace_Vision_Systems_CVPR_2024_paper.html, /content/CVPR2024/html/Turing_Parallel_Vision_CVPR_2024_paper.html]
 required_fields: [stable_id, metadata, date_filter]
 required_capabilities: [stable_id, metadata, date_filter]
-fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

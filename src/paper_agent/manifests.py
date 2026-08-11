@@ -111,6 +111,8 @@ def load_catalog(root: Path | None = None) -> ManifestCatalog:
                 raise ManifestError(f"{venue_id}: unknown fallback provider {provider}")
             if fallback["role"] not in providers[provider]["roles"]:
                 raise ManifestError(f"{venue_id}: fallback {provider} lacks role {fallback['role']}")
+        if not any(fallback["role"] == "search" for fallback in acceptance["fallbacks"]):
+            raise ManifestError(f"{venue_id}: fallback graph has no discovery-capable search node")
         fixture = (directory / acceptance["fixture_path"]).resolve()
         fixture.relative_to(directory.resolve())
         if sha256(fixture.read_bytes()).hexdigest() != acceptance["fixture_sha256"]:

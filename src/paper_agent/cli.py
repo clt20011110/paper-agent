@@ -1694,13 +1694,14 @@ def _search_plan(
 ) -> dict[str, Any]:
     draft = load_yaml(input_path)
     config = load_config(config_path) if config_path is not None else None
+    venue_specs = _venue_specs(input_path.parent, draft["scope"]["venues"])
     providers = _provider_specs(
         draft.pop("providers"),
         input_path.parent,
         venue_ids=draft["scope"]["venues"],
         plugin_allowlist=plugin_allowlist_from_config(config),
     )
-    plan = compile_query_plan(draft, providers=providers)
+    plan = compile_query_plan(draft, providers=providers, venue_specs=venue_specs)
     store = QueryPlanStore(output_root)
     path = store.draft_path(str(plan["plan_id"]))
     if not dry_run:
@@ -1876,7 +1877,7 @@ def _crawl(
     venues = [catalog.venue(venue_id) for venue_id in normalized_ids]
     if plan_path is not None:
         plan = _load_json(plan_path)
-        _assert_venue_only_plan(plan, normalized_ids, venues)
+        _assert_venue_only_plan(plan, normalized_ids)
         result = _search_run(
             plan_path,
             database_path=database_path,
@@ -1909,16 +1910,27 @@ def _crawl(
 def _assert_venue_only_plan(
     plan: Mapping[str, Any],
     venue_ids: Sequence[str],
-    venues: Sequence[Mapping[str, Any]],
 ) -> None:
     if sorted(set(plan["scope"]["venues"])) != list(venue_ids):
         raise ValueError("crawl venues must exactly match the approved QueryPlan scope")
-    primary_providers = {str(venue["primary_provider"]) for venue in venues}
+    operations = tuple(plan.get("venue_operations", ()))
+    if {str(operation["venue_id"]) for operation in operations} != set(venue_ids):
+        raise ValueError("crawl QueryPlan must freeze every requested venue operation")
+    primary_providers = {
+        str(operation["descriptor"]["provider"]) for operation in operations
+    }
+    graph_providers = primary_providers | {
+        str(fallback["provider"])
+        for operation in operations
+        for fallback in operation["fallbacks"]
+    }
     resolved_providers = {
         str(provider["provider"]) for provider in plan["providers"] if provider["resolved"]
     }
-    if resolved_providers != primary_providers:
-        raise ValueError("crawl QueryPlan may resolve only the requested venue primary providers")
+    if not primary_providers.issubset(resolved_providers):
+        raise ValueError("crawl QueryPlan must resolve every frozen venue primary provider")
+    if not resolved_providers.issubset(graph_providers):
+        raise ValueError("crawl QueryPlan may resolve only providers in the frozen venue graph")
     if plan["scope"].get("user_seeds"):
         raise ValueError("crawl QueryPlan cannot contain user seeds")
     if plan["citation_snowball"]["enabled"]:
@@ -1984,7 +1996,12 @@ def _provider_specs(
         catalog.venue(Path(str(venue_id)).stem)["primary_provider"]
         for venue_id in venue_ids
     }
-    for provider in exact_providers:
+    fallback_providers = {
+        fallback["provider"]
+        for venue_id in venue_ids
+        for fallback in catalog.acceptance(Path(str(venue_id)).stem)["fallbacks"]
+    }
+    for provider in exact_providers | fallback_providers:
         requested_by_provider.setdefault(provider, {"provider": provider})
 
     plugin_registry = PluginRegistry(plugin_allowlist)
@@ -2038,6 +2055,17 @@ def _provider_specs(
         spec.update(requested)
         specs.append(spec)
     return specs
+
+
+def _venue_specs(root: Path, venue_ids: Sequence[str]) -> list[dict[str, Any]]:
+    catalog = load_catalog(root if (root / "providers").exists() else None)
+    return [
+        {
+            "descriptor": catalog.venue(Path(str(venue_id)).stem),
+            "acceptance": catalog.acceptance(Path(str(venue_id)).stem),
+        }
+        for venue_id in sorted(set(venue_ids))
+    ]
 
 
 def _credential_environment_variables(authentication: Mapping[str, Any]) -> tuple[str, ...]:

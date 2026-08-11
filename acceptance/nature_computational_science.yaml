@@ -10,5 +10,5 @@ transport_fixture_routes:
 transport_expected_stable_ids: [10.1038/s43588-024-00003-3]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
-fallbacks: [{provider: crossref, role: metadata_enricher}]
+fallbacks: [{provider: crossref, role: search}]
 journal: {slug: natcomputsci, issns: [2662-8457], article_types: [article, review, analysis]}

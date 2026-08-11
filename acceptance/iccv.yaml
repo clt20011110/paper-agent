@@ -10,4 +10,4 @@ transport_fixture_routes:
 transport_expected_stable_ids: [/content/ICCV2023/html/Lovelace_Vision_Systems_ICCV_2023_paper.html, /content/ICCV2023/html/Turing_Parallel_Vision_ICCV_2023_paper.html]
 required_fields: [stable_id, metadata, date_filter]
 required_capabilities: [stable_id, metadata, date_filter]
-fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

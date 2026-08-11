@@ -47,6 +47,15 @@ def search_audit(database_path: Path, crawl_run_id: str) -> dict[str, Any]:
             raise ValueError(f"unknown crawl_run_id: {crawl_run_id}")
         sources = _sources(connection, crawl_run_id)
         queries = _queries(connection, crawl_run_id)
+        request_attempts = _request_attempts(connection, crawl_run_id)
+        execution_attempts = [
+            _row(row)
+            for row in connection.execute(
+                """SELECT * FROM crawl_execution_attempts
+                   WHERE crawl_run_id = ? ORDER BY attempt_no""",
+                (crawl_run_id,),
+            ).fetchall()
+        ]
         rounds = _rounds(connection, crawl_run_id)
         incremental = connection.execute(
             "SELECT * FROM incremental_diffs WHERE crawl_run_id = ?", (crawl_run_id,)
@@ -72,6 +81,16 @@ def search_audit(database_path: Path, crawl_run_id: str) -> dict[str, Any]:
                 _ROUND_METRICS,
             ),
             "queries": len(queries),
+            "provider_request_attempts": len(request_attempts),
+            "requests_made": sum(
+                int(attempt["request_charged"]) for attempt in request_attempts
+            ),
+            "candidates_accepted": sum(
+                int(attempt["accepted_count"]) for attempt in request_attempts
+            ),
+            "candidates_returned": sum(
+                int(attempt["raw_returned_count"]) for attempt in request_attempts
+            ),
             "rounds": len(rounds),
         },
         "incomplete_sources": [
@@ -79,6 +98,8 @@ def search_audit(database_path: Path, crawl_run_id: str) -> dict[str, Any]:
         ],
         "sources": sources,
         "queries": queries,
+        "provider_request_attempts": request_attempts,
+        "crawl_execution_attempts": execution_attempts,
         "rounds": rounds,
         "incremental_diff": _row(incremental) if incremental else None,
     }
@@ -118,6 +139,24 @@ def _queries(connection: sqlite3.Connection, crawl_run_id: str) -> list[dict[str
             **_row(row),
             "provider_params": _json(row["provider_params_json"]),
             "filters": _json(row["filters_json"]),
+            "error": _json(row["error_json"]),
+        }
+        for row in rows
+    ]
+
+
+def _request_attempts(
+    connection: sqlite3.Connection, crawl_run_id: str
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """SELECT * FROM provider_request_attempts
+           WHERE crawl_run_id = ?
+           ORDER BY provider, role, operation_key, attempt_no""",
+        (crawl_run_id,),
+    ).fetchall()
+    return [
+        {
+            **_row(row),
             "error": _json(row["error_json"]),
         }
         for row in rows

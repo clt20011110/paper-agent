@@ -10,5 +10,5 @@ transport_fixture_routes:
 transport_expected_stable_ids: ["10000001"]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
-fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+fallbacks: [{provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
 journal: {slug: ieee-tcad, issns: [0278-0070], article_types: [journal_article]}

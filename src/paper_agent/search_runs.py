@@ -11,7 +11,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from .canonical import content_hash
 from .domain import EnvelopeStatus, SourceBatch
-from .fanout import FanoutResult
+from .fanout import FanoutResult, RequestBudgetExhausted
 from .provider_response_artifacts import ProviderResponseArtifactRepository
 from .query_plan import runtime_requirements
 from .storage import Database
@@ -23,6 +23,10 @@ class IncrementalChangeKind(StrEnum):
     RETRACTED = "retracted"
     METADATA_CHANGED = "metadata_changed"
     PREPRINT_REPLACED = "preprint_replaced"
+
+
+class RequestReservationTransactionError(RuntimeError):
+    """A durable request reservation cannot join a caller transaction."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +108,11 @@ class SearchRunCoordinator:
         cursor: str | None = None,
         alias_group: str | None = None,
         filters: Mapping[str, object] | None = None,
+        source_operation_key: str | None = None,
+        request_charged: int = 1,
+        raw_returned_count: int | None = None,
+        request_attempt_id: str | None = None,
+        record_request_attempt: bool = True,
     ) -> str:
         """Persist one provider response without inspecting or mutating its entries."""
         source_run_id = batch.source_run_id
@@ -113,7 +122,13 @@ class SearchRunCoordinator:
             "SELECT crawl_run_id, provider, provider_version, role FROM source_runs WHERE source_run_id = ?",
             (source_run_id,),
         ).fetchone()
-        expected_source = (crawl_run_id, provider, provider_version, role)
+        source_role = source_operation_key or role
+        if request_charged < 0:
+            raise ValueError("request_charged cannot be negative")
+        raw_returned = len(batch.entries) if raw_returned_count is None else raw_returned_count
+        if raw_returned < len(batch.entries):
+            raise ValueError("raw_returned_count cannot be smaller than accepted entries")
+        expected_source = (crawl_run_id, provider, provider_version, source_role)
         if source and tuple(source) != expected_source:
             raise ValueError("source run is already bound to a different provider request")
 
@@ -140,7 +155,7 @@ class SearchRunCoordinator:
                         crawl_run_id,
                         provider,
                         provider_version,
-                        role,
+                        source_role,
                         _json({"cursor": batch.next_cursor}),
                         source_status,
                         error_json,
@@ -172,16 +187,19 @@ class SearchRunCoordinator:
                     query_id, search_plan_id, source_run_id, provider, provider_version,
                     query_compiler_version, role, query_text, provider_params_json, alias_group,
                     filters_json, page, cursor, requested_at, completed_at, query_hash,
-                    response_hash, response_artifact_id, returned_count, status, error_json
+                    response_hash, response_artifact_id, returned_count, status, error_json,
+                    request_attempt_id
                 ) VALUES (?, (SELECT search_plan_id FROM crawl_runs WHERE crawl_run_id = ?), ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(query_id) DO UPDATE SET
                     completed_at = excluded.completed_at, response_hash = excluded.response_hash,
                     response_artifact_id = COALESCE(
                         excluded.response_artifact_id, search_queries.response_artifact_id
                     ),
                     returned_count = excluded.returned_count, status = excluded.status,
-                    error_json = excluded.error_json, provider_params_json = excluded.provider_params_json""",
+                    error_json = excluded.error_json,
+                    provider_params_json = excluded.provider_params_json,
+                    request_attempt_id = excluded.request_attempt_id""",
                 (
                     query_id,
                     crawl_run_id,
@@ -204,8 +222,30 @@ class SearchRunCoordinator:
                     len(batch.entries),
                     query_status,
                     error_json,
+                    request_attempt_id,
                 ),
             )
+            if request_attempt_id is None and record_request_attempt:
+                _insert_request_attempt(
+                    connection,
+                    crawl_run_id=crawl_run_id,
+                    source_run_id=source_run_id,
+                    citation_request_id=None,
+                    operation_key=f"{source_role}:{batch.query_hash}:{cursor or ''}",
+                    provider=provider,
+                    role=role,
+                    query_hash=batch.query_hash,
+                    requested_cursor=cursor,
+                    request_charged=request_charged,
+                    accepted_count=len(batch.entries),
+                    raw_returned_count=raw_returned,
+                    status=batch.status.value,
+                    error_json=error_json,
+                    response_hash=batch.raw_response_artifact_hash,
+                    response_artifact_id=response_artifact_id,
+                    started_at=requested_at,
+                    completed_at=completed_at,
+                )
             connection.execute(
                 """INSERT INTO source_run_audits(
                     source_run_id, raw_discovered, unique_after_dedup, overlap, screened, excluded,
@@ -224,6 +264,101 @@ class SearchRunCoordinator:
             )
         return source_run_id
 
+    def reserve_request_attempt(
+        self,
+        *,
+        crawl_run_id: str,
+        operation_key: str,
+        provider: str,
+        role: str,
+        query_hash: str,
+        requested_cursor: str | None,
+        max_requests: int,
+        started_at: str,
+        citation_request_id: str | None = None,
+    ) -> str:
+        """Charge a provider call before control is handed to the client."""
+        if self.database.connection.in_transaction:
+            raise RequestReservationTransactionError(
+                "request reservation requires a clean transaction boundary"
+            )
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                """SELECT p.plan_json FROM crawl_runs c
+                   JOIN search_plans p ON p.search_plan_id = c.search_plan_id
+                   WHERE c.crawl_run_id = ?""",
+                (crawl_run_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("request reservation requires a frozen search plan")
+            frozen_max_requests = int(json.loads(row["plan_json"])["budgets"]["max_requests"])
+            if max_requests != frozen_max_requests:
+                raise ValueError("request reservation budget differs from the frozen plan")
+            charged = int(
+                connection.execute(
+                    """SELECT COALESCE(SUM(request_charged), 0)
+                       FROM provider_request_attempts WHERE crawl_run_id = ?""",
+                    (crawl_run_id,),
+                ).fetchone()[0]
+            )
+            if charged >= frozen_max_requests:
+                raise RequestBudgetExhausted("frozen request budget is exhausted")
+            return _insert_request_attempt(
+                connection,
+                crawl_run_id=crawl_run_id,
+                source_run_id=None,
+                citation_request_id=citation_request_id,
+                operation_key=operation_key,
+                provider=provider,
+                role=role,
+                query_hash=query_hash,
+                requested_cursor=requested_cursor,
+                request_charged=1,
+                accepted_count=0,
+                raw_returned_count=0,
+                status="running",
+                error_json=None,
+                response_hash=None,
+                response_artifact_id=None,
+                started_at=started_at,
+                completed_at=None,
+            )
+
+    def complete_request_attempt(
+        self,
+        request_attempt_id: str,
+        *,
+        accepted_count: int,
+        raw_returned_count: int,
+        status: EnvelopeStatus,
+        error: str | None,
+        response_hash: str | None,
+        completed_at: str,
+    ) -> None:
+        """Complete one pre-call reservation with the observed response counts."""
+        if min(accepted_count, raw_returned_count) < 0:
+            raise ValueError("request response counts cannot be negative")
+        if raw_returned_count < accepted_count:
+            raise ValueError("raw request count cannot be smaller than accepted count")
+        with self.database.transaction() as connection:
+            updated = connection.execute(
+                """UPDATE provider_request_attempts
+                   SET accepted_count = ?, raw_returned_count = ?, status = ?,
+                       error_json = ?, response_hash = ?, completed_at = ?
+                   WHERE request_attempt_id = ? AND status = 'running'""",
+                (
+                    accepted_count,
+                    raw_returned_count,
+                    status.value,
+                    _error_json(error),
+                    response_hash,
+                    completed_at,
+                    request_attempt_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("request reservation is missing or already completed")
+
     def record_metrics(self, source_run_id: str, metrics: SourceMetrics, *, updated_at: str) -> None:
         _non_negative(metrics)
         with self.database.transaction() as connection:
@@ -238,7 +373,8 @@ class SearchRunCoordinator:
                     overlap = excluded.overlap, screened = excluded.screened,
                     excluded = excluded.excluded, included = excluded.included,
                     full_text_available = excluded.full_text_available,
-                    error_count = excluded.error_count, updated_at = excluded.updated_at""",
+                    error_count = MAX(source_run_audits.error_count, excluded.error_count),
+                    updated_at = excluded.updated_at""",
                 (source_run_id, *asdict(metrics).values(), updated_at),
             )
 
@@ -259,6 +395,16 @@ class SearchRunCoordinator:
         successful_roles = {
             row["role"] for row in sources if row["status"] == "complete"
         }
+        successful_roles.update(
+            row["role"]
+            for row in self.database.connection.execute(
+                """SELECT DISTINCT q.role FROM search_queries q
+                   JOIN source_runs s ON s.source_run_id = q.source_run_id
+                   WHERE s.crawl_run_id = ? AND s.status = 'complete'
+                     AND q.status = 'complete'""",
+                (crawl_run_id,),
+            )
+        )
         required_providers = set(requirements["required_providers"])
         required_roles = set(requirements["required_roles"])
         required_failure = not required_providers.issubset(successful) or not required_roles.issubset(successful_roles)
@@ -559,6 +705,84 @@ def _statuses(status: EnvelopeStatus) -> tuple[str, str]:
     if status is EnvelopeStatus.PARTIAL:
         return "incomplete", "complete"
     return "complete", "complete"
+
+
+def _insert_request_attempt(
+    connection,
+    *,
+    crawl_run_id: str,
+    source_run_id: str | None,
+    citation_request_id: str | None,
+    operation_key: str,
+    provider: str,
+    role: str,
+    query_hash: str,
+    requested_cursor: str | None,
+    request_charged: int,
+    accepted_count: int,
+    raw_returned_count: int,
+    status: str,
+    error_json: str | None,
+    response_hash: str | None,
+    response_artifact_id: str | None,
+    started_at: str,
+    completed_at: str | None,
+) -> str:
+    if min(
+        request_charged,
+        accepted_count,
+        raw_returned_count,
+    ) < 0:
+        raise ValueError("request attempt counts cannot be negative")
+    if raw_returned_count < accepted_count:
+        raise ValueError("raw request count cannot be smaller than accepted count")
+    attempt_no = int(
+        connection.execute(
+            """SELECT COALESCE(MAX(attempt_no), 0) + 1
+               FROM provider_request_attempts
+               WHERE crawl_run_id = ? AND operation_key = ?""",
+            (crawl_run_id, operation_key),
+        ).fetchone()[0]
+    )
+    request_attempt_id = (
+        "provider-request-"
+        + uuid5(
+            NAMESPACE_URL,
+            f"{crawl_run_id}:{operation_key}:{attempt_no}",
+        ).hex
+    )
+    connection.execute(
+        """INSERT INTO provider_request_attempts(
+               request_attempt_id, crawl_run_id, source_run_id,
+               citation_request_id, operation_key, attempt_no, provider, role,
+               query_hash, requested_cursor,
+               request_charged, accepted_count, raw_returned_count, status,
+               error_json, response_hash,
+               response_artifact_id, started_at, completed_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            request_attempt_id,
+            crawl_run_id,
+            source_run_id,
+            citation_request_id,
+            operation_key,
+            attempt_no,
+            provider,
+            role,
+            query_hash,
+            requested_cursor,
+            request_charged,
+            accepted_count,
+            raw_returned_count,
+            status,
+            error_json,
+            response_hash,
+            response_artifact_id,
+            started_at,
+            completed_at,
+        ),
+    )
+    return request_attempt_id
 
 
 def _query_id(source_run_id: str, query_hash: str, page: str | None, cursor: str | None) -> str:

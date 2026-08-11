@@ -888,7 +888,7 @@ def test_migration_adopts_legacy_uncertain_analysis_as_terminal_without_reinvoca
         database.connection.commit()
 
         assert [migration.version for migration in database.migrate()] == [
-            16, 17, 18, 19, 20, 21, 22, 23, 24,
+            16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
         ]
         adopted = database.connection.execute(
             """SELECT status, dispatch_count, policy_version, policy_hash,

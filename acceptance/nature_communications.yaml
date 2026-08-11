@@ -10,5 +10,5 @@ transport_fixture_routes:
 transport_expected_stable_ids: [10.1038/s41467-024-00004-4]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
-fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}]
+fallbacks: [{provider: crossref, role: search}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}]
 journal: {slug: ncomms, issns: [2041-1723], article_types: [article, review, analysis]}

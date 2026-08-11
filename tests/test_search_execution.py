@@ -241,8 +241,23 @@ def test_venue_only_execution_runs_descriptors_without_topic_search(tmp_path) ->
     document["citation_snowball"]["enabled"] = False
     document["required_roles"] = ["venue_primary"]
     document["required_providers"] = []
-    specs = _provider_specs(["neurips_proceedings"], ROOT, venue_ids=("neurips",))
-    plan = compile_query_plan(document, providers=specs)
+    catalog = load_catalog(ROOT)
+    acceptance = catalog.acceptance("neurips")
+    provider_names = [
+        "neurips_proceedings",
+        *(item["provider"] for item in acceptance["fallbacks"]),
+    ]
+    specs = _provider_specs(provider_names, ROOT, venue_ids=("neurips",))
+    plan = compile_query_plan(
+        document,
+        providers=specs,
+        venue_specs=(
+            {
+                "descriptor": catalog.venue("neurips"),
+                "acceptance": acceptance,
+            },
+        ),
+    )
     approved = approve_query_plan(plan, plan["plan_hash"], approved_by="owner", approved_at=NOW)
     venue_page = json.loads(
         (ROOT / "tests/fixtures/providers/venue-neurips.json").read_text(encoding="utf-8")
@@ -270,7 +285,16 @@ def test_venue_only_execution_runs_descriptors_without_topic_search(tmp_path) ->
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute(
             "SELECT DISTINCT role FROM source_runs WHERE crawl_run_id = ?", (crawl_run_id,)
-        ).fetchall() == [("venue_primary",)]
+        ).fetchall() == [("venue_primary:neurips",)]
+        window = json.loads(
+            connection.execute(
+                "SELECT window_json FROM crawl_runs WHERE crawl_run_id = ?", (crawl_run_id,)
+            ).fetchone()[0]
+        )
+    assert [
+        {"provider": item["provider"], "role": item["role"]}
+        for item in window["venue_fallback_graph"][0]["fallbacks"]
+    ] == acceptance["fallbacks"]
 
 
 def _install_search_plugin(tmp_path: Path) -> metadata.Distribution:

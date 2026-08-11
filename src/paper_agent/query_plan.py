@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .approval import ApprovalError, approve, approved_content_hash, require_valid_approval
-from .canonical import canonical_json
+from .canonical import canonical_json, content_hash
 from .query_compilers import COMPILER_VERSION, compile_queries
 from .scope_filter import screening_scope_hash
 
@@ -20,6 +20,9 @@ class QueryPlanError(ValueError):
 
 class QueryPlanDriftError(QueryPlanError):
     pass
+
+
+QUERY_PLAN_SCHEMA_VERSION = "2"
 
 
 _RUNTIME_PROVIDER_FIELDS = (
@@ -56,6 +59,7 @@ def compile_query_plan(
     draft: Mapping[str, Any],
     *,
     providers: Sequence[Mapping[str, Any]] | None = None,
+    venue_specs: Sequence[Mapping[str, Any]] | None = None,
     plan_id: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -70,9 +74,14 @@ def compile_query_plan(
         raise QueryPlanError("created_at is required to compile a QueryPlan")
 
     requirements = _requirements(source)
+    venue_primary_providers = {
+        str(item["descriptor"]["primary_provider"])
+        for item in (venue_specs or ())
+    }
     requirements["required_providers"] = sorted(
         set(requirements["required_providers"])
         | {str(spec["provider"]) for spec in provider_specs if spec.get("exact_required") is True}
+        | venue_primary_providers
     )
     variants = list(source["query_variants"])
     scope = dict(source["scope"])
@@ -89,9 +98,16 @@ def compile_query_plan(
     ]
     _validate_terms_approvals(compiled_providers, requirements)
     _validate_resolution(compiled_providers, requirements)
+    venue_operations = _compile_venue_operations(
+        scope,
+        variants,
+        compiled_providers,
+        venue_specs or (),
+        page_size=_page_size(source),
+    )
 
     plan = {
-        "schema_version": "1",
+        "schema_version": QUERY_PLAN_SCHEMA_VERSION,
         "plan_id": plan_id or "",
         "plan_hash": "",
         "status": "draft",
@@ -101,6 +117,7 @@ def compile_query_plan(
         "inclusion": source["inclusion"],
         "query_variants": variants,
         "providers": compiled_providers,
+        "venue_operations": venue_operations,
         "filter": filter_config,
         "citation_snowball": source["citation_snowball"],
         "budgets": source["budgets"],
@@ -113,6 +130,95 @@ def compile_query_plan(
     return plan
 
 
+def _compile_venue_operations(
+    scope: Mapping[str, Any],
+    variants: list[Mapping[str, Any]],
+    providers: Sequence[Mapping[str, Any]],
+    venue_specs: Sequence[Mapping[str, Any]],
+    *,
+    page_size: int,
+) -> list[dict[str, Any]]:
+    """Freeze descriptor and fallback decisions into the approved plan."""
+    requested = tuple(str(venue_id) for venue_id in scope.get("venues", ()))
+    if len(requested) != len(set(requested)):
+        raise QueryPlanError("QueryPlan venue scope contains duplicates")
+    specifications: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for item in venue_specs:
+        descriptor = deepcopy(dict(item["descriptor"]))
+        acceptance = deepcopy(dict(item["acceptance"]))
+        venue_id = str(descriptor["venue_id"])
+        if venue_id in specifications:
+            raise QueryPlanError(f"venue specification repeats {venue_id}")
+        if acceptance.get("venue_id") != venue_id:
+            raise QueryPlanError(f"venue {venue_id} acceptance manifest does not match")
+        specifications[venue_id] = (descriptor, acceptance)
+    if set(specifications) != set(requested):
+        missing = sorted(set(requested) - set(specifications))
+        extra = sorted(set(specifications) - set(requested))
+        detail = ", ".join((*[f"missing {name}" for name in missing], *[f"extra {name}" for name in extra]))
+        raise QueryPlanError(f"venue specifications do not match scope: {detail}")
+
+    provider_map = {str(provider["provider"]): provider for provider in providers}
+    operations: list[dict[str, Any]] = []
+    for venue_id in sorted(requested):
+        descriptor, acceptance = specifications[venue_id]
+        primary = str(descriptor["primary_provider"])
+        if acceptance.get("primary_provider") != primary:
+            raise QueryPlanError(f"venue {venue_id} primary provider does not match acceptance")
+        if primary not in provider_map:
+            raise QueryPlanError(f"venue {venue_id} primary provider is absent from QueryPlan")
+        fallbacks = []
+        venue_scope = {**scope, "venues": [venue_id]}
+        for order, fallback in enumerate(acceptance.get("fallbacks", ()), start=1):
+            provider_name = str(fallback["provider"])
+            role = str(fallback["role"])
+            provider = provider_map.get(provider_name)
+            if provider is None:
+                raise QueryPlanError(
+                    f"venue {venue_id} fallback provider {provider_name} is absent from QueryPlan"
+                )
+            if role not in provider["roles"]:
+                raise QueryPlanError(
+                    f"venue {venue_id} fallback {provider_name} does not declare role {role}"
+                )
+            hashes = (
+                [
+                    query.query_hash
+                    for query in compile_queries(
+                        provider_name, variants, venue_scope, page_size=page_size
+                    )
+                ]
+                if role == "search"
+                else []
+            )
+            fallbacks.append(
+                {
+                    "order": order,
+                    "provider": provider_name,
+                    "role": role,
+                    "native_query_hashes": hashes,
+                }
+            )
+        operations.append(
+            {
+                "venue_id": venue_id,
+                "name": str(descriptor["name"]),
+                "venue_type": str(descriptor["venue_type"]),
+                "descriptor": {
+                    "schema_version": str(descriptor["schema_version"]),
+                    "provider": primary,
+                    "adapter": primary,
+                    "parameters": deepcopy(dict(descriptor["provider_params"])),
+                },
+                "descriptor_hash": content_hash(descriptor),
+                "acceptance_schema_version": str(acceptance["schema_version"]),
+                "acceptance_manifest_hash": content_hash(acceptance),
+                "fallbacks": fallbacks,
+            }
+        )
+    return operations
+
+
 def approve_query_plan(
     plan: Mapping[str, Any],
     expected_hash: str,
@@ -120,6 +226,7 @@ def approve_query_plan(
     approved_by: str,
     approved_at: str,
 ) -> dict[str, Any]:
+    _require_schema_version(plan)
     assert_screening_scope_hash(plan)
     return approve(
         plan,
@@ -154,6 +261,7 @@ def compile_runtime_providers(
     plan: Mapping[str, Any], provider_specs: Sequence[Mapping[str, Any]]
 ) -> tuple[dict[str, Any], ...]:
     """Resolve current provider facts into the same frozen shape as a QueryPlan."""
+    _require_schema_version(plan)
     requirements = runtime_requirements(plan)
     providers = tuple(
         _compile_provider(
@@ -179,6 +287,10 @@ def assert_runtime_matches(
     include_arxiv_candidates: bool | None = None,
 ) -> None:
     """Reject every environment change that would alter replayed searches."""
+    try:
+        _require_schema_version(plan)
+    except QueryPlanError as error:
+        raise QueryPlanDriftError(str(error)) from error
     try:
         require_valid_approval(plan, "plan_hash")
     except ApprovalError as error:
@@ -246,6 +358,7 @@ class QueryPlanStore:
         return approved
 
     def save_approved(self, plan: Mapping[str, Any]) -> Path:
+        _require_schema_version(plan)
         try:
             require_valid_approval(plan, "plan_hash")
         except ApprovalError as error:
@@ -266,6 +379,7 @@ class QueryPlanStore:
 
     def load_approved(self, plan_id: str) -> dict[str, Any]:
         plan = json.loads(self.approved_path(plan_id).read_text(encoding="utf-8"))
+        _require_schema_version(plan)
         try:
             require_valid_approval(plan, "plan_hash")
         except ApprovalError as error:
@@ -382,6 +496,14 @@ def _is_sha256(value: Any) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _require_schema_version(plan: Mapping[str, Any]) -> None:
+    if plan.get("schema_version") != QUERY_PLAN_SCHEMA_VERSION:
+        raise QueryPlanError(
+            "QueryPlan schema_version is unsupported; recompile the plan as version "
+            f"{QUERY_PLAN_SCHEMA_VERSION}"
+        )
 
 
 def _requirements(document: Mapping[str, Any]) -> dict[str, Any]:

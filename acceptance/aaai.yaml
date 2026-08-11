@@ -11,4 +11,4 @@ transport_fixture_routes:
 transport_expected_stable_ids: ["31001", "31002"]
 required_fields: [stable_id, metadata, date_filter]
 required_capabilities: [stable_id, metadata, date_filter]
-fallbacks: [{provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+fallbacks: [{provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

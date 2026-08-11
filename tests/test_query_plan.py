@@ -84,6 +84,25 @@ def draft() -> dict[str, object]:
     }
 
 
+def venue_spec(*, fallback_role: str = "search") -> dict[str, object]:
+    return {
+        "descriptor": {
+            "schema_version": "1",
+            "venue_id": "testconf",
+            "name": "TestConf",
+            "venue_type": "conference",
+            "primary_provider": "pmlr",
+            "provider_params": {"volume_id": "v1"},
+        },
+        "acceptance": {
+            "schema_version": "2",
+            "venue_id": "testconf",
+            "primary_provider": "pmlr",
+            "fallbacks": [{"provider": "openalex", "role": fallback_role}],
+        },
+    }
+
+
 def test_compiled_plan_replays_and_approval_is_detached() -> None:
     first = compile_query_plan(draft(), providers=[provider()])
     second = compile_query_plan(draft(), providers=[provider()])
@@ -91,6 +110,7 @@ def test_compiled_plan_replays_and_approval_is_detached() -> None:
     assert first["plan_hash"] == second["plan_hash"]
     assert first["plan_id"] == second["plan_id"]
     assert first["scope"]["include_arxiv_candidates"] is False
+    assert first["schema_version"] == "2"
     approved = approve_query_plan(
         first,
         first["plan_hash"],
@@ -99,6 +119,59 @@ def test_compiled_plan_replays_and_approval_is_detached() -> None:
     )
     assert approved["plan_hash"] == first["plan_hash"]
     validate(approved, "query-plan.schema.json")
+
+
+def test_legacy_v1_plan_requires_explicit_recompile_before_approval_or_runtime() -> None:
+    plan = compile_query_plan(draft(), providers=[provider()])
+    legacy = deepcopy(plan)
+    legacy["schema_version"] = "1"
+    legacy["plan_hash"] = approved_content_hash(legacy)
+
+    with pytest.raises(QueryPlanError, match="recompile.*version 2"):
+        approve_query_plan(
+            legacy,
+            legacy["plan_hash"],
+            approved_by="owner",
+            approved_at="2026-08-09T01:00:00Z",
+        )
+    with pytest.raises(QueryPlanDriftError, match="recompile.*version 2"):
+        assert_runtime_matches(legacy, legacy["providers"])
+
+
+def test_venue_operation_graph_is_frozen_into_approval_identity() -> None:
+    document = draft()
+    document["scope"]["venues"] = ["testconf"]
+    document["required_roles"] = ["venue_primary"]
+    document["required_providers"] = ["pmlr"]
+    primary = provider("pmlr")
+    primary["roles"] = ["venue_primary"]
+    fallback = provider("openalex")
+    fallback["roles"] = ["search", "metadata_enricher"]
+
+    first = compile_query_plan(
+        document,
+        providers=[primary, fallback],
+        venue_specs=[venue_spec()],
+    )
+    changed = compile_query_plan(
+        document,
+        providers=[primary, fallback],
+        venue_specs=[venue_spec(fallback_role="metadata_enricher")],
+    )
+
+    operation = first["venue_operations"][0]
+    assert operation["venue_id"] == "testconf"
+    assert operation["fallbacks"][0]["native_query_hashes"]
+    assert first["plan_hash"] != changed["plan_hash"]
+    validate(first, "query-plan.schema.json")
+
+
+def test_venue_scope_requires_exact_descriptor_and_acceptance_snapshots() -> None:
+    document = draft()
+    document["scope"]["venues"] = ["testconf"]
+
+    with pytest.raises(QueryPlanError, match="venue specifications do not match scope"):
+        compile_query_plan(document, providers=[provider()])
 
 
 def test_screening_scope_hash_is_derived_after_scope_defaults_and_overwrites_input() -> None:

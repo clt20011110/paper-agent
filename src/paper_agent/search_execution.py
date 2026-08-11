@@ -23,7 +23,7 @@ from .approved_snapshot import (
 )
 from .provider_runtime import ProviderRuntime, ProviderRuntimePolicy, policy_from_manifest
 from .provider_response_artifacts import ProviderResponseArtifactService
-from .providers.api import CrawlWindow, SeedInput
+from .providers.api import CrawlWindow, SeedInput, VenueDescriptor
 from .providers.builtin import create_builtin, manifest_from_document
 from .providers.plugins import (
     IsolatedProviderClient,
@@ -36,7 +36,7 @@ from .query_plan import (
     assert_runtime_matches,
     compile_runtime_providers,
 )
-from .search_pipeline import PipelineResult, SearchPipeline, VenueRun
+from .search_pipeline import PipelineResult, SearchPipeline, VenueFallback, VenueRun
 from .stage2_search import Stage2ReleaseError, load_stage2_release
 from .storage import Database
 from .verification import ProviderTrust, VenueContext
@@ -282,7 +282,7 @@ def execute_search_plan(
         name: ProviderTrust.from_manifest(installed.provider(name))
         for name in clients
     }
-    venues = _venue_runs(plan, installed, historical_replay=historical_replay)
+    venues = _venue_runs(plan, historical_replay=historical_replay)
     seeds = () if venue_only else tuple(seed_input(value) for value in plan["scope"].get("user_seeds", ()))
     citation_clients = {
         name: client
@@ -346,27 +346,42 @@ def seed_input(value: str) -> SeedInput:
 
 
 def _venue_runs(
-    plan: Mapping[str, Any], catalog: ManifestCatalog, *, historical_replay: bool = False
+    plan: Mapping[str, Any], *, historical_replay: bool = False
 ) -> tuple[VenueRun, ...]:
     start = str(plan["scope"]["date_from"])
     end = str(plan["scope"]["date_to"])
     year = int(start[:4]) if start[:4] == end[:4] else None
     runs = []
-    for venue_id in plan["scope"].get("venues", ()):
-        venue = catalog.venue(str(venue_id))
+    for operation in plan.get("venue_operations", ()):
+        venue_id = str(operation["venue_id"])
+        descriptor = operation["descriptor"]
         runs.append(
             VenueRun(
-                catalog.runtime_venue(str(venue_id)),
+                VenueDescriptor(
+                    int(descriptor["schema_version"]),
+                    venue_id,
+                    str(descriptor["provider"]),
+                    str(descriptor["adapter"]),
+                    dict(descriptor["parameters"]),
+                ),
                 CrawlWindow(date_from=start, date_to=end, year=year),
                 VenueContext(
                     f"{venue_id}:{start}:{end}",
-                    str(venue_id),
-                    str(venue["name"]),
-                    str(venue["venue_type"]),
-                    str(venue["primary_provider"]),
-                    venue,
+                    venue_id,
+                    str(operation["name"]),
+                    str(operation["venue_type"]),
+                    str(descriptor["provider"]),
+                    operation,
                 ),
                 historical_replay=historical_replay,
+                fallbacks=tuple(
+                    VenueFallback(
+                        str(item["provider"]),
+                        str(item["role"]),
+                        tuple(str(value) for value in item["native_query_hashes"]),
+                    )
+                    for item in operation["fallbacks"]
+                ),
             )
         )
     return tuple(runs)

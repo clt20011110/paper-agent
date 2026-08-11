@@ -170,7 +170,13 @@ class MetadataCoordinator:
         self.trusts = trusts
         self.verification = MetadataVerification(trusts)
 
-    def merge_batch(self, batch: SourceBatch, venue: VenueContext | None = None) -> tuple[Paper, ...]:
+    def merge_batch(
+        self,
+        batch: SourceBatch,
+        venue: VenueContext | None = None,
+        *,
+        candidate_only: bool = False,
+    ) -> tuple[Paper, ...]:
         papers: dict[str, Paper] = {}
         if venue:
             self.repository.save_collection(
@@ -186,7 +192,9 @@ class MetadataCoordinator:
             papers[paper.paper_id] = paper
             self._record_source_details(paper.paper_id, entry)
             if venue:
-                self._record_membership(paper.paper_id, entry, venue)
+                self._record_membership(
+                    paper.paper_id, entry, venue, candidate_only=candidate_only
+                )
 
         for paper_id in papers:
             evidence = self._entries_for_paper(paper_id)
@@ -223,13 +231,21 @@ class MetadataCoordinator:
                 str(citation_count_as_of),
             )
 
-    def _record_membership(self, paper_id: str, entry: SourceEntry, venue: VenueContext) -> None:
+    def _record_membership(
+        self,
+        paper_id: str,
+        entry: SourceEntry,
+        venue: VenueContext,
+        *,
+        candidate_only: bool,
+    ) -> None:
         current = self.repository.connection.execute(
             "SELECT membership_status, official_evidence_json FROM paper_collections WHERE paper_id = ? AND collection_id = ?",
             (paper_id, venue.collection_id),
         ).fetchone()
         official = (
-            entry.provider == venue.primary_provider
+            not candidate_only
+            and entry.provider == venue.primary_provider
             and entry.metadata.get("official_membership") is True
             and entry.metadata.get("venue_id") == venue.venue_id
         )

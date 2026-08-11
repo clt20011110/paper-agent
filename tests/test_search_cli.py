@@ -467,7 +467,23 @@ def test_venue_scope_automatically_freezes_exact_primary_provider(tmp_path, caps
     plan = json.loads(Path(result["draft_path"]).read_text())
 
     assert plan["execution"]["required_providers"] == ["openalex", "pmlr"]
-    assert {provider["provider"] for provider in plan["providers"]} == {"openalex", "pmlr"}
+    operation = plan["venue_operations"][0]
+    assert operation["descriptor"]["provider"] == "pmlr"
+    assert {fallback["provider"] for fallback in operation["fallbacks"]} == {
+        "crossref",
+        "dblp",
+        "openalex",
+        "openreview",
+        "semantic_scholar",
+    }
+    assert {provider["provider"] for provider in plan["providers"]} == {
+        "crossref",
+        "dblp",
+        "openalex",
+        "openreview",
+        "pmlr",
+        "semantic_scholar",
+    }
 
 
 def test_cli_plan_and_run_forward_exact_plugin_allowlist(
