@@ -3,7 +3,7 @@ provider: semantic_scholar
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.providers.builtin:SemanticScholarProvider
-artifact_sha256: 4a37ff0396ff2dcbc01057138968a41979c2c2a53e7dd12ece2a60da24697bd6
+artifact_sha256: 3ef41d7aed1629cf1b65730621db38f9b6fec633c9a9282644bfd35fdae93649
 enabled: true
 builtin: true
 authority: scholarly_graph
