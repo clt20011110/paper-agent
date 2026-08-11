@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
+import stat
 import sys
 import sysconfig
 from datetime import UTC, datetime
@@ -85,6 +87,14 @@ from .stage2_evaluator import (
     validate_hidden_promotion_payload,
 )
 from .stage2_hidden_attestation import load_hidden_evaluator_trust
+from .stage2_promotion_artifacts import (
+    run_promotion_evaluation,
+    validate_promotion_candidate_bundles,
+)
+from .stage2_release_assembly import (
+    assemble_stage2_release,
+    validate_stage2_release_assembly,
+)
 from .stage2_commands import (
     evaluate_benchmark_artifacts,
     filter_database,
@@ -130,6 +140,11 @@ _NON_SUCCESS_EVENT_STATUSES = frozenset({
     "running",
     "uncertain_terminal",
 })
+
+_STAGE2_PROMOTION_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_STAGE2_PROMOTION_DATE_TIME = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
 
 
 class _StructuredArgumentParser(argparse.ArgumentParser):
@@ -316,6 +331,43 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     attest.add_argument("--signing-key-file", required=True, type=Path)
     attest.add_argument("--trust-manifest", required=True, type=Path)
     attest.add_argument("--output", required=True, type=Path)
+
+    promote = evaluator_commands.add_parser(
+        "promote",
+        help="run one sealed hidden promotion batch and sign one public-safe attestation",
+    )
+    promote.add_argument("--manifest", required=True, type=Path)
+    promote.add_argument("--private-labels", required=True, type=Path)
+    promote.add_argument("--candidate", action="append", required=True, metavar="ID=PATH")
+    promote.add_argument("--submission", action="append", required=True, metavar="ID=PATH")
+    promote.add_argument("--incumbent-candidate-id", required=True)
+    promote.add_argument("--selected-candidate-id", required=True)
+    promote.add_argument("--evaluator-id", required=True)
+    promote.add_argument("--evaluation-run-id", required=True)
+    promote.add_argument("--state-root", required=True, type=Path)
+    promote.add_argument("--evaluator-key-id", required=True)
+    promote.add_argument("--issued-at", required=True)
+    promote.add_argument("--trust-manifest", required=True, type=Path)
+    promote.add_argument("--signing-key-file", required=True, type=Path)
+    promote.add_argument("--output", required=True, type=Path)
+    promote.add_argument("--bootstrap-iterations", type=int, default=2_000)
+    promote.add_argument("--bootstrap-seed", type=int, default=0)
+
+    stage2_release = subcommands.add_parser(
+        "stage2-release",
+        help="validate or assemble a deployment-ready Stage 2 release",
+    )
+    stage2_release_commands = stage2_release.add_subparsers(
+        dest="stage2_release_command", required=True
+    )
+    assemble = stage2_release_commands.add_parser(
+        "assemble",
+        help="verify every public and hidden gate and write a schema-v3 release",
+    )
+    assemble.add_argument("--candidate", required=True, type=Path)
+    assemble.add_argument("--evidence", required=True, type=Path)
+    assemble.add_argument("--trust-manifest", required=True, type=Path)
+    assemble.add_argument("--output", required=True, type=Path)
 
     report = subcommands.add_parser(
         "report", help="plan, approve, run, or compare Stage 4b reports"
@@ -556,6 +608,10 @@ def main(
         return _finish(args, result)
     if args.command == "stage2-evaluator" and args.stage2_evaluator_command == "attest":
         return _finish(args, _stage2_evaluator_attest(args))
+    if args.command == "stage2-evaluator" and args.stage2_evaluator_command == "promote":
+        return _finish(args, _stage2_evaluator_promote(args))
+    if args.command == "stage2-release" and args.stage2_release_command == "assemble":
+        return _finish(args, _stage2_release_assemble(args))
     if args.command == "report":
         return _finish(args, _report(args))
     if args.command == "verify-report":
@@ -602,6 +658,37 @@ def _filter(args: argparse.Namespace) -> dict[str, Any]:
         paper_ids=args.paper_id,
         dry_run=args.dry_run,
     )
+
+
+def _stage2_release_assemble(args: argparse.Namespace) -> dict[str, Any]:
+    """Verify and optionally write one public-safe Stage 2 release."""
+
+    operation = (
+        validate_stage2_release_assembly
+        if args.dry_run
+        else assemble_stage2_release
+    )
+    try:
+        result = operation(
+            args.candidate,
+            args.evidence,
+            args.trust_manifest,
+            args.output,
+        )
+    except Exception:
+        # Inputs include deployment-owned trust.  Keep the console boundary
+        # useful without reflecting paths, schema instances, or verifier
+        # internals that could disclose evaluator material.
+        raise CliUsageError(
+            "Stage 2 release assembly verification failed"
+        ) from None
+    return {
+        "command": "stage2-release.assemble",
+        "dry_run": args.dry_run,
+        "written": not args.dry_run,
+        **result.summary(),
+        "status": "validated" if args.dry_run else "complete",
+    }
 
 
 def _stage2_evaluator_attest(args: argparse.Namespace) -> dict[str, Any]:
@@ -655,6 +742,346 @@ def _assert_attestation_output_absent(path: Path) -> None:
     except OSError as error:
         raise OSError("cannot inspect hidden promotion attestation output") from error
     raise FileExistsError("hidden promotion attestation already exists")
+
+
+def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
+    """Run exactly one sealed promotion batch and sign only its selected result.
+
+    All public bindings, trust material, private-key custody, and the empty
+    output reservation are checked before private labels or predictions are
+    opened.  Once the evaluator starts, its hidden marker may be consumed even
+    when the selected candidate fails a gate; that signed failure is useful
+    audit evidence and never becomes a production release.
+    """
+
+    candidate_paths = _stage2_promotion_paths(args.candidate, "candidate")
+    submission_paths = _stage2_promotion_paths(args.submission, "submission")
+    _validate_stage2_promotion_controls(args, candidate_paths, submission_paths)
+    try:
+        # A gold manifest and v2 bundles are public inputs.  Do this before
+        # touching labels or submissions so malformed mappings cannot consume
+        # the hidden holdout.
+        from .stage2_evaluation import load_gold_manifest
+
+        manifest = load_gold_manifest(args.manifest)
+        manifest.validate_sampling_structure()
+        validate_promotion_candidate_bundles(
+            candidate_paths, expected_manifest_hash=manifest.hash()
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        raise CliUsageError("Stage 2 promotion public inputs are invalid") from None
+
+    _assert_attestation_output_absent(args.output)
+    try:
+        trust = load_hidden_evaluator_trust(args.trust_manifest)
+        if args.evaluator_key_id not in trust.keys:
+            raise ValueError("selected evaluator key is not active")
+    except (OSError, ValueError, TypeError, KeyError):
+        raise CliUsageError("Stage 2 promotion deployment trust is invalid") from None
+    if args.dry_run:
+        return {
+            "command": "stage2-evaluator.promote",
+            "candidate_id": args.selected_candidate_id,
+            "evaluation_manifest_hash": manifest.hash(),
+            "evaluation_run_id": args.evaluation_run_id,
+            "evaluated": False,
+            "signed": False,
+            "status": "validated",
+        }
+
+    # Reading the key precedes private evaluator input and marker consumption.
+    try:
+        private_key = load_hidden_evaluator_private_key(args.signing_key_file)
+        validate_hidden_evaluator_private_key_trust(
+            private_key, evaluator_key_id=args.evaluator_key_id, trust=trust
+        )
+    except (OSError, ValueError, TypeError):
+        raise CliUsageError("Stage 2 promotion signing prerequisites are invalid") from None
+    try:
+        descriptor, directory, parent_reservation, reservation = (
+            _reserve_hidden_promotion_output(args.output)
+        )
+    except FileExistsError:
+        raise
+    except OSError:
+        raise CliUsageError("Stage 2 promotion attestation output failed") from None
+    try:
+        try:
+            evaluation = run_promotion_evaluation(
+                manifest_path=args.manifest,
+                private_labels_path=args.private_labels,
+                submission_paths=submission_paths,
+                candidate_bundle_paths=candidate_paths,
+                evaluator_id=args.evaluator_id,
+                state_root=args.state_root,
+                incumbent_candidate_id=args.incumbent_candidate_id,
+                evaluation_run_id=args.evaluation_run_id,
+                bootstrap_iterations=args.bootstrap_iterations,
+                bootstrap_seed=args.bootstrap_seed,
+            )
+            signing = evaluation.candidates[args.selected_candidate_id]
+            payload = signing.attestation_payload(
+                evaluator_key_id=args.evaluator_key_id,
+                trust_manifest_hash=trust.manifest_hash,
+                issued_at=args.issued_at,
+            )
+            attestation = issue_hidden_promotion_from_payload(payload, private_key)
+        except Exception:
+            raise CliUsageError("sealed Stage 2 promotion evaluation failed") from None
+
+        try:
+            _write_reserved_hidden_promotion_output(descriptor, attestation)
+            _verify_reserved_hidden_promotion_output(
+                args.output.parent,
+                args.output.name,
+                parent_reservation,
+                reservation,
+                canonical_json(dict(attestation)),
+            )
+            os.close(descriptor)
+        except OSError:
+            raise CliUsageError("Stage 2 promotion attestation output failed") from None
+        descriptor = None
+    finally:
+        if descriptor is not None:
+            _remove_hidden_promotion_reservation(
+                directory, args.output.name, descriptor, reservation
+            )
+        os.close(directory)
+
+    passed = bool(payload["result_summary"]["passed"])
+    return {
+        "command": "stage2-evaluator.promote",
+        "candidate_id": args.selected_candidate_id,
+        "evaluation_manifest_hash": evaluation.evaluation_manifest_hash,
+        "evaluation_run_id": evaluation.evaluation_run_id,
+        "promotion_marker_hash": evaluation.promotion_marker_hash,
+        "payload_sha256": content_hash(payload),
+        "attestation_sha256": content_hash(attestation),
+        "evaluated": True,
+        "signed": True,
+        "passed": passed,
+        "status": "complete" if passed else "failed",
+    }
+
+
+def _stage2_promotion_paths(values: Sequence[str], label: str) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for value in values:
+        candidate_id, separator, path = value.partition("=")
+        if (
+            not separator
+            or not _STAGE2_PROMOTION_IDENTIFIER.fullmatch(candidate_id)
+            or not path
+            or candidate_id in result
+        ):
+            raise CliUsageError(
+                f"Stage 2 promotion {label} mappings must be unique ID=PATH values"
+            )
+        result[candidate_id] = Path(path)
+    return result
+
+
+def _validate_stage2_promotion_controls(
+    args: argparse.Namespace,
+    candidate_paths: Mapping[str, Path],
+    submission_paths: Mapping[str, Path],
+) -> None:
+    identifiers = (
+        *candidate_paths,
+        *submission_paths,
+        args.incumbent_candidate_id,
+        args.selected_candidate_id,
+        args.evaluator_id,
+        args.evaluation_run_id,
+        args.evaluator_key_id,
+    )
+    for value in identifiers:
+        if not _STAGE2_PROMOTION_IDENTIFIER.fullmatch(value):
+            raise CliUsageError("Stage 2 promotion identifiers are invalid")
+    if set(candidate_paths) != set(submission_paths):
+        raise CliUsageError("Stage 2 promotion candidate and submission mappings must match")
+    if (
+        args.incumbent_candidate_id not in candidate_paths
+        or args.selected_candidate_id not in candidate_paths
+    ):
+        raise CliUsageError("Stage 2 promotion incumbent and selected candidates must be submitted")
+    if not _stage2_promotion_date_time(args.issued_at):
+        raise CliUsageError("Stage 2 promotion issued-at is not a schema-valid date-time")
+    if args.bootstrap_iterations <= 0:
+        raise CliUsageError("Stage 2 promotion bootstrap iterations must be positive")
+
+
+def _stage2_promotion_date_time(value: str) -> bool:
+    """Apply the RFC 3339 shape required by JSON Schema ``date-time``."""
+
+    if not _STAGE2_PROMOTION_DATE_TIME.fullmatch(value):
+        return False
+    normalized = value.replace("t", "T").replace("z", "Z")
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def _hidden_promotion_directory_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _reserve_hidden_promotion_output(
+    path: Path,
+) -> tuple[int, int, os.stat_result, os.stat_result]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        directory = os.open(path.parent, _hidden_promotion_directory_flags())
+    except OSError:
+        raise OSError("cannot open hidden promotion attestation output directory") from None
+    try:
+        parent_reservation = os.fstat(directory)
+    except OSError:
+        os.close(directory)
+        raise OSError("cannot inspect hidden promotion attestation output directory") from None
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor: int | None = None
+    reservation: os.stat_result | None = None
+    try:
+        descriptor = os.open(path.name, flags, 0o600, dir_fd=directory)
+        reservation = os.fstat(descriptor)
+        os.fchmod(descriptor, 0o600)
+        reservation = os.fstat(descriptor)
+        if not stat.S_ISREG(reservation.st_mode):
+            raise OSError("hidden promotion attestation output is not a regular file")
+    except FileExistsError:
+        os.close(directory)
+        raise FileExistsError("hidden promotion attestation already exists") from None
+    except OSError:
+        if descriptor is not None:
+            if reservation is None:
+                os.close(descriptor)
+            else:
+                _remove_hidden_promotion_reservation(
+                    directory, path.name, descriptor, reservation
+                )
+        os.close(directory)
+        raise
+    return descriptor, directory, parent_reservation, reservation
+
+
+def _write_reserved_hidden_promotion_output(
+    descriptor: int, attestation: Mapping[str, Any]
+) -> None:
+    remaining = memoryview(canonical_json(dict(attestation)))
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError("cannot write hidden promotion attestation output")
+        remaining = remaining[written:]
+    os.fsync(descriptor)
+
+
+def _verify_reserved_hidden_promotion_output(
+    parent: Path,
+    name: str,
+    parent_reservation: os.stat_result,
+    reservation: os.stat_result,
+    expected: bytes,
+) -> None:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    directory = os.open(parent, _hidden_promotion_directory_flags())
+    try:
+        current_parent = os.fstat(directory)
+        if (current_parent.st_dev, current_parent.st_ino) != (
+            parent_reservation.st_dev,
+            parent_reservation.st_ino,
+        ):
+            raise OSError("hidden promotion attestation output directory changed")
+        descriptor = os.open(name, flags, dir_fd=directory)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or stat.S_IMODE(opened.st_mode) != 0o600
+                or (opened.st_dev, opened.st_ino)
+                != (reservation.st_dev, reservation.st_ino)
+            ):
+                raise OSError("hidden promotion attestation output reservation changed")
+            actual = bytearray()
+            while len(actual) <= len(expected):
+                block = os.read(
+                    descriptor, min(65_536, len(expected) + 1 - len(actual))
+                )
+                if not block:
+                    break
+                actual.extend(block)
+            final = os.fstat(descriptor)
+            current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if (
+                bytes(actual) != expected
+                or (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_mode,
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                )
+                != (
+                    final.st_dev,
+                    final.st_ino,
+                    final.st_mode,
+                    final.st_size,
+                    final.st_mtime_ns,
+                    final.st_ctime_ns,
+                )
+                or not stat.S_ISREG(current.st_mode)
+                or stat.S_IMODE(current.st_mode) != 0o600
+                or (current.st_dev, current.st_ino, current.st_size)
+                != (reservation.st_dev, reservation.st_ino, len(expected))
+            ):
+                raise OSError("hidden promotion attestation output verification failed")
+            os.fsync(directory)
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+
+
+def _remove_hidden_promotion_reservation(
+    directory: int, name: str, descriptor: int, reservation: os.stat_result
+) -> None:
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+    try:
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except OSError:
+        return
+    if (
+        current.st_dev == reservation.st_dev
+        and current.st_ino == reservation.st_ino
+    ):
+        try:
+            os.unlink(name, dir_fd=directory)
+        except OSError:
+            pass
 
 
 def _report(args: argparse.Namespace) -> dict[str, Any]:
@@ -2359,7 +2786,13 @@ def _command_from_argv(argv: Sequence[str]) -> str:
     if index >= len(argv):
         return "unknown"
     command = argv[index]
-    if command in {"grant", "search", "report", "stage2-evaluator"} and index + 1 < len(argv):
+    if command in {
+        "grant",
+        "search",
+        "report",
+        "stage2-evaluator",
+        "stage2-release",
+    } and index + 1 < len(argv):
         if argv[index + 1].startswith("-"):
             return command
         command = f"{command}.{argv[index + 1]}"
@@ -2369,7 +2802,9 @@ def _command_from_argv(argv: Sequence[str]) -> str:
 def _command_stage(command: str) -> str:
     if command.startswith(("search", "crawl", "import-seeds", "import")):
         return "stage1"
-    if command.startswith(("filter", "benchmark-stage2", "stage2-evaluator")):
+    if command.startswith(
+        ("filter", "benchmark-stage2", "stage2-evaluator", "stage2-release")
+    ):
         return "stage2"
     if command.startswith(("report", "verify-report")):
         return "stage4b"

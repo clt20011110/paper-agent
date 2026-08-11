@@ -14,6 +14,7 @@ import paper_agent.stage2_release_assembly as stage2_release_assembly
 from paper_agent.stage2_release_assembly import (
     Stage2ReleaseAssemblyError,
     assemble_stage2_release,
+    validate_stage2_release_assembly,
 )
 from paper_agent.stage2_search import load_stage2_release
 
@@ -90,6 +91,66 @@ def test_assemble_v3_release_from_verified_candidate_and_evidence(
     )
     assert loaded.profile.config_hash == result.query_plan_config_hash
     assert loaded.profile.threshold_hash == result.query_plan_thresholds_hash
+
+
+def test_validate_assembly_runs_all_gates_without_writing(
+    assembly_bundle: V3Bundle,
+) -> None:
+    candidate_path = assembly_bundle.root / "candidate.json"
+    evidence_path = assembly_bundle.root / "stage2-release-evidence.json"
+    output_path = assembly_bundle.root / "assembled-stage2-release.json"
+
+    validation = validate_stage2_release_assembly(
+        candidate_path,
+        evidence_path,
+        assembly_bundle.trust_path,
+        output_path,
+    )
+
+    assert not output_path.exists()
+    assembled = assemble_stage2_release(
+        candidate_path,
+        evidence_path,
+        assembly_bundle.trust_path,
+        output_path,
+    )
+    assert validation.summary() == assembled.summary()
+    assert sha256(output_path.read_bytes()).hexdigest() == validation.release_sha256
+
+
+def test_validate_assembly_does_not_create_an_invalid_output_parent(
+    assembly_bundle: V3Bundle,
+) -> None:
+    missing_parent = assembly_bundle.root / "missing"
+
+    with pytest.raises(Stage2ReleaseAssemblyError, match="exactly the benchmark"):
+        validate_stage2_release_assembly(
+            assembly_bundle.root / "candidate.json",
+            assembly_bundle.root / "stage2-release-evidence.json",
+            assembly_bundle.trust_path,
+            missing_parent / "assembled-stage2-release.json",
+        )
+
+    assert not missing_parent.exists()
+
+
+def test_validate_assembly_fails_closed_on_untrusted_hidden_attestation(
+    assembly_bundle: V3Bundle,
+) -> None:
+    trust = json.loads(assembly_bundle.trust_path.read_text(encoding="utf-8"))
+    trust["keys"][0]["status"] = "revoked"
+    _write_json(assembly_bundle.trust_path, trust)
+    output_path = assembly_bundle.root / "assembled-stage2-release.json"
+
+    with pytest.raises(Stage2ReleaseAssemblyError, match="verification failed"):
+        validate_stage2_release_assembly(
+            assembly_bundle.root / "candidate.json",
+            assembly_bundle.root / "stage2-release-evidence.json",
+            assembly_bundle.trust_path,
+            output_path,
+        )
+
+    assert not output_path.exists()
 
 
 @pytest.mark.parametrize(

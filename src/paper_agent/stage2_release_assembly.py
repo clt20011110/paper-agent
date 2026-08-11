@@ -84,6 +84,46 @@ def assemble_stage2_release(
     here: its configuration hash includes the envelope built by this function.
     """
 
+    return _verify_stage2_release_assembly(
+        candidate_path,
+        evidence_path,
+        hidden_trust_path,
+        output_path,
+        write_output=True,
+    )
+
+
+def validate_stage2_release_assembly(
+    candidate_path: Path,
+    evidence_path: Path,
+    hidden_trust_path: Path,
+    output_path: Path,
+) -> AssembledStage2Release:
+    """Validate a prospective v3 release without creating any output.
+
+    This follows the exact candidate, evidence, deployment-trust, and release
+    gate verification path used by :func:`assemble_stage2_release`.  The
+    prospective canonical release bytes and their digest are computed in
+    memory, but the output path and its parent are never created.
+    """
+
+    return _verify_stage2_release_assembly(
+        candidate_path,
+        evidence_path,
+        hidden_trust_path,
+        output_path,
+        write_output=False,
+    )
+
+
+def _verify_stage2_release_assembly(
+    candidate_path: Path,
+    evidence_path: Path,
+    hidden_trust_path: Path,
+    output_path: Path,
+    *,
+    write_output: bool,
+) -> AssembledStage2Release:
     try:
         candidate_path = candidate_path.resolve(strict=True)
         evidence_path = evidence_path.resolve(strict=True)
@@ -143,7 +183,8 @@ def assemble_stage2_release(
             "release_gate": release_gate,
         }
         release_bytes = _canonical_output_bytes(release_document)
-        _write_new(bundle_fd, output_path.name, output_path, release_bytes)
+        if write_output:
+            _write_new(bundle_fd, output_path.name, output_path, release_bytes)
     finally:
         os.close(bundle_fd)
 

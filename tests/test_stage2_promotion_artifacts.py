@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -27,6 +28,7 @@ from paper_agent.stage2_promotion_artifacts import (
     promotion_submission_document,
     promotion_submission_from_document,
     run_promotion_evaluation,
+    validate_promotion_candidate_bundles,
 )
 
 
@@ -148,6 +150,38 @@ def test_candidate_artifacts_are_derived_from_existing_v2_bundle(tmp_path: Path)
     assert derived.candidate_id == "local-winner"
     assert set(derived.calibrators) == set(CalibrationPath)
     assert set(derived.thresholds) == set(CalibrationPath)
+
+
+def test_candidate_preflight_requires_every_calibrator_to_bind_gold_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, labels_document = _gold()
+    labels = private_gold_labels_from_document(labels_document, manifest=manifest)
+    candidate = _candidate(manifest, labels)
+    monkeypatch.setattr(
+        artifacts_io, "candidate_artifacts_from_v2_bundle", lambda _path: candidate
+    )
+
+    validate_promotion_candidate_bundles(
+        {candidate.candidate_id: tmp_path / "candidate.json"},
+        expected_manifest_hash=manifest.hash(),
+    )
+
+    calibrators = dict(candidate.calibrators)
+    calibrators[CalibrationPath.QWEN] = replace(
+        calibrators[CalibrationPath.QWEN], gold_manifest_hash="f" * 64
+    )
+    mismatched = CandidateModelArtifacts(
+        candidate.candidate_id, calibrators, candidate.thresholds
+    )
+    monkeypatch.setattr(
+        artifacts_io, "candidate_artifacts_from_v2_bundle", lambda _path: mismatched
+    )
+    with pytest.raises(PrivatePromotionArtifactError, match="supplied gold manifest"):
+        validate_promotion_candidate_bundles(
+            {candidate.candidate_id: tmp_path / "candidate.json"},
+            expected_manifest_hash=manifest.hash(),
+        )
 
 
 def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_failure(

@@ -233,6 +233,35 @@ def candidate_artifacts_from_v2_bundle(path: Path) -> CandidateModelArtifacts:
         raise PrivatePromotionArtifactError(f"v2 candidate bundle is invalid: {error}") from error
 
 
+def validate_promotion_candidate_bundles(
+    candidate_bundle_paths: Mapping[str, Path],
+    *,
+    expected_manifest_hash: str,
+) -> None:
+    """Validate public candidate-ID-to-v2-bundle bindings before sealed input use.
+
+    This deliberately reads neither labels nor prediction submissions.  The
+    evaluator CLI calls it before it opens any private artifact or consumes a
+    hidden promotion marker.
+    """
+
+    if not candidate_bundle_paths:
+        raise PrivatePromotionArtifactError("at least one candidate bundle is required")
+    for candidate_id, path in candidate_bundle_paths.items():
+        artifact = candidate_artifacts_from_v2_bundle(path)
+        if candidate_id != artifact.candidate_id:
+            raise PrivatePromotionArtifactError(
+                "candidate bundle mapping keys must match frozen v2 profile names"
+            )
+        if any(
+            calibrator.gold_manifest_hash != expected_manifest_hash
+            for calibrator in artifact.calibrators.values()
+        ):
+            raise PrivatePromotionArtifactError(
+                "candidate calibrators do not bind the supplied gold manifest"
+            )
+
+
 def run_promotion_evaluation(
     *,
     manifest_path: Path,
