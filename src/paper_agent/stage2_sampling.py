@@ -9,13 +9,13 @@ manifest together with a small binding artifact.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite, log
+from math import isclose, isfinite, log
 from random import Random
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from .canonical import content_hash
-from .stage2_evaluation import GoldLabelStore, GoldManifest, GoldPair, GoldSplit, make_pair_id
+from .stage2_evaluation import GoldManifest, GoldPair, GoldSplit, make_pair_id
 
 
 def _pair_key(topic: str, paper_id: str) -> tuple[str, str]:
@@ -181,7 +181,7 @@ class PrivateSamplingAnnotation:
 
 @dataclass(frozen=True, slots=True)
 class PrivateSamplingAnnotations:
-    """Complete private annotation view of one :class:`PrivateCorpusSnapshot`."""
+    """Private labels for the curated candidates in a corpus snapshot."""
 
     rows: tuple[PrivateSamplingAnnotation, ...]
 
@@ -222,11 +222,16 @@ class GoldSamplingProvenance:
     corpus_hash: str
     sampling_policy_version: str
     sampling_seed: int
+    sampling_annotations_hash: str
     gold_manifest_hash: str
 
     def __post_init__(self) -> None:
         if self.schema_version != 1 or not all((
-            self.snapshot_hash, self.corpus_hash, self.sampling_policy_version, self.gold_manifest_hash,
+            self.snapshot_hash,
+            self.corpus_hash,
+            self.sampling_policy_version,
+            self.sampling_annotations_hash,
+            self.gold_manifest_hash,
         )):
             raise ValueError("gold sampling provenance requires complete bindings")
 
@@ -237,6 +242,7 @@ class GoldSamplingProvenance:
             "corpus_hash": self.corpus_hash,
             "sampling_policy_version": self.sampling_policy_version,
             "sampling_seed": self.sampling_seed,
+            "sampling_annotations_hash": self.sampling_annotations_hash,
             "gold_manifest_hash": self.gold_manifest_hash,
         }
 
@@ -247,7 +253,6 @@ class GoldSamplingProvenance:
 @dataclass(frozen=True, slots=True)
 class GoldSamplingResult:
     manifest: GoldManifest
-    labels: GoldLabelStore
     provenance: GoldSamplingProvenance
 
 
@@ -293,19 +298,42 @@ def _annotation_for(sampler: _StratifiedSampler, paper: CorpusPaper) -> PrivateS
 
 
 def _select_stratified_split(sampler: _StratifiedSampler, split: GoldSplit, size: int, topics: tuple[str, ...]) -> None:
+    def curated(predicate):
+        return lambda paper: paper.key in sampler.annotations and predicate(paper)
+
     for topic in topics:
-        sampler.ensure(split, 1, lambda paper, topic=topic: paper.topic == topic, f"topic {topic}")
+        sampler.ensure(
+            split,
+            1,
+            curated(lambda paper, topic=topic: paper.topic == topic),
+            f"curated candidates for topic {topic}",
+        )
     for language in ("en", "zh"):
-        sampler.ensure(split, 1, lambda paper, language=language: paper.language == language, f"language {language}")
-    sampler.ensure(split, 1, lambda paper: paper.cross_language_match, "cross-language match")
+        sampler.ensure(
+            split,
+            1,
+            curated(lambda paper, language=language: paper.language == language),
+            f"curated candidates for language {language}",
+        )
+    sampler.ensure(split, 1, curated(lambda paper: paper.cross_language_match), "curated cross-language candidates")
     sampler.ensure(
         split, (size + 4) // 5,
-        lambda paper: _annotation_for(sampler, paper).hard_negative,
-        "hard negatives",
+        curated(lambda paper: _annotation_for(sampler, paper).hard_negative),
+        "curated hard negatives",
     )
-    sampler.ensure(split, (size + 9) // 10, lambda paper: paper.abstract_incomplete, "incomplete abstracts")
-    sampler.ensure(split, 1, lambda paper: _annotation_for(sampler, paper).hard_positive, "hard positives")
-    sampler.take(split, size - len(sampler.selected[split]), lambda paper: True, "quota")
+    sampler.ensure(
+        split,
+        (size + 9) // 10,
+        curated(lambda paper: paper.abstract_incomplete),
+        "curated incomplete abstracts",
+    )
+    sampler.ensure(
+        split,
+        1,
+        curated(lambda paper: _annotation_for(sampler, paper).hard_positive),
+        "curated hard positives",
+    )
+    sampler.take(split, size - len(sampler.selected[split]), curated(lambda paper: True), "curated quota")
 
 
 def build_gold_sampling(
@@ -315,10 +343,10 @@ def build_gold_sampling(
 ) -> GoldSamplingResult:
     """Construct an exact, reproducible 600-pair Stage 2 gold-set artifact.
 
-    The real-distribution split is selected after the two labelled strata and
-    never consults ``annotations``.  It is a random sample of the remaining
-    crawler population with one recorded inclusion probability, as required by
-    the public ``GoldManifest`` contract.
+    HIDDEN_REAL is selected first from the complete natural crawler population
+    without consulting annotations.  DEV and HIDDEN_HARD are then drawn from
+    the remaining curated annotations.  The selected 600 rows are labelled in
+    a separate post-selection ledger before ``manifest.validate(labels)``.
     """
 
     if (snapshot.sampling_policy_version, snapshot.sampling_seed) != (policy.version, policy.seed):
@@ -328,20 +356,22 @@ def build_gold_sampling(
         raise ValueError("private corpus snapshot must cover 6..8 topics")
     by_key = annotations.by_key
     snapshot_keys = {paper.key for paper in snapshot.papers}
-    if set(by_key) != snapshot_keys:
-        raise ValueError("private sampling annotations must exactly cover the private corpus snapshot")
+    if not set(by_key) <= snapshot_keys:
+        raise ValueError("private sampling annotations contain rows outside the private corpus snapshot")
+
+    natural = [paper for paper in snapshot.papers if paper.natural_crawler_population]
+    if len(natural) < policy.hidden_real_size:
+        raise ValueError("insufficient natural crawler rows for hidden_real")
+    hidden_real_probability = policy.hidden_real_size / len(natural)
+    if any(
+        not isclose(paper.sampling_probability, hidden_real_probability, rel_tol=1e-9, abs_tol=1e-12)
+        for paper in natural
+    ):
+        raise ValueError(
+            "natural crawler rows must record hidden_real_size / natural frame size as sampling_probability"
+        )
 
     sampler = _StratifiedSampler(snapshot, by_key, policy.seed)
-    _select_stratified_split(sampler, GoldSplit.DEV, policy.dev_size, topics)
-    _select_stratified_split(sampler, GoldSplit.HIDDEN_HARD, policy.hidden_hard_size, topics)
-
-    natural = [
-        paper for paper in snapshot.papers
-        if sampler._eligible(paper, GoldSplit.HIDDEN_REAL) and paper.natural_crawler_population
-    ]
-    probabilities = {paper.sampling_probability for paper in natural}
-    if len(probabilities) != 1:
-        raise ValueError("hidden_real crawler population must have one recorded sampling_probability")
     sampler.take(
         GoldSplit.HIDDEN_REAL,
         policy.hidden_real_size,
@@ -349,6 +379,8 @@ def build_gold_sampling(
         "natural crawler population",
         weighted=False,
     )
+    _select_stratified_split(sampler, GoldSplit.DEV, policy.dev_size, topics)
+    _select_stratified_split(sampler, GoldSplit.HIDDEN_HARD, policy.hidden_hard_size, topics)
 
     pairs = tuple(
         GoldPair(
@@ -356,7 +388,7 @@ def build_gold_sampling(
             paper.topic,
             paper.language,
             paper.source,
-            paper.sampling_probability,
+            hidden_real_probability if split is GoldSplit.HIDDEN_REAL else paper.sampling_probability,
             paper.paper_family,
             snapshot.corpus_hash,
             split,
@@ -368,15 +400,14 @@ def build_gold_sampling(
         for paper in sampler.selected[split]
     )
     manifest = GoldManifest(1, snapshot.corpus_hash, pairs, ("en", "zh"))
-    selected_annotations = {paper.pair_id: by_key[paper.key] for papers in sampler.selected.values() for paper in papers}
-    labels = GoldLabelStore(
-        {pair_id: annotation.label for pair_id, annotation in selected_annotations.items()},
-        annotations.hash(),
-        frozenset(pair_id for pair_id, annotation in selected_annotations.items() if annotation.hard_negative),
-        frozenset(pair_id for pair_id, annotation in selected_annotations.items() if annotation.hard_positive),
-    )
-    manifest.validate(labels)
+    manifest.validate_sampling_structure()
     provenance = GoldSamplingProvenance(
-        1, snapshot.hash(), snapshot.corpus_hash, policy.version, policy.seed, manifest.hash()
+        1,
+        snapshot.hash(),
+        snapshot.corpus_hash,
+        policy.version,
+        policy.seed,
+        annotations.hash(),
+        manifest.hash(),
     )
-    return GoldSamplingResult(manifest, labels, provenance)
+    return GoldSamplingResult(manifest, provenance)
