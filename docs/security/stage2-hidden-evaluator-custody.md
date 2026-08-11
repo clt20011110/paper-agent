@@ -2,6 +2,22 @@
 
 Production Stage 2 release schema v3 has two independently verified inputs: public raw gate evidence and a signed statement from the team that holds the hidden labels. The signed statement does not carry labels, pair IDs, annotations, raw predictions, scores, or private marker state.
 
+## Sampling and annotation custody
+
+Build the 600-pair set before creating authoritative gold labels. The complete natural frame marked inside the private snapshot does not require exhaustive pre-labeling. Under a frozen seed, draw 150 HIDDEN_REAL rows from that frame **without reading curated labels** and record their true inclusion probability, 150/N; then build DEV and HIDDEN_HARD from the curated pool of remaining paper families. The curated labels and difficulty flags are provisional sampling strata only, not gold. After all 600 pairs are selected, two annotators independently label every pair and a third adjudicates disagreements:
+
+```sh
+paper-agent --dry-run stage2-sampling build \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --curated-annotations /secure/evaluator/curated-annotations.json \
+  --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
+  --provenance-output /secure/evaluator/provenance.json
+```
+
+Only HIDDEN_REAL has an interpretable `sampling_probability=150/N`. DEV and HIDDEN_HARD are constrained by quotas, weights, and paper-family grouping, so their field is `null` and they must not enter inverse-probability metrics.
+
+The label-free 600-pair gold manifest may enter the release bundle. The snapshot, curated annotations, sampling provenance (private in the current design), and raw annotation ledger remain in evaluator custody. `--private-labels` is exactly the labels for those 600 manifest pairs, never a full-snapshot label export.
+
 The evaluator and the deployment verifier share only a reviewed Ed25519 public-key trust manifest. A release bundle cannot select or replace that trust root. The evaluator uses an explicit `--trust-manifest` for `stage2-evaluator attest`, `stage2-evaluator promote`, and `stage2-release assemble`. Commands that load an already assembled production release instead use the deployment environment variable `PAPER_AGENT_STAGE2_HIDDEN_TRUST`, or the equivalent `hidden_trust_path` Python argument. The environment variable does not replace the explicit evaluator or assembler option.
 
 ## Trust-root deployment

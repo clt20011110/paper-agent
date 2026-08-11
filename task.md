@@ -452,7 +452,19 @@ evidence_fields[]
 - 开发集和 hard-case 集至少包含 20% hard negatives、10% 缺失或截断摘要，并覆盖 hard positives。
 - 真实分布集必须从目标爬虫输出按已记录的抽样概率随机抽取，不得为了平衡标签而改写自然基率。
 - 同一论文的 arXiv、会议、期刊或预印本家族必须使用 paper-family 分组切分，不能跨 dev/hidden 泄漏。
-- 冻结 sampling manifest，记录 topic、language、source、抽样概率、paper-family 和语料 hash。
+- 冻结 sampling manifest，记录 topic、language、source、paper-family 和语料 hash；HIDDEN_REAL 记录真实纳入概率 150/N，受配额、权重和 family 约束的 DEV/HIDDEN_HARD 没有可解释的单一纳入概率，必须记录 `null`，不得借用 HIDDEN_REAL 概率。
+
+抽样与权威 gold 标注必须分两阶段：先由 evaluator 保管的完整自然语料框生成 private snapshot（不要求对全量 snapshot 预标）。使用冻结 seed，在**不读取 curated labels**的情况下从完整自然框抽取 150 条 HIDDEN_REAL，并记录真实纳入概率 150/N；再从剩余 paper-family 的 curated pool 构建 DEV 与 HIDDEN_HARD。curated annotations 的临时标签和难例标记只用于抽样配额与分层，绝不是 gold label。仅当这 600 个 pair 已被选中后，全部样本才由两位标注者独立标注，并交由第三人仲裁。构建命令为：
+
+```sh
+paper-agent --dry-run stage2-sampling build \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --curated-annotations /secure/evaluator/curated-annotations.json \
+  --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
+  --provenance-output /secure/evaluator/provenance.json
+```
+
+`gold-manifest` 是不含标签的 600-pair 公共清单，可进入 release；private snapshot、curated annotations、抽样 provenance 和原始标注 ledger 均由 evaluator 托管（当前设计下 provenance 也不公开）。`--private-labels` 必须精确覆盖该 600-pair manifest，绝不是完整 snapshot 的全量标签。
 
 标注 rubric：
 
@@ -461,7 +473,7 @@ evidence_fields[]
 - 2：与主题直接相关，应保留。
 - 3：主题核心论文，必须保留。
 
-两位标注者独立标注，2/3 为正例；分歧由第三人仲裁。quadratic-weighted kappa 在仲裁前计算且必须 ≥ 0.75。隐藏集标签由一次性 promotion evaluator 持有；候选不得读取标签或逐次调参。隐藏结果一旦暴露，该集合转为 regression set，下一轮模型晋级必须使用新 holdout。
+2/3 为正例。两位标注者在 600-pair 选样后独立标注，分歧由第三人仲裁。quadratic-weighted kappa 在仲裁前计算且必须 ≥ 0.75。隐藏集标签由一次性 promotion evaluator 持有；候选不得读取标签或逐次调参。隐藏结果一旦暴露，该集合转为 regression set，下一轮模型晋级必须使用新 holdout。
 
 级联分数必须定义为 P(gold_label ≥ 2)。reranker 与 Qwen 分别在 dev 上拟合并冻结 path-specific calibrator，不能直接比较或混合原始分数。ECE 使用 10 个 equal-frequency bins。
 
@@ -1190,7 +1202,7 @@ Codex skill：
 ### Phase 3：Stage 2 模型评测与上线
 
 1. 升级 oMLX 至至少 v0.5.7。
-2. 建立 600 条金标集和标注流程。
+2. 从完整 private snapshot 按冻结 seed 先抽 HIDDEN_REAL、再以剩余 family 构建 DEV/HIDDEN_HARD；选中 600 条后完成双人独立标注与仲裁，并保管 sampling provenance。
 3. 实现 BGE 基线、候选 backend 和 Qwen 裁决器。
 4. 校准阈值并运行隐藏集。
 5. 运行 1,000/10,000 篇性能与 soak 测试。

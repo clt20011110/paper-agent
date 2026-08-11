@@ -19,6 +19,24 @@ Paper Agent 的 SQLite 数据库、冻结计划、grant、模型 release 和报�
 
 ## Stage 2 晋级与 release 组装
 
+金标采样在隔离 evaluator 内先于标注完成。private snapshot 中标记的完整自然语料框不要求全量预标：冻结 seed
+先从其中抽取 150 条 HIDDEN_REAL，记录真实纳入概率 150/N，且该步不得读取 curated labels；随后从剩余 paper-family 的 curated
+pool 构建 DEV/HIDDEN_HARD。curated annotations 中的标签和难例标记只用于抽样分层，不是 gold label。
+600 个 pair 选定后，全部样本才进行权威的两位独立标注和第三人仲裁：
+
+```sh
+paper-agent --dry-run stage2-sampling build \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --curated-annotations /secure/evaluator/curated-annotations.json \
+  --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
+  --provenance-output /secure/evaluator/provenance.json
+```
+
+HIDDEN_REAL 在 manifest 中记录真实 `sampling_probability=150/N`；DEV/HIDDEN_HARD 的配额、权重与 family
+约束使其不存在单一纳入概率，因此记录 `null` 且不得用于逆概率加权。
+
+无标签的 600-pair gold manifest 可进入 release；private snapshot、curated annotations、抽样 provenance（当前设计为 private）和原始标注 ledger 必须留在 evaluator custody。传给 promotion 的 `--private-labels` 精确覆盖这 600 条 manifest pair，不得以 snapshot 全量标签代替。
+
 隔离 evaluator 优先运行 `stage2-evaluator promote`，而不是手工构造 hidden gate 结论。先在全局
 `--dry-run` 下提供完整的 `--manifest`、`--private-labels`、重复的 `--candidate ID=PATH` 与
 `--submission ID=PATH`、重复的 `--public-evidence ID=PATH`、incumbent/evaluator/run IDs、`--state-root`、key ID、RFC 3339

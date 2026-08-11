@@ -79,6 +79,25 @@ calibrator、threshold 和 release bundle；`configs/stage2/models/*.lock.json` 
 锁定输入，不等于 release 已通过。随后用同一 approved QueryPlan 和
 `--stage2-release` 运行 `doctor`，确认模型 ID、revision、digest 和本地 endpoint。
 
+准备金标时，private snapshot 中标记的完整自然语料框由 evaluator 保管，**不需全量预标**。先按冻结 seed 从
+该框抽取 150 条 HIDDEN_REAL（不读 curated labels，记录真实纳入概率 150/N），再由剩余 paper-family 的 curated pool 构建 DEV/
+HIDDEN_HARD。curated annotations 只保存为抽样配额和难例分层准备的临时 curation 标签，不是权威 gold。
+600 个 pair 选中后，全部样本才由两人独立标注并由第三人仲裁：
+
+```sh
+paper-agent --dry-run stage2-sampling build \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --curated-annotations /secure/evaluator/curated-annotations.json \
+  --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
+  --provenance-output /secure/evaluator/provenance.json
+```
+
+输出中只有 HIDDEN_REAL 带真实 `sampling_probability=150/N`。DEV/HIDDEN_HARD 的约束抽样没有单一可解释
+纳入概率，因此该字段为 `null`，不能参与逆概率加权。
+
+无标签 gold manifest 的 600 pair 可进入 release；snapshot、curated annotations、provenance（当前为 private）和原始
+标注 ledger 均不得离开 evaluator custody。promotion 的 `--private-labels` 只精确覆盖这 600 个 manifest pair。
+
 schema-v3 release 不能手写或仅修改 schema version。隔离 evaluator 优先用一次性的
 `stage2-evaluator promote` 同时执行 hidden gate、创建持久 marker 并签名。先做 public-only
 dry-run；虽然 private/key/state/output 参数仍为必填，但这一步不读取 private labels、submission

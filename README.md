@@ -79,6 +79,26 @@ Stage 2 production release 现为 schema v3：公共门禁从原始 evidence 重
 bundle 不能携带或选择这个 trust root。先阅读
 [hidden evaluator custody runbook](docs/security/stage2-hidden-evaluator-custody.md)，再配置该环境变量。
 
+Stage 2 金标先抽样、后标注：evaluator 从 private snapshot 的完整自然语料框按冻结 seed 抽取 150 条
+HIDDEN_REAL（不读取 curated labels，记录真实纳入概率 150/N），再从剩余 paper-family 的 curated pool 构建 DEV/HIDDEN_HARD。
+curated annotations 是只用于配额与难例分层的临时 curation 标签，不是 gold；完整 snapshot 无需全量预标。
+选中 600 个 pair 后，全部样本才进入权威的双人独立标注和第三人仲裁。构建命令（`--dry-run` 是全局选项）为：
+
+```sh
+paper-agent --dry-run stage2-sampling build \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --curated-annotations /secure/evaluator/curated-annotations.json \
+  --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
+  --provenance-output /secure/evaluator/provenance.json
+```
+
+manifest 只给 HIDDEN_REAL 记录可解释的 `sampling_probability=150/N`；DEV/HIDDEN_HARD 受配额、权重和
+paper-family 约束，字段为 `null`，不会用错误概率污染逆概率指标。
+
+无标签的 600-pair gold manifest 可放入 release；private snapshot、curated annotations、provenance 与原始标注 ledger
+均留在 evaluator custody（当前 provenance 也不公开）。`--private-labels` 只包含 manifest 的精确 600 条标签，不是
+snapshot 全量标签。
+
 生产 release 的顺序是 `promote → assemble → load`。优先在隔离 evaluator 中使用一次性
 `promote`；`--candidate` 与 `--submission` 是可重复的 `ID=PATH`，两边 ID 集合必须完全一致：
 
