@@ -116,7 +116,10 @@ def test_service_uses_descriptor_lookup_order_and_identifier_bindings(
         ("unpaywall", "resolve"),
         ("arxiv", "search"),
     ]
-    assert transport.calls[0][2] == {"doi": "10.1000/stage3"}
+    assert transport.calls[0][2] == {
+        "doi": "10.1000/stage3",
+        "resultType": "core",
+    }
     assert transport.calls[1][2]["doi"] == "10.1000/stage3"
     assert transport.calls[2][2] == {"query": "id:2501.01234"}
 
@@ -124,13 +127,19 @@ def test_service_uses_descriptor_lookup_order_and_identifier_bindings(
 def test_lookup_retains_raw_evidence_hash_and_retrieval_time_for_resolver_candidates() -> None:
     class EuropeFixture:
         def __call__(self, provider: str, operation: str, parameters: Mapping[str, Any]) -> Mapping[str, Any]:
-            assert (provider, operation, parameters["doi"]) == ("europe_pmc", "search", "10.1000/stage3")
+            assert (provider, operation, dict(parameters)) == (
+                "europe_pmc",
+                "search",
+                {"doi": "10.1000/stage3", "resultType": "core"},
+            )
             return {
                 "raw_response_artifact_hash": "europe-pmc-response-sha256",
                 "resultList": {"result": [{
                     "isOpenAccess": "Y",
                     "fullTextUrlList": {"fullTextUrl": [{
-                        "availability": "Open access", "url": "https://europepmc.example/paper.pdf",
+                        "availability": "Open access",
+                        "documentStyle": "pdf",
+                        "url": "https://europepmc.example/paper.pdf",
                     }]},
                 }]},
             }
@@ -141,6 +150,29 @@ def test_lookup_retains_raw_evidence_hash_and_retrieval_time_for_resolver_candid
 
     assert candidates[0].raw_evidence_hash == "europe-pmc-response-sha256"
     assert candidates[0].retrieved_at == "2026-08-10T00:00:00Z"
+
+
+def test_default_europe_pmc_lookup_freezes_the_core_result_contract() -> None:
+    registry = default_metadata_lookup_registry()
+    descriptor = registry.get("europe_pmc")
+
+    assert descriptor is not None
+    assert descriptor.parameters(Paper("paper-metadata", "Metadata Lookup", doi="10.1000/stage3")) == {
+        "doi": "10.1000/stage3",
+        "resultType": "core",
+    }
+    assert registry.canonical_identity()["descriptors"][0] == {
+        "resolver": "europe_pmc",
+        "provider": "europe_pmc",
+        "operation": "search",
+        "implementation_version": "europe-pmc-doi-parameters-v2",
+        "parameter_contract": {
+            "paper_field": "doi",
+            "parameter": "doi",
+            "fixed_parameters": {"resultType": "core"},
+            "missing": "skip",
+        },
+    }
 
 
 def test_lookup_identity_comes_from_the_actual_registry_contract() -> None:

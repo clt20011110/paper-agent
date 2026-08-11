@@ -112,6 +112,9 @@ def test_default_resolver_order_uses_only_metadata_evidence_and_preserves_licens
         ("unpaywall", "paper-1"),
         ("arxiv", "paper-1"),
     ]
+    assert [
+        candidate.url for candidate in candidates if candidate.resolver == "europe_pmc"
+    ] == ["https://europepmc.org/articles/PMC7654321/bin/main.pdf"]
     bronze, repository = [candidate for candidate in candidates if candidate.resolver == "unpaywall"]
     assert bronze.access_basis is AccessBasis.PUBLIC_READ_ONLY
     assert repository.access_basis is AccessBasis.PUBLIC_READ_ONLY

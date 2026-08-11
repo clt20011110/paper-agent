@@ -109,9 +109,14 @@ def default_metadata_lookup_registry() -> MetadataLookupRegistry:
             "europe_pmc",
             "europe_pmc",
             "search",
-            "europe-pmc-doi-parameters-v1",
-            {"paper_field": "doi", "parameter": "doi", "missing": "skip"},
-            _doi_parameters,
+            "europe-pmc-doi-parameters-v2",
+            {
+                "paper_field": "doi",
+                "parameter": "doi",
+                "fixed_parameters": {"resultType": "core"},
+                "missing": "skip",
+            },
+            _europe_pmc_doi_parameters,
         ),
         MetadataLookupDescriptor(
             "unpaywall",
@@ -196,6 +201,12 @@ def _doi_parameters(paper: Paper) -> Mapping[str, Any] | None:
     if not paper.doi:
         return None
     return {"doi": paper.doi}
+
+
+def _europe_pmc_doi_parameters(paper: Paper) -> Mapping[str, Any] | None:
+    if not paper.doi:
+        return None
+    return {"doi": paper.doi, "resultType": "core"}
 
 
 def _arxiv_parameters(paper: Paper) -> Mapping[str, Any] | None:

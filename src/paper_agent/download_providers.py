@@ -306,6 +306,8 @@ class EuropePMCOpenAccessResolver:
             for location in locations:
                 if str(location.get("availability", "")).lower() != "open access":
                     continue
+                if str(location.get("documentStyle", "")).strip().casefold() != "pdf":
+                    continue
                 url = _text(location.get("url"))
                 if not url:
                     continue

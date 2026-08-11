@@ -14,6 +14,13 @@
               "fullTextUrl": [
                 {
                   "availability": "Open access",
+                  "documentStyle": "html",
+                  "site": "Europe_PMC",
+                  "url": "https://europepmc.org/articles/PMC7654321"
+                },
+                {
+                  "availability": "Open access",
+                  "documentStyle": "pdf",
                   "site": "Europe_PMC",
                   "url": "https://europepmc.org/articles/PMC7654321/bin/main.pdf"
                 }
