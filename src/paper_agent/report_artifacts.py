@@ -460,7 +460,15 @@ def verify_report(
         allowed_citations = set().union(*(_paper_ids(claim_by_id[claim_id]) for claim_id in claim_ids))
         if not set(citations).issubset(allowed_citations):
             raise ReportVerificationError("block cites a paper not bound to its claim evidence")
-        if NUMBER.search(str(block["text"])) and not any(
+        numbers = set(NUMBER.findall(str(block["text"])))
+        citation_years = {
+            str(bibliography[paper_id]["year"])
+            for paper_id in citations
+            if paper_id in bibliography
+            and isinstance(bibliography[paper_id].get("year"), int)
+            and not isinstance(bibliography[paper_id]["year"], bool)
+        }
+        if numbers - citation_years and not any(
             _numeric_evidence(claim_by_id[claim_id]) for claim_id in claim_ids
         ):
             raise ReportVerificationError("numeric report text has no bound numeric evidence")

@@ -604,6 +604,70 @@ def test_verifier_rejects_missing_claim_citation_limitation_and_ungrounded_numbe
             corpus_snapshot=ungrounded["corpus_snapshot"],
         )
 
+    publication_year = deepcopy(bundle)
+    year_claim = deepcopy(publication_year["claims"][0])
+    year_claim["claim_key"] = {
+        **year_claim["claim_key"],
+        "predicate_id": "is_in_scope",
+        "qualifier_context_hash": "d" * 64,
+    }
+    year_claim["claim_id"] = stable_claim_id(
+        year_claim["claim_key"], report_run_id="report-1"
+    )
+    year_claim["claim_text"] = "该论文属于本报告范围。"
+    year_unit = year_claim["supporting_evidence"][0]["evidence_unit"]
+    year_unit["claim"] = "The paper is in scope."
+    year_unit["value"] = "not numeric"
+    year_unit["source_value"] = "not numeric"
+    year_unit["comparison_eligibility"] = "not_comparable"
+    year_unit["missing_fields"] = ["value"]
+    publication_year["claims"].append(year_claim)
+    publication_year["coverage"]["papers"][0]["evidence_claim_ids"].append(
+        year_claim["claim_id"]
+    )
+    publication_year["document"]["blocks"].append({
+        "block_id": "b3",
+        "block_kind": "prose",
+        "section_id": "evidence",
+        "text": "本报告聚焦 2026 年发表的论文。[@p1]",
+        "claim_ids": [year_claim["claim_id"]],
+        "citation_paper_ids": ["p1"],
+    })
+    verify_report(
+        plan=publication_year["plan"],
+        document=publication_year["document"],
+        claims=publication_year["claims"],
+        coverage=publication_year["coverage"],
+        bibliography=publication_year["bibliography"],
+        corpus_snapshot=publication_year["corpus_snapshot"],
+    )
+
+    publication_year["document"]["blocks"][-1]["text"] = (
+        "本报告聚焦 2025 年发表的论文。[@p1]"
+    )
+    with pytest.raises(ReportVerificationError, match="numeric"):
+        verify_report(
+            plan=publication_year["plan"],
+            document=publication_year["document"],
+            claims=publication_year["claims"],
+            coverage=publication_year["coverage"],
+            bibliography=publication_year["bibliography"],
+            corpus_snapshot=publication_year["corpus_snapshot"],
+        )
+
+    publication_year["document"]["blocks"][-1]["text"] = (
+        "本报告聚焦 2026 年发表的 42 篇论文。[@p1]"
+    )
+    with pytest.raises(ReportVerificationError, match="numeric"):
+        verify_report(
+            plan=publication_year["plan"],
+            document=publication_year["document"],
+            claims=publication_year["claims"],
+            coverage=publication_year["coverage"],
+            bibliography=publication_year["bibliography"],
+            corpus_snapshot=publication_year["corpus_snapshot"],
+        )
+
     source_encoded = deepcopy(bundle)
     unit = source_encoded["claims"][0]["supporting_evidence"][0]["evidence_unit"]
     unit["value"] = "multiple reported metrics"
