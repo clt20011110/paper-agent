@@ -69,6 +69,7 @@ class ArtifactRef:
 class GateEvidenceRefs:
     manifest: ArtifactRef
     records: tuple[ArtifactRef, ...]
+    papers: ArtifactRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,8 +108,13 @@ def load_stage2_release_evidence_index(path: Path) -> Stage2ReleaseEvidenceIndex
                 ArtifactRef.from_document(item)
                 for item in public["benchmark"]["records"]
             ),
+            ArtifactRef.from_document(public["benchmark"]["papers"]),
         ),
-        "soak": _single_records(public["soak"], "record"),
+        "soak": GateEvidenceRefs(
+            ArtifactRef.from_document(public["soak"]["manifest"]),
+            (ArtifactRef.from_document(public["soak"]["record"]),),
+            ArtifactRef.from_document(public["soak"]["papers"]),
+        ),
     }
     index = Stage2ReleaseEvidenceIndex(
         index_path=path.resolve(),
@@ -148,6 +154,8 @@ def _verify_all_refs(index: Stage2ReleaseEvidenceIndex) -> None:
     for gate in index.public_gates.values():
         refs.append(gate.manifest)
         refs.extend(gate.records)
+        if gate.papers is not None:
+            refs.append(gate.papers)
     for ref in refs:
         ref.read_bytes(index.bundle_root)
 

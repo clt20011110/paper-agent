@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-benchmark-papers.schema.json",
+  "title": "Stage 2 public benchmark papers",
+  "description": "The public paper inputs needed to recompute benchmark and soak corpus/input hashes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "papers"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "kind": {"const": "stage2_benchmark_papers"},
+    "papers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/paper"}
+    }
+  },
+  "$defs": {
+    "paper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paper_id", "title"],
+      "properties": {
+        "paper_id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "abstract": {"type": ["string", "null"]},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "document_type": {"type": ["string", "null"]},
+        "possibly_truncated": {"type": "boolean"},
+        "multi_condition_conflict": {"type": "boolean"},
+        "language_anomaly": {"type": "boolean"}
+      }
+    }
+  }
+}

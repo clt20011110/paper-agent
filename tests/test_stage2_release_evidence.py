@@ -9,13 +9,32 @@ import pytest
 
 from paper_agent.canonical import content_hash
 from paper_agent.schema import SchemaValidationError, validate
+from paper_agent.stage2_benchmark import BenchmarkExecutionRecord, benchmark_workload_hash
+from paper_agent.stage2_benchmark_inputs import (
+    benchmark_corpus_hash,
+    benchmark_papers_from_document,
+)
 from paper_agent.stage2_evaluation import (
     GoldManifest,
     GoldPair,
     GoldSplit,
+    ParityManifest,
+    ParityScore,
+    PerformanceCase,
+    PerformanceRoutingManifest,
+    RationaleAuditCase,
+    RationaleAuditManifest,
+    RationaleAuditRecord,
+    RationaleStratum,
+    ReplayError,
+    SoakManifest,
+    Stage2Decision,
+    StructuredReplayManifest,
+    StructuredReplayRecord,
     pair_universe_hash,
     write_gold_manifest,
 )
+from paper_agent.stage2_public_gates import verify_public_stage2_gates
 from paper_agent.stage2_release_evidence import (
     Stage2EvidenceError,
     load_stage2_release_evidence_index,
@@ -134,7 +153,9 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
             "parity-manifest",
             "parity-scores",
             "benchmark-manifest",
+            "benchmark-papers",
             "soak-manifest",
+            "soak-papers",
             "soak-record",
         )
     }
@@ -168,10 +189,12 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
             },
             "benchmark": {
                 "manifest": refs["benchmark-manifest"],
+                "papers": refs["benchmark-papers"],
                 "records": benchmark_records,
             },
             "soak": {
                 "manifest": refs["soak-manifest"],
+                "papers": refs["soak-papers"],
                 "record": refs["soak-record"],
             },
         },
@@ -179,6 +202,398 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
     path = tmp_path / "stage2-release-evidence.json"
     path.write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
     return path, document
+
+
+def _benchmark_paper_document(pair_ids: list[str], missing: set[str]) -> dict:
+    return {
+        "schema_version": "1",
+        "kind": "stage2_benchmark_papers",
+        "papers": [
+            {
+                "paper_id": pair_id,
+                "title": f"Title {pair_id}",
+                "abstract": None if pair_id in missing else f"Abstract {pair_id}",
+                "keywords": ["topic"],
+                "document_type": "article",
+                "possibly_truncated": False,
+                "multi_condition_conflict": False,
+                "language_anomaly": False,
+            }
+            for pair_id in pair_ids
+        ],
+    }
+
+
+def _execution_payload(
+    manifest: PerformanceRoutingManifest | SoakManifest,
+    papers_document: dict,
+    *,
+    kind: str,
+    scenario: str | None,
+    run_id: str,
+    qwen_pair_ids: list[str],
+    duration_seconds: float,
+) -> dict:
+    papers = benchmark_papers_from_document(papers_document)
+    pair_ids = [item.pair_id for item in manifest.cases]
+    rerank_trace = [
+        {
+            "path": "/v1/rerank",
+            "duration_seconds": 0.01,
+            "document_count": min(32, len(pair_ids) - offset),
+            "failed": False,
+        }
+        for offset in range(0, len(pair_ids), 32)
+    ]
+    qwen_trace = [
+        {
+            "path": "/v1/chat/completions",
+            "duration_seconds": 0.01,
+            "document_count": 1,
+            "failed": False,
+        }
+        for _ in qwen_pair_ids
+    ]
+    service_trace = rerank_trace + qwen_trace
+    model_call_trace = [
+        {
+            "backend": "reranker",
+            "pair_ids": pair_ids,
+            "duration_seconds": 0.5,
+            "failed": False,
+        }
+    ] + [
+        {
+            "backend": "qwen",
+            "pair_ids": [pair_id],
+            "duration_seconds": 0.01,
+            "failed": False,
+        }
+        for pair_id in qwen_pair_ids
+    ]
+    rss_samples = [8 * 1024**3] * 4
+    qwen_count = len(qwen_pair_ids)
+    qwen_share = qwen_count / len(pair_ids)
+    capacity = "severe" if qwen_share > 0.30 else "warning" if qwen_share > 0.15 else "normal"
+    alarms = ["stage2.adjudicator_share_exceeded"] if qwen_share > 0.15 else []
+    input_tokens = sum(item.input_tokens for item in manifest.cases)
+    components = ["rules", "reranker", "qwen", "schema_validation", "sqlite_commit"]
+    latency = {
+        "reranker": {"sample_count": len(rerank_trace), "p50_seconds": 0.01, "p95_seconds": 0.01},
+        "qwen": {"sample_count": len(qwen_trace), "p50_seconds": 0.01, "p95_seconds": 0.01},
+    }
+    model_hashes = list(manifest.model_lock_hashes)
+    threshold_hashes = list(manifest.threshold_artifact_hashes)
+    environment = {
+        "machine_model": "Apple Silicon M4 Max",
+        "memory_gb": 36,
+        "macos_version": "15.6",
+        "omlx_version": "0.5.7",
+        "mlx_version": "0.29.0",
+        "power_mode": "automatic",
+        "background_load": "idle",
+        "batch_config": {
+            "document_batch_size": 32,
+            "reranker_max_in_flight": 2,
+            "adjudicator_concurrency": 4,
+        },
+        "resident_model_instances": {item: 1 for item in model_hashes},
+    }
+    return {
+        "record_version": 2,
+        "measurement_evidence_version": "1",
+        "kind": kind,
+        "scenario": scenario,
+        "run_id": run_id,
+        "manifest_hash": manifest.hash(),
+        "corpus_hash": manifest.corpus_hash,
+        "input_hash": benchmark_workload_hash(manifest.cases, papers),
+        "release_hash": "1" * 64,
+        "stage2_config_hash": manifest.stage2_config_hash,
+        "observed_stage2_config_hash": manifest.stage2_config_hash,
+        "full_profile_hash": "2" * 64,
+        "model_lock_hashes": model_hashes,
+        "threshold_artifact_hashes": threshold_hashes,
+        "observed_threshold_artifact_hashes": threshold_hashes,
+        "model_releases": {
+            "reranker": {"model_id": "reranker", "revision": "revision-1"},
+            "qwen": {"model_id": "qwen", "revision": "revision-1"},
+        },
+        "prompt_hash": "3" * 64,
+        "schema_hash": "4" * 64,
+        "output_token_limit": manifest.output_token_limit,
+        "observed_output_token_limit": manifest.output_token_limit,
+        "fixture_scale": False,
+        "case_count": len(pair_ids),
+        "input_token_count": input_tokens,
+        "duration_seconds": duration_seconds,
+        "p50_seconds": 0.01,
+        "p95_seconds": 0.01,
+        "latency_sample_count": len(service_trace),
+        "latency_sample_unit": "omlx_service_request",
+        "latency_by_path": latency,
+        "papers_per_second": len(pair_ids) / duration_seconds,
+        "input_tokens_per_second": input_tokens / duration_seconds,
+        "pair_tokens_per_second": input_tokens / duration_seconds,
+        "peak_memory_gb": 8.0,
+        "rss_start_bytes": rss_samples[0],
+        "rss_end_bytes": rss_samples[-1],
+        "peak_rss_bytes": max(rss_samples),
+        "rss_sample_count": len(rss_samples),
+        "rss_samples_bytes": rss_samples,
+        "memory_pressure_samples": [False] * len(rss_samples),
+        "rss_sample_interval_seconds": 0.25,
+        "rss_scope": "macos_ps_current_rss:runner_pid=100;omlx_pids=200",
+        "request_count": len(pair_ids),
+        "request_count_unit": "manifest_case",
+        "request_failure_rate": 0.0,
+        "pair_attempt_count": len(pair_ids) + qwen_count,
+        "model_call_count": len(model_call_trace),
+        "model_call_trace": model_call_trace,
+        "service_request_count": len(service_trace),
+        "service_request_trace": service_trace,
+        "service_pair_attempt_count": sum(item["document_count"] for item in service_trace),
+        "service_failed_request_count": 0,
+        "service_request_failure_rate": 0.0,
+        "reranker_batch_call_count": 1,
+        "reranker_fallback_count": 0,
+        "reranker_fallback_measurement_available": True,
+        "adjudicator_call_count": qwen_count,
+        "backend_failed_call_count": 0,
+        "backend_call_failure_rate": 0.0,
+        "failed_request_count": 0,
+        "completed_pair_ids": sorted(pair_ids),
+        "needs_review_pair_ids": [],
+        "failed_request_pair_ids": [],
+        "qwen_pair_ids": sorted(qwen_pair_ids),
+        "qwen_count": qwen_count,
+        "qwen_share": qwen_share,
+        "qwen_share_alarms": alarms,
+        "qwen_capacity_level": capacity,
+        "adjudicator_count": qwen_count,
+        "adjudicator_share": qwen_share,
+        "adjudicator_capacity": capacity,
+        "alarm_codes": alarms,
+        "frozen_qwen_routing_matches": True if kind == "performance" else None,
+        "routing_mode": "performance_only_manifest" if kind == "performance" else "quality_thresholds",
+        "batch_concurrency": {
+            "document_batch_size": 32,
+            "reranker_max_in_flight": 2,
+            "adjudicator_concurrency": 4,
+        },
+        "environment": environment,
+        "expected_components": components,
+        "executed_components": components,
+        "sqlite_commit_count": len(pair_ids),
+        "sqlite_commit_unit": "persisted_filter_decision",
+        "result_count": len(pair_ids),
+        "missing_result_count": 0,
+        "duplicate_result_count": 0,
+        "warmed": True,
+        "resume_verified": True,
+        "resume_model_call_count": 0,
+        "resume_service_request_trace": [],
+        "resumed_pair_count": len(pair_ids),
+        "resumed_pair_ids": sorted(pair_ids),
+        "oom": False,
+        "process_crash": False,
+        "memory_pressure_critical": False,
+        "memory_pressure_sampled": True,
+        "memory_growth_detector": {
+            "version": "post_warmup_monotonic_25_percent_v1",
+            "monotonic_non_decreasing": True,
+            "growth_bytes": 0,
+            "growth_ratio": 1.0,
+            "minimum_sample_count": 4,
+        },
+        "unbounded_memory_growth": False,
+    }
+
+
+def _write_execution(path: Path, payload: dict) -> dict[str, str]:
+    record = BenchmarkExecutionRecord(payload)
+    path.write_bytes(record.canonical_bytes())
+    return {"path": path.name, "sha256": sha256(path.read_bytes()).hexdigest()}
+
+
+def _install_public_gate_evidence(tmp_path: Path, path: Path, index_document: dict) -> None:
+    model_hashes = index_document["model_lock_hashes"]
+    threshold_hashes = index_document["threshold_hashes"]
+    config_hash = index_document["stage2_config_hash"]
+    gold = _gold_manifest()
+
+    replay_ids = [f"replay-{index}" for index in range(1_000)]
+    replay_manifest = StructuredReplayManifest(
+        1,
+        tuple(replay_ids),
+        "5" * 64,
+        config_hash,
+        model_hashes["qwen"],
+        "6" * 64,
+        "7" * 64,
+    )
+    replay_records = [
+        StructuredReplayRecord(
+            pair_id,
+            replay_manifest.hash(),
+            ReplayError.NONE,
+            pair_id,
+            False,
+            False,
+            0,
+            0,
+            None,
+            True,
+            pair_id,
+            False,
+            False,
+            Stage2Decision.RELEVANT,
+        ).document()
+        for pair_id in replay_ids
+    ]
+    index_document["public_gates"]["structured_replay"] = {
+        "manifest": _write(tmp_path / "structured-manifest.json", replay_manifest.document()),
+        "records": _write(tmp_path / "structured-records.json", {
+            "schema_version": "1",
+            "kind": "stage2_structured_replay_records",
+            "records": replay_records,
+        }),
+    }
+
+    rationale_cases = tuple(
+        RationaleAuditCase(
+            f"rationale-{stratum.value}-{language}-{index}",
+            stratum,
+            language,
+            "8" * 64,
+        )
+        for stratum in RationaleStratum
+        for language in ("en", "zh")
+        for index in range(25)
+    )
+    rationale_manifest = RationaleAuditManifest(
+        1,
+        rationale_cases,
+        "9" * 64,
+        model_hashes["qwen"],
+        "a" * 64,
+        "b" * 64,
+    )
+    rationale_records = [
+        RationaleAuditRecord(item.pair_id, rationale_manifest.hash(), True, False).document()
+        for item in rationale_cases
+    ]
+    index_document["public_gates"]["rationale"] = {
+        "manifest": _write(tmp_path / "rationale-manifest.json", rationale_manifest.document()),
+        "records": _write(tmp_path / "rationale-records.json", {
+            "schema_version": "1",
+            "kind": "stage2_rationale_audit_records",
+            "records": rationale_records,
+        }),
+    }
+
+    parity_ids = [f"parity-{index}" for index in range(10_000)]
+    parity_manifest = ParityManifest(
+        1,
+        tuple(parity_ids),
+        "c" * 64,
+        "d" * 64,
+        "e" * 64,
+        "f" * 64,
+        model_hashes["reranker"],
+        "1" * 64,
+        threshold_hashes["reranker"],
+        gold.dev_hash(),
+        "2" * 64,
+        0.2,
+        0.8,
+        0.2,
+        0.8,
+        frozenset(parity_ids[:100]),
+        frozenset(parity_ids[-100:]),
+        "closest to oracle low threshold",
+        "closest to oracle high threshold",
+    )
+    parity_scores = [
+        ParityScore(pair_id, parity_manifest.hash(), index / 10_000, index / 10_000).document()
+        for index, pair_id in enumerate(parity_ids)
+    ]
+    index_document["public_gates"]["parity"] = {
+        "manifest": _write(tmp_path / "parity-manifest.json", parity_manifest.document()),
+        "scores": _write(tmp_path / "parity-scores.json", {
+            "schema_version": "1",
+            "kind": "stage2_parity_scores",
+            "scores": parity_scores,
+        }),
+    }
+
+    performance_ids = [f"performance-{index}" for index in range(1_000)]
+    performance_missing = set(performance_ids[:100])
+    performance_papers_document = _benchmark_paper_document(performance_ids, performance_missing)
+    performance_papers = benchmark_papers_from_document(performance_papers_document)
+    performance_manifest = PerformanceRoutingManifest(
+        1,
+        benchmark_corpus_hash(performance_papers),
+        config_hash,
+        (model_hashes["reranker"], model_hashes["qwen"]),
+        (threshold_hashes["reranker"], threshold_hashes["qwen"]),
+        256,
+        tuple(PerformanceCase(pair_id, 100, pair_id in performance_missing) for pair_id in performance_ids),
+        frozenset(performance_ids[:150]),
+        frozenset(performance_ids[:300]),
+    )
+    benchmark_records = []
+    for scenario, qwen_ids, duration in (
+        ("normal", performance_ids[:150], 100.0),
+        ("stress", performance_ids[:300], 200.0),
+    ):
+        for run in range(3):
+            payload = _execution_payload(
+                performance_manifest,
+                performance_papers_document,
+                kind="performance",
+                scenario=scenario,
+                run_id=f"{scenario}-{run}",
+                qwen_pair_ids=qwen_ids,
+                duration_seconds=duration + run,
+            )
+            benchmark_records.append(_write_execution(
+                tmp_path / f"benchmark-{scenario}-{run}.json",
+                payload,
+            ))
+    index_document["public_gates"]["benchmark"] = {
+        "manifest": _write(tmp_path / "benchmark-manifest.json", performance_manifest.document()),
+        "papers": _write(tmp_path / "benchmark-papers.json", performance_papers_document),
+        "records": benchmark_records,
+    }
+
+    soak_ids = [f"soak-{index}" for index in range(10_000)]
+    soak_papers_document = _benchmark_paper_document(soak_ids, set())
+    soak_papers = benchmark_papers_from_document(soak_papers_document)
+    soak_manifest = SoakManifest(
+        1,
+        benchmark_corpus_hash(soak_papers),
+        config_hash,
+        (model_hashes["reranker"], model_hashes["qwen"]),
+        (threshold_hashes["reranker"], threshold_hashes["qwen"]),
+        256,
+        tuple(PerformanceCase(pair_id, 100, False) for pair_id in soak_ids),
+    )
+    soak_payload = _execution_payload(
+        soak_manifest,
+        soak_papers_document,
+        kind="soak",
+        scenario=None,
+        run_id="soak-0",
+        qwen_pair_ids=soak_ids[:1_000],
+        duration_seconds=500.0,
+    )
+    index_document["public_gates"]["soak"] = {
+        "manifest": _write(tmp_path / "soak-manifest.json", soak_manifest.document()),
+        "papers": _write(tmp_path / "soak-papers.json", soak_papers_document),
+        "record": _write_execution(tmp_path / "soak-record.json", soak_payload),
+    }
+    path.write_text(json.dumps(index_document, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def test_release_evidence_index_verifies_every_bound_file(tmp_path: Path) -> None:
@@ -289,3 +704,107 @@ def test_hidden_attestation_schema_forbids_private_evaluator_content() -> None:
     document["payload"]["labels"] = {"hidden-pair": 3}
     with pytest.raises(SchemaValidationError, match="Additional properties"):
         validate(document, "stage2-hidden-evaluator-attestation.schema.json")
+
+
+def test_public_stage2_gates_are_recomputed_from_raw_evidence(tmp_path: Path) -> None:
+    path, document = _index(tmp_path)
+    _install_public_gate_evidence(tmp_path, path, document)
+
+    result = verify_public_stage2_gates(load_stage2_release_evidence_index(path))
+
+    assert result.passed
+    assert result.throughput_runs == (10.0, 1000 / 101, 1000 / 102)
+    assert all(
+        gate.document()["verification"] == "recomputed_from_raw_evidence"
+        for gate in result.gates.values()
+    )
+    assert result.gates["structured_replay"].metrics["record_count"] == 1_000
+    assert result.gates["rationale"].metrics["record_count"] == 100
+    assert result.gates["parity"].metrics["score_count"] == 10_000
+    assert result.gates["benchmark"].metrics["record_count"] == 6
+    assert result.gates["soak"].metrics["request_count"] == 10_000
+
+
+def test_public_stage2_gates_ignore_hash_valid_but_failing_rationale_claims(
+    tmp_path: Path,
+) -> None:
+    path, document = _index(tmp_path)
+    _install_public_gate_evidence(tmp_path, path, document)
+    records_path = tmp_path / "rationale-records.json"
+    records = json.loads(records_path.read_text(encoding="utf-8"))
+    for item in records["records"][:6]:
+        item["evidence_supported"] = False
+    document["public_gates"]["rationale"]["records"] = _write(records_path, records)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    result = verify_public_stage2_gates(load_stage2_release_evidence_index(path))
+
+    assert not result.passed
+    assert result.gates["rationale"].gate.failures == (
+        "rationale evidence support < 95%",
+    )
+
+
+def test_public_stage2_gates_reject_rewritten_benchmark_memory_summary(
+    tmp_path: Path,
+) -> None:
+    path, document = _index(tmp_path)
+    _install_public_gate_evidence(tmp_path, path, document)
+    record_ref = document["public_gates"]["benchmark"]["records"][0]
+    record_path = tmp_path / record_ref["path"]
+    record = json.loads(record_path.read_bytes())
+    record["peak_memory_gb"] = 7.0
+    document["public_gates"]["benchmark"]["records"][0] = _write_execution(
+        record_path,
+        record,
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(Stage2EvidenceError, match="memory summaries do not match"):
+        verify_public_stage2_gates(load_stage2_release_evidence_index(path))
+
+
+def test_public_stage2_gates_require_chat_trace_for_every_qwen_route(
+    tmp_path: Path,
+) -> None:
+    path, document = _index(tmp_path)
+    _install_public_gate_evidence(tmp_path, path, document)
+    record_ref = document["public_gates"]["benchmark"]["records"][0]
+    record_path = tmp_path / record_ref["path"]
+    record = json.loads(record_path.read_bytes())
+    for item in record["service_request_trace"]:
+        item["path"] = "/v1/rerank"
+    record["latency_by_path"] = {
+        "reranker": {
+            "sample_count": len(record["service_request_trace"]),
+            "p50_seconds": 0.01,
+            "p95_seconds": 0.01,
+        },
+        "qwen": {"sample_count": 0, "p50_seconds": 0.0, "p95_seconds": 0.0},
+    }
+    record["reranker_fallback_count"] = 150
+    document["public_gates"]["benchmark"]["records"][0] = _write_execution(
+        record_path,
+        record,
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(Stage2EvidenceError, match="model-call routing"):
+        verify_public_stage2_gates(load_stage2_release_evidence_index(path))
+
+
+def test_public_stage2_gates_require_real_boolean_primitives(tmp_path: Path) -> None:
+    path, document = _index(tmp_path)
+    _install_public_gate_evidence(tmp_path, path, document)
+    record_ref = document["public_gates"]["benchmark"]["records"][0]
+    record_path = tmp_path / record_ref["path"]
+    record = json.loads(record_path.read_bytes())
+    record["fixture_scale"] = 0
+    document["public_gates"]["benchmark"]["records"][0] = _write_execution(
+        record_path,
+        record,
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(Stage2EvidenceError, match="JSON booleans"):
+        verify_public_stage2_gates(load_stage2_release_evidence_index(path))

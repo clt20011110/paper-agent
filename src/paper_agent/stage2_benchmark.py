@@ -65,6 +65,102 @@ RssSampler = Callable[[], int]
 PressureSampler = Callable[[], bool]
 CommandRunner = Callable[[Sequence[str]], str]
 _COMPONENTS = ("rules", "reranker", "qwen", "schema_validation", "sqlite_commit")
+BENCHMARK_EXECUTION_FIELDS = frozenset({
+    "record_version",
+    "measurement_evidence_version",
+    "kind",
+    "scenario",
+    "run_id",
+    "manifest_hash",
+    "corpus_hash",
+    "input_hash",
+    "release_hash",
+    "stage2_config_hash",
+    "observed_stage2_config_hash",
+    "full_profile_hash",
+    "model_lock_hashes",
+    "threshold_artifact_hashes",
+    "observed_threshold_artifact_hashes",
+    "model_releases",
+    "prompt_hash",
+    "schema_hash",
+    "output_token_limit",
+    "observed_output_token_limit",
+    "fixture_scale",
+    "case_count",
+    "input_token_count",
+    "duration_seconds",
+    "p50_seconds",
+    "p95_seconds",
+    "latency_sample_count",
+    "latency_sample_unit",
+    "latency_by_path",
+    "papers_per_second",
+    "input_tokens_per_second",
+    "pair_tokens_per_second",
+    "peak_memory_gb",
+    "rss_start_bytes",
+    "rss_end_bytes",
+    "peak_rss_bytes",
+    "rss_sample_count",
+    "rss_samples_bytes",
+    "memory_pressure_samples",
+    "rss_sample_interval_seconds",
+    "rss_scope",
+    "request_count",
+    "request_count_unit",
+    "request_failure_rate",
+    "pair_attempt_count",
+    "model_call_count",
+    "model_call_trace",
+    "service_request_count",
+    "service_request_trace",
+    "service_pair_attempt_count",
+    "service_failed_request_count",
+    "service_request_failure_rate",
+    "reranker_batch_call_count",
+    "reranker_fallback_count",
+    "reranker_fallback_measurement_available",
+    "adjudicator_call_count",
+    "backend_failed_call_count",
+    "backend_call_failure_rate",
+    "failed_request_count",
+    "completed_pair_ids",
+    "needs_review_pair_ids",
+    "failed_request_pair_ids",
+    "qwen_pair_ids",
+    "qwen_count",
+    "qwen_share",
+    "qwen_share_alarms",
+    "qwen_capacity_level",
+    "adjudicator_count",
+    "adjudicator_share",
+    "adjudicator_capacity",
+    "alarm_codes",
+    "frozen_qwen_routing_matches",
+    "routing_mode",
+    "batch_concurrency",
+    "environment",
+    "expected_components",
+    "executed_components",
+    "sqlite_commit_count",
+    "sqlite_commit_unit",
+    "result_count",
+    "missing_result_count",
+    "duplicate_result_count",
+    "warmed",
+    "resume_verified",
+    "resume_model_call_count",
+    "resume_service_request_trace",
+    "resumed_pair_count",
+    "resumed_pair_ids",
+    "oom",
+    "process_crash",
+    "memory_pressure_critical",
+    "memory_pressure_sampled",
+    "memory_growth_detector",
+    "unbounded_memory_growth",
+})
 
 
 def benchmark_alarm_codes(
@@ -348,6 +444,8 @@ class BenchmarkExecutionRecord:
     payload: Mapping[str, Any]
 
     def __post_init__(self) -> None:
+        if set(self.payload) != BENCHMARK_EXECUTION_FIELDS:
+            raise ValueError("benchmark execution record must use the exact evidence-v1 fields")
         frozen = _freeze_json(dict(self.payload))
         assert isinstance(frozen, Mapping)
         object.__setattr__(self, "payload", frozen)
@@ -456,6 +554,8 @@ class _MeasuredReranker:
     clock: Clock
     call_durations: list[float] = field(default_factory=list)
     batch_sizes: list[int] = field(default_factory=list)
+    pair_ids: list[tuple[str, ...]] = field(default_factory=list)
+    call_failures: list[bool] = field(default_factory=list)
     pair_attempt_count: int = 0
     call_count: int = 0
     failed_call_count: int = 0
@@ -481,11 +581,15 @@ class _MeasuredReranker:
                 self.failed_call_count += int(failed)
                 self.call_durations.append(duration)
                 self.batch_sizes.append(len(documents))
+                self.pair_ids.append(tuple(item.paper_id for item in documents))
+                self.call_failures.append(failed)
 
     def reset(self) -> None:
         with self._lock:
             self.call_durations.clear()
             self.batch_sizes.clear()
+            self.pair_ids.clear()
+            self.call_failures.clear()
             self.pair_attempt_count = self.call_count = self.failed_call_count = 0
 
 
@@ -495,6 +599,7 @@ class _MeasuredAdjudicator:
     clock: Clock
     call_durations: list[float] = field(default_factory=list)
     pair_ids: list[str] = field(default_factory=list)
+    call_failures: list[bool] = field(default_factory=list)
     call_count: int = 0
     failed_call_count: int = 0
     _lock: Lock = field(default_factory=Lock)
@@ -518,11 +623,13 @@ class _MeasuredAdjudicator:
                 self.failed_call_count += int(failed)
                 self.pair_ids.append(request.paper_id)
                 self.call_durations.append(duration)
+                self.call_failures.append(failed)
 
     def reset(self) -> None:
         with self._lock:
             self.call_durations.clear()
             self.pair_ids.clear()
+            self.call_failures.clear()
             self.call_count = self.failed_call_count = 0
 
 
@@ -730,11 +837,20 @@ class Stage2BenchmarkRunner:
             raise RuntimeError("benchmark did not execute a model request")
         resume_call_count = 0
         resumed_count = 0
+        resumed_pair_ids: tuple[str, ...] = ()
+        resume_service_requests: tuple[_ServiceRequest, ...] = ()
         if verify_resume:
             calls_before_resume = reranker.call_count + adjudicator.call_count
             resumed = pipeline.run(run_id, ordered_papers)
             resume_call_count = reranker.call_count + adjudicator.call_count - calls_before_resume
             resumed_count = sum(item.resumed for item in resumed.decisions)
+            resumed_pair_ids = tuple(sorted(
+                item.paper_id for item in resumed.decisions if item.resumed
+            ))
+            if self._transport_probe is not None:
+                resume_service_requests = tuple(
+                    self._transport_probe.requests[len(service_requests):]
+                )
 
         durations = (
             tuple(item.duration_seconds for item in service_requests)
@@ -785,7 +901,7 @@ class Stage2BenchmarkRunner:
             unbounded_memory_growth=unbounded_memory_growth,
         )
         input_tokens = sum(item.input_tokens for item in spec.cases)
-        input_hash = _workload_hash(spec.cases, ordered_papers)
+        input_hash = benchmark_workload_hash(spec.cases, ordered_papers)
         initial_rerank_requests = sum(
             ceil(size / self.profile.document_batch_size) for size in first_reranker_batch_sizes
         )
@@ -800,6 +916,7 @@ class Stage2BenchmarkRunner:
             observed_components.append("sqlite_commit")
         payload: dict[str, Any] = {
             "record_version": 2,
+            "measurement_evidence_version": "1",
             "kind": spec.kind,
             "scenario": spec.scenario,
             "run_id": run_id,
@@ -841,6 +958,8 @@ class Stage2BenchmarkRunner:
             "rss_end_bytes": rss_end,
             "peak_rss_bytes": peak_rss,
             "rss_sample_count": len(samples),
+            "rss_samples_bytes": list(samples),
+            "memory_pressure_samples": list(pressure_samples),
             "rss_sample_interval_seconds": self.rss_sample_interval_seconds,
             "rss_scope": self.rss_scope,
             # PerformanceRunRecord audits failures by unique paper ID, so its
@@ -851,7 +970,43 @@ class Stage2BenchmarkRunner:
             "request_failure_rate": request_failure_rate,
             "pair_attempt_count": first_run_pair_attempt_count,
             "model_call_count": first_run_call_count,
+            "model_call_trace": [
+                {
+                    "backend": "reranker",
+                    "pair_ids": list(pair_ids),
+                    "duration_seconds": duration_seconds,
+                    "failed": failed,
+                }
+                for pair_ids, duration_seconds, failed in zip(
+                    reranker.pair_ids[:first_reranker_call_count],
+                    reranker.call_durations[:first_reranker_call_count],
+                    reranker.call_failures[:first_reranker_call_count],
+                    strict=True,
+                )
+            ] + [
+                {
+                    "backend": "qwen",
+                    "pair_ids": [pair_id],
+                    "duration_seconds": duration_seconds,
+                    "failed": failed,
+                }
+                for pair_id, duration_seconds, failed in zip(
+                    adjudicator.pair_ids[:first_adjudicator_call_count],
+                    adjudicator.call_durations[:first_adjudicator_call_count],
+                    adjudicator.call_failures[:first_adjudicator_call_count],
+                    strict=True,
+                )
+            ],
             "service_request_count": len(service_requests) if service_requests else None,
+            "service_request_trace": [
+                {
+                    "path": item.path,
+                    "duration_seconds": item.duration_seconds,
+                    "document_count": item.document_count,
+                    "failed": item.failed,
+                }
+                for item in service_requests
+            ],
             "service_pair_attempt_count": (
                 sum(item.document_count for item in service_requests) if service_requests else None
             ),
@@ -898,7 +1053,17 @@ class Stage2BenchmarkRunner:
             "warmed": True,
             "resume_verified": verify_resume and resume_call_count == 0 and resumed_count == len(spec.cases),
             "resume_model_call_count": resume_call_count,
+            "resume_service_request_trace": [
+                {
+                    "path": item.path,
+                    "duration_seconds": item.duration_seconds,
+                    "document_count": item.document_count,
+                    "failed": item.failed,
+                }
+                for item in resume_service_requests
+            ],
             "resumed_pair_count": resumed_count,
+            "resumed_pair_ids": list(resumed_pair_ids),
             "oom": False,
             "process_crash": False,
             "memory_pressure_critical": memory_pressure_critical,
@@ -1037,7 +1202,12 @@ def _thaw_json(value: Any) -> Any:
     return value
 
 
-def _workload_hash(cases: Sequence[PerformanceCase], papers: Sequence[Stage2Paper]) -> str:
+def benchmark_workload_hash(
+    cases: Sequence[PerformanceCase],
+    papers: Sequence[Stage2Paper],
+) -> str:
+    """Hash the exact ordered cases and normalized papers consumed by a run."""
+
     by_id = {paper.paper_id: paper for paper in papers}
     return content_hash([
         {

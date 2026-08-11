@@ -1367,13 +1367,16 @@ class SoakManifest:
         if not self.threshold_artifact_hashes or not all(self.threshold_artifact_hashes) or self.output_token_limit < 1:
             raise ValueError("soak manifest requires thresholds and a positive output cap")
 
-    def hash(self) -> str:
-        return _hash({
+    def document(self) -> dict[str, object]:
+        return {
             "version": self.version, "kind": "soak", "corpus_hash": self.corpus_hash,
             "stage2_config_hash": self.stage2_config_hash, "model_lock_hashes": list(self.model_lock_hashes),
             "threshold_artifact_hashes": list(self.threshold_artifact_hashes), "output_token_limit": self.output_token_limit,
             "cases": [[item.pair_id, item.input_tokens, item.abstract_missing] for item in self.cases],
-        })
+        }
+
+    def hash(self) -> str:
+        return _hash(self.document())
 
 
 @dataclass(frozen=True, slots=True)
@@ -1688,12 +1691,15 @@ class StructuredReplayManifest:
         if self.version != 1 or len(self.pair_ids) < 1_000 or len(set(self.pair_ids)) != len(self.pair_ids) or not all(hashes):
             raise ValueError("structured replay manifest requires >=1,000 unique requests and complete provenance")
 
-    def hash(self) -> str:
-        return _hash({
+    def document(self) -> dict[str, object]:
+        return {
             "version": self.version, "pair_ids": list(self.pair_ids), "corpus_hash": self.corpus_hash,
             "stage2_config_hash": self.stage2_config_hash, "model_lock_hash": self.model_lock_hash,
             "prompt_hash": self.prompt_hash, "schema_hash": self.schema_hash,
-        })
+        }
+
+    def hash(self) -> str:
+        return _hash(self.document())
 
 
 @dataclass(frozen=True, slots=True)
@@ -1743,6 +1749,24 @@ class StructuredReplayRecord:
             raise ValueError("a valid first response cannot become a final invalid response")
         if not first_valid and self.final_valid and not recovery_actions:
             raise ValueError("a recovered valid response must record its repair or retry")
+
+    def document(self) -> dict[str, object]:
+        return {
+            "pair_id": self.pair_id,
+            "manifest_hash": self.manifest_hash,
+            "first_error": self.first_error.value,
+            "first_returned_pair_id": self.first_returned_pair_id,
+            "first_schema_outside_text": self.first_schema_outside_text,
+            "first_think_tag_leak": self.first_think_tag_leak,
+            "deterministic_repairs": self.deterministic_repairs,
+            "model_retries": self.model_retries,
+            "retry_error": self.retry_error.value if self.retry_error is not None else None,
+            "final_valid": self.final_valid,
+            "final_returned_pair_id": self.final_returned_pair_id,
+            "final_schema_outside_text": self.final_schema_outside_text,
+            "final_think_tag_leak": self.final_think_tag_leak,
+            "final_decision": self.final_decision.value,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1838,14 +1862,17 @@ class RationaleAuditManifest:
         if any(cells[(stratum, language)] < 10 for stratum in RationaleStratum for language in languages):
             raise ValueError("each rationale stratum/language cell requires at least 10 samples")
 
-    def hash(self) -> str:
-        return _hash({
+    def document(self) -> dict[str, object]:
+        return {
             "version": self.version,
             "cases": [[item.pair_id, item.stratum.value, item.language, item.rationale_artifact_hash] for item in self.cases],
             "corpus_hash": self.corpus_hash, "model_lock_hash": self.model_lock_hash,
             "evidence_rubric_hash": self.evidence_rubric_hash,
             "fabrication_rubric_hash": self.fabrication_rubric_hash,
-        })
+        }
+
+    def hash(self) -> str:
+        return _hash(self.document())
 
 
 @dataclass(frozen=True, slots=True)
@@ -1858,6 +1885,14 @@ class RationaleAuditRecord:
     def __post_init__(self) -> None:
         if not self.pair_id or not self.manifest_hash:
             raise ValueError("rationale audit record requires pair_id and manifest hash")
+
+    def document(self) -> dict[str, object]:
+        return {
+            "pair_id": self.pair_id,
+            "manifest_hash": self.manifest_hash,
+            "evidence_supported": self.evidence_supported,
+            "severe_fabrication": self.severe_fabrication,
+        }
 
 
 def rationale_audit_gate(manifest: RationaleAuditManifest, records: Sequence[RationaleAuditRecord]) -> GateResult:
@@ -1918,8 +1953,8 @@ class ParityManifest:
         if not all(isfinite(item) for item in thresholds) or not self.oracle_low < self.oracle_high or not self.candidate_low < self.candidate_high:
             raise ValueError("parity low/high thresholds must be finite and ordered")
 
-    def hash(self) -> str:
-        return _hash({
+    def document(self) -> dict[str, object]:
+        return {
             "version": self.version, "pair_ids": list(self.pair_ids), "corpus_hash": self.corpus_hash,
             "tokenizer_hash": self.tokenizer_hash, "preprocess_hash": self.preprocess_hash,
             "oracle_model_lock_hash": self.oracle_model_lock_hash,
@@ -1933,7 +1968,10 @@ class ParityManifest:
             "high_window_pair_ids": sorted(self.high_window_pair_ids),
             "low_window_definition": self.low_window_definition,
             "high_window_definition": self.high_window_definition,
-        })
+        }
+
+    def hash(self) -> str:
+        return _hash(self.document())
 
 
 @dataclass(frozen=True, slots=True)
@@ -1946,6 +1984,14 @@ class ParityScore:
     def __post_init__(self) -> None:
         if not self.pair_id or not self.manifest_hash or not isfinite(self.oracle_score) or not isfinite(self.candidate_score):
             raise ValueError("parity scores require pair_id and finite values")
+
+    def document(self) -> dict[str, object]:
+        return {
+            "pair_id": self.pair_id,
+            "manifest_hash": self.manifest_hash,
+            "oracle_score": self.oracle_score,
+            "candidate_score": self.candidate_score,
+        }
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-structured-replay-records.schema.json",
+  "title": "Stage 2 structured replay raw records",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "records"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "kind": {"const": "stage2_structured_replay_records"},
+    "records": {"type": "array", "minItems": 1000, "items": {"$ref": "#/$defs/record"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "minLength": 1},
+    "nullableId": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
+    "replayError": {"enum": ["none", "schema", "timeout", "service"]},
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pair_id", "manifest_hash", "first_error", "first_returned_pair_id", "first_schema_outside_text", "first_think_tag_leak", "deterministic_repairs", "model_retries", "retry_error", "final_valid", "final_returned_pair_id", "final_schema_outside_text", "final_think_tag_leak", "final_decision"],
+      "properties": {
+        "pair_id": {"$ref": "#/$defs/id"},
+        "manifest_hash": {"$ref": "#/$defs/sha256"},
+        "first_error": {"$ref": "#/$defs/replayError"},
+        "first_returned_pair_id": {"$ref": "#/$defs/nullableId"},
+        "first_schema_outside_text": {"type": "boolean"},
+        "first_think_tag_leak": {"type": "boolean"},
+        "deterministic_repairs": {"enum": [0, 1]},
+        "model_retries": {"enum": [0, 1]},
+        "retry_error": {"anyOf": [{"$ref": "#/$defs/replayError"}, {"type": "null"}]},
+        "final_valid": {"type": "boolean"},
+        "final_returned_pair_id": {"$ref": "#/$defs/nullableId"},
+        "final_schema_outside_text": {"type": "boolean"},
+        "final_think_tag_leak": {"type": "boolean"},
+        "final_decision": {"enum": ["relevant", "irrelevant", "needs_review"]}
+      }
+    }
+  }
+}

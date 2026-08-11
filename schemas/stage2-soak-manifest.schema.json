@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-soak-manifest.schema.json",
+  "title": "Stage 2 soak manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "kind", "corpus_hash", "stage2_config_hash", "model_lock_hashes", "threshold_artifact_hashes", "output_token_limit", "cases"],
+  "properties": {
+    "version": {"const": 1},
+    "kind": {"const": "soak"},
+    "corpus_hash": {"$ref": "#/$defs/sha256"},
+    "stage2_config_hash": {"$ref": "#/$defs/sha256"},
+    "model_lock_hashes": {"$ref": "#/$defs/hashArray"},
+    "threshold_artifact_hashes": {"$ref": "#/$defs/hashArray"},
+    "output_token_limit": {"type": "integer", "minimum": 1},
+    "cases": {"type": "array", "minItems": 10000, "maxItems": 10000, "uniqueItems": true, "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "minLength": 1},
+    "hashArray": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+    "case": {
+      "type": "array",
+      "prefixItems": [
+        {"$ref": "#/$defs/id"},
+        {"type": "integer", "minimum": 1},
+        {"type": "boolean"}
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    }
+  }
+}

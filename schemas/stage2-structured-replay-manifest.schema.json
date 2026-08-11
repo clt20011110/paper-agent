@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-structured-replay-manifest.schema.json",
+  "title": "Stage 2 structured replay manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "pair_ids", "corpus_hash", "stage2_config_hash", "model_lock_hash", "prompt_hash", "schema_hash"],
+  "properties": {
+    "version": {"const": 1},
+    "pair_ids": {"type": "array", "minItems": 1000, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "corpus_hash": {"$ref": "#/$defs/sha256"},
+    "stage2_config_hash": {"$ref": "#/$defs/sha256"},
+    "model_lock_hash": {"$ref": "#/$defs/sha256"},
+    "prompt_hash": {"$ref": "#/$defs/sha256"},
+    "schema_hash": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "minLength": 1}
+  }
+}

@@ -48,9 +48,10 @@
         "benchmark": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["manifest", "records"],
+          "required": ["manifest", "records", "papers"],
           "properties": {
             "manifest": {"$ref": "#/$defs/artifactRef"},
+            "papers": {"$ref": "#/$defs/artifactRef"},
             "records": {
               "type": "array",
               "minItems": 6,
@@ -62,10 +63,11 @@
         "soak": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["manifest", "record"],
+          "required": ["manifest", "record", "papers"],
           "properties": {
             "manifest": {"$ref": "#/$defs/artifactRef"},
-            "record": {"$ref": "#/$defs/artifactRef"}
+            "record": {"$ref": "#/$defs/artifactRef"},
+            "papers": {"$ref": "#/$defs/artifactRef"}
           }
         }
       }

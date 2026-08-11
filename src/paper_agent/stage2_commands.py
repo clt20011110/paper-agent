@@ -8,13 +8,16 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .canonical import content_hash
 from .schema import schema_directory
 from .stage2_backends import OmlxTransport, UrlLibOmlxTransport
 from .stage2_benchmark import (
     BenchmarkRunSpec,
     MacOSMemoryObserver,
     Stage2BenchmarkRunner,
+)
+from .stage2_benchmark_inputs import (
+    benchmark_corpus_hash,
+    benchmark_papers_from_document,
 )
 from .stage2_evaluation import (
     BenchmarkEnvironment,
@@ -301,76 +304,7 @@ def _benchmark_spec(value: Mapping[str, Any], scenario: str) -> BenchmarkRunSpec
 
 
 def _benchmark_papers(path: Path) -> tuple[Stage2Paper, ...]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(value, dict):
-        if set(value) != {"papers"}:
-            raise ValueError("benchmark papers object must contain only the papers array")
-        value = value["papers"]
-    if not isinstance(value, list) or not value:
-        raise ValueError("benchmark papers must be a non-empty JSON array")
-    allowed = {
-        "paper_id",
-        "title",
-        "abstract",
-        "keywords",
-        "document_type",
-        "possibly_truncated",
-        "multi_condition_conflict",
-        "language_anomaly",
-    }
-    papers: list[Stage2Paper] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, dict) or not set(item) <= allowed:
-            raise ValueError(f"benchmark paper {index} has invalid fields")
-        keywords = item.get("keywords", [])
-        if not isinstance(keywords, list) or not all(isinstance(keyword, str) for keyword in keywords):
-            raise ValueError(f"benchmark paper {index} keywords must be strings")
-        paper_id = item.get("paper_id")
-        title = item.get("title")
-        if not isinstance(paper_id, str) or not isinstance(title, str):
-            raise ValueError(f"benchmark paper {index} paper_id and title must be strings")
-        abstract = item.get("abstract")
-        document_type = item.get("document_type")
-        if abstract is not None and not isinstance(abstract, str):
-            raise ValueError(f"benchmark paper {index} abstract must be a string or null")
-        if document_type is not None and not isinstance(document_type, str):
-            raise ValueError(f"benchmark paper {index} document_type must be a string or null")
-        flags = {
-            name: item.get(name, False)
-            for name in ("possibly_truncated", "multi_condition_conflict", "language_anomaly")
-        }
-        if not all(isinstance(flag, bool) for flag in flags.values()):
-            raise ValueError(f"benchmark paper {index} flags must be booleans")
-        papers.append(Stage2Paper(
-            paper_id=paper_id,
-            title=title,
-            abstract=abstract,
-            keywords=tuple(keywords),
-            document_type=document_type,
-            **flags,
-        ))
-    return tuple(papers)
-
-
-def benchmark_corpus_hash(papers: Sequence[Stage2Paper]) -> str:
-    """Hash the normalized paper content consumed by the measured runner."""
-
-    return content_hash({
-        "schema_version": 1,
-        "papers": [
-            {
-                "paper_id": paper.paper_id,
-                "title": paper.title,
-                "abstract": paper.abstract,
-                "keywords": list(paper.keywords),
-                "document_type": paper.document_type,
-                "possibly_truncated": paper.possibly_truncated,
-                "multi_condition_conflict": paper.multi_condition_conflict,
-                "language_anomaly": paper.language_anomaly,
-            }
-            for paper in sorted(papers, key=lambda item: item.paper_id)
-        ],
-    })
+    return benchmark_papers_from_document(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _cases(value: Sequence[Mapping[str, Any]]) -> tuple[PerformanceCase, ...]:
