@@ -98,6 +98,36 @@ def _plan(tmp_path, capsys) -> tuple[dict[str, object], str]:
     return output, output["draft_path"]
 
 
+def test_search_plan_cli_freezes_default_and_explicit_page_size(
+    tmp_path, capsys
+) -> None:
+    implicit, implicit_path = _plan(tmp_path, capsys)
+    implicit_plan = json.loads(Path(implicit_path).read_text(encoding="utf-8"))
+
+    explicit_draft = _draft()
+    explicit_draft["page_size"] = 1
+    explicit_path = tmp_path / "single-page-search.yaml"
+    explicit_path.write_text(json.dumps(explicit_draft), encoding="utf-8")
+    assert main(
+        [
+            "search",
+            "plan",
+            "--input",
+            str(explicit_path),
+            "--output-root",
+            str(tmp_path / "output"),
+        ]
+    ) == 0
+    explicit = json.loads(capsys.readouterr().out)
+    explicit_plan = json.loads(
+        Path(explicit["draft_path"]).read_text(encoding="utf-8")
+    )
+
+    assert implicit_plan["page_size"] == 100
+    assert explicit_plan["page_size"] == 1
+    assert explicit["plan_hash"] != implicit["plan_hash"]
+
+
 def test_search_plan_and_approval_dry_runs_validate_without_writes(
     tmp_path, capsys
 ) -> None:

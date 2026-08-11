@@ -11,8 +11,10 @@ from paper_agent.query_plan import (
     approve_query_plan,
     assert_runtime_matches,
     compile_query_plan,
+    compile_runtime_providers,
 )
-from paper_agent.schema import validate
+from paper_agent.query_compilers import compile_queries
+from paper_agent.schema import SchemaValidationError, validate
 from paper_agent.scope_filter import screening_scope_hash
 
 
@@ -110,6 +112,7 @@ def test_compiled_plan_replays_and_approval_is_detached() -> None:
     assert first["plan_hash"] == second["plan_hash"]
     assert first["plan_id"] == second["plan_id"]
     assert first["scope"]["include_arxiv_candidates"] is False
+    assert first["page_size"] == 100
     assert first["schema_version"] == "2"
     approved = approve_query_plan(
         first,
@@ -119,6 +122,51 @@ def test_compiled_plan_replays_and_approval_is_detached() -> None:
     )
     assert approved["plan_hash"] == first["plan_hash"]
     validate(approved, "query-plan.schema.json")
+
+
+def test_page_size_is_frozen_in_plan_hash_and_runtime_provider_queries() -> None:
+    implicit = compile_query_plan(draft(), providers=[provider()])
+    explicit_default_draft = draft()
+    explicit_default_draft["page_size"] = 100
+    explicit_default = compile_query_plan(
+        explicit_default_draft,
+        providers=[provider()],
+    )
+    single_page_draft = draft()
+    single_page_draft["page_size"] = 1
+    single_page = compile_query_plan(single_page_draft, providers=[provider()])
+
+    assert implicit["page_size"] == explicit_default["page_size"] == 100
+    assert implicit["plan_hash"] == explicit_default["plan_hash"]
+    assert single_page["page_size"] == 1
+    assert single_page["plan_hash"] != implicit["plan_hash"]
+    assert single_page["providers"][0]["native_query_hashes"] != implicit["providers"][0][
+        "native_query_hashes"
+    ]
+    runtime = compile_runtime_providers(single_page, [provider()])
+    assert runtime[0]["native_query_hashes"] == single_page["providers"][0][
+        "native_query_hashes"
+    ]
+
+
+@pytest.mark.parametrize("value", (True, False, "1", 1.0, None, 0, -1))
+def test_page_size_requires_a_positive_integer(value: object) -> None:
+    document = draft()
+    document["page_size"] = value
+
+    with pytest.raises(QueryPlanError, match="page_size must be a positive integer"):
+        compile_query_plan(document, providers=[provider()])
+
+
+def test_query_plan_schema_requires_the_frozen_page_size() -> None:
+    plan = compile_query_plan(draft(), providers=[provider()])
+    validate(plan, "query-plan.schema.json")
+    plan.pop("page_size")
+
+    with pytest.raises(SchemaValidationError, match="page_size"):
+        validate(plan, "query-plan.schema.json")
+    with pytest.raises(QueryPlanError, match="page_size is not frozen"):
+        compile_runtime_providers(plan, [provider()])
 
 
 def test_legacy_v1_plan_requires_explicit_recompile_before_approval_or_runtime() -> None:
@@ -140,6 +188,7 @@ def test_legacy_v1_plan_requires_explicit_recompile_before_approval_or_runtime()
 
 def test_venue_operation_graph_is_frozen_into_approval_identity() -> None:
     document = draft()
+    document["page_size"] = 1
     document["scope"]["venues"] = ["testconf"]
     document["required_roles"] = ["venue_primary"]
     document["required_providers"] = ["pmlr"]
@@ -162,6 +211,16 @@ def test_venue_operation_graph_is_frozen_into_approval_identity() -> None:
     operation = first["venue_operations"][0]
     assert operation["venue_id"] == "testconf"
     assert operation["fallbacks"][0]["native_query_hashes"]
+    venue_scope = {**first["scope"], "venues": ["testconf"]}
+    assert operation["fallbacks"][0]["native_query_hashes"] == [
+        query.query_hash
+        for query in compile_queries(
+            "openalex",
+            first["query_variants"],
+            venue_scope,
+            page_size=first["page_size"],
+        )
+    ]
     assert first["plan_hash"] != changed["plan_hash"]
     validate(first, "query-plan.schema.json")
 

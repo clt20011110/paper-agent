@@ -86,6 +86,7 @@ def compile_query_plan(
     variants = list(source["query_variants"])
     scope = dict(source["scope"])
     scope.setdefault("include_arxiv_candidates", False)
+    page_size = _page_size(source, default=100)
     filter_config = dict(source["filter"])
     filter_config["screening_scope_hash"] = screening_scope_hash({
         "research": source["research"],
@@ -93,7 +94,13 @@ def compile_query_plan(
         "scope": scope,
     })
     compiled_providers = [
-        _compile_provider(spec, variants, scope, page_size=_page_size(source), requirements=requirements)
+        _compile_provider(
+            spec,
+            variants,
+            scope,
+            page_size=page_size,
+            requirements=requirements,
+        )
         for spec in provider_specs
     ]
     _validate_terms_approvals(compiled_providers, requirements)
@@ -103,7 +110,7 @@ def compile_query_plan(
         variants,
         compiled_providers,
         venue_specs or (),
-        page_size=_page_size(source),
+        page_size=page_size,
     )
 
     plan = {
@@ -116,6 +123,7 @@ def compile_query_plan(
         "scope": scope,
         "inclusion": source["inclusion"],
         "query_variants": variants,
+        "page_size": page_size,
         "providers": compiled_providers,
         "venue_operations": venue_operations,
         "filter": filter_config,
@@ -549,8 +557,16 @@ def _validate_terms_approvals(
             raise QueryPlanError(f"terms approval URL for {name} does not match the frozen manifest")
 
 
-def _page_size(document: Mapping[str, Any]) -> int:
-    return int(document.get("page_size", 100))
+def _page_size(document: Mapping[str, Any], *, default: int | None = None) -> int:
+    if "page_size" not in document:
+        if default is None:
+            raise QueryPlanError("page_size is not frozen in the QueryPlan")
+        value = default
+    else:
+        value = document["page_size"]
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise QueryPlanError("page_size must be a positive integer")
+    return value
 
 
 def _provider_enabled(setting: Any, scope: Mapping[str, Any]) -> bool:

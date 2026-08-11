@@ -4,6 +4,7 @@ from email.message import Message
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -175,6 +176,24 @@ def test_public_metadata_operations_use_native_official_routes(
     ControlledHTTPTransport("mailto:operator@example.test", opener=opener)(provider, operation, parameters)
 
     assert expected_path in urls[0]
+
+
+def test_europe_pmc_result_type_is_forwarded_to_the_search_url() -> None:
+    urls: list[str] = []
+
+    def opener(request, timeout):
+        urls.append(request.full_url)
+        return Response(b"{}", {"Content-Type": "application/json"})
+
+    ControlledHTTPTransport("mailto:operator@example.test", opener=opener)(
+        "europe_pmc",
+        "search",
+        {"doi": "10.3758/s13421-020-01060-2", "resultType": "core"},
+    )
+
+    query = parse_qs(urlsplit(urls[0]).query)
+    assert query["query"] == ["DOI:10.3758/s13421-020-01060-2"]
+    assert query["resultType"] == ["core"]
 
 
 def test_openalex_citations_resolve_external_id_before_filtering() -> None:
