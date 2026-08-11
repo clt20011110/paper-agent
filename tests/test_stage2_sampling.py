@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+import paper_agent.stage2_sampling as stage2_sampling
 from paper_agent.schema import SchemaValidationError, validate
 from paper_agent.stage2_evaluation import GoldLabelStore, GoldSplit
 from paper_agent.stage2_sampling import (
@@ -141,6 +142,36 @@ def test_private_snapshot_round_trip_keeps_text_metadata_and_corpus_hash() -> No
     document["papers"][0]["title"] = "changed"
     with pytest.raises(ValueError, match="corpus_hash"):
         private_corpus_snapshot_from_document(document)
+
+
+def test_private_snapshot_hashes_its_large_payload_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    real_content_hash = stage2_sampling.content_hash
+
+    def counted_content_hash(value: object) -> str:
+        nonlocal calls
+        calls += 1
+        return real_content_hash(value)
+
+    monkeypatch.setattr(stage2_sampling, "content_hash", counted_content_hash)
+    paper = CorpusPaper(
+        topic="molecular generation",
+        paper_id="paper-1",
+        title="One paper",
+        abstract="One abstract",
+        metadata={},
+        source="crawler",
+        language="en",
+        paper_family="family-1",
+        sampling_weight=1.0,
+        sampling_probability=1.0,
+    )
+    snapshot = PrivateCorpusSnapshot(1, "policy-v1", 741, (paper,))
+
+    assert calls == 2
+    assert snapshot.corpus_hash == snapshot.corpus_hash
+    assert snapshot.hash() == snapshot.hash()
+    assert calls == 2
 
 
 def test_private_sampling_artifacts_round_trip_bind_inputs_and_keep_public_manifest_safe(tmp_path) -> None:

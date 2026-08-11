@@ -8,7 +8,7 @@ manifest together with a small binding artifact.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from math import isclose, isfinite, log
 import os
@@ -93,6 +93,8 @@ class PrivateCorpusSnapshot:
     sampling_policy_version: str
     sampling_seed: int
     papers: tuple[CorpusPaper, ...]
+    _corpus_hash: str = field(init=False, repr=False, compare=False)
+    _snapshot_hash: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "papers", tuple(self.papers))
@@ -100,13 +102,20 @@ class PrivateCorpusSnapshot:
             raise ValueError("private corpus snapshot requires version, policy, and papers")
         if len({paper.key for paper in self.papers}) != len(self.papers):
             raise ValueError("private corpus snapshot has duplicate topic-paper rows")
+        papers = [paper.document() for paper in sorted(self.papers, key=lambda item: item.key)]
+        corpus_hash = content_hash({"schema_version": self.schema_version, "papers": papers})
+        object.__setattr__(self, "_corpus_hash", corpus_hash)
+        object.__setattr__(self, "_snapshot_hash", content_hash({
+            "schema_version": self.schema_version,
+            "sampling_policy_version": self.sampling_policy_version,
+            "sampling_seed": self.sampling_seed,
+            "corpus_hash": corpus_hash,
+            "papers": papers,
+        }))
 
     @property
     def corpus_hash(self) -> str:
-        return content_hash({
-            "schema_version": self.schema_version,
-            "papers": [paper.document() for paper in sorted(self.papers, key=lambda item: item.key)],
-        })
+        return self._corpus_hash
 
     def document(self) -> dict[str, Any]:
         return {
@@ -118,7 +127,7 @@ class PrivateCorpusSnapshot:
         }
 
     def hash(self) -> str:
-        return content_hash(self.document())
+        return self._snapshot_hash
 
 
 def private_corpus_snapshot_from_document(document: object) -> PrivateCorpusSnapshot:
