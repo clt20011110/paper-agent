@@ -403,6 +403,7 @@ def _download() -> dict[str, Any]:
                 "source_zip_sha256": None,
                 "installed_content_sha256": None,
                 "dependency_lock_sha256": None,
+                "provider": "authorized_skill",
                 "allowed_domains": [],
                 "paper_ids": [],
                 "collection_snapshot_hash": None,

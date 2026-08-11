@@ -26,6 +26,7 @@ def test_v2_example_configs_validate_and_use_frozen_model_routes() -> None:
         assert config["filter"]["adjudicator"]["backend"] == "omlx_chat"
         assert config["download"]["authorized_skill"]["profile"] == "stage3_authorized_luna"
         assert config["download"]["authorized_skill"]["codex_model"] == "gpt-5.6-luna"
+        assert config["download"]["authorized_skill"]["grant_defaults"]["provider"] == "authorized_skill"
         assert config["download"]["metadata_lookup"]["enabled"] is True
         assert config["download"]["metadata_lookup"]["timeout_seconds"] > 0
         assert config["analysis"]["profile"] == "stage4_analysis_luna"

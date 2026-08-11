@@ -83,7 +83,7 @@ download:
     profile: stage3_authorized_luna
     codex_model: gpt-5.6-luna
     reasoning_effort: low
-    grant_defaults: {source_zip_sha256: null, installed_content_sha256: null, dependency_lock_sha256: null, allowed_domains: [], paper_ids: [], collection_snapshot_hash: null, selection_snapshot_hash: null, max_papers: null, actions: [download, store, extract], purpose: personal_research, mode: attended, allow_unattended: false, authorization_expires_at: null}
+    grant_defaults: {source_zip_sha256: null, installed_content_sha256: null, dependency_lock_sha256: null, provider: authorized_skill, allowed_domains: [], paper_ids: [], collection_snapshot_hash: null, selection_snapshot_hash: null, max_papers: null, actions: [download, store, extract], purpose: personal_research, mode: attended, allow_unattended: false, authorization_expires_at: null}
 analysis:
   profile: stage4_analysis_luna
   provider: codex_exec

@@ -9,7 +9,7 @@ import yaml
 from paper_agent import cli
 from paper_agent.approval import approved_content_hash
 from paper_agent.authorized_skill_runtime import load_audit_record
-from paper_agent.config import ConfigError
+from paper_agent.config import ConfigError, load_config
 from paper_agent.doctor import DoctorCheck, SystemDoctorReport
 from paper_agent.domain import SourceEntry
 from paper_agent.downloads import (
@@ -68,6 +68,7 @@ def test_grant_cli_creates_unapproved_draft_then_approves_and_revokes(tmp_path: 
     assert draft["status"] == "draft"
     assert draft["approval"] is None
     assert draft["scope"]["domains"] == ["publisher.example"]
+    assert draft["scope"]["provider"] == "authorized_skill"
     assert not database.exists()
 
     assert cli.main([
@@ -119,6 +120,11 @@ def test_download_grant_uses_only_defaults_and_create_dry_run_has_no_writes(
             "grant", "create", "--kind", "download", "--output", str(output),
             "--config", str(config), "--paper-id", "paper-2",
         ])
+    with pytest.raises(ConfigError, match="only from grant_defaults"):
+        cli.main([
+            "grant", "create", "--kind", "download", "--output", str(output),
+            "--config", str(config), "--provider", "authorized_skill",
+        ])
 
     drifted = yaml.safe_load(config.read_text(encoding="utf-8"))
     drifted["download"]["authorized_skill"]["grant_defaults"][
@@ -130,6 +136,23 @@ def test_download_grant_uses_only_defaults_and_create_dry_run_has_no_writes(
             "grant", "create", "--kind", "download", "--output", str(output),
             "--config", str(config), "--dry-run",
         ])
+
+
+@pytest.mark.parametrize("provider", (None, "public_direct"))
+def test_download_grant_default_provider_is_required_and_fixed(
+    tmp_path: Path, provider: str | None
+) -> None:
+    config, _database = _download_config(tmp_path)
+    document = yaml.safe_load(config.read_text(encoding="utf-8"))
+    defaults = document["download"]["authorized_skill"]["grant_defaults"]
+    if provider is None:
+        defaults.pop("provider")
+    else:
+        defaults["provider"] = provider
+    config.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        load_config(config)
 
 
 def test_download_cli_resolves_hash_bound_snapshot_path_and_persisted_id(

@@ -1777,7 +1777,7 @@ def _grant_scope(args: argparse.Namespace, defaults: Mapping[str, Any]) -> dict[
         "collection_snapshot_hash": args.collection_snapshot_hash or defaults.get("collection_snapshot_hash"),
         "selection_snapshot_hash": args.selection_snapshot_hash or defaults.get("selection_snapshot_hash"),
         "domains": args.domain or list(defaults.get("allowed_domains", ())),
-        "provider": args.provider,
+        "provider": defaults["provider"] if args.kind == "download" else args.provider,
         "model": args.model,
         "data_categories": args.data_category,
     }
