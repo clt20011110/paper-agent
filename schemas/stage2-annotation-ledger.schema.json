@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-annotation-ledger.schema.json",
+  "title": "Stage 2 evaluator-private annotation ledger",
+  "description": "Private evaluator-custody record of two complete annotations and disagreement-only adjudication. It contains labels and must not be included in release bundles or fixtures.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "gold_manifest_hash",
+    "rubric_version",
+    "rubric_hash",
+    "annotator_ids",
+    "adjudicator_id",
+    "annotations",
+    "adjudications",
+    "hard_negative_pair_ids",
+    "hard_positive_pair_ids"
+  ],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "gold_manifest_hash": {"$ref": "#/$defs/sha256"},
+    "rubric_version": {"const": 1},
+    "rubric_hash": {"$ref": "#/$defs/sha256"},
+    "annotator_ids": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/personId"}
+    },
+    "adjudicator_id": {"$ref": "#/$defs/personId"},
+    "annotations": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"$ref": "#/$defs/annotation"}
+    },
+    "adjudications": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/adjudication"}
+    },
+    "hard_negative_pair_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/pairId"}
+    },
+    "hard_positive_pair_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/pairId"}
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "pairId": {
+      "type": "string",
+      "pattern": "^pair-[a-f0-9]{64}$"
+    },
+    "personId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "label": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    },
+    "annotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pair_id", "annotator_id", "label"],
+      "properties": {
+        "pair_id": {"$ref": "#/$defs/pairId"},
+        "annotator_id": {"$ref": "#/$defs/personId"},
+        "label": {"$ref": "#/$defs/label"}
+      }
+    },
+    "adjudication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pair_id", "adjudicator_id", "label"],
+      "properties": {
+        "pair_id": {"$ref": "#/$defs/pairId"},
+        "adjudicator_id": {"$ref": "#/$defs/personId"},
+        "label": {"$ref": "#/$defs/label"}
+      }
+    }
+  }
+}
