@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial
 import json
 from pathlib import Path
 import re
@@ -248,22 +249,29 @@ class Stage3DownloadService:
         config_hash = resolver_snapshot.snapshot_hash
         resolved_run_id = run_id or f"stage3-{input_hash[:16]}"
         artifact_store = ArtifactStore(self.artifact_root)
-        fetcher = self.fetcher
-        if fetcher is urllib_fetch:
-            trusted_cidrs = self.download_config.get("trusted_egress_proxy_cidrs", ())
-            fetcher = lambda url: urllib_fetch(
-                url,
-                max_bytes=policy.max_pdf_bytes,
-                trusted_egress_proxy_cidrs=trusted_cidrs,
-            )
+        provider_fetchers = {}
+        if (
+            self.fetcher is urllib_fetch
+            and self.download_config.get("allow_rfc2544_fake_ip_dns", False)
+        ):
+            provider_fetchers = {
+                provider: partial(
+                    urllib_fetch,
+                    max_bytes=policy.max_pdf_bytes,
+                    allow_rfc2544_fake_ip_dns=True,
+                    trusted_fake_dns_hosts=terms.domain_allowlist,
+                )
+                for provider, terms in self.provider_terms.items()
+            }
         service = DownloadService(
             self.database,
             artifact_store,
             policy,
             self.provider_terms,
-            fetcher,
+            self.fetcher,
             scope_membership=self.scope_membership,
             clock=self.clock,
+            provider_fetchers=provider_fetchers,
         )
         providers = default_download_provider_registry(service)
         if dry_run:

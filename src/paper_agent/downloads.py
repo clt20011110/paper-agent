@@ -1778,14 +1778,20 @@ def urllib_fetch(
     *,
     timeout: float = 30.0,
     max_bytes: int = 209_715_200,
-    trusted_egress_proxy_cidrs: Sequence[str] = (),
+    allow_rfc2544_fake_ip_dns: bool = False,
+    trusted_fake_dns_hosts: Sequence[str] = (),
 ) -> HTTPResponse:
     """Fetch one public URL without browser state, cookies, or authentication."""
 
     split = urlsplit(url)
     if not split.hostname:
         raise OSError("download URL has no host")
-    _require_public_dns(split.hostname, trusted_egress_proxy_cidrs)
+    _require_public_dns(
+        split.hostname,
+        scheme=split.scheme,
+        allow_rfc2544_fake_ip_dns=allow_rfc2544_fake_ip_dns,
+        trusted_fake_dns_hosts=trusted_fake_dns_hosts,
+    )
     request = Request(url, headers={"Accept": "application/pdf", "User-Agent": "paper-agent/2"})
     opener = build_opener(_SameHostRedirects(split.hostname))
     try:
@@ -1805,17 +1811,35 @@ def urllib_fetch(
         )
 
 
-def _require_public_dns(host: str, trusted_egress_proxy_cidrs: Sequence[str] = ()) -> None:
+def _require_public_dns(
+    host: str,
+    *,
+    scheme: str = "https",
+    allow_rfc2544_fake_ip_dns: bool = False,
+    trusted_fake_dns_hosts: Sequence[str] = (),
+) -> None:
     addresses = {
         ipaddress.ip_address(item[4][0])
         for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     }
-    trusted = tuple(ipaddress.ip_network(value) for value in trusted_egress_proxy_cidrs)
-    if not addresses or any(
-        not address.is_global and not any(address in network for network in trusted)
-        for address in addresses
+    if addresses and all(address.is_global for address in addresses):
+        return
+    desktop_proxy = ipaddress.ip_network("198.18.0.0/15")
+    try:
+        ipaddress.ip_address(host)
+        host_is_ip = True
+    except ValueError:
+        host_is_ip = False
+    if (
+        allow_rfc2544_fake_ip_dns
+        and scheme == "https"
+        and not host_is_ip
+        and host.casefold() in {value.casefold() for value in trusted_fake_dns_hosts}
+        and addresses
+        and all(address in desktop_proxy for address in addresses)
     ):
-        raise OSError("download host resolves to a private or local address")
+        return
+    raise OSError("download host resolves to a private or local address")
 
 
 def _normalize_candidate(

@@ -230,14 +230,51 @@ def test_default_pdf_fetcher_rejects_fake_ip_dns_before_network(
         urllib_fetch("https://europepmc.org/articles/PMC7683441?pdf=render")
 
 
-def test_pdf_fetcher_accepts_an_explicit_trusted_egress_proxy_cidr(
+def test_pdf_fetcher_accepts_an_explicit_rfc2544_fake_dns_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "paper_agent.downloads.socket.getaddrinfo",
         lambda *_args, **_kwargs: [(2, 1, 6, "", ("198.18.0.66", 0))],
     )
-    _require_public_dns("europepmc.org", ("198.18.0.0/15",))
+    _require_public_dns(
+        "europepmc.org",
+        allow_rfc2544_fake_ip_dns=True,
+        trusted_fake_dns_hosts=("europepmc.org",),
+    )
+
+
+@pytest.mark.parametrize(
+    ("host", "scheme", "addresses"),
+    (
+        ("unbound.example", "https", ("198.18.0.66",)),
+        ("europepmc.org", "http", ("198.18.0.66",)),
+        ("198.18.0.66", "https", ("198.18.0.66",)),
+        ("europepmc.org", "https", ("10.0.0.8",)),
+        ("europepmc.org", "https", ("198.18.0.66", "8.8.8.8")),
+        ("europepmc.org", "https", ("198.18.0.66", "10.0.0.8")),
+    ),
+)
+def test_pdf_fetcher_rejects_untrusted_fake_dns_routes(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    scheme: str,
+    addresses: tuple[str, ...],
+) -> None:
+    monkeypatch.setattr(
+        "paper_agent.downloads.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (2, 1, 6, "", (address, 0)) for address in addresses
+        ],
+    )
+
+    with pytest.raises(OSError, match="private or local address"):
+        _require_public_dns(
+            host,
+            scheme=scheme,
+            allow_rfc2544_fake_ip_dns=True,
+            trusted_fake_dns_hosts=("europepmc.org",),
+        )
 
 
 def test_public_oa_script_returns_nonzero_for_a_failed_smoke(
