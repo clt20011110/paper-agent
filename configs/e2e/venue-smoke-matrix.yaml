@@ -9,6 +9,27 @@ stage_contract:
   stage4: {model: gpt-5.6-luna, invoke_by_default: false}
   stage4b: {model: gpt-5.6-sol, execution_strategy: one_shot, invoke_by_default: false}
 venues:
+  - id: neurips
+    year: 2025
+    topic: "低成本模板化分子生成"
+    descriptor: venues/neurips.yaml
+    official_identity_url: https://proceedings.neurips.cc/paper_files/paper/2025/hash/333581887bf483296118a97773cab0c1-Abstract-Conference.html
+    paper:
+      title: "Scalable and Cost-Efficient de Novo Template-Based Molecular Generation"
+      arxiv_id: "2506.19865"
+      authors:
+        - Piotr Gaiński
+        - Oussama Boussif
+        - Andrei Rekesh
+        - Dmytro Shevchuk
+        - Ali Parviz
+        - Mike Tyers
+        - Robert A. Batey
+        - Michał Koziarski
+      metadata_source_url: https://proceedings.neurips.cc/paper_files/paper/2025/hash/333581887bf483296118a97773cab0c1-Abstract-Conference.html
+      landing_url: https://proceedings.neurips.cc/paper_files/paper/2025/hash/333581887bf483296118a97773cab0c1-Abstract-Conference.html
+      pdf_url: https://proceedings.neurips.cc/paper_files/paper/2025/file/333581887bf483296118a97773cab0c1-Paper-Conference.pdf
+      access_basis: official_open_access
   - id: icml
     year: 2024
     topic: "分子生成与可解释图语法"

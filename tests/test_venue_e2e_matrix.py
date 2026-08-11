@@ -194,7 +194,7 @@ def test_matrix_schema_accepts_future_venue_year(tmp_path: Path) -> None:
 def test_all_configured_venues_have_a_valid_model_free_preflight() -> None:
     module = _runner_module()
     matrix = module.load_matrix(ROOT / "configs" / "e2e" / "venue-smoke-matrix.yaml")
-    assert len(matrix["venues"]) == 19
+    assert len(matrix["venues"]) == 20
     assert all(venue["paper"]["authors"] for venue in matrix["venues"])
     assert all(venue["paper"]["metadata_source_url"].startswith("https://") for venue in matrix["venues"])
 
