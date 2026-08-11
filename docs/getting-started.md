@@ -85,6 +85,13 @@ HIDDEN_HARD。curated annotations 只保存为抽样配额和难例分层准备�
 600 个 pair 选中后，全部样本才由两人独立标注并由第三人仲裁：
 
 ```sh
+python scripts/freeze_stage2_crossref_snapshot.py \
+  --query-spec configs/stage2/real-sampling-crossref-v1.json \
+  --contact operator@example.org \
+  --output /secure/evaluator/private-snapshot.json \
+  --capture-directory /secure/evaluator/crossref-raw \
+  --capture-manifest /secure/evaluator/crossref-captures.json
+
 paper-agent --dry-run stage2-sampling freeze-frame \
   --private-snapshot /secure/evaluator/private-snapshot.json \
   --output /secure/evaluator/hidden-real-freeze-frame.json

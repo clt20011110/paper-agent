@@ -85,6 +85,13 @@ curated annotations 是只用于配额与难例分层的临时 curation 标签�
 选中 600 个 pair 后，全部样本才进入权威的双人独立标注和第三人仲裁。构建命令（`--dry-run` 是全局选项）为：
 
 ```sh
+python scripts/freeze_stage2_crossref_snapshot.py \
+  --query-spec configs/stage2/real-sampling-crossref-v1.json \
+  --contact operator@example.org \
+  --output /secure/evaluator/private-snapshot.json \
+  --capture-directory /secure/evaluator/crossref-raw \
+  --capture-manifest /secure/evaluator/crossref-captures.json
+
 paper-agent --dry-run stage2-sampling freeze-frame \
   --private-snapshot /secure/evaluator/private-snapshot.json \
   --output /secure/evaluator/hidden-real-freeze-frame.json
