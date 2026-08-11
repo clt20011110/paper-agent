@@ -81,6 +81,7 @@ class FakeInvoker:
     actual_model: str | None = "gpt-5.6-luna"
     actual_profile: str | None = "stage4_analysis_luna"
     read_only_output: bool = False
+    output_overrides: dict | None = None
 
     def invoke(self, request):
         assert self.calls is not None
@@ -105,6 +106,7 @@ class FakeInvoker:
             "comparison_eligibility": "comparable" if self.evidence_unit else "not_comparable",
             "missing_fields": ["full_text"] if payload["input_scope"] != "full_pdf" else ([] if self.evidence_unit else ["comparison_evidence"]),
         }
+        output.update(self.output_overrides or {})
         metadata = InvocationMetadata(
             "fake-id", "stage4_analysis_luna", "gpt-5.6-luna", "medium",
             "paper-analysis.schema.json", self.coordinator.schema_hash, request.input_hash,
@@ -217,6 +219,38 @@ def test_read_only_codex_output_validates_as_a_json_object(tmp_path: Path) -> No
 
         assert result.for_paper("one").status == "complete"
         assert len(calls) == 1
+    finally:
+        database.close()
+
+
+def test_system_owned_output_bindings_override_model_echo(tmp_path: Path) -> None:
+    calls: list[object] = []
+    holder: dict[str, PaperAnalysisCoordinator] = {}
+    database, coordinator = _coordinator(
+        tmp_path,
+        lambda: FakeInvoker(
+            holder["coordinator"],
+            calls=calls,
+            output_overrides={"paper_id": "wrong-paper"},
+        ),
+    )
+    holder["coordinator"] = coordinator
+    try:
+        result = coordinator.run(
+            "run-system-bindings",
+            [
+                AnalysisInput(
+                    "one",
+                    "CC-BY-4.0",
+                    "open_license",
+                    normalized_text="a normalized paper",
+                )
+            ],
+        ).for_paper("one")
+
+        assert result.status == "complete", result.error
+        assert result.output is not None
+        assert result.output["paper_id"] == "one"
     finally:
         database.close()
 

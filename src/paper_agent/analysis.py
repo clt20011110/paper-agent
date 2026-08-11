@@ -729,9 +729,10 @@ class PaperAnalysisCoordinator:
             "prompt_hash": metadata.prompt_hash, "schema_hash": metadata.schema_hash,
             "input_scope": input_scope, "created_at": created_at,
         }
-        if any(output[key] != value for key, value in bindings.items()):
-            raise AnalysisValidationError("analysis output does not match its paper/artifact/model/prompt/schema binding")
-        normalized = self.normalization_registry.normalize_analysis(output)
+        normalized = self.normalization_registry.normalize_analysis({
+            **dict(output),
+            **bindings,
+        })
         normalized = _prune_unverifiable_label_evidence(normalized, request)
         try:
             validate(normalized, ANALYSIS_SCHEMA)
