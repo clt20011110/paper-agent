@@ -9,7 +9,7 @@ call and writes validated PDFs to the content-addressed artifact store.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.message import Message
@@ -1774,14 +1774,18 @@ class _SameHostRedirects(HTTPRedirectHandler):
 
 
 def urllib_fetch(
-    url: str, *, timeout: float = 30.0, max_bytes: int = 209_715_200
+    url: str,
+    *,
+    timeout: float = 30.0,
+    max_bytes: int = 209_715_200,
+    trusted_egress_proxy_cidrs: Sequence[str] = (),
 ) -> HTTPResponse:
     """Fetch one public URL without browser state, cookies, or authentication."""
 
     split = urlsplit(url)
     if not split.hostname:
         raise OSError("download URL has no host")
-    _require_public_dns(split.hostname)
+    _require_public_dns(split.hostname, trusted_egress_proxy_cidrs)
     request = Request(url, headers={"Accept": "application/pdf", "User-Agent": "paper-agent/2"})
     opener = build_opener(_SameHostRedirects(split.hostname))
     try:
@@ -1801,12 +1805,16 @@ def urllib_fetch(
         )
 
 
-def _require_public_dns(host: str) -> None:
+def _require_public_dns(host: str, trusted_egress_proxy_cidrs: Sequence[str] = ()) -> None:
     addresses = {
         ipaddress.ip_address(item[4][0])
         for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     }
-    if not addresses or any(not address.is_global for address in addresses):
+    trusted = tuple(ipaddress.ip_network(value) for value in trusted_egress_proxy_cidrs)
+    if not addresses or any(
+        not address.is_global and not any(address in network for network in trusted)
+        for address in addresses
+    ):
         raise OSError("download host resolves to a private or local address")
 
 

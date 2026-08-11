@@ -18,7 +18,7 @@ from paper_agent.download_cli_service import (
     Stage3DownloadService,
     load_provider_terms,
 )
-from paper_agent.downloads import HTTPResponse, urllib_fetch
+from paper_agent.downloads import HTTPResponse, _require_public_dns, urllib_fetch
 from paper_agent.repository import PaperRepository
 from paper_agent.resources import public_oa_terms_path, release_asset_root
 from paper_agent.stage3_metadata_lookup import (
@@ -228,6 +228,16 @@ def test_default_pdf_fetcher_rejects_fake_ip_dns_before_network(
 
     with pytest.raises(OSError, match="private or local address"):
         urllib_fetch("https://europepmc.org/articles/PMC7683441?pdf=render")
+
+
+def test_pdf_fetcher_accepts_an_explicit_trusted_egress_proxy_cidr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "paper_agent.downloads.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("198.18.0.66", 0))],
+    )
+    _require_public_dns("europepmc.org", ("198.18.0.0/15",))
 
 
 def test_public_oa_script_returns_nonzero_for_a_failed_smoke(

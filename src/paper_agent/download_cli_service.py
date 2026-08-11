@@ -248,12 +248,20 @@ class Stage3DownloadService:
         config_hash = resolver_snapshot.snapshot_hash
         resolved_run_id = run_id or f"stage3-{input_hash[:16]}"
         artifact_store = ArtifactStore(self.artifact_root)
+        fetcher = self.fetcher
+        if fetcher is urllib_fetch:
+            trusted_cidrs = self.download_config.get("trusted_egress_proxy_cidrs", ())
+            fetcher = lambda url: urllib_fetch(
+                url,
+                max_bytes=policy.max_pdf_bytes,
+                trusted_egress_proxy_cidrs=trusted_cidrs,
+            )
         service = DownloadService(
             self.database,
             artifact_store,
             policy,
             self.provider_terms,
-            self.fetcher,
+            fetcher,
             scope_membership=self.scope_membership,
             clock=self.clock,
         )
