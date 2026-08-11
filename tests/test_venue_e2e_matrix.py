@@ -50,6 +50,9 @@ def test_icml_native_stage1_and_test_only_stage2_persist_sqlite_checkpoints(tmp_
     connection = sqlite3.connect(database)
     try:
         assert connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT verification_status FROM papers"
+        ).fetchone()[0] == "verified"
         authors = json.loads(connection.execute("SELECT authors_json FROM papers").fetchone()[0])
         assert connection.execute("SELECT COUNT(*) FROM filter_decisions").fetchone()[0] == 1
         sources = connection.execute(
@@ -206,6 +209,7 @@ def test_frozen_stage1_records_preserve_audited_authors_and_dois() -> None:
         _, record = module._snapshot_bundle(venue, descriptor)
         assert record["authors"] == venue["paper"]["authors"]
         assert record["doi"] == venue["paper"].get("doi")
+        assert record["arxiv_id"] == venue["paper"].get("arxiv_id")
         assert record["metadata_source_url"] == venue["paper"]["metadata_source_url"]
 
     aaai = module._venue_by_id(matrix, "aaai")

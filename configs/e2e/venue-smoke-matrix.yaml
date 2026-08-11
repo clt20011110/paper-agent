@@ -16,6 +16,7 @@ venues:
     official_identity_url: https://proceedings.mlr.press/v235/sun24c.html
     paper:
       title: "Representing Molecules as Random Walks Over Interpretable Grammars"
+      arxiv_id: "2403.08147"
       authors:
         - Michael Sun
         - Minghao Guo
@@ -41,6 +42,7 @@ venues:
     official_identity_url: https://openreview.net/forum?id=Lb91pXwZMR
     paper:
       title: "UniGEM: A Unified Approach to Generation and Property Prediction for Molecules"
+      arxiv_id: "2410.10516"
       authors:
         - Shikun Feng
         - Yuyan Ni

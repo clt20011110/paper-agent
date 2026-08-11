@@ -168,6 +168,9 @@ def _validate_venue(venue: object, seen: set[str]) -> None:
     doi = paper.get("doi")
     if doi is not None and (not isinstance(doi, str) or not doi.startswith("10.") or "/" not in doi):
         raise MatrixConfigError(f"{venue_id}: paper.doi must be a bare DOI")
+    arxiv_id = paper.get("arxiv_id")
+    if arxiv_id is not None and (not isinstance(arxiv_id, str) or not arxiv_id):
+        raise MatrixConfigError(f"{venue_id}: paper.arxiv_id must be a non-empty string")
     for field in ("metadata_source_url", "landing_url", "pdf_url"):
         value = paper.get(field)
         if not isinstance(value, str) or not value.startswith("http"):
@@ -206,6 +209,7 @@ def _discovery_parameters(venue: Mapping[str, Any], descriptor: Mapping[str, Any
         "title": paper["title"],
         "authors": list(paper["authors"]),
         "doi": paper.get("doi"),
+        "arxiv_id": paper.get("arxiv_id"),
         "metadata_source_url": paper["metadata_source_url"],
         "abstract": None,
         "publication_date": f"{year}-01-01",
