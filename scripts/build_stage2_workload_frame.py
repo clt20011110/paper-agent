@@ -93,8 +93,14 @@ def build_workload_frame(papers: Iterable[Stage2Paper], *, seed: int) -> tuple[d
     performance = tuple(random.sample(present, 900) + random.sample(missing, 100))
     soak = tuple(random.sample(universe, 10_000))
     performance_ids = tuple(paper.paper_id for paper in performance)
-    normal_qwen_ids = tuple(sorted(random.sample(performance_ids, 150)))
-    stress_qwen_ids = tuple(sorted(random.sample(performance_ids, 300)))
+    missing_ids = {paper.paper_id for paper in performance if paper.abstract is None}
+    present_ids = [paper.paper_id for paper in performance if paper.abstract is not None]
+    normal_extra = set(random.sample(present_ids, 50))
+    stress_extra = normal_extra | set(
+        random.sample([paper_id for paper_id in present_ids if paper_id not in normal_extra], 150)
+    )
+    normal_qwen_ids = tuple(sorted(missing_ids | normal_extra))
+    stress_qwen_ids = tuple(sorted(missing_ids | stress_extra))
     performance_document = _papers_document(performance)
     soak_document = _papers_document(soak)
     receipt = {

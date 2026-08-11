@@ -108,6 +108,12 @@ def test_workload_frame_uses_sqlite_exact_counts_hashes_and_no_replace(tmp_path:
     assert receipt["performance"]["papers_corpus_hash"] == again[2]["performance"]["papers_corpus_hash"]
     assert len(receipt["performance"]["normal_qwen_ids"]) == 150
     assert len(receipt["performance"]["stress_qwen_ids"]) == 300
+    missing_ids = {
+        item["paper_id"] for item in performance["papers"] if item["abstract"] is None
+    }
+    normal_ids = set(receipt["performance"]["normal_qwen_ids"])
+    stress_ids = set(receipt["performance"]["stress_qwen_ids"])
+    assert missing_ids <= normal_ids <= stress_ids
     assert receipt["omitted_bindings"] == ["stage2_config_hash", "threshold_artifact_hashes", "model_lock_hashes"]
 
     performance_path = tmp_path / "performance-papers.json"
