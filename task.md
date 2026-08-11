@@ -605,6 +605,21 @@ needs_review 的指标语义：
 - 确定性解析修复与模型重试分开统计；任何最终无效响应 100% 路由 needs_review，绝不自动拒绝。
 - 固定专项回放在允许的一次重试后必须全部得到合法结果或正确进入 needs_review。
 
+执行命令只接受冻结 workload 和 schema-v2 candidate，不允许单独覆盖模型、并发、seed、endpoint、
+prompt 或 schema：
+
+```sh
+paper-agent --dry-run stage2-replay \
+  --papers /secure/workloads/performance-papers.json \
+  --stage2-candidate /secure/release/stage2-candidate-v2.json \
+  --manifest-output /secure/evidence/structured-replay-manifest.json \
+  --records-output /secure/evidence/structured-replay-records.json
+```
+
+dry-run 只冻结并验证 manifest；移除 `--dry-run` 才调用本地 oMLX。实际响应 model 必须与 candidate
+一致，400 grammar failure、Warning、schema 外文本、think 标签和 paper_id 错配均按 schema failure
+记录并最多重试一次，最终无效项进入 needs_review。
+
 rationale 使用至少 100 条按 relevant/边界/语言分层的人工审计样本。预先冻结“证据支持”和“严重编造”rubric；证据支持率 ≥ 95%，严重编造率 ≤ 1%。
 
 模型选择规则：
@@ -1185,6 +1200,7 @@ paper-agent resume
 paper-agent export
 paper-agent migrate-config
 paper-agent benchmark-stage2
+paper-agent stage2-replay
 ~~~
 
 通用要求：

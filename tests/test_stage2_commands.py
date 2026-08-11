@@ -9,7 +9,7 @@ import pytest
 from paper_agent import cli
 from paper_agent.domain import FilterStatus, SourceEntry
 from paper_agent.repository import PaperRepository
-from paper_agent.stage2_backends import ThresholdArtifact
+from paper_agent.stage2_backends import OmlxResponse, ThresholdArtifact
 from paper_agent.stage2_benchmark import MacOSMemoryObserver
 from paper_agent.stage2_commands import (
     _measurement_result,
@@ -17,6 +17,7 @@ from paper_agent.stage2_commands import (
     evaluate_benchmark_artifacts,
     filter_database,
     measure_stage2_benchmark,
+    run_structured_replay,
 )
 from paper_agent.stage2_evaluation import PerformanceCase, PerformanceRoutingManifest
 from paper_agent.stage2_pipeline import (
@@ -303,6 +304,128 @@ def test_benchmark_stage2_measure_cli_dispatches_explicit_production_inputs(
     assert captured["scenario"] == "stress"
     assert captured["dry_run"] is True
     assert json.loads(capsys.readouterr().out)["status"] == "validated"
+
+
+def test_stage2_replay_dry_run_and_measured_execution(
+    tmp_path: Path,
+) -> None:
+    profile = Stage2Profile(
+        query="frozen replay topic",
+        query_version="replay-v1",
+        thresholds=ThresholdArtifact(
+            "threshold-v1", "reranker-lock", "raw_reranker_score", -1, 1
+        ),
+        reranker_model_id="reranker",
+        reranker_revision="reranker-revision",
+        adjudicator_model_id="qwen",
+        adjudicator_revision="qwen-revision",
+        screening_scope_hash="0" * 64,
+        reranker_lock_hash="a" * 64,
+        adjudicator_lock_hash="b" * 64,
+        adjudicator_concurrency=4,
+    )
+    papers_path = tmp_path / "papers.json"
+    papers_path.write_text(json.dumps({
+        "schema_version": "1",
+        "kind": "stage2_benchmark_papers",
+        "papers": [
+            {
+                "paper_id": f"paper-{index:04d}",
+                "title": f"Paper {index}",
+                "abstract": "Frozen abstract",
+                "keywords": [],
+            }
+            for index in range(1_000)
+        ],
+    }), encoding="utf-8")
+    release = SimpleNamespace(
+        profile=profile,
+        omlx_base_url="http://127.0.0.1:8000",
+        api_key_env=None,
+    )
+    candidate_loader = lambda _path: release
+    manifest_path = tmp_path / "replay-manifest.json"
+    records_path = tmp_path / "replay-records.json"
+
+    preview = run_structured_replay(
+        papers_path=papers_path,
+        candidate_path=tmp_path / "candidate.json",
+        manifest_output=manifest_path,
+        records_output=records_path,
+        dry_run=True,
+        candidate_loader=candidate_loader,
+    )
+    assert preview["status"] == "validated"
+    assert preview["case_count"] == 1_000
+    assert not manifest_path.exists() and not records_path.exists()
+
+    class Transport:
+        calls = 0
+
+        def request(self, path, payload):
+            assert path == "/v1/chat/completions"
+            self.calls += 1
+            paper_id = payload["messages"][1]["content"].split("Paper ID: ", 1)[1].split("\n", 1)[0]
+            decision = {
+                "paper_id": paper_id,
+                "decision": "relevant",
+                "score": 0.9,
+                "reason_codes": ["topic_match"],
+                "rationale": "Directly relevant.",
+                "evidence_fields": ["title", "abstract"],
+            }
+            return OmlxResponse(200, json.dumps({
+                "model": "qwen",
+                "choices": [{"message": {"content": json.dumps(decision)}}],
+            }).encode())
+
+    transport = Transport()
+    result = run_structured_replay(
+        papers_path=papers_path,
+        candidate_path=tmp_path / "candidate.json",
+        manifest_output=manifest_path,
+        records_output=records_path,
+        candidate_loader=candidate_loader,
+        transport=transport,
+    )
+
+    assert result["status"] == "passed"
+    assert result["first_valid_rate"] == 1
+    assert result["deterministic_repairs"] == 0
+    assert result["model_retries"] == 0
+    assert len(result["manifest_sha256"]) == len(result["records_sha256"]) == 64
+    assert transport.calls == 1_000
+    assert manifest_path.is_file() and records_path.is_file()
+
+
+def test_stage2_replay_cli_uses_only_frozen_inputs(monkeypatch, capsys) -> None:
+    captured = {}
+
+    def replay(**kwargs):
+        captured.update(kwargs)
+        return {"command": "stage2-replay", "status": "validated"}
+
+    monkeypatch.setattr(cli, "run_structured_replay", replay)
+    exit_code = cli.main([
+        "--dry-run",
+        "stage2-replay",
+        "--papers", "papers.json",
+        "--stage2-candidate", "candidate.json",
+        "--manifest-output", "manifest.json",
+        "--records-output", "records.json",
+    ])
+
+    assert exit_code == 0
+    assert captured == {
+        "papers_path": Path("papers.json"),
+        "candidate_path": Path("candidate.json"),
+        "manifest_output": Path("manifest.json"),
+        "records_output": Path("records.json"),
+        "dry_run": True,
+    }
+    output = json.loads(capsys.readouterr().out)
+    assert output["stage"] == "stage2"
+    assert output["status"] == "validated"
 
 
 def test_measure_stage2_dry_run_validates_release_workload_and_macos_observation(

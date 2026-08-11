@@ -145,6 +145,20 @@ paper-agent --dry-run stage2-sampling finalize-annotations \
 该命令要求每个 pair 恰好两份独立标注、所有分歧恰好一次第三人仲裁、仲裁前 quadratic-weighted kappa
 至少为 0.75，并重新验证语言正例与 hard-case 配额。移除 `--dry-run` 后只写 label artifact，不复制标注者身份或原始仲裁记录，且拒绝覆盖已有输出。
 
+结构化输出专项回放直接复用冻结的 1,000 篇 workload 与 schema-v2 candidate；模型、并发、seed、
+endpoint、prompt 和 schema 均从 candidate 读取，命令不提供运行时覆盖：
+
+```sh
+paper-agent --dry-run stage2-replay \
+  --papers /secure/workloads/performance-papers.json \
+  --stage2-candidate /secure/release/stage2-candidate-v2.json \
+  --manifest-output /secure/evidence/structured-replay-manifest.json \
+  --records-output /secure/evidence/structured-replay-records.json
+```
+
+dry-run 只校验并返回冻结 manifest hash；移除 `--dry-run` 后才调用本地 oMLX，并把 400 grammar
+失败、Warning、模型身份错配和 JSON/schema 错误统一记录为 schema failure，最多重试一次。
+
 生产 release 的顺序是 `promote → assemble → load`。优先在隔离 evaluator 中使用一次性
 `promote`；`--candidate` 与 `--submission` 是可重复的 `ID=PATH`，两边 ID 集合必须完全一致：
 

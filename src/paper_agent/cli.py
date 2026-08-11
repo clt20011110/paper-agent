@@ -133,6 +133,7 @@ from .stage2_commands import (
     evaluate_benchmark_artifacts,
     filter_database,
     measure_stage2_benchmark,
+    run_structured_replay,
 )
 from .search_audit import search_audit
 from .seed_import import import_seeds, inputs_from_files, validate_seed_inputs
@@ -402,6 +403,21 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     stage2_sampling_finalize.add_argument(
         "--private-labels-output", required=True, type=Path
     )
+
+    replay = subcommands.add_parser(
+        "stage2-replay",
+        help="run the frozen 1,000-request structured-output gate against local oMLX",
+    )
+    replay.add_argument("--papers", required=True, type=Path)
+    replay.add_argument(
+        "--stage2-candidate",
+        "--stage2-config",
+        dest="stage2_candidate",
+        required=True,
+        type=Path,
+    )
+    replay.add_argument("--manifest-output", required=True, type=Path)
+    replay.add_argument("--records-output", required=True, type=Path)
 
     benchmark = subcommands.add_parser(
         "benchmark-stage2", help="measure or evaluate frozen Stage 2 benchmark records"
@@ -750,6 +766,14 @@ def main(
         and args.stage2_sampling_command == "finalize-annotations"
     ):
         return _finish(args, _stage2_annotations_finalize(args))
+    if args.command == "stage2-replay":
+        return _finish(args, run_structured_replay(
+            papers_path=args.papers,
+            candidate_path=args.stage2_candidate,
+            manifest_output=args.manifest_output,
+            records_output=args.records_output,
+            dry_run=args.dry_run,
+        ))
     if args.command == "benchmark-stage2":
         if args.benchmark_command == "measure":
             result = measure_stage2_benchmark(
@@ -3303,9 +3327,7 @@ def _command_from_argv(argv: Sequence[str]) -> str:
 def _command_stage(command: str) -> str:
     if command.startswith(("search", "crawl", "import-seeds", "import")):
         return "stage1"
-    if command.startswith(
-        ("filter", "benchmark-stage2", "stage2-evaluator", "stage2-release")
-    ):
+    if command.startswith(("filter", "benchmark-stage2", "stage2-")):
         return "stage2"
     if command.startswith(("report", "verify-report")):
         return "stage4b"

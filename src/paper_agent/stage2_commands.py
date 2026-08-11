@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,10 @@ from .stage2_search import (
     ReleasedStage2,
     load_stage2_benchmark_candidate,
     load_stage2_release,
+)
+from .stage2_structured_replay import (
+    StructuredReplayRunner,
+    freeze_structured_replay_manifest,
 )
 from .storage import Database
 
@@ -140,6 +145,83 @@ def evaluate_benchmark_artifacts(
         }
     result["status"] = "passed" if performance.passed and result.get("soak", {}).get("passed", True) else "failed"
     return result
+
+
+def run_structured_replay(
+    *,
+    papers_path: Path,
+    candidate_path: Path,
+    manifest_output: Path,
+    records_output: Path,
+    dry_run: bool = False,
+    candidate_loader: Callable[[Path], ReleasedStage2] = load_stage2_benchmark_candidate,
+    transport: OmlxTransport | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run the frozen 1,000-request adjudicator replay against local oMLX."""
+
+    if manifest_output == records_output:
+        raise ValueError("structured replay outputs must use different paths")
+    existing = next(
+        (path for path in (manifest_output, records_output) if path.exists()),
+        None,
+    )
+    if existing is not None:
+        raise FileExistsError(f"refusing to replace structured replay artifact: {existing}")
+
+    release = candidate_loader(candidate_path)
+    papers = _benchmark_papers(papers_path)
+    manifest = freeze_structured_replay_manifest(papers, release.profile)
+    if dry_run:
+        return {
+            "case_count": len(papers),
+            "command": "stage2-replay",
+            "corpus_hash": manifest.corpus_hash,
+            "manifest_hash": manifest.hash(),
+            "model_lock_hash": manifest.model_lock_hash,
+            "status": "validated",
+            "written": False,
+        }
+
+    values = environment if environment is not None else os.environ
+    api_key = values.get(release.api_key_env) if release.api_key_env else None
+    if release.api_key_env and not api_key:
+        raise ValueError(
+            f"structured replay requires environment variable {release.api_key_env}"
+        )
+    local_transport = transport or UrlLibOmlxTransport(
+        release.omlx_base_url,
+        api_key=api_key,
+    )
+    run = StructuredReplayRunner(release.profile, local_transport).run(
+        papers,
+        manifest=manifest,
+        manifest_path=manifest_output,
+        records_path=records_output,
+    )
+    result = run.result
+    return {
+        "case_count": len(run.records),
+        "command": "stage2-replay",
+        "corpus_hash": run.manifest.corpus_hash,
+        "deterministic_repairs": result.deterministic_repairs,
+        "failures": list(result.gate.failures),
+        "first_valid_rate": result.first_valid_rate,
+        "manifest_hash": result.manifest_hash,
+        "manifest_output": str(manifest_output),
+        "manifest_sha256": sha256(manifest_output.read_bytes()).hexdigest(),
+        "model_retries": result.model_retries,
+        "records_output": str(records_output),
+        "records_sha256": sha256(records_output.read_bytes()).hexdigest(),
+        "retry_error_counts": {
+            error.value: count for error, count in result.retry_error_counts.items()
+        },
+        "schema_errors": result.schema_errors,
+        "service_errors": result.service_errors,
+        "status": "passed" if result.gate.passed else "failed",
+        "timeouts": result.timeouts,
+        "written": True,
+    }
 
 
 def measure_stage2_benchmark(
