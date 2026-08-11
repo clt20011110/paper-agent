@@ -167,7 +167,7 @@ def test_rejects_hidden_content_in_signing_input(field: str) -> None:
     payload = _payload()
     payload[field] = ["must never be signed"]
 
-    with pytest.raises(Stage2EvaluatorError, match="Additional properties"):
+    with pytest.raises(Stage2EvaluatorError, match="failed schema validation"):
         issue_hidden_promotion_from_payload(payload, Ed25519PrivateKey.generate())
 
 

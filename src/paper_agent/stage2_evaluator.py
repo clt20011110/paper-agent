@@ -18,7 +18,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .schema import SchemaValidationError, validate
-from .stage2_hidden_attestation import issue_hidden_promotion_attestation
+from .stage2_hidden_attestation import (
+    HiddenEvaluatorTrust,
+    issue_hidden_promotion_attestation,
+)
 from .stage2_search import ReleasedStage2, load_stage2_release
 
 
@@ -72,11 +75,70 @@ def issue_hidden_promotion_from_payload(
     no function in this module accepts a private-key string or raw key bytes.
     """
 
+    validate_hidden_promotion_payload(payload)
+    return issue_hidden_promotion_attestation(payload, private_key)
+
+
+def validate_hidden_promotion_payload(payload: Mapping[str, Any]) -> None:
+    """Reject signing inputs that are not the strict public-safe schema."""
+
+    if not _is_valid_hidden_promotion_payload(payload):
+        # jsonschema messages can embed the rejected instance.  Validation is
+        # isolated in a helper so the public error retains no validator
+        # exception in either __cause__ or __context__.
+        raise Stage2EvaluatorError(
+            "hidden evaluator signing payload failed schema validation"
+        ) from None
+
+
+def _is_valid_hidden_promotion_payload(payload: Mapping[str, Any]) -> bool:
+    """Return only validity; discard validator exceptions containing values."""
+
     try:
         validate(payload, "stage2-hidden-evaluator-signing-input.schema.json")
-    except SchemaValidationError as error:
-        raise Stage2EvaluatorError(str(error)) from error
-    return issue_hidden_promotion_attestation(payload, private_key)
+    except SchemaValidationError:
+        return False
+    return True
+
+
+def validate_hidden_evaluator_signing_trust(
+    payload: Mapping[str, Any], trust: HiddenEvaluatorTrust
+) -> None:
+    """Bind a schema-valid payload to the deployment-controlled trust root."""
+
+    if payload["trust_manifest_hash"] != trust.manifest_hash:
+        raise Stage2EvaluatorError(
+            "hidden evaluator signing payload trust manifest hash does not match deployment trust"
+        )
+    if payload["evaluator_key_id"] not in trust.keys:
+        raise Stage2EvaluatorError(
+            "hidden evaluator signing payload evaluator key is not an active trusted key"
+        )
+
+
+def validate_hidden_evaluator_private_key_trust(
+    private_key: Ed25519PrivateKey,
+    *,
+    evaluator_key_id: str,
+    trust: HiddenEvaluatorTrust,
+) -> None:
+    """Require the loaded private key to match the selected active trust key."""
+
+    trusted = trust.keys.get(evaluator_key_id)
+    if trusted is None:
+        raise Stage2EvaluatorError(
+            "hidden evaluator signing payload evaluator key is not an active trusted key"
+        )
+    actual = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    expected = trusted.public_key.public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    if actual != expected:
+        raise Stage2EvaluatorError(
+            "hidden evaluator private key does not match the active deployment trust key"
+        )
 
 
 def verify_public_stage2_release(

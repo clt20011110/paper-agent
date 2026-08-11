@@ -77,6 +77,14 @@ from .report_plan import ReportPlanBundle
 from .repository import PaperRepository
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import Stage2ReleaseError, load_stage2_release
+from .stage2_evaluator import (
+    issue_hidden_promotion_from_payload,
+    load_hidden_evaluator_private_key,
+    validate_hidden_evaluator_private_key_trust,
+    validate_hidden_evaluator_signing_trust,
+    validate_hidden_promotion_payload,
+)
+from .stage2_hidden_attestation import load_hidden_evaluator_trust
 from .stage2_commands import (
     evaluate_benchmark_artifacts,
     filter_database,
@@ -292,6 +300,22 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
         help="oMLX server or worker PID to include in current RSS; repeat for every process",
     )
     measure.add_argument("--sample-interval-seconds", type=float, default=0.25)
+
+    evaluator = subcommands.add_parser(
+        "stage2-evaluator",
+        help="issue public-safe attestations from the isolated Stage 2 evaluator",
+    )
+    evaluator_commands = evaluator.add_subparsers(
+        dest="stage2_evaluator_command", required=True
+    )
+    attest = evaluator_commands.add_parser(
+        "attest",
+        help="validate and Ed25519-sign a public-safe hidden-promotion payload",
+    )
+    attest.add_argument("--payload", required=True, type=Path)
+    attest.add_argument("--signing-key-file", required=True, type=Path)
+    attest.add_argument("--trust-manifest", required=True, type=Path)
+    attest.add_argument("--output", required=True, type=Path)
 
     report = subcommands.add_parser(
         "report", help="plan, approve, run, or compare Stage 4b reports"
@@ -530,6 +554,8 @@ def main(
             soak_record_path=args.soak_record,
         )
         return _finish(args, result)
+    if args.command == "stage2-evaluator" and args.stage2_evaluator_command == "attest":
+        return _finish(args, _stage2_evaluator_attest(args))
     if args.command == "report":
         return _finish(args, _report(args))
     if args.command == "verify-report":
@@ -576,6 +602,59 @@ def _filter(args: argparse.Namespace) -> dict[str, Any]:
         paper_ids=args.paper_id,
         dry_run=args.dry_run,
     )
+
+
+def _stage2_evaluator_attest(args: argparse.Namespace) -> dict[str, Any]:
+    """Sign one schema-validated public-safe hidden-promotion payload."""
+
+    payload = _load_json(args.payload)
+    if not isinstance(payload, Mapping):
+        raise CliUsageError("stage2-evaluator attest payload must be a JSON object")
+    validate_hidden_promotion_payload(payload)
+    _assert_attestation_output_absent(args.output)
+    trust = load_hidden_evaluator_trust(args.trust_manifest)
+    validate_hidden_evaluator_signing_trust(payload, trust)
+
+    result = {
+        "command": "stage2-evaluator.attest",
+        "candidate_id": payload["candidate_id"],
+        "evaluation_run_id": payload["evaluation_run_id"],
+        "evaluator_key_id": payload["evaluator_key_id"],
+        "passed": payload["result_summary"]["passed"],
+        "payload_sha256": content_hash(payload),
+        "output": str(args.output),
+    }
+    if args.dry_run:
+        return {**result, "signed": False, "status": "validated"}
+
+    private_key = load_hidden_evaluator_private_key(args.signing_key_file)
+    validate_hidden_evaluator_private_key_trust(
+        private_key,
+        evaluator_key_id=payload["evaluator_key_id"],
+        trust=trust,
+    )
+    attestation = issue_hidden_promotion_from_payload(payload, private_key)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("xb") as output:
+        output.write(canonical_json(attestation))
+    return {
+        **result,
+        "attestation_sha256": content_hash(attestation),
+        "signed": True,
+        "status": "complete",
+    }
+
+
+def _assert_attestation_output_absent(path: Path) -> None:
+    """Reject every pre-existing destination, including a dangling symlink."""
+
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise OSError("cannot inspect hidden promotion attestation output") from error
+    raise FileExistsError("hidden promotion attestation already exists")
 
 
 def _report(args: argparse.Namespace) -> dict[str, Any]:
@@ -2280,7 +2359,7 @@ def _command_from_argv(argv: Sequence[str]) -> str:
     if index >= len(argv):
         return "unknown"
     command = argv[index]
-    if command in {"grant", "search", "report"} and index + 1 < len(argv):
+    if command in {"grant", "search", "report", "stage2-evaluator"} and index + 1 < len(argv):
         if argv[index + 1].startswith("-"):
             return command
         command = f"{command}.{argv[index + 1]}"
@@ -2290,7 +2369,7 @@ def _command_from_argv(argv: Sequence[str]) -> str:
 def _command_stage(command: str) -> str:
     if command.startswith(("search", "crawl", "import-seeds", "import")):
         return "stage1"
-    if command.startswith(("filter", "benchmark-stage2")):
+    if command.startswith(("filter", "benchmark-stage2", "stage2-evaluator")):
         return "stage2"
     if command.startswith(("report", "verify-report")):
         return "stage4b"
