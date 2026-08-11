@@ -316,7 +316,7 @@ def _neurips(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -
                     "pdf_url": re.sub(
                         r"-Abstract(?P<track>-[A-Za-z0-9_]+)?\.html$",
                         r"-Paper\g<track>.pdf",
-                        landing_url,
+                        landing_url.replace("/hash/", "/file/", 1),
                     ),
                     "publication_version": "published",
                     "host_type": "official",

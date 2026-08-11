@@ -141,7 +141,7 @@ def test_neurips_uses_year_page_maps_official_ids_and_paginates_cached_html() ->
     assert first.entries[0].external_id == "NeurIPS-2024-abc123"
     assert first.entries[0].authors == ("Ada Lovelace", "Grace Hopper")
     assert first.entries[0].pdf_url == (
-        "https://proceedings.neurips.cc/paper_files/paper/2024/hash/"
+        "https://proceedings.neurips.cc/paper_files/paper/2024/file/"
         "abc123-Paper-Conference.pdf"
     )
     assert first.entries[0].publication_version is PublicationVersion.PUBLISHED
@@ -171,7 +171,9 @@ def test_neurips_legacy_page_accepts_unclassified_items_and_plain_abstract_suffi
 
     assert batch.entries[0].external_id == "NeurIPS-2020-legacy123"
     assert batch.entries[0].landing_url.endswith("legacy123-Abstract.html")
-    assert batch.entries[0].pdf_url.endswith("legacy123-Paper.pdf")
+    assert batch.entries[0].pdf_url == (
+        "https://proceedings.neurips.cc/paper_files/paper/2020/file/legacy123-Paper.pdf"
+    )
     assert batch.entries[0].metadata["language"] == "en"
     assert batch.entries[0].metadata["document_type"] == "proceedings-article"
 
