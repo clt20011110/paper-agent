@@ -441,8 +441,8 @@ def _analysis(legacy: dict[str, Any]) -> dict[str, Any]:
 def _summary(legacy: dict[str, Any]) -> dict[str, Any]:
     return {
         "enabled": bool(legacy.get("generate_summary", True)),
-        "execution_strategy": "reduce_tree",
-        "profile": "stage4b_summary_sol",
+        "execution_strategy": "one_shot",
+        "profile": "stage4b_oneshot_sol",
         "provider": "codex_exec",
         "model": "gpt-5.6-sol",
         "reasoning_effort": "high",
@@ -477,7 +477,7 @@ def _summary(legacy: dict[str, Any]) -> dict[str, Any]:
         "require_search_audit": True,
         "require_complete_coverage": True,
         "require_claim_evidence": True,
-        "semantic_chunking": True,
+        "semantic_chunking": False,
         "remote_model_processing": {
             "policy_matrix": "./policies/artifact-processing-v1.yaml",
             "processing_grant_id": None,
@@ -486,12 +486,12 @@ def _summary(legacy: dict[str, Any]) -> dict[str, Any]:
         "citations": {"marker": "stable_paper_id", "style": "ieee", "bibliography_from_canonical_metadata": True},
         "final_audit": {
             "deterministic": True,
-            "independent_sol_session": True,
+            "independent_sol_session": False,
             "rubric": "./policies/report-audit-rubric-v1.yaml",
             "max_blocker_findings": 0,
             "max_major_findings": 0,
-            "max_repair_calls": 1,
-            "reverify_and_reaudit_after_repair": True,
+            "max_repair_calls": 0,
+            "reverify_and_reaudit_after_repair": False,
         },
         "immutable_run_directories": True,
         "update_latest_after_pass": True,

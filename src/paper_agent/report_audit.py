@@ -796,6 +796,7 @@ class ReportAuditCoordinator:
                 schema_root=self.schema_root,
                 prompt_root=self.prompt_root,
                 resources=self.resources,
+                _legacy_read_only=True,
             )
             assert_report_runtime_matches(
                 plan,

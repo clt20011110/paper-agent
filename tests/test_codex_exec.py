@@ -12,6 +12,7 @@ from paper_agent.codex_exec import (
     CALL_KIND_SCHEMAS,
     CodexAuthError,
     CodexExec,
+    CodexExecError,
     CodexExecRequest,
     CodexModelMismatchError,
     CodexOutputError,
@@ -250,18 +251,15 @@ def test_invalid_jsonl_usage_is_not_recorded_as_a_number(value: object) -> None:
         CodexExec(runner=BadUsageRunner([0])).invoke(_request())
 
 
-def test_stage4b_requires_its_call_kind_schema_and_hashes() -> None:
+def test_legacy_stage4b_dispatch_is_disabled_before_process_start() -> None:
     request = _request(
         profile="stage4b_summary_sol", call_kind="quality_audit",
         schema_name=CALL_KIND_SCHEMAS["quality_audit"], prompt_name=CALL_KIND_PROMPTS["quality_audit"],
     )
     runner = FakeRunner([0])
-    result = CodexExec(runner=runner).invoke(request)
-
-    assert runner.calls[0]["argv"][3] == "gpt-5.6-sol"
-    assert result.metadata.call_kind == "quality_audit"
-    assert result.metadata.input_hash == INPUT_HASH
-    assert len(result.metadata.schema_hash) == len(result.metadata.prompt_hash) == 64
+    with pytest.raises(CodexExecError, match="legacy Stage 4b"):
+        CodexExec(runner=runner).invoke(request)
+    assert runner.calls == []
     with pytest.raises(ValueError, match="call_kind"):
         _request(
             profile="stage4b_summary_sol", call_kind=None, schema_name="report-plan.schema.json",
@@ -316,18 +314,18 @@ def test_one_shot_stage4b_accepts_only_one_shot_report_and_never_retries() -> No
 
 
 def test_stage4b_invocation_uses_explicit_configured_resource_paths(tmp_path: Path) -> None:
-    schema_path = tmp_path / "configured" / "project-audit.json"
+    schema_path = tmp_path / "configured" / "project-one-shot.json"
     schema_path.parent.mkdir()
-    schema = {**SCHEMA, "title": "Project audit output"}
+    schema = {**SCHEMA, "title": "Project one-shot output"}
     schema_path.write_text(json.dumps(schema), encoding="utf-8")
-    prompt_path = tmp_path / "configured" / "project-audit.md"
-    prompt_path.write_text("Project-specific audit instructions.\n", encoding="utf-8")
+    prompt_path = tmp_path / "configured" / "project-one-shot.md"
+    prompt_path.write_text("Project-specific one-shot instructions.\n", encoding="utf-8")
     request = _request(
-        profile="stage4b_summary_sol",
-        call_kind="quality_audit",
+        profile="stage4b_oneshot_sol",
+        call_kind="one_shot_report",
         output_schema=schema,
-        schema_name=CALL_KIND_SCHEMAS["quality_audit"],
-        prompt_name=CALL_KIND_PROMPTS["quality_audit"],
+        schema_name=CALL_KIND_SCHEMAS["one_shot_report"],
+        prompt_name=CALL_KIND_PROMPTS["one_shot_report"],
         schema_path=str(schema_path),
         prompt_path=str(prompt_path),
         expected_prompt_hash=sha256(prompt_path.read_bytes()).hexdigest(),
@@ -336,7 +334,7 @@ def test_stage4b_invocation_uses_explicit_configured_resource_paths(tmp_path: Pa
 
     result = CodexExec(runner=runner).invoke(request)
 
-    assert str(runner.calls[0]["input"]).startswith("Project-specific audit instructions.")
+    assert str(runner.calls[0]["input"]).startswith("Project-specific one-shot instructions.")
     assert result.metadata.schema_path == str(schema_path)
     assert result.metadata.prompt_path == str(prompt_path)
 
@@ -357,10 +355,10 @@ def test_configured_resources_are_stage4b_only_and_prompt_drift_fails_before_cal
         )
 
     request = _request(
-        profile="stage4b_summary_sol",
-        call_kind="quality_audit",
-        schema_name=CALL_KIND_SCHEMAS["quality_audit"],
-        prompt_name=CALL_KIND_PROMPTS["quality_audit"],
+        profile="stage4b_oneshot_sol",
+        call_kind="one_shot_report",
+        schema_name=CALL_KIND_SCHEMAS["one_shot_report"],
+        prompt_name=CALL_KIND_PROMPTS["one_shot_report"],
         schema_path=str(schema_path),
         prompt_path=str(prompt_path),
         expected_prompt_hash="a" * 64,
@@ -382,7 +380,7 @@ def test_stage4b_resolves_refs_through_the_configured_call_kind_map(
             "status": {"$ref": "report-document.schema.json"},
         },
     }
-    schema_path = tmp_path / "custom" / "audit.schema.json"
+    schema_path = tmp_path / "custom" / "one-shot.schema.json"
     schema_path.parent.mkdir()
     schema_path.write_text(json.dumps(schema), encoding="utf-8")
     dependency_path = tmp_path / "other" / "document.schema.json"
@@ -390,25 +388,25 @@ def test_stage4b_resolves_refs_through_the_configured_call_kind_map(
     dependency_path.write_text(
         json.dumps({"type": "string", "const": "ok"}), encoding="utf-8"
     )
-    prompt_path = tmp_path / "custom" / "audit.md"
-    prompt_path.write_text("Configured audit prompt.\n", encoding="utf-8")
+    prompt_path = tmp_path / "custom" / "one-shot.md"
+    prompt_path.write_text("Configured one-shot prompt.\n", encoding="utf-8")
     resources = {
         name: str(tmp_path / name) for name in CALL_KIND_SCHEMAS.values()
     }
-    resources[CALL_KIND_SCHEMAS["quality_audit"]] = str(schema_path)
+    resources[CALL_KIND_SCHEMAS["one_shot_report"]] = str(schema_path)
     resources[CALL_KIND_SCHEMAS["final_reduce"]] = str(dependency_path)
     service_schema = prepare_service_schema(
-        CALL_KIND_SCHEMAS["quality_audit"],
+        CALL_KIND_SCHEMAS["one_shot_report"],
         schema,
         schema_root=tmp_path,
         resource_paths=resources,
     )
     request = _request(
-        profile="stage4b_summary_sol",
-        call_kind="quality_audit",
+        profile="stage4b_oneshot_sol",
+        call_kind="one_shot_report",
         output_schema=schema,
-        schema_name=CALL_KIND_SCHEMAS["quality_audit"],
-        prompt_name=CALL_KIND_PROMPTS["quality_audit"],
+        schema_name=CALL_KIND_SCHEMAS["one_shot_report"],
+        prompt_name=CALL_KIND_PROMPTS["one_shot_report"],
         schema_path=str(schema_path),
         prompt_path=str(prompt_path),
         expected_prompt_hash=sha256(prompt_path.read_bytes()).hexdigest(),
@@ -572,3 +570,21 @@ def test_doctor_checks_binary_auth_and_never_claims_unverified_models_available(
     failed_auth = FakeRunner([0, 1])
     with pytest.raises(CodexAuthError):
         CodexExec(executable="/usr/local/bin/codex", runner=failed_auth).doctor()
+
+
+def test_paid_doctor_probe_uses_one_shot_sol_profile_without_retry() -> None:
+    runner = FakeRunner([0, 0, 0, 0, 2], output={"ok": True})
+
+    report = CodexExec(
+        executable="/usr/local/bin/codex", runner=runner
+    ).doctor(prove_model_availability=True)
+
+    sol_calls = [
+        call for call in runner.calls
+        if call["argv"][1:3] == ["exec", "-m"]
+        and call["argv"][3] == "gpt-5.6-sol"
+    ]
+    assert len(sol_calls) == 1
+    assert 'model_reasoning_effort="high"' in sol_calls[0]["argv"]
+    assert report.model_availability["stage4b_summary_sol"] == "unavailable"
+    assert report.model_availability["stage4b_oneshot_sol"] == "unavailable"

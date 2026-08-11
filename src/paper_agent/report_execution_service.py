@@ -11,13 +11,6 @@ from .artifacts import ArtifactStore
 from .canonical import content_hash
 from .processing import ProcessingGate
 from .report_artifacts import ReportArtifactStore
-from .report_audit import (
-    ReportAuditBudgetError,
-    ReportAuditCoordinator,
-    ReportAuditResult,
-    ReportBundle,
-    SolInvoker as AuditInvoker,
-)
 from .report_config import ReportRuntimeConfig
 from .report_direct import (
     DirectReportBudgetError,
@@ -30,22 +23,9 @@ from .report_plan import (
     ReportPlanBundle,
     ReportPlanDriftError,
     assert_report_runtime_matches,
-    persist_approved_report_plan,
 )
-from .report_reduce import (
-    FrozenDerivedArtifact,
-    ReportReduceResult,
-    SolBudgetError,
-    SolInvoker as ReduceInvoker,
-    SolReduceCoordinator,
-)
-from .reporting import (
-    AnalysisRecord,
-    BudgetExceeded,
-    ReportPlanner,
-    SectionRule,
-    derive_comparison_groups,
-)
+from .report_reduce import FrozenDerivedArtifact
+from .reporting import AnalysisRecord, SectionRule
 from .storage import Database
 from .workflow_report_handoff import assert_report_handoff_runtime
 
@@ -66,8 +46,6 @@ class ReportExecutionResult:
     report_run_id: str
     status: str
     dry_run: bool
-    reduce: ReportReduceResult | None = None
-    audit: ReportAuditResult | None = None
     direct: DirectReportResult | None = None
     skipped: bool = False
     codex_budget: ReportCodexBudget | None = None
@@ -85,8 +63,6 @@ class ReportExecutionService:
         gate: ProcessingGate,
         report_store: ReportArtifactStore,
         *,
-        reduce_invoker_factory: Callable[[], ReduceInvoker] | None = None,
-        audit_invoker_factory: Callable[[], AuditInvoker] | None = None,
         direct_invoker_factory: Callable[[], DirectReportInvoker] | None = None,
         execution_mode: str = "attended",
         runtime_config: ReportRuntimeConfig | None = None,
@@ -95,13 +71,9 @@ class ReportExecutionService:
         self.artifact_store = artifact_store
         self.gate = gate
         self.report_store = report_store
-        self.reduce_invoker_factory = reduce_invoker_factory
-        self.audit_invoker_factory = audit_invoker_factory
         self.direct_invoker_factory = direct_invoker_factory
         self.execution_mode = execution_mode
         self.runtime_config = runtime_config or ReportRuntimeConfig.defaults()
-        self.last_reduce: SolReduceCoordinator | None = None
-        self.last_audit: ReportAuditCoordinator | None = None
 
     def run(
         self,
@@ -143,98 +115,44 @@ class ReportExecutionService:
                 runtime_artifact_root=self.artifact_store.root,
             )
         analyses, artifacts = self._analyses(bundle)
-        if self.runtime_config.execution_strategy == "one_shot":
-            direct_options: dict[str, Any] = {
-                "resources": self.runtime_config.resources,
-                "execution_mode": self.execution_mode,
-            }
-            if self.direct_invoker_factory is not None:
-                direct_options["invoker_factory"] = self.direct_invoker_factory
-            coordinator = DirectReportCoordinator(
-                self.database,
-                self.artifact_store,
-                self.gate,
-                self.report_store,
-                analyses,
-                artifacts,
-                self._sections(bundle.plan),
-                self._memberships(bundle.plan),
-                **direct_options,
-            )
-            if dry_run:
-                try:
-                    coordinator.preflight(
-                        report_run_id, bundle, previous=previous
-                    )
-                except DirectReportError as error:
-                    budget_error = isinstance(error, DirectReportBudgetError)
-                    return self._result(
-                        report_run_id,
-                        "incomplete",
-                        True,
-                        codex_budget=self._codex_budget(report_run_id, bundle.plan),
-                        alarm_codes=(CODEX_BUDGET_ALARM,) if budget_error else (),
-                        error={
-                            "type": type(error).__name__,
-                            "message": str(error),
-                            **(
-                                {"event_code": CODEX_BUDGET_ALARM}
-                                if budget_error
-                                else {}
-                            ),
-                        },
-                    )
-                return self._result(
-                    report_run_id,
-                    "validated",
-                    True,
-                    codex_budget=self._codex_budget(report_run_id, bundle.plan),
-                )
-            direct = coordinator.run(
-                report_run_id,
-                pipeline_run_id,
-                bundle,
-                processing_grants=processing_grants or {},
-                previous=previous,
-            )
-            return self._result(
-                report_run_id,
-                direct.status,
-                False,
-                direct=direct,
-                codex_budget=self._codex_budget(report_run_id, bundle.plan),
-                error=(
-                    {"type": "DirectReportError", "message": direct.error}
-                    if direct.error is not None
-                    else None
-                ),
-            )
-        planner = ReportPlanner(
-            bundle.plan, analyses,
-            max_chunk_input_tokens=int(bundle.plan["aggregation"]["max_chunk_input_tokens"]),
-            reduce_output_tokens=int(bundle.plan["aggregation"]["reduce_output_tokens"]),
-            audit_input_tokens=1,
-            repair_input_tokens=1,
+        direct_options: dict[str, Any] = {
+            "resources": self.runtime_config.resources,
+            "execution_mode": self.execution_mode,
+        }
+        if self.direct_invoker_factory is not None:
+            direct_options["invoker_factory"] = self.direct_invoker_factory
+        coordinator = DirectReportCoordinator(
+            self.database,
+            self.artifact_store,
+            self.gate,
+            self.report_store,
+            analyses,
+            artifacts,
+            self._sections(bundle.plan),
+            self._memberships(bundle.plan),
+            **direct_options,
         )
-        try:
-            reduce_plan = planner.build()
-        except BudgetExceeded as error:
-            document = _budget_error(error)
-            if dry_run:
+        if dry_run:
+            try:
+                coordinator.preflight(report_run_id, bundle, previous=previous)
+            except DirectReportError as error:
+                budget_error = isinstance(error, DirectReportBudgetError)
                 return self._result(
                     report_run_id,
                     "incomplete",
                     True,
                     codex_budget=self._codex_budget(report_run_id, bundle.plan),
-                    alarm_codes=(CODEX_BUDGET_ALARM,),
-                    error=document,
+                    alarm_codes=(CODEX_BUDGET_ALARM,) if budget_error else (),
+                    error={
+                        "type": type(error).__name__,
+                        "message": str(error),
+                        **(
+                            {"event_code": CODEX_BUDGET_ALARM}
+                            if budget_error
+                            else {}
+                        ),
+                    },
                 )
-            return self._budget_exhausted_result(
-                report_run_id, pipeline_run_id, bundle.plan, error
-            )
-        if dry_run:
-            # Selection and tree compilation are pure reads; do not persist a
-            # ReportPlan or create a coordinator that could dispatch Sol.
             return self._result(
                 report_run_id,
                 "validated",
@@ -242,93 +160,37 @@ class ReportExecutionService:
                 codex_budget=self._codex_budget(report_run_id, bundle.plan),
             )
 
-        persist_approved_report_plan(self.database, bundle.plan)
-        reduce_options: dict[str, Any] = {
-            "execution_mode": self.execution_mode,
-            "resources": self.runtime_config.resources,
-            "rubric_path": self.runtime_config.rubric_path,
-        }
-        if self.reduce_invoker_factory is not None:
-            reduce_options["invoker_factory"] = self.reduce_invoker_factory
-        reducer = SolReduceCoordinator(
-            self.database, self.artifact_store, self.gate, analyses,
-            self._sections(bundle.plan), self._memberships(bundle.plan), **reduce_options,
+        direct = coordinator.run(
+            report_run_id,
+            pipeline_run_id,
+            bundle,
+            processing_grants=processing_grants or {},
+            previous=previous,
         )
-        self.last_reduce = reducer
-        try:
-            reduced = reducer.run(
-                report_run_id, pipeline_run_id, bundle.plan, reduce_plan, artifacts,
-                corpus_snapshot=bundle.corpus_snapshot, search_audit_pack=bundle.search_audit,
-                processing_grants=processing_grants,
-            )
-        except SolBudgetError as error:
-            return self._budget_exhausted_result(
-                report_run_id, pipeline_run_id, bundle.plan, error
-            )
-        if reduced.status != "generation_complete":
-            budget_error = self._persisted_budget_error(report_run_id)
-            if budget_error is not None:
-                self._mark_budget_incomplete(
-                    report_run_id, pipeline_run_id, budget_error
-                )
-                return self._result(
-                    report_run_id,
-                    "incomplete",
-                    False,
-                    reduce=reduced,
-                    codex_budget=self._codex_budget(report_run_id, bundle.plan),
-                    alarm_codes=(CODEX_BUDGET_ALARM,),
-                    error=budget_error,
-                )
-            return self._result(
-                report_run_id,
-                reduced.status,
-                False,
-                reduce=reduced,
-                codex_budget=self._codex_budget(report_run_id, bundle.plan),
-            )
-
-        audit_options: dict[str, Any] = {
-            "execution_mode": self.execution_mode,
-            "resources": self.runtime_config.resources,
-            "rubric_path": self.runtime_config.rubric_path,
-        }
-        if self.audit_invoker_factory is not None:
-            audit_options["invoker_factory"] = self.audit_invoker_factory
-        auditor = ReportAuditCoordinator(
-            self.database, self.artifact_store, self.gate, self.report_store, **audit_options,
-        )
-        self.last_audit = auditor
-        report_bundle = self._report_bundle(report_run_id, bundle, auditor)
-        try:
-            audited = auditor.run(
-                report_run_id,
-                report_bundle,
-                processing_grants=processing_grants,
-                previous=previous,
-            )
-        except ReportAuditBudgetError as error:
-            return self._budget_exhausted_result(
-                report_run_id,
-                pipeline_run_id,
-                bundle.plan,
-                error,
-                reduce=reduced,
-            )
-        budget_error = self._persisted_budget_error(report_run_id)
-        if budget_error is not None:
-            self._mark_budget_incomplete(
-                report_run_id, pipeline_run_id, budget_error
-            )
         return self._result(
             report_run_id,
-            "incomplete" if budget_error is not None else audited.status,
+            direct.status,
             False,
-            reduce=reduced,
-            audit=audited,
+            direct=direct,
             codex_budget=self._codex_budget(report_run_id, bundle.plan),
-            alarm_codes=(CODEX_BUDGET_ALARM,) if budget_error is not None else (),
-            error=budget_error,
+            alarm_codes=(CODEX_BUDGET_ALARM,) if direct.budget_exhausted else (),
+            error=(
+                {
+                    "type": (
+                        "DirectReportBudgetError"
+                        if direct.budget_exhausted
+                        else "DirectReportError"
+                    ),
+                    "message": direct.error,
+                    **(
+                        {"event_code": CODEX_BUDGET_ALARM}
+                        if direct.budget_exhausted
+                        else {}
+                    ),
+                }
+                if direct.error is not None
+                else None
+            ),
         )
 
     @staticmethod
@@ -337,8 +199,6 @@ class ReportExecutionService:
         status: str,
         dry_run: bool,
         *,
-        reduce: ReportReduceResult | None = None,
-        audit: ReportAuditResult | None = None,
         direct: DirectReportResult | None = None,
         skipped: bool = False,
         codex_budget: ReportCodexBudget | None = None,
@@ -349,8 +209,6 @@ class ReportExecutionService:
             report_run_id=report_run_id,
             status=status,
             dry_run=dry_run,
-            reduce=reduce,
-            audit=audit,
             direct=direct,
             skipped=skipped,
             codex_budget=codex_budget,
@@ -358,121 +216,22 @@ class ReportExecutionService:
             error=error,
         )
 
-    def _budget_exhausted_result(
-        self,
-        report_run_id: str,
-        pipeline_run_id: str,
-        plan: Mapping[str, Any],
-        error: BudgetExceeded | SolBudgetError | ReportAuditBudgetError,
-        *,
-        reduce: ReportReduceResult | None = None,
-    ) -> ReportExecutionResult:
-        document = _budget_error(error)
-        self._mark_budget_incomplete(report_run_id, pipeline_run_id, document)
-        return self._result(
-            report_run_id,
-            "incomplete",
-            False,
-            reduce=reduce,
-            codex_budget=self._codex_budget(report_run_id, plan),
-            alarm_codes=(CODEX_BUDGET_ALARM,),
-            error=document,
-        )
-
     def _codex_budget(
         self, report_run_id: str, plan: Mapping[str, Any]
     ) -> ReportCodexBudget:
         row = self.database.connection.execute(
-            """SELECT COALESCE(SUM(calls), 0), COALESCE(SUM(tokens), 0)
-               FROM (
-                   SELECT budget_calls_reserved AS calls,
-                          budget_tokens_reserved AS tokens
-                     FROM report_reduce_nodes WHERE report_run_id = ?
-                   UNION ALL
-                   SELECT budget_calls_reserved, budget_tokens_reserved
-                     FROM report_audit_steps WHERE report_run_id = ?
-                   UNION ALL
-                   SELECT budget_calls_reserved, budget_tokens_reserved
-                     FROM report_audit_shard_steps WHERE report_run_id = ?
-                   UNION ALL
-                   SELECT budget_calls_reserved, budget_tokens_reserved
-                     FROM report_one_shot_runs WHERE report_run_id = ?
-               )""",
-            (report_run_id, report_run_id, report_run_id, report_run_id),
+            """SELECT COALESCE(budget_calls_reserved, 0),
+                      COALESCE(budget_tokens_reserved, 0)
+                 FROM report_one_shot_runs WHERE report_run_id = ?""",
+            (report_run_id,),
         ).fetchone()
         budget = plan["budget"]
         return ReportCodexBudget(
-            int(row[0]),
-            int(row[1]),
+            int(row[0]) if row is not None else 0,
+            int(row[1]) if row is not None else 0,
             int(budget["max_sol_calls"]),
             int(budget["max_input_tokens"]),
         )
-
-    def _persisted_budget_error(
-        self, report_run_id: str
-    ) -> Mapping[str, str] | None:
-        rows = self.database.connection.execute(
-            """SELECT error_json FROM report_reduce_nodes WHERE report_run_id = ?
-               UNION ALL
-               SELECT error_json FROM report_audit_runs WHERE report_run_id = ?
-               UNION ALL
-               SELECT error_json FROM report_audit_steps WHERE report_run_id = ?
-               UNION ALL
-               SELECT error_json FROM report_audit_shard_steps WHERE report_run_id = ?""",
-            (report_run_id, report_run_id, report_run_id, report_run_id),
-        ).fetchall()
-        budget_types = {
-            BudgetExceeded.__name__,
-            SolBudgetError.__name__,
-            ReportAuditBudgetError.__name__,
-        }
-        for row in rows:
-            if row["error_json"] is None:
-                continue
-            document = json.loads(row["error_json"])
-            if document.get("error") in budget_types:
-                return {
-                    "type": str(document["error"]),
-                    "message": str(document.get("message") or document["error"]),
-                    "event_code": CODEX_BUDGET_ALARM,
-                }
-        return None
-
-    def _mark_budget_incomplete(
-        self,
-        report_run_id: str,
-        pipeline_run_id: str,
-        error: Mapping[str, str],
-    ) -> None:
-        persisted_error = json.dumps(
-            {
-                "error": error["type"],
-                "message": error["message"],
-                "event_code": CODEX_BUDGET_ALARM,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        with self.database.transaction() as connection:
-            connection.execute(
-                """UPDATE report_audit_runs SET status = 'incomplete', error_json = ?,
-                          completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                     WHERE report_run_id = ? AND status <> 'complete'""",
-                (persisted_error, report_run_id),
-            )
-            connection.execute(
-                """UPDATE report_runs SET status = 'incomplete',
-                          completed_at = CURRENT_TIMESTAMP
-                     WHERE report_run_id = ? AND status <> 'complete'""",
-                (report_run_id,),
-            )
-            connection.execute(
-                """UPDATE pipeline_runs SET status = 'incomplete',
-                          completed_at = CURRENT_TIMESTAMP
-                     WHERE run_id = ? AND status <> 'complete'""",
-                (pipeline_run_id,),
-            )
 
     def _analyses(self, bundle: ReportPlanBundle) -> tuple[tuple[AnalysisRecord, ...], tuple[FrozenDerivedArtifact, ...]]:
         records: list[AnalysisRecord] = []
@@ -512,36 +271,6 @@ class ReportExecutionService:
         return {str(item["paper_id"]): tuple(str(value) for value in item["section_ids"])
                 for item in plan["paper_memberships"]}
 
-    def _report_bundle(
-        self, report_run_id: str, frozen: ReportPlanBundle, auditor: ReportAuditCoordinator,
-    ) -> ReportBundle:
-        rows = self.database.connection.execute(
-            """SELECT node_id, call_kind, dependency_ids_json, output_hash FROM report_reduce_nodes
-               WHERE report_run_id = ? AND status = 'complete'""", (report_run_id,)
-        ).fetchall()
-        final = [row for row in rows if row["call_kind"] == "final_reduce"]
-        if len(final) != 1 or not final[0]["output_hash"]:
-            raise ValueError("generation_complete report lacks one persisted final reduce output")
-        document = _object(self.artifact_store.read_bytes(str(final[0]["output_hash"])), "final reduce output")
-        dependencies = json.loads(final[0]["dependency_ids_json"])
-        if len(dependencies) != 1:
-            raise ValueError("final reduce must have one synthesis dependency")
-        synthesis = next((row for row in rows if row["node_id"] == dependencies[0]), None)
-        if synthesis is None or not synthesis["output_hash"]:
-            raise ValueError("final reduce synthesis output is missing")
-        claims = tuple(_object(self.artifact_store.read_bytes(str(synthesis["output_hash"])), "synthesis output")["claims"])
-        groups = derive_comparison_groups(claims)
-        bibliography = _bibliography(frozen.corpus_snapshot, claims)
-        provisional = ReportBundle(
-            frozen.plan, frozen.search_audit, frozen.corpus_snapshot, claims, groups, (), document, {}, bibliography,
-        )
-        coverage = auditor._rebuild_persisted_coverage(report_run_id, {  # noqa: SLF001 - shared persisted-source verifier.
-            "plan": provisional.plan, "corpus_snapshot": provisional.corpus_snapshot, "claims": provisional.claims,
-        })
-        return ReportBundle(
-            frozen.plan, frozen.search_audit, frozen.corpus_snapshot, claims, groups, (), document, coverage, bibliography,
-        )
-
 
 def _object(payload: bytes, name: str) -> Mapping[str, Any]:
     value = json.loads(payload)
@@ -565,16 +294,6 @@ def _validate_processing_grants(grants: Mapping[str, str] | None) -> None:
         raise ValueError("processing grants must map artifact SHA-256 hashes to grant IDs")
 
 
-def _budget_error(
-    error: BudgetExceeded | SolBudgetError | ReportAuditBudgetError,
-) -> dict[str, str]:
-    return {
-        "type": type(error).__name__,
-        "message": str(error),
-        "event_code": CODEX_BUDGET_ALARM,
-    }
-
-
 def _values(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         value = (value,)
@@ -596,18 +315,4 @@ def _classifications(labels: Mapping[str, Any], paper: Mapping[str, Any]) -> dic
     venue = paper.get("venue_id") or paper.get("venue_name")
     if venue:
         result["venue"] = (str(venue),)
-    return result
-
-
-def _bibliography(corpus: Mapping[str, Any], claims: tuple[Mapping[str, Any], ...]) -> dict[str, dict[str, Any]]:
-    cited = {str(ref["paper_id"]) for claim in claims for field in ("supporting_evidence", "contradicting_evidence")
-             for ref in claim[field] if ref.get("kind") == "paper_evidence"}
-    papers = {str(item["paper_id"]): item for item in corpus["papers"]}
-    result = {}
-    for paper_id in sorted(cited):
-        paper = papers[paper_id]
-        result[paper_id] = {key: value for key, value in {
-            "title": paper.get("title"), "authors": paper.get("authors"), "year": paper.get("publication_year"),
-            "venue_name": paper.get("venue_name"), "doi": paper.get("doi"), "canonical_url": paper.get("canonical_url"),
-        }.items() if value is not None}
     return result

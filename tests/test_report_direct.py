@@ -35,9 +35,11 @@ from paper_agent.reporting import stable_claim_id
 from test_report_reduce import _claim, _draft, _fixture, _sol_grant
 
 
-def _one_shot_bundle(fixture) -> ReportPlanBundle:
+def _one_shot_bundle(
+    fixture, *, max_input_tokens: int = 10_000_000
+) -> ReportPlanBundle:
     resources = ReportResources.defaults()
-    draft = _draft(10_000_000)
+    draft = _draft(max_input_tokens)
     draft["execution_strategy"] = "one_shot"
     draft["stage4b_config_hash"] = one_shot_config_hash(
         fixture.coordinator.gate.policy.hash,
@@ -46,7 +48,7 @@ def _one_shot_bundle(fixture) -> ReportPlanBundle:
     draft["stage4b_audit_config_hash"] = one_shot_validation_config_hash()
     draft["budget"] = {
         "max_sol_calls": 1,
-        "max_input_tokens": 10_000_000,
+        "max_input_tokens": max_input_tokens,
         "max_retries": 0,
         "audit_calls": 0,
         "repair_calls": 0,
@@ -456,6 +458,10 @@ def test_one_shot_report_uses_one_sol_call_and_resumes_without_another(tmp_path)
             ("report-one-shot",),
         ).fetchone()[0] == 1
         assert fixture.database.connection.execute(
+            "SELECT COUNT(*) FROM report_reduce_nodes WHERE report_run_id = ?",
+            ("report-one-shot",),
+        ).fetchone()[0] == 0
+        assert fixture.database.connection.execute(
             "SELECT COUNT(*) FROM report_audit_steps WHERE report_run_id = ?",
             ("report-one-shot",),
         ).fetchone()[0] == 0
@@ -466,6 +472,38 @@ def test_one_shot_report_uses_one_sol_call_and_resumes_without_another(tmp_path)
         report = tmp_path / "release" / "reports" / "report-one-shot"
         assert (report / "REPORT.md").is_file()
         assert json.loads((report / "AUDIT.json").read_text())["audit_pass"] == "deterministic"
+    finally:
+        fixture.database.close()
+
+
+def test_one_shot_oversized_input_stops_before_dispatch(tmp_path) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    bundle = _one_shot_bundle(fixture, max_input_tokens=1)
+    fake = OneShotSol(fixture)
+    try:
+        result = _one_shot_service(
+            fixture, tmp_path / "release", fake
+        ).run(
+            "report-one-shot-oversized",
+            "pipeline-one-shot-oversized",
+            bundle,
+            processing_grants={},
+        )
+
+        assert result.status == "incomplete"
+        assert result.alarm_codes == ("report.codex_budget_exhausted",)
+        assert result.error == {
+            "type": "DirectReportBudgetError",
+            "message": "one-shot Sol prompt exceeds the approved input budget",
+            "event_code": "report.codex_budget_exhausted",
+        }
+        assert fake.calls == []
+        assert fixture.database.connection.execute(
+            "SELECT COUNT(*) FROM report_one_shot_runs"
+        ).fetchone()[0] == 0
+        assert fixture.database.connection.execute(
+            "SELECT COUNT(*) FROM report_sol_invocations"
+        ).fetchone()[0] == 0
     finally:
         fixture.database.close()
 

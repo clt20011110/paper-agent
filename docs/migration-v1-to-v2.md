@@ -43,6 +43,14 @@ paper-agent search plan \
 | download settings | `download` policy 与 grant defaults | 默认不启用授权浏览器；配置草稿不是实际授权。 |
 | analysis/summary model | 固定 Stage 4/4b profile | 模型、schema、prompt 和输入 hash 由 run 记录绑定。 |
 
+已有的 v2 `reduce_tree` 配置不会再被运行时接受，也不能通过 `migrate-config`
+原地升级。请保留旧 run 和旧 ReportPlan 作为只读审计记录，并为新 run 手工把
+`summary` 的六个字段改为：`execution_strategy: one_shot`、
+`profile: stage4b_oneshot_sol`、`semantic_chunking: false`、
+`final_audit.independent_sol_session: false`、`max_repair_calls: 0`、
+`reverify_and_reaudit_after_repair: false`。随后重新编译并批准新的 ReportPlan；
+不得重新批准旧 reduce-tree plan。
+
 ## 模型与环境约定
 
 示例把模型路由写进 v2 可验证字段，不能被默认模型覆盖：

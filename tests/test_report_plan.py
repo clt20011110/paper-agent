@@ -148,7 +148,7 @@ def _draft() -> dict:
         {
             "id": section_id,
             "title": f"中文章节：{section_id.replace('_', ' ')}",
-            "subquestion_ids": ["rq1"] if section_id in {"field_taxonomy", "evidence_synthesis"} else [],
+            "subquestion_ids": ["rq1"],
             "target_words": 300,
             "evidence_requirements": ["Every substantive fact has evidence"],
             "allowed_evidence_levels": [
@@ -204,11 +204,11 @@ def _draft() -> dict:
             "appendices": ["query manifest", "coverage ledger"],
         },
         "budget": {
-            "max_sol_calls": 30,
+            "max_sol_calls": 1,
             "max_input_tokens": 100_000,
-            "max_retries": 1,
-            "audit_calls": 2,
-            "repair_calls": 1,
+            "max_retries": 0,
+            "audit_calls": 0,
+            "repair_calls": 0,
         },
     }
 
@@ -247,7 +247,7 @@ def test_compiled_report_plan_binds_frozen_inputs_prompts_and_required_contract(
         "repair",
         "one_shot_report",
     }
-    assert plan["execution_strategy"] == "reduce_tree"
+    assert plan["execution_strategy"] == "one_shot"
     assert set(REPORT_SECTION_IDS).issubset(section["id"] for section in plan["sections"])
     assert audit["source_audit_hash"] == corpus["search_audit_source_hash"]
 
@@ -357,7 +357,7 @@ def test_plan_rejects_silent_corpus_omission_and_section_contract_drift() -> Non
 
     draft = _draft()
     draft["budget"]["audit_calls"] = 3
-    with pytest.raises(ReportPlanError, match="audit_calls"):
+    with pytest.raises(ReportPlanError, match="one_shot"):
         compile_report_plan(
             draft,
             corpus_snapshot=corpus,
@@ -394,6 +394,37 @@ def test_one_shot_plan_freezes_exactly_one_sol_call_without_retry_or_audit() -> 
 
     assert compiled["execution_strategy"] == "one_shot"
     assert compiled["budget"] == draft["budget"]
+
+    legacy = deepcopy(draft)
+    legacy["execution_strategy"] = "reduce_tree"
+    legacy["budget"] = {
+        "max_sol_calls": 30,
+        "max_input_tokens": 100_000,
+        "max_retries": 1,
+        "audit_calls": 2,
+        "repair_calls": 1,
+    }
+    with pytest.raises(ReportPlanError, match="new ReportPlans require"):
+        compile_report_plan(
+            legacy,
+            corpus_snapshot=corpus,
+            search_audit_pack=audit,
+            created_at="2026-08-10T00:02:00Z",
+        )
+    historical = compile_report_plan(
+        legacy,
+        corpus_snapshot=corpus,
+        search_audit_pack=audit,
+        created_at="2026-08-10T00:02:00Z",
+        _legacy_read_only=True,
+    )
+    with pytest.raises(ReportPlanError, match="new ReportPlan approvals require"):
+        approve_report_plan(
+            historical,
+            historical["plan_hash"],
+            approved_by="owner",
+            approved_at="2026-08-10T00:03:00Z",
+        )
 
     for field, value in (
         ("max_sol_calls", 2),

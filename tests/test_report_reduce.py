@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from paper_agent.approval import approve
 from paper_agent.artifacts import ArtifactStore
 from paper_agent.canonical import canonical_json, content_hash
 from paper_agent.codex_exec import CodexExecResult, InvocationMetadata
@@ -23,7 +24,6 @@ from paper_agent.report_plan import (
     CLASSIFICATION_AXES,
     REPORT_SECTION_IDS,
     CorpusPaper,
-    approve_report_plan,
     build_corpus_snapshot,
     build_search_audit_pack,
     compile_report_plan,
@@ -167,6 +167,7 @@ def _draft(max_input_tokens: int) -> dict:
     return {
         "objective": "综合冻结证据，不增加论文。",
         "report_language": "zh-CN",
+        "execution_strategy": "reduce_tree",
         "audience": "Researchers",
         "primary_question": "What does the frozen evidence support?",
         "subquestions": [{"id": "rq1", "question": "What does the evidence support?"}],
@@ -829,12 +830,14 @@ def _fixture(
         search_audit_pack=audit,
         created_at="2026-08-10T00:03:00Z",
         resources=resources,
+        _legacy_read_only=True,
     )
-    plan = approve_report_plan(
+    plan = approve(
         draft,
         draft["plan_hash"],
         approved_by="owner",
         approved_at="2026-08-10T00:04:00Z",
+        hash_field="plan_hash",
     )
     persist_approved_report_plan(database, plan)
     sections = tuple(

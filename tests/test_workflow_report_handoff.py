@@ -53,20 +53,9 @@ STAGE4_RUN_ID = f"{WORKFLOW_RUN_ID}:analyze"
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _configure_reduce_tree_summary(config: dict[str, Any]) -> None:
-    """Keep legacy reducer workflow fixtures explicit under one-shot defaults."""
+def _enable_one_shot_summary(config: dict[str, Any]) -> None:
     summary = config["summary"]
-    summary.update({
-        "enabled": True,
-        "execution_strategy": "reduce_tree",
-        "profile": "stage4b_summary_sol",
-        "semantic_chunking": True,
-    })
-    summary["final_audit"].update({
-        "independent_sol_session": True,
-        "max_repair_calls": 1,
-        "reverify_and_reaudit_after_repair": True,
-    })
+    summary["enabled"] = True
 
 
 class _PersistedOutcomeAdapter:
@@ -593,7 +582,7 @@ def test_handoff_compiles_approves_and_resumes_one_independent_report_workflow(
         )
         config["project"]["output_dir"] = str(release)
         config["storage"]["sqlite_path"] = str(database.path)
-        _configure_reduce_tree_summary(config)
+        _enable_one_shot_summary(config)
         config["summary"]["report_plan"]["input_path"] = str(approved.path)
         config["summary"]["report_plan"]["content_hash"] = approved.plan["plan_hash"]
         config_path.write_text(
@@ -744,7 +733,7 @@ def test_conflicting_parallel_report_workflow_reservations_leave_no_orphan_manif
     )
     config["project"]["output_dir"] = str(release)
     config["storage"]["sqlite_path"] = str(database.path)
-    _configure_reduce_tree_summary(config)
+    _enable_one_shot_summary(config)
     config["summary"]["report_plan"]["input_path"] = str(approved.path)
     config["summary"]["report_plan"]["content_hash"] = approved.plan["plan_hash"]
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
@@ -830,7 +819,7 @@ def test_report_workflow_reservation_recovers_after_bundle_write_failure(
         )
         config["project"]["output_dir"] = str(release)
         config["storage"]["sqlite_path"] = str(database.path)
-        _configure_reduce_tree_summary(config)
+        _enable_one_shot_summary(config)
         config["summary"]["report_plan"]["input_path"] = str(approved.path)
         config["summary"]["report_plan"]["content_hash"] = approved.plan["plan_hash"]
         config_path.write_text(
@@ -955,7 +944,7 @@ def test_cli_prepares_workflow_handoff_and_materializes_report_manifest(
     )
     config["project"]["output_dir"] = str(release)
     config["storage"]["sqlite_path"] = str(database_path)
-    _configure_reduce_tree_summary(config)
+    _enable_one_shot_summary(config)
     config["summary"]["report_plan"]["input_path"] = str(approved_path)
     config["summary"]["report_plan"]["content_hash"] = planned["plan_hash"]
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")

@@ -492,12 +492,20 @@ class CodexExec:
         }
         if prove_model_availability:
             probed: dict[str, Literal["available", "unavailable"]] = {}
-            for name, profile in FROZEN_PROFILES.items():
+            executable_profiles = (
+                profile
+                for name, profile in FROZEN_PROFILES.items()
+                if name != "stage4b_summary_sol"
+            )
+            for profile in executable_profiles:
+                name = profile.name
                 if availability[name] == "unavailable":
                     continue
                 if profile.model not in probed:
                     probed[profile.model] = self._probe_model(profile)
-                availability[name] = probed[profile.model]
+            for name, profile in FROZEN_PROFILES.items():
+                if profile.model in probed:
+                    availability[name] = probed[profile.model]
         return DoctorReport(
             executable=executable,
             version=version.strip(),
@@ -506,6 +514,10 @@ class CodexExec:
         )
 
     def invoke(self, request: CodexExecRequest) -> CodexExecResult:
+        if request.profile == "stage4b_summary_sol":
+            raise CodexExecError(
+                "legacy Stage 4b reduce/audit dispatch is disabled; use one_shot_report"
+            )
         profile = self.profile(request.profile)
         invocation_id = str(uuid4())
         schema_path = Path(request.schema_path) if request.schema_path is not None else None

@@ -565,14 +565,8 @@ def test_offline_user_seed_workflow_handoff_and_report_are_end_to_end_resumable(
     report_config["project"]["output_dir"] = str(release)
     report_config["storage"]["sqlite_path"] = str(database_path)
     report_config["summary"]["enabled"] = True
-    report_config["summary"]["execution_strategy"] = "reduce_tree"
-    report_config["summary"]["profile"] = "stage4b_summary_sol"
-    report_config["summary"]["semantic_chunking"] = True
-    report_config["summary"]["final_audit"].update({
-        "independent_sol_session": True,
-        "max_repair_calls": 1,
-        "reverify_and_reaudit_after_repair": True,
-    })
+    assert report_config["summary"]["execution_strategy"] == "one_shot"
+    assert report_config["summary"]["profile"] == "stage4b_oneshot_sol"
     report_config["summary"]["report_plan"]["input_path"] = str(approved_path)
     report_config["summary"]["report_plan"]["content_hash"] = planned["plan_hash"]
     report_config_path = tmp_path / "report-config.yaml"
@@ -615,7 +609,7 @@ def test_offline_user_seed_workflow_handoff_and_report_are_end_to_end_resumable(
         str(report_policy),
     ])
 
-    report_codex_calls: list[str] = []
+    report_stage_calls: list[str] = []
     coverage_path = release / "reports" / "phase7-mock-coverage.json"
 
     class FixtureReportCodex:
@@ -630,7 +624,15 @@ def test_offline_user_seed_workflow_handoff_and_report_are_end_to_end_resumable(
             **options: Any,
         ) -> SimpleNamespace:
             assert report_run_id == pipeline_run_id
-            report_codex_calls.append(report_run_id)
+            report_stage_calls.append(report_run_id)
+            assert bundle.plan["execution_strategy"] == "one_shot"
+            assert bundle.plan["budget"] == {
+                "max_sol_calls": 1,
+                "max_input_tokens": 100_000,
+                "max_retries": 0,
+                "audit_calls": 0,
+                "repair_calls": 0,
+            }
             plan_ids = sorted(
                 membership["paper_id"]
                 for membership in bundle.plan["paper_memberships"]
@@ -684,7 +686,7 @@ def test_offline_user_seed_workflow_handoff_and_report_are_end_to_end_resumable(
     assert first_report["status"] == "complete"
     invoke(["resume", *report_args[1:]])
     invoke(report_args)
-    assert report_codex_calls == [f"{report_run_id}:report"]
+    assert report_stage_calls == [f"{report_run_id}:report"]
     assert json.loads(coverage_path.read_text()) == {
         "paper_ids": ["p1"],
         "covered_paper_ids": ["p1"],

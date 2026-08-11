@@ -25,6 +25,7 @@ from .codex_exec import (
     prepare_service_schema,
     prompt_directory,
 )
+from .report_artifacts import audit_rubric_hash
 from .schema import SchemaValidationError, schema_directory
 
 
@@ -229,8 +230,8 @@ class ReportRuntimeConfig:
     report_plan_hash: str | None = None
     require_plan_for_unattended: bool = True
     rubric_path: Path | None = None
-    profile: str = "stage4b_summary_sol"
-    execution_strategy: str = "reduce_tree"
+    profile: str = "stage4b_oneshot_sol"
+    execution_strategy: str = "one_shot"
 
     def __post_init__(self) -> None:
         if not self.require_plan_for_unattended:
@@ -243,18 +244,13 @@ class ReportRuntimeConfig:
             raise ReportConfigError(
                 "summary report plan hash must be a lowercase SHA-256"
             )
-        if self.profile not in {"stage4b_summary_sol", "stage4b_oneshot_sol"}:
-            raise ReportConfigError("summary profile is unsupported")
-        if self.execution_strategy not in {"reduce_tree", "one_shot"}:
-            raise ReportConfigError("summary execution strategy is unsupported")
-        expected_profile = (
-            "stage4b_oneshot_sol"
-            if self.execution_strategy == "one_shot"
-            else "stage4b_summary_sol"
-        )
-        if self.profile != expected_profile:
+        if self.execution_strategy != "one_shot":
             raise ReportConfigError(
-                f"{self.execution_strategy} summary requires profile {expected_profile}"
+                "approved Stage 4b execution requires execution_strategy=one_shot"
+            )
+        if self.profile != "stage4b_oneshot_sol":
+            raise ReportConfigError(
+                "approved Stage 4b execution requires profile stage4b_oneshot_sol"
             )
 
     @classmethod
@@ -307,6 +303,7 @@ class ReportRuntimeConfig:
                 raise ReportConfigError(
                     f"summary audit rubric is unavailable: {runtime.rubric_path}"
                 )
+            runtime._validate_rubric()
         return runtime
 
     def validate_for_run(
@@ -318,7 +315,7 @@ class ReportRuntimeConfig:
             )
         if not self.enabled:
             return
-        strategy = str(plan.get("execution_strategy", "reduce_tree"))
+        strategy = str(plan.get("execution_strategy", "one_shot"))
         if self.execution_strategy != strategy:
             raise ReportConfigError(
                 f"summary configuration strategy {self.execution_strategy} does not match {strategy} report plan"
@@ -326,6 +323,7 @@ class ReportRuntimeConfig:
         self.resources.validate_files()
         if self.rubric_path is not None and not self.rubric_path.is_file():
             raise ReportConfigError(f"summary audit rubric is unavailable: {self.rubric_path}")
+        self._validate_rubric()
         if execution_mode != "unattended":
             return
         if self.report_plan_path is None or self.report_plan_hash is None:
@@ -348,6 +346,14 @@ class ReportRuntimeConfig:
             raise ReportConfigError("runtime report plan hash differs from unattended pin")
         if canonical_json(dict(pinned)) != canonical_json(dict(plan)):
             raise ReportConfigError("runtime report plan differs from the pinned unattended file")
+
+    def _validate_rubric(self) -> None:
+        if self.rubric_path is not None and (
+            audit_rubric_hash(self.rubric_path) != audit_rubric_hash()
+        ):
+            raise ReportConfigError(
+                "one-shot Stage 4b requires the frozen report audit rubric"
+            )
 
 
 def _resource_mapping(

@@ -99,6 +99,7 @@ class DirectReportResult:
     status: str
     published_path: Path | None = None
     error: str | None = None
+    budget_exhausted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +144,7 @@ def one_shot_validation_config_hash() -> str:
         # The local verifier/bibliography semantics changed, but the emitted
         # Markdown layout did not.  Keep the renderer's independent v1 label.
         "renderer_version": RENDERER_VERSION,
+        "rubric_hash": audit_rubric_hash(),
         "implementation_version": IMPLEMENTATION_VERSION,
     })
 
@@ -195,7 +197,12 @@ class DirectReportCoordinator:
         try:
             preflight = self.preflight(report_run_id, bundle, previous=previous)
         except DirectReportError as error:
-            return DirectReportResult(report_run_id, "incomplete", error=str(error))
+            return DirectReportResult(
+                report_run_id,
+                "incomplete",
+                error=str(error),
+                budget_exhausted=isinstance(error, DirectReportBudgetError),
+            )
         persist_approved_report_plan(self.database, bundle.plan)
         self._ensure_run(
             report_run_id,

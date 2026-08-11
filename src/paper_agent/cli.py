@@ -1557,13 +1557,9 @@ def _report_execute(
         "error": dict(result.error) if result.error is not None else None,
         "pipeline_run_id": pipeline_run_id,
         "published_path": (
-            str(result.audit.published_path)
-            if result.audit and result.audit.published_path
-            else (
-                str(result.direct.published_path)
-                if result.direct and result.direct.published_path
-                else None
-            )
+            str(result.direct.published_path)
+            if result.direct and result.direct.published_path
+            else None
         ),
         "report_run_id": result.report_run_id,
         "skipped": bool(getattr(result, "skipped", False)),

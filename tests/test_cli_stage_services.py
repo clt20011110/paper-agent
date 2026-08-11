@@ -48,14 +48,6 @@ def test_report_execution_cli_wires_frozen_inputs_and_processing_grants(
     config_document["storage"]["sqlite_path"] = str(database_path)
     config_document["project"]["output_dir"] = str(output_root)
     config_document["summary"]["enabled"] = True
-    config_document["summary"]["execution_strategy"] = "reduce_tree"
-    config_document["summary"]["profile"] = "stage4b_summary_sol"
-    config_document["summary"]["semantic_chunking"] = True
-    config_document["summary"]["final_audit"].update({
-        "independent_sol_session": True,
-        "max_repair_calls": 1,
-        "reverify_and_reaudit_after_repair": True,
-    })
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(config_document, sort_keys=False), encoding="utf-8"

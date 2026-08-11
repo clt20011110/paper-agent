@@ -329,6 +329,7 @@ def compile_report_plan(
     schema_root: Path | None = None,
     prompt_root: Path | None = None,
     resources: ReportResources | None = None,
+    _legacy_read_only: bool = False,
 ) -> dict[str, Any]:
     _validate_report_inputs(corpus_snapshot, search_audit_pack)
     source = deepcopy(dict(draft))
@@ -364,7 +365,9 @@ def compile_report_plan(
         "budget",
     )
     source.setdefault("report_language", "zh-CN")
-    source.setdefault("execution_strategy", "reduce_tree")
+    source.setdefault("execution_strategy", "one_shot")
+    if source["execution_strategy"] != "one_shot" and not _legacy_read_only:
+        raise ReportPlanError("new ReportPlans require execution_strategy=one_shot")
     missing = [field for field in fields if field not in source]
     if missing:
         raise ReportPlanError(f"ReportPlan draft is missing fields: {missing}")
@@ -405,6 +408,8 @@ def approve_report_plan(
     approved_by: str,
     approved_at: str,
 ) -> dict[str, Any]:
+    if plan.get("execution_strategy") != "one_shot":
+        raise ReportPlanError("new ReportPlan approvals require execution_strategy=one_shot")
     try:
         approved = approve(
             plan,
@@ -596,7 +601,7 @@ class ReportPlanStore:
 def _validate_plan_semantics(plan: Mapping[str, Any], corpus_snapshot: Mapping[str, Any]) -> None:
     if plan.get("report_language") != "zh-CN":
         raise ReportPlanError("ReportPlan report_language must be zh-CN")
-    strategy = plan.get("execution_strategy", "reduce_tree")
+    strategy = plan.get("execution_strategy", "one_shot")
     if strategy not in {"reduce_tree", "one_shot"}:
         raise ReportPlanError("ReportPlan execution_strategy is unsupported")
     budget = plan["budget"]

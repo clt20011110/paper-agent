@@ -208,8 +208,8 @@ download:
 analysis: {profile: stage4_analysis_luna, provider: codex_exec, model: gpt-5.6-luna, reasoning_effort: medium, sandbox: read_only, network: false, output_schema: paper-analysis.schema.json, workers: 1, allow_abstract_only: true, remote_model_processing: {policy_matrix: policies/artifact-processing-v1.yaml, processing_grant_id: null}}
 summary:
   enabled: false
-  execution_strategy: reduce_tree
-  profile: stage4b_summary_sol
+  execution_strategy: one_shot
+  profile: stage4b_oneshot_sol
   provider: codex_exec
   model: gpt-5.6-sol
   reasoning_effort: high
@@ -223,10 +223,10 @@ summary:
   require_search_audit: true
   require_complete_coverage: true
   require_claim_evidence: true
-  semantic_chunking: true
+  semantic_chunking: false
   remote_model_processing: {policy_matrix: policies/artifact-processing-v1.yaml, processing_grant_id: null}
   citations: {marker: stable_paper_id, style: x, bibliography_from_canonical_metadata: true}
-  final_audit: {deterministic: true, independent_sol_session: true, rubric: policies/report-audit-rubric-v1.yaml, max_blocker_findings: 0, max_major_findings: 0, max_repair_calls: 1, reverify_and_reaudit_after_repair: true}
+  final_audit: {deterministic: true, independent_sol_session: false, rubric: policies/report-audit-rubric-v1.yaml, max_blocker_findings: 0, max_major_findings: 0, max_repair_calls: 0, reverify_and_reaudit_after_repair: false}
   immutable_run_directories: true
   update_latest_after_pass: true
   emit_incremental_diff: true
