@@ -22,6 +22,7 @@ from .report_config import ReportRuntimeConfig
 from .report_direct import (
     DirectReportBudgetError,
     DirectReportCoordinator,
+    DirectReportError,
     DirectReportInvoker,
     DirectReportResult,
 )
@@ -165,17 +166,22 @@ class ReportExecutionService:
                     coordinator.preflight(
                         report_run_id, bundle, previous=previous
                     )
-                except DirectReportBudgetError as error:
+                except DirectReportError as error:
+                    budget_error = isinstance(error, DirectReportBudgetError)
                     return self._result(
                         report_run_id,
                         "incomplete",
                         True,
                         codex_budget=self._codex_budget(report_run_id, bundle.plan),
-                        alarm_codes=(CODEX_BUDGET_ALARM,),
+                        alarm_codes=(CODEX_BUDGET_ALARM,) if budget_error else (),
                         error={
                             "type": type(error).__name__,
                             "message": str(error),
-                            "event_code": CODEX_BUDGET_ALARM,
+                            **(
+                                {"event_code": CODEX_BUDGET_ALARM}
+                                if budget_error
+                                else {}
+                            ),
                         },
                     )
                 return self._result(

@@ -6,9 +6,16 @@ from threading import Thread
 from time import sleep
 from types import MappingProxyType
 
+import paper_agent.report_direct as report_direct
+import pytest
 from paper_agent.canonical import content_hash
 from paper_agent.codex_exec import CodexExecResult, InvocationMetadata
-from paper_agent.report_artifacts import LOCAL_REFERENCES_NOTE, ReportArtifactStore
+from paper_agent.report_artifacts import (
+    LOCAL_REFERENCES_NOTE,
+    ReportArtifactError,
+    ReportArtifactStore,
+    ReportVerificationError,
+)
 from paper_agent.report_config import ReportResources, ReportRuntimeConfig
 from paper_agent.report_direct import (
     one_shot_config_hash,
@@ -16,8 +23,11 @@ from paper_agent.report_direct import (
 )
 from paper_agent.report_execution_service import ReportExecutionService
 from paper_agent.report_plan import (
+    CorpusPaper,
     ReportPlanBundle,
     approve_report_plan,
+    build_corpus_snapshot,
+    build_search_audit_pack,
     compile_report_plan,
 )
 from paper_agent.reporting import stable_claim_id
@@ -55,6 +65,81 @@ def _one_shot_bundle(fixture) -> ReportPlanBundle:
         approved_at="2026-08-10T03:01:00Z",
     )
     return ReportPlanBundle(approved, fixture.corpus, fixture.audit)
+
+
+def _freeze_missing_authors_with_official_db_provenance(
+    fixture, *, add_provenance: bool = True
+) -> None:
+    papers = tuple(
+        CorpusPaper(
+            **{
+                **paper,
+                "authors": (),
+                "lineage_hashes": tuple(paper["lineage_hashes"]),
+            }
+        )
+        for paper in fixture.corpus["papers"]
+    )
+    raw_audit = fixture.audit["source_round_audit"]
+    fixture.corpus = build_corpus_snapshot(
+        papers,
+        query_plan_hash=fixture.corpus["query_plan_hash"],
+        search_audit=raw_audit,
+        created_at="2026-08-10T00:01:00Z",
+    )
+    fixture.audit = build_search_audit_pack(
+        raw_audit,
+        fixture.corpus,
+        screening_flow={
+            key: int(fixture.audit["flow"][key])
+            for key in (
+                "raw_discovered",
+                "unique_after_dedup",
+                "stage2_screened",
+                "included",
+            )
+        },
+        exclusion_reasons=fixture.audit["flow"]["excluded_by_reason"],
+        created_at="2026-08-10T00:02:00Z",
+    )
+    if not add_provenance:
+        return
+    for paper in fixture.corpus["papers"]:
+        paper_id = str(paper["paper_id"])
+        source_id = f"official-metadata-{paper_id}"
+        authors = ["Ada Lovelace"]
+        fixture.database.connection.execute(
+            """INSERT INTO paper_sources(
+                   source_id, paper_id, provider, external_id, landing_url,
+                   publication_version, host_type, access_basis, raw_metadata_json
+               ) VALUES (?, ?, 'fixture-official', ?, ?, 'published', 'official',
+                         'public_read_only', ?)""",
+            (
+                source_id,
+                paper_id,
+                f"official-{paper_id}",
+                f"https://example.test/{paper_id}",
+                json.dumps(
+                    {
+                        "kind": "canonical_metadata_fill",
+                        "locator": "official landing page",
+                    },
+                    sort_keys=True,
+                ),
+            ),
+        )
+        fixture.database.connection.execute(
+            """INSERT INTO paper_field_provenance(
+                   provenance_id, paper_id, source_id, field_name, field_value_json
+               ) VALUES (?, ?, ?, 'authors', ?)""",
+            (
+                f"provenance-{source_id}-authors",
+                paper_id,
+                source_id,
+                json.dumps(authors, separators=(",", ":")),
+            ),
+        )
+    fixture.database.connection.commit()
 
 
 class OneShotSol:
@@ -207,6 +292,111 @@ def _make_procedural_reference_note(output: dict, *, mixed: bool = False) -> Non
         block["claim_refs"].append(home_claim["claim_ref"])
 
 
+def _make_semantic_procedural_reference_note(
+    output: dict,
+    *,
+    subject_id: str = "report-bibliography",
+    predicate_id: str = "is-generated-locally",
+    object_or_scope_id: str = "canonical-reference-rendering",
+) -> None:
+    claim, block = _section_claim(output, "references_and_appendices")
+    claim.update({
+        "subject_id": subject_id,
+        "predicate_id": predicate_id,
+        "object_or_scope_id": object_or_scope_id,
+        "qualifier_context": "canonical bibliography is generated locally",
+        "claim_text": "规范参考文献由本地协调器确定性生成，不属于论文结论。",
+        "claim_type": "recommendation",
+        "supporting_evidence": [],
+        "contradicting_evidence": [],
+        "evidence_level": "metadata_only",
+        "confidence": "high",
+        "known_limitations": ["This is a procedural note, not a paper claim."],
+        "status": "supported",
+    })
+    block["text"] = "规范参考文献由本地协调器生成；这不是论文结论。"
+    block["citation_paper_ids"] = []
+
+
+def _make_unsupported_substantive_reference_recommendation(output: dict) -> None:
+    claim, block = _section_claim(output, "references_and_appendices")
+    claim.update({
+        "subject_id": "future-molecular-model",
+        "predicate_id": "should_improve_accuracy",
+        "object_or_scope_id": "external-benchmark",
+        "qualifier_context": "future deployment recommendation",
+        "claim_text": "未来模型应在外部基准上将准确率提高到99%。",
+        "claim_type": "recommendation",
+        "supporting_evidence": [],
+        "contradicting_evidence": [],
+        "evidence_level": "metadata_only",
+        "confidence": "low",
+        "known_limitations": ["No direct evidence was provided."],
+        "status": "insufficient",
+    })
+    block["text"] = "未来模型应在外部基准上将准确率提高到99%。"
+    block["citation_paper_ids"] = []
+
+
+@pytest.mark.parametrize(
+    ("legacy_component", "expected_error"),
+    (
+        ("implementation", "Stage 4b configuration has drifted"),
+        ("validation", "deterministic validation configuration has drifted"),
+    ),
+)
+def test_legacy_one_shot_approved_plan_hashes_fail_closed_before_dispatch(
+    tmp_path,
+    monkeypatch,
+    legacy_component,
+    expected_error,
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    current_implementation = report_direct.IMPLEMENTATION_VERSION
+    current_validation = report_direct.DETERMINISTIC_VALIDATION_VERSION
+    if legacy_component == "implementation":
+        monkeypatch.setattr(
+            report_direct, "IMPLEMENTATION_VERSION", "stage4b-one-shot-v1"
+        )
+    else:
+        monkeypatch.setattr(
+            report_direct,
+            "DETERMINISTIC_VALIDATION_VERSION",
+            "deterministic-report-v1",
+        )
+    bundle = _one_shot_bundle(fixture)
+    monkeypatch.setattr(
+        report_direct, "IMPLEMENTATION_VERSION", current_implementation
+    )
+    monkeypatch.setattr(
+        report_direct,
+        "DETERMINISTIC_VALIDATION_VERSION",
+        current_validation,
+    )
+    fake = OneShotSol(fixture)
+    try:
+        result = _one_shot_service(
+            fixture, tmp_path / "release", fake
+        ).run(
+            f"legacy-{legacy_component}-report",
+            f"legacy-{legacy_component}-pipeline",
+            bundle,
+            processing_grants={},
+        )
+
+        assert result.status == "incomplete"
+        assert expected_error in str(result.error)
+        assert fake.calls == []
+        assert fixture.database.connection.execute(
+            "SELECT COUNT(*) FROM report_one_shot_runs"
+        ).fetchone()[0] == 0
+        assert fixture.database.connection.execute(
+            "SELECT COUNT(*) FROM report_sol_invocations"
+        ).fetchone()[0] == 0
+    finally:
+        fixture.database.close()
+
+
 def test_one_shot_report_uses_one_sol_call_and_resumes_without_another(tmp_path) -> None:
     fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
     bundle = _one_shot_bundle(fixture)
@@ -276,6 +466,135 @@ def test_one_shot_report_uses_one_sol_call_and_resumes_without_another(tmp_path)
         report = tmp_path / "release" / "reports" / "report-one-shot"
         assert (report / "REPORT.md").is_file()
         assert json.loads((report / "AUDIT.json").read_text())["audit_pass"] == "deterministic"
+    finally:
+        fixture.database.close()
+
+
+def test_bibliography_fill_only_overlay_keeps_frozen_one_shot_input(tmp_path) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    _freeze_missing_authors_with_official_db_provenance(fixture)
+    bundle = _one_shot_bundle(fixture)
+    fake = OneShotSol(fixture)
+    grants = _one_shot_grants(fixture, "bibliography-overlay-grant")
+    report_run_id = "report-one-shot-bibliography-overlay"
+    try:
+        service = _one_shot_service(fixture, tmp_path / "release", fake)
+        result = service.run(
+            report_run_id,
+            "pipeline-one-shot-bibliography-overlay",
+            bundle,
+            processing_grants=grants,
+        )
+
+        assert result.status == "complete", result.error
+        assert len(fake.calls) == 1
+        prompt = json.loads(fake.calls[0].prompt)
+        assert prompt["corpus_summary"]["snapshot_hash"] == fixture.corpus["snapshot_hash"]
+        assert all(
+            "authors" not in paper
+            for paper in prompt["corpus_summary"]["papers"]
+        )
+        bibliography = json.loads(
+            (
+                tmp_path
+                / "release"
+                / "reports"
+                / report_run_id
+                / "BIBLIOGRAPHY.json"
+            ).read_text(encoding="utf-8")
+        )
+        for entry in bibliography.values():
+            assert entry["authors"] == ["Ada Lovelace"]
+            overlay = entry["canonical_metadata_overlay"]
+            assert overlay["mode"] == "fill_only"
+            assert overlay["frozen_snapshot_hash"] == fixture.corpus["snapshot_hash"]
+            assert set(overlay["fields"]) == {"authors"}
+            assert overlay["overlay_hash"] == content_hash(
+                {key: value for key, value in overlay.items() if key != "overlay_hash"}
+            )
+    finally:
+        fixture.database.close()
+
+
+def test_missing_bibliography_metadata_stops_before_one_shot_dispatch(tmp_path) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    _freeze_missing_authors_with_official_db_provenance(
+        fixture, add_provenance=False
+    )
+    bundle = _one_shot_bundle(fixture)
+    fake = OneShotSol(fixture)
+    try:
+        service = _one_shot_service(fixture, tmp_path / "release", fake)
+        result = service.run(
+            "report-one-shot-missing-bibliography",
+            "pipeline-one-shot-missing-bibliography",
+            bundle,
+            processing_grants=_one_shot_grants(
+                fixture, "missing-bibliography-grant"
+            ),
+        )
+
+        assert result.status == "incomplete"
+        assert "lacks official provenance" in str(result.error)
+        assert fake.calls == []
+        assert fixture.database.connection.execute(
+            """SELECT COUNT(*) FROM report_one_shot_runs
+               WHERE report_run_id = 'report-one-shot-missing-bibliography'"""
+        ).fetchone()[0] == 0
+    finally:
+        fixture.database.close()
+
+
+def test_post_validation_retry_publishes_persisted_output_without_redispatch(
+    tmp_path, monkeypatch
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    bundle = _one_shot_bundle(fixture)
+    fake = OneShotSol(fixture)
+    grants = _one_shot_grants(fixture, "post-validation-grant")
+    report_run_id = "report-one-shot-post-validation"
+    pipeline_run_id = "pipeline-one-shot-post-validation"
+    real_verify = report_direct._deterministic_verify
+    try:
+        service = _one_shot_service(fixture, tmp_path / "release", fake)
+        monkeypatch.setattr(
+            report_direct,
+            "_deterministic_verify",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                ReportVerificationError("forced local post-validation failure")
+            ),
+        )
+        first = service.run(
+            report_run_id,
+            pipeline_run_id,
+            bundle,
+            processing_grants=grants,
+        )
+        persisted = fixture.database.connection.execute(
+            """SELECT status, dispatch_count, invocation_id, output_hash
+               FROM report_one_shot_runs WHERE report_run_id = ?""",
+            (report_run_id,),
+        ).fetchone()
+
+        monkeypatch.setattr(report_direct, "_deterministic_verify", real_verify)
+        second = service.run(
+            report_run_id,
+            pipeline_run_id,
+            bundle,
+            processing_grants=grants,
+        )
+        replayed = fixture.database.connection.execute(
+            """SELECT status, dispatch_count, invocation_id, output_hash
+               FROM report_one_shot_runs WHERE report_run_id = ?""",
+            (report_run_id,),
+        ).fetchone()
+
+        assert first.status == "failed"
+        assert second.status == "complete", second.error
+        assert len(fake.calls) == 1
+        assert tuple(persisted) == tuple(replayed)
+        assert tuple(replayed[:2]) == ("complete", 1)
+        assert (tmp_path / "release" / "reports" / report_run_id / "REPORT.md").is_file()
     finally:
         fixture.database.close()
 
@@ -420,6 +739,111 @@ def test_exclusive_procedural_reference_note_becomes_exact_local_block(
         assert "这段模型生成的程序文本不应进入最终报告。" not in report_markdown
         claims_text = (report / "CLAIMS_EVIDENCE.jsonl").read_text(encoding="utf-8")
         assert "should_generate_canonical_references" not in claims_text
+    finally:
+        fixture.database.close()
+
+
+@pytest.mark.parametrize(
+    ("subject_id", "predicate_id", "object_or_scope_id"),
+    (
+        (
+            "report-bibliography",
+            "is-generated-locally",
+            "canonical-reference-rendering",
+        ),
+        (
+            "local-report-coordinator",
+            "should_be_generated_locally",
+            "canonical-references-and-audit-appendices",
+        ),
+    ),
+)
+def test_semantic_bibliography_note_becomes_exact_local_block_without_redispatch(
+    tmp_path, subject_id, predicate_id, object_or_scope_id
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    bundle = _one_shot_bundle(fixture)
+    fake = OneShotSol(
+        fixture,
+        lambda output, _payload: _make_semantic_procedural_reference_note(
+            output,
+            subject_id=subject_id,
+            predicate_id=predicate_id,
+            object_or_scope_id=object_or_scope_id,
+        ),
+    )
+    grants = _one_shot_grants(fixture, "semantic-reference-grant")
+    report_run_id = "report-one-shot-semantic-reference"
+    try:
+        service = _one_shot_service(fixture, tmp_path / "release", fake)
+        first = service.run(
+            report_run_id,
+            "pipeline-one-shot-semantic-reference",
+            bundle,
+            processing_grants=grants,
+        )
+        second = service.run(
+            report_run_id,
+            "pipeline-one-shot-semantic-reference",
+            bundle,
+            processing_grants=grants,
+        )
+
+        assert first.status == second.status == "complete"
+        assert len(fake.calls) == 1
+        report = tmp_path / "release" / "reports" / report_run_id
+        document = json.loads(
+            (report / "REPORT_DOCUMENT.json").read_text(encoding="utf-8")
+        )
+        reference_block = next(
+            block
+            for block in document["blocks"]
+            if block["section_id"] == "references_and_appendices"
+        )
+        assert reference_block["text"] == LOCAL_REFERENCES_NOTE
+        assert reference_block["claim_ids"] == []
+        assert reference_block["citation_paper_ids"] == []
+        assert fixture.database.connection.execute(
+            """SELECT dispatch_count FROM report_one_shot_runs
+               WHERE report_run_id = ?""",
+            (report_run_id,),
+        ).fetchone()[0] == 1
+    finally:
+        fixture.database.close()
+
+
+def test_substantive_evidence_free_reference_recommendation_is_not_normalized_away(
+    tmp_path,
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    bundle = _one_shot_bundle(fixture)
+    fake = OneShotSol(
+        fixture,
+        lambda output, _payload: _make_unsupported_substantive_reference_recommendation(
+            output
+        ),
+    )
+    report_run_id = "report-one-shot-substantive-reference-recommendation"
+    try:
+        result = _one_shot_service(fixture, tmp_path / "release", fake).run(
+            report_run_id,
+            "pipeline-one-shot-substantive-reference-recommendation",
+            bundle,
+            processing_grants=_one_shot_grants(
+                fixture, "substantive-reference-recommendation-grant"
+            ),
+        )
+
+        assert result.status == "failed"
+        assert len(fake.calls) == 1
+        assert not (
+            tmp_path / "release" / "reports" / report_run_id / "REPORT.md"
+        ).exists()
+        assert fixture.database.connection.execute(
+            """SELECT dispatch_count FROM report_one_shot_runs
+               WHERE report_run_id = ?""",
+            (report_run_id,),
+        ).fetchone()[0] == 1
     finally:
         fixture.database.close()
 
@@ -723,6 +1147,58 @@ def test_concurrent_local_publish_reconciles_without_demoting_success(tmp_path) 
             ("report-one-shot-publish-race",),
         ).fetchone()
         assert tuple(row) == ("complete", "complete")
+    finally:
+        fixture.database.close()
+
+
+def test_reconcile_failure_does_not_overwrite_report_audit_attestation(
+    tmp_path,
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    bundle = _one_shot_bundle(fixture)
+    fake = OneShotSol(fixture)
+    grants = {
+        artifact.artifact_hash: _sol_grant(
+            fixture,
+            artifact,
+            f"one-shot-reconcile-grant-{index}",
+            expires_at="2026-09-11T00:00:00Z",
+        )
+        for index, artifact in enumerate(fixture.artifacts, start=1)
+    }
+
+    class RejectingReconcileStore(ReportArtifactStore):
+        def reconcile(self, **kwargs):
+            raise ReportArtifactError("frozen bundle uses an older contract")
+
+    try:
+        service = ReportExecutionService(
+            fixture.database,
+            fixture.store,
+            fixture.coordinator.gate,
+            RejectingReconcileStore(tmp_path / "release"),
+            direct_invoker_factory=lambda: fake,
+            runtime_config=ReportRuntimeConfig(
+                True,
+                ReportResources.defaults(),
+                profile="stage4b_oneshot_sol",
+                execution_strategy="one_shot",
+            ),
+        )
+
+        result = service.run(
+            "report-one-shot-reconcile-rejected",
+            "pipeline-one-shot-reconcile-rejected",
+            bundle,
+            processing_grants=grants,
+        )
+
+        assert result.status == "failed"
+        assert "older contract" in str(result.error)
+        assert fixture.database.connection.execute(
+            "SELECT COUNT(*) FROM report_audit_runs WHERE report_run_id = ?",
+            ("report-one-shot-reconcile-rejected",),
+        ).fetchone()[0] == 0
     finally:
         fixture.database.close()
 

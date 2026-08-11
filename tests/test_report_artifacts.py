@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 
 import pytest
 
@@ -9,8 +10,10 @@ from paper_agent.report_artifacts import (
     ReportArtifactError,
     ReportArtifactStore,
     ReportVerificationError,
+    _validate_audit_binding,
     audit_coverage_ledger,
     audit_rubric_hash,
+    audit_search_limitations,
     render_markdown,
     report_artifact_hash,
     report_diff,
@@ -101,6 +104,124 @@ def _bundle() -> dict:
              "citation_paper_ids": ["p1"]},
         ]},
     }
+
+
+def test_report_artifact_hash_is_stable_across_persisted_claim_order() -> None:
+    document = {
+        "blocks": [
+            {"claim_ids": ["claim-two", "claim-one"]},
+        ]
+    }
+    claim_one = {"claim_id": "claim-one", "claim": "first"}
+    claim_two = {"claim_id": "claim-two", "claim": "second"}
+    arguments = {
+        "document": document,
+        "coverage": {},
+        "comparison_groups": {},
+        "claim_relations": [],
+        "bibliography": {},
+    }
+
+    expected = content_hash({
+        "document": document,
+        "claims": [claim_one, claim_two],
+        "coverage": {},
+        "comparison_groups": {},
+        "claim_relations": [],
+        "bibliography": {},
+    })
+    assert report_artifact_hash(
+        claims=[claim_one, claim_two], **arguments
+    ) == report_artifact_hash(claims=[claim_two, claim_one], **arguments) == expected
+
+
+def test_published_claim_order_reloads_under_the_same_audit_hash(tmp_path) -> None:
+    bundle = _bundle()
+    first = bundle["claims"][0]
+    second = deepcopy(first)
+    second["claim_key"] = {
+        **second["claim_key"],
+        "predicate_id": "confirms",
+        "qualifier_context_hash": "d" * 64,
+    }
+    second["claim_id"] = stable_claim_id(
+        second["claim_key"], report_run_id="report-1"
+    )
+    second["claim_text"] = "第二项证据在相同条件下同样达到 91%。"
+    bundle["claims"] = sorted(
+        [first, second], key=lambda item: str(item["claim_id"]), reverse=True
+    )
+    assert [item["claim_id"] for item in bundle["claims"]] != sorted(
+        item["claim_id"] for item in bundle["claims"]
+    )
+    bundle["document"]["blocks"].append({
+        "block_id": "b3",
+        "block_kind": "prose",
+        "section_id": "evidence",
+        "text": "第二项证据在相同条件下同样达到 91%。[@p1]",
+        "claim_ids": [second["claim_id"]],
+        "citation_paper_ids": ["p1"],
+    })
+    bundle["coverage"]["papers"][0]["evidence_claim_ids"] = sorted(
+        item["claim_id"] for item in bundle["claims"]
+    )
+    audit = {
+        "audit_pass": "deterministic",
+        "report_document_hash": content_hash(bundle["document"]),
+        "report_artifact_hash": report_artifact_hash(
+            document=bundle["document"],
+            claims=bundle["claims"],
+            coverage=bundle["coverage"],
+            comparison_groups={},
+            claim_relations=[],
+            bibliography=bundle["bibliography"],
+        ),
+        "report_plan_hash": content_hash(bundle["plan"]),
+        "rubric_hash": audit_rubric_hash(),
+        "search_limitations_hash": content_hash(list(audit_search_limitations(
+            bundle["search_audit"], bundle["corpus_snapshot"]
+        ))),
+        "coverage_complete": True,
+        "coverage_ledger": audit_coverage_ledger(
+            bundle["document"], bundle["claims"]
+        ),
+        "findings": [],
+    }
+
+    output = ReportArtifactStore(tmp_path).write(
+        plan=bundle["plan"],
+        search_audit=bundle["search_audit"],
+        corpus_snapshot=bundle["corpus_snapshot"],
+        claims=bundle["claims"],
+        comparison_groups={},
+        claim_relations=[],
+        document=bundle["document"],
+        coverage=bundle["coverage"],
+        bibliography=bundle["bibliography"],
+        audit=audit,
+    )
+    persisted_claims = [
+        json.loads(line)
+        for line in (output / "CLAIMS_EVIDENCE.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert [item["claim_id"] for item in persisted_claims] == sorted(
+        item["claim_id"] for item in persisted_claims
+    )
+    _validate_audit_binding(
+        audit,
+        plan=bundle["plan"],
+        document=bundle["document"],
+        claims=persisted_claims,
+        coverage=bundle["coverage"],
+        comparison_groups={},
+        claim_relations=[],
+        bibliography=bundle["bibliography"],
+        search_audit=bundle["search_audit"],
+        corpus_snapshot=bundle["corpus_snapshot"],
+    )
 
 
 def test_verifier_renderer_and_immutable_publish(tmp_path) -> None:
@@ -497,6 +618,28 @@ def test_verifier_rejects_missing_claim_citation_limitation_and_ungrounded_numbe
         bibliography=source_encoded["bibliography"],
         search_audit=source_encoded["search_audit"],
         corpus_snapshot=source_encoded["corpus_snapshot"],
+    )
+
+    claim_encoded = deepcopy(bundle)
+    unit = claim_encoded["claims"][0]["supporting_evidence"][0]["evidence_unit"]
+    unit["claim"] = (
+        "The training share was reduced from 70% to 10% in the reported ablation."
+    )
+    unit["value"] = "strictly better on MAE"
+    unit["source_value"] = "strictly better on MAE"
+    unit["comparison_eligibility"] = "not_comparable"
+    unit["missing_fields"] = ["scalar value"]
+    claim_encoded["document"]["blocks"][0]["text"] = (
+        "训练集比例从 70% 降至 10%。[@p1]"
+    )
+    verify_report(
+        plan=claim_encoded["plan"],
+        document=claim_encoded["document"],
+        claims=claim_encoded["claims"],
+        coverage=claim_encoded["coverage"],
+        bibliography=claim_encoded["bibliography"],
+        search_audit=claim_encoded["search_audit"],
+        corpus_snapshot=claim_encoded["corpus_snapshot"],
     )
 
 

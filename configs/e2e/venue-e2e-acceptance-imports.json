@@ -1,0 +1,12 @@
+{
+  "schema_version": "paper-agent.venue-e2e-acceptance-imports.v1",
+  "repository_root": "../..",
+  "imports": [
+    {
+      "venue_id": "neurips",
+      "evidence_schema_version": "1",
+      "evidence_path": "docs/acceptance/neurips-2025-molecular-e2e-20260811-evidence.json",
+      "sha256": "57ff1128587fc163e6e6a62ca44d3643e485428006228ea1884626dbb35426f2"
+    }
+  ]
+}

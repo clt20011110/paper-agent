@@ -394,6 +394,28 @@ paper-agent resume --workflow /absolute/path/to/report-workflow.json \
 .venv/bin/python -m pytest
 ```
 
+受控 venue E2E 使用冻结的单记录 Stage 1 snapshot 与 `TEST_ONLY` Stage 2，随后下载真实公开 PDF；
+Luna 和 Sol 只有带显式执行参数时才会启动。先以单个 venue 验证边界：
+
+```bash
+.venv/bin/python scripts/run_venue_e2e_matrix.py \
+  --venue icml --output-root /absolute/run/root --run-id icml-e2e
+.venv/bin/python scripts/venue_e2e_stage4.py \
+  --run-dir /absolute/run/root/icml-e2e --through-stage stage4b
+.venv/bin/python scripts/venue_e2e_stage4.py \
+  --run-dir /absolute/run/root/icml-e2e --through-stage stage4b \
+  --resume --execute-models
+.venv/bin/python scripts/summarize_venue_e2e_matrix.py \
+  --run-root /absolute/run/root --venue-catalog-root venues
+```
+
+最后一个汇总命令不调用模型，并对 run lineage、PDF/analysis/report CAS、一次性 Sol ledger、
+报告 manifest 与完整本地 verifier 做只读核验。受控矩阵不替代逐 provider 的 live transport 验收，
+也不替代 Stage 2 production release gate；边界和 20-venue 结果见
+[docs/acceptance/venue-e2e-matrix-20260811.md](docs/acceptance/venue-e2e-matrix-20260811.md)。
+需要提交机器可读证据时加 `--portable-paths --json-output /absolute/evidence.json`，本机 run/repository
+前缀会替换为 `$RUN_ROOT`/`$REPOSITORY_ROOT`。
+
 CI 在按 lockfile 安装依赖后，以禁用外部 socket 的方式执行测试；测试过程不会访问实时站点、下载大模型、消耗 Codex 配额或使用订阅登录。冷缓存 runner 的依赖安装仍会访问 Python package index，不宣称整个 CI bootstrap 物理断网。真实金标晋级、oMLX 性能/浸泡测试、实时 venue smoke 和学校授权下载属于明确的外部门禁，缺少证据时生产运行会停止而不是伪造通过结果。
 
 完整可执行规格见 `task.md`；安全边界、状态机和数据库设计见 `docs/`。

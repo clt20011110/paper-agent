@@ -73,7 +73,8 @@ PROFILE = "stage4b_oneshot_sol"
 CALL_KIND = "one_shot_report"
 MODEL = SUMMARY_MODEL
 REASONING_EFFORT = "high"
-IMPLEMENTATION_VERSION = "stage4b-one-shot-v1"
+IMPLEMENTATION_VERSION = "stage4b-one-shot-v3"
+DETERMINISTIC_VALIDATION_VERSION = "deterministic-report-v3"
 NODE_ID = "one_shot:0001"
 MAX_OUTPUT_BYTES = 1_048_576
 DISPATCH_GRACE_SECONDS = 600
@@ -138,7 +139,9 @@ def one_shot_config_hash(
 def one_shot_validation_config_hash() -> str:
     return content_hash({
         "strategy": "one_shot",
-        "validation": "deterministic-report-v1",
+        "validation": DETERMINISTIC_VALIDATION_VERSION,
+        # The local verifier/bibliography semantics changed, but the emitted
+        # Markdown layout did not.  Keep the renderer's independent v1 label.
         "renderer_version": RENDERER_VERSION,
         "implementation_version": IMPLEMENTATION_VERSION,
     })
@@ -191,7 +194,7 @@ class DirectReportCoordinator:
     ) -> DirectReportResult:
         try:
             preflight = self.preflight(report_run_id, bundle, previous=previous)
-        except DirectReportBudgetError as error:
+        except DirectReportError as error:
             return DirectReportResult(report_run_id, "incomplete", error=str(error))
         persist_approved_report_plan(self.database, bundle.plan)
         self._ensure_run(
@@ -268,6 +271,7 @@ class DirectReportCoordinator:
         """Validate and size the exact request without persistence or model work."""
         self._validate_plan(bundle.plan)
         self._validate_previous(report_run_id, previous)
+        self._validate_bibliography_metadata(bundle)
         prompt = self._prompt(report_run_id, bundle, previous)
         rendered = self._rendered_prompt(prompt)
         input_tokens = len(rendered.encode("utf-8"))
@@ -276,6 +280,29 @@ class DirectReportCoordinator:
                 "one-shot Sol prompt exceeds the approved input budget"
             )
         return DirectReportPreflight(prompt, rendered, input_tokens)
+
+    def _validate_bibliography_metadata(self, bundle: ReportPlanBundle) -> None:
+        papers = {
+            str(item["paper_id"]): item
+            for item in bundle.corpus_snapshot["papers"]
+        }
+        evidence_paper_ids = {
+            str(item["paper_id"])
+            for item in bundle.plan["paper_memberships"]
+            if item["coverage_disposition"] == "evidence"
+        }
+        for paper_id in sorted(evidence_paper_ids):
+            paper = papers.get(paper_id)
+            if paper is None:
+                raise DirectReportError(
+                    "ReportPlan bibliography paper is absent from the frozen corpus"
+                )
+            _canonical_bibliography_metadata(
+                self.database,
+                paper_id,
+                paper,
+                frozen_snapshot_hash=str(bundle.corpus_snapshot["snapshot_hash"]),
+            )
 
     def _validate_plan(self, plan: Mapping[str, Any]) -> None:
         require_valid_approval(plan, "plan_hash")
@@ -712,7 +739,9 @@ class DirectReportCoordinator:
             })
         relations = validate_claim_relations(previous, claims, relation_drafts)
         coverage = _coverage(frozen.plan, claims)
-        bibliography = _bibliography(frozen.corpus_snapshot, claims)
+        bibliography = _bibliography(
+            frozen.corpus_snapshot, claims, database=self.database
+        )
         validator = SynthesisValidator(
             report_run_id=report_run_id,
             analyses=self.analyses,
@@ -788,6 +817,24 @@ class DirectReportCoordinator:
                     raise
         previous_report_run_id = _previous_report_run_id(
             report_run_id, previous, relations
+        )
+        # Verify an existing immutable bundle before changing its database
+        # attestation.  This matters when resuming a report produced under an
+        # older serialization contract: a reconcile failure must leave the
+        # original audit hashes available for strict legacy verification.
+        self.report_store.reconcile(
+            plan=frozen.plan,
+            search_audit=frozen.search_audit,
+            corpus_snapshot=frozen.corpus_snapshot,
+            claims=claims,
+            comparison_groups=groups,
+            claim_relations=relations,
+            document=document,
+            coverage=coverage,
+            bibliography=bibliography,
+            audit=audit,
+            previous=previous,
+            advance_latest=False,
         )
         with self.database.transaction() as connection:
             _upsert_local_audit_run(
@@ -1279,7 +1326,10 @@ def _coverage(
 
 
 def _bibliography(
-    corpus: Mapping[str, Any], claims: Sequence[Mapping[str, Any]]
+    corpus: Mapping[str, Any],
+    claims: Sequence[Mapping[str, Any]],
+    *,
+    database: Database | None = None,
 ) -> dict[str, dict[str, Any]]:
     cited = {
         str(reference["paper_id"])
@@ -1289,21 +1339,211 @@ def _bibliography(
         if reference["kind"] == "paper_evidence"
     }
     papers = {str(item["paper_id"]): item for item in corpus["papers"]}
+    result = {}
+    for paper_id in sorted(cited):
+        paper = papers[paper_id]
+        result[paper_id] = (
+            _canonical_bibliography_metadata(
+                database,
+                paper_id,
+                paper,
+                frozen_snapshot_hash=str(corpus.get("snapshot_hash") or ""),
+            )
+            if database is not None
+            else _frozen_bibliography_metadata(paper)
+        )
+    return result
+
+
+def _frozen_bibliography_metadata(paper: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        paper_id: {
-            key: value
-            for key, value in {
-                "title": papers[paper_id].get("title"),
-                "authors": papers[paper_id].get("authors"),
-                "year": papers[paper_id].get("publication_year"),
-                "venue_name": papers[paper_id].get("venue_name"),
-                "doi": papers[paper_id].get("doi"),
-                "canonical_url": papers[paper_id].get("canonical_url"),
-            }.items()
-            if value is not None
-        }
-        for paper_id in sorted(cited)
+        key: value
+        for key, value in {
+            "title": paper.get("title"),
+            "authors": paper.get("authors"),
+            "year": paper.get("publication_year"),
+            "venue_name": paper.get("venue_name"),
+            "doi": paper.get("doi"),
+            "canonical_url": paper.get("canonical_url"),
+        }.items()
+        if value is not None
     }
+
+
+def _canonical_bibliography_metadata(
+    database: Database,
+    paper_id: str,
+    frozen: Mapping[str, Any],
+    *,
+    frozen_snapshot_hash: str | None = None,
+) -> dict[str, Any]:
+    """Resolve a fill-only, provenance-bound bibliography metadata overlay.
+
+    The frozen corpus remains the sole Sol input.  A later canonical correction
+    may fill a field that was empty at freeze time, but cannot replace any
+    non-empty frozen value.  The exact official provenance is included in the
+    bibliography artifact so the report hash binds the local correction.
+    """
+    result = _frozen_bibliography_metadata(frozen)
+    frozen_verification_status = str(frozen.get("verification_status") or "")
+    frozen_verified = frozen_verification_status in {"verified", "single_source"}
+    if _bibliography_metadata_complete(result) and frozen_verified:
+        return result
+    row = database.connection.execute(
+        """SELECT title, authors_json, year, venue_name, doi, canonical_url,
+                  verification_status
+             FROM papers WHERE paper_id = ?""",
+        (paper_id,),
+    ).fetchone()
+    if row is None or row["verification_status"] not in {"verified", "single_source"}:
+        raise DirectReportError(
+            f"canonical bibliography metadata is not verified for {paper_id}"
+        )
+    try:
+        authors = json.loads(str(row["authors_json"]))
+    except json.JSONDecodeError as error:
+        raise DirectReportError(
+            f"canonical bibliography authors are malformed for {paper_id}"
+        ) from error
+    live = {
+        "title": row["title"],
+        "authors": authors,
+        "year": row["year"],
+        "venue_name": row["venue_name"],
+        "doi": row["doi"],
+        "canonical_url": row["canonical_url"],
+    }
+    for field in ("title", "authors", "year", "venue_name", "doi", "canonical_url"):
+        frozen_value = result.get(field)
+        live_value = live.get(field)
+        if (
+            _bibliography_value_present(frozen_value)
+            and _bibliography_value_present(live_value)
+            and canonical_json(frozen_value) != canonical_json(live_value)
+        ):
+            raise DirectReportError(
+                f"canonical bibliography metadata would overwrite frozen {field} for {paper_id}"
+            )
+
+    overlay_fields: dict[str, Any] = {}
+    for field in ("title", "authors", "year", "venue_name"):
+        if _bibliography_value_present(result.get(field)):
+            continue
+        value = live.get(field)
+        if not _bibliography_value_present(value):
+            continue
+        provenance = _official_field_provenance(
+            database, paper_id, field, value, frozen
+        )
+        if provenance is None:
+            raise DirectReportError(
+                f"canonical bibliography {field} lacks official provenance for {paper_id}"
+            )
+        result[field] = value
+        overlay_fields[field] = provenance
+    if not (
+        _bibliography_value_present(result.get("doi"))
+        or _bibliography_value_present(result.get("canonical_url"))
+    ):
+        for field in ("doi", "canonical_url"):
+            value = live.get(field)
+            if not _bibliography_value_present(value):
+                continue
+            provenance = _official_field_provenance(
+                database, paper_id, field, value, frozen
+            )
+            if provenance is None:
+                continue
+            result[field] = value
+            overlay_fields[field] = provenance
+            break
+    if not _bibliography_metadata_complete(result):
+        raise DirectReportError(
+            f"canonical metadata is incomplete for citation {paper_id}"
+        )
+    if overlay_fields or not frozen_verified:
+        overlay = {
+            "paper_id": paper_id,
+            "mode": "fill_only",
+            "frozen_snapshot_hash": frozen_snapshot_hash,
+            "frozen_verification_status": frozen_verification_status,
+            "verification_status": str(row["verification_status"]),
+            "fields": overlay_fields,
+        }
+        result["canonical_metadata_overlay"] = {
+            **overlay,
+            "overlay_hash": content_hash(overlay),
+        }
+    return result
+
+
+def _bibliography_metadata_complete(metadata: Mapping[str, Any]) -> bool:
+    authors = metadata.get("authors")
+    return bool(
+        str(metadata.get("title") or "").strip()
+        and isinstance(authors, Sequence)
+        and not isinstance(authors, (str, bytes))
+        and any(str(author).strip() for author in authors)
+        and isinstance(metadata.get("year"), int)
+        and not isinstance(metadata.get("year"), bool)
+        and str(metadata.get("venue_name") or "").strip()
+        and (
+            str(metadata.get("doi") or "").strip()
+            or str(metadata.get("canonical_url") or "").strip()
+        )
+    )
+
+
+def _bibliography_value_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return any(str(item).strip() for item in value)
+    return True
+
+
+def _official_field_provenance(
+    database: Database,
+    paper_id: str,
+    field: str,
+    value: Any,
+    frozen: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    rows = database.connection.execute(
+        """SELECT fp.provenance_id, fp.source_id, fp.field_value_json,
+                  fp.observed_at, ps.provider, ps.landing_url,
+                  ps.raw_metadata_json
+             FROM paper_field_provenance fp
+             JOIN paper_sources ps ON ps.source_id = fp.source_id
+            WHERE fp.paper_id = ? AND fp.field_name = ?
+              AND ps.host_type = 'official'
+            ORDER BY fp.observed_at DESC, fp.source_id""",
+        (paper_id, field),
+    ).fetchall()
+    frozen_url = str(frozen.get("canonical_url") or "").rstrip("/")
+    for row in rows:
+        try:
+            observed = json.loads(str(row["field_value_json"]))
+            source_metadata = json.loads(str(row["raw_metadata_json"]))
+        except json.JSONDecodeError:
+            continue
+        landing_url = str(row["landing_url"] or "").rstrip("/")
+        if canonical_json(observed) != canonical_json(value):
+            continue
+        if frozen_url and landing_url != frozen_url:
+            continue
+        return {
+            "provenance_id": str(row["provenance_id"]),
+            "source_id": str(row["source_id"]),
+            "provider": str(row["provider"]),
+            "landing_url": str(row["landing_url"] or ""),
+            "observed_at": str(row["observed_at"]),
+            "field_value_hash": content_hash(value),
+            "source_metadata_hash": content_hash(source_metadata),
+        }
+    return None
 
 
 def _deterministic_verify(
@@ -1510,15 +1750,51 @@ def _is_procedural_reference_note(claim: Mapping[str, Any]) -> bool:
 
     The references appendix is rendered from frozen local metadata, so a model
     may describe that procedure without turning it into a research claim.  No
-    other evidence-free model output is normalized away.
+    other evidence-free model output is normalized away.  The normalizer then
+    requires this candidate to be the exclusive claim on one uncited references
+    block and replaces all of its model text with ``LOCAL_REFERENCES_NOTE``.
     """
+    semantic_text = " ".join(
+        str(claim.get(field) or "")
+        for field in (
+            "subject_id",
+            "predicate_id",
+            "object_or_scope_id",
+            "qualifier_context",
+            "claim_text",
+        )
+    ).casefold()
+    limitations = " ".join(
+        str(value)
+        for value in claim.get("known_limitations", ())
+        if isinstance(value, str)
+    ).casefold()
+    names_references = any(
+        marker in semantic_text
+        for marker in ("bibliograph", "reference", "citation", "参考文献", "书目")
+    )
+    names_local_generation = any(
+        marker in semantic_text
+        for marker in ("local", "coordinator", "renderer", "canonical", "本地", "协调器", "渲染")
+    )
+    discloses_procedural_scope = any(
+        marker in limitations
+        for marker in (
+            "procedur",
+            "not a paper claim",
+            "不是论文",
+            "报告生成",
+            "审计规则",
+        )
+    )
     return (
         claim.get("report_section") == "references_and_appendices"
         and claim.get("claim_type") == "recommendation"
-        and claim.get("status") == "insufficient"
-        and claim.get("evidence_level") == "corpus_stat"
         and not claim.get("supporting_evidence")
         and not claim.get("contradicting_evidence")
+        and names_references
+        and names_local_generation
+        and discloses_procedural_scope
     )
 
 

@@ -1,0 +1,455 @@
+# One public paper per supported venue/journal for a reproducible E2E smoke.
+# These records are approved curated fixtures, not substitutes for a native
+# provider response snapshot or a production Stage 2 release.
+schema_version: paper-agent.venue-e2e-matrix.v1
+stage_contract:
+  stage1: {mode: approved_snapshot}
+  stage2: {mode: TEST_ONLY, model_invoked: false}
+  stage3: {provider: public_direct, authorized_skill_allowed: false}
+  stage4: {model: gpt-5.6-luna, invoke_by_default: false}
+  stage4b: {model: gpt-5.6-sol, execution_strategy: one_shot, invoke_by_default: false}
+venues:
+  - id: icml
+    year: 2024
+    topic: "分子生成与可解释图语法"
+    descriptor: venues/icml.yaml
+    official_identity_url: https://proceedings.mlr.press/v235/sun24c.html
+    paper:
+      title: "Representing Molecules as Random Walks Over Interpretable Grammars"
+      authors:
+        - Michael Sun
+        - Minghao Guo
+        - Weize Yuan
+        - Veronika Thost
+        - Crystal Elaine Owens
+        - Aristotle Franklin Grosz
+        - Sharvaa Selvan
+        - Katelyn Zhou
+        - Hassan Mohiuddin
+        - Benjamin J Pedretti
+        - Zachary P Smith
+        - Jie Chen
+        - Wojciech Matusik
+      metadata_source_url: https://proceedings.mlr.press/v235/sun24c.html
+      landing_url: https://proceedings.mlr.press/v235/sun24c.html
+      pdf_url: https://arxiv.org/pdf/2403.08147
+      access_basis: official_open_access
+  - id: iclr
+    year: 2025
+    topic: "统一分子生成与性质预测"
+    descriptor: venues/iclr.yaml
+    official_identity_url: https://openreview.net/forum?id=Lb91pXwZMR
+    paper:
+      title: "UniGEM: A Unified Approach to Generation and Property Prediction for Molecules"
+      authors:
+        - Shikun Feng
+        - Yuyan Ni
+        - Lu Yan
+        - Zhi-Ming Ma
+        - Wei-Ying Ma
+        - Yanyan Lan
+      metadata_source_url: https://proceedings.iclr.cc/paper_files/paper/2025/hash/223935759d7743c85318639b560882a1-Abstract-Conference.html
+      landing_url: https://openreview.net/forum?id=Lb91pXwZMR
+      pdf_url: https://arxiv.org/pdf/2410.10516
+      access_basis: legal_author_copy
+  - id: aaai
+    year: 2025
+    topic: "蛋白口袋条件的三维分子设计"
+    descriptor: venues/aaai.yaml
+    official_identity_url: https://ojs.aaai.org/index.php/AAAI/article/view/34804
+    paper:
+      title: "BindGPT: A Scalable Framework for 3D Molecular Design via Language Modeling and Reinforcement Learning"
+      authors:
+        - Artem Zholus
+        - Maksim Kuznetsov
+        - Roman Schutski
+        - Rim Shayakhmetov
+        - Daniil Polykovskiy
+        - Sarath Chandar
+        - Alex Zhavoronkov
+      doi: 10.1609/aaai.v39i24.34804
+      metadata_source_url: https://ojs.aaai.org/index.php/AAAI/article/view/34804
+      landing_url: https://ojs.aaai.org/index.php/AAAI/article/view/34804
+      pdf_url: https://ojs.aaai.org/index.php/AAAI/article/view/34804/36959
+      access_basis: official_open_access
+  - id: acl
+    year: 2025
+    topic: "LLM 分子结构解析"
+    descriptor: venues/acl.yaml
+    official_identity_url: https://aclanthology.org/2025.acl-long.1100/
+    paper:
+      title: "Boosting LLM’s Molecular Structure Elucidation with Knowledge Enhanced Tree Search Reasoning"
+      authors:
+        - Xiang Zhuang
+        - Bin Wu
+        - Jiyu Cui
+        - Kehua Feng
+        - Xiaotong Li
+        - Huabin Xing
+        - Keyan Ding
+        - Qiang Zhang
+        - Huajun Chen
+      doi: 10.18653/v1/2025.acl-long.1100
+      metadata_source_url: https://aclanthology.org/2025.acl-long.1100/
+      landing_url: https://aclanthology.org/2025.acl-long.1100/
+      pdf_url: https://aclanthology.org/2025.acl-long.1100.pdf
+      access_basis: official_open_access
+  - id: cvpr
+    year: 2024
+    topic: "分子弱监督伪标注"
+    descriptor: venues/cvpr.yaml
+    official_identity_url: https://openaccess.thecvf.com/content/CVPR2024/html/Juan_Molecular_Data_Programming_Towards_Molecule_Pseudo-labeling_with_Systematic_Weak_Supervision_CVPR_2024_paper.html
+    paper:
+      title: "Molecular Data Programming: Towards Molecule Pseudo-labeling with Systematic Weak Supervision"
+      authors:
+        - Xin Juan
+        - Kaixiong Zhou
+        - Ninghao Liu
+        - Tianlong Chen
+        - Xin Wang
+      doi: 10.1109/cvpr52733.2024.00037
+      metadata_source_url: https://openaccess.thecvf.com/content/CVPR2024/html/Juan_Molecular_Data_Programming_Towards_Molecule_Pseudo-labeling_with_Systematic_Weak_Supervision_CVPR_2024_paper.html
+      landing_url: https://openaccess.thecvf.com/content/CVPR2024/html/Juan_Molecular_Data_Programming_Towards_Molecule_Pseudo-labeling_with_Systematic_Weak_Supervision_CVPR_2024_paper.html
+      pdf_url: https://openaccess.thecvf.com/content/CVPR2024/papers/Juan_Molecular_Data_Programming_Towards_Molecule_Pseudo-labeling_with_Systematic_Weak_Supervision_CVPR_2024_paper.pdf
+      access_basis: official_open_access
+  - id: iccv
+    year: 2025
+    topic: "化学结构图片识别"
+    descriptor: venues/iccv.yaml
+    official_identity_url: https://openaccess.thecvf.com/content/ICCV2025/html/Fang_MolParser_End-to-end_Visual_Recognition_of_Molecule_Structures_in_the_Wild_ICCV_2025_paper.html
+    paper:
+      title: "MolParser: End-to-end Visual Recognition of Molecule Structures in the Wild"
+      authors:
+        - Xi Fang
+        - Jiankun Wang
+        - Xiaochen Cai
+        - Shangqian Chen
+        - Shuwen Yang
+        - Haoyi Tao
+        - Nan Wang
+        - Lin Yao
+        - Linfeng Zhang
+        - Guolin Ke
+      doi: 10.1109/iccv51701.2025.02274
+      metadata_source_url: https://openaccess.thecvf.com/content/ICCV2025/html/Fang_MolParser_End-to-end_Visual_Recognition_of_Molecule_Structures_in_the_Wild_ICCV_2025_paper.html
+      landing_url: https://openaccess.thecvf.com/content/ICCV2025/html/Fang_MolParser_End-to-end_Visual_Recognition_of_Molecule_Structures_in_the_Wild_ICCV_2025_paper.html
+      pdf_url: https://openaccess.thecvf.com/content/ICCV2025/papers/Fang_MolParser_End-to-end_Visual_Recognition_of_Molecule_Structures_in_the_Wild_ICCV_2025_paper.pdf
+      access_basis: official_open_access
+  - id: ijcai
+    year: 2025
+    topic: "条件生成模型检索"
+    descriptor: venues/ijcai.yaml
+    official_identity_url: https://www.ijcai.org/proceedings/2025/804
+    paper:
+      title: "CGI: Identifying Conditional Generative Models with Example Images"
+      authors:
+        - Zhi Zhou
+        - Hao-Zhe Tan
+        - Peng-Xiao Song
+        - Lan-Zhe Guo
+      doi: 10.24963/ijcai.2025/804
+      metadata_source_url: https://www.ijcai.org/proceedings/2025/804
+      landing_url: https://www.ijcai.org/proceedings/2025/804
+      pdf_url: https://www.ijcai.org/proceedings/2025/0804.pdf
+      access_basis: official_open_access
+  - id: dac
+    year: 2024
+    topic: "端侧 LLM 个性化"
+    descriptor: venues/dac.yaml
+    official_identity_url: https://doi.org/10.1145/3649329.3655665
+    paper:
+      title: "Enabling On-Device Large Language Model Personalization with Self-Supervised Data Selection and Synthesis"
+      authors:
+        - Ruiyang Qin
+        - Jun Xia
+        - Zhenge Jia
+        - Meng Jiang
+        - Ahmed Abbasi
+        - Peipei Zhou
+        - Jingtong Hu
+        - Yiyu Shi
+      doi: 10.1145/3649329.3655665
+      metadata_source_url: https://api.crossref.org/works/10.1145/3649329.3655665
+      landing_url: https://doi.org/10.1145/3649329.3655665
+      pdf_url: https://arxiv.org/pdf/2311.12275
+      access_basis: legal_author_copy
+  - id: iccad
+    year: 2024
+    topic: "无注意力 LLM 的 PIM 加速"
+    descriptor: venues/iccad.yaml
+    official_identity_url: https://doi.org/10.1145/3676536.3676776
+    paper:
+      title: "Towards Floating Point-Based Attention-Free LLM: Hybrid PIM with Non-Uniform Data Format and Reduced Multiplications"
+      authors:
+        - Lidong Guo
+        - Zhenhua Zhu
+        - Tengxuan Liu
+        - Xuefei Ning
+        - Shiyao Li
+        - Guohao Dai
+        - Huazhong Yang
+        - Wangyang Fu
+        - Yu Wang
+      doi: 10.1145/3676536.3676776
+      metadata_source_url: https://api.crossref.org/works/10.1145/3676536.3676776
+      landing_url: https://doi.org/10.1145/3676536.3676776
+      pdf_url: https://nicsefc.ee.tsinghua.edu.cn/nics_file/pdf/3b18c2b6-a7c4-439d-9fa8-d6276749f085.pdf
+      access_basis: legal_author_copy
+  - id: tcad
+    year: 2024
+    topic: "LLM 驱动 EDA Agent"
+    descriptor: venues/tcad.yaml
+    official_identity_url: https://doi.org/10.1109/TCAD.2024.3383347
+    paper:
+      title: "ChatEDA: A Large Language Model Powered Autonomous Agent for EDA"
+      authors:
+        - Haoyuan Wu
+        - Zhuolun He
+        - Xinyun Zhang
+        - Xufeng Yao
+        - Su Zheng
+        - Haisheng Zheng
+        - Bei Yu
+      doi: 10.1109/tcad.2024.3383347
+      metadata_source_url: https://api.crossref.org/works/10.1109/tcad.2024.3383347
+      landing_url: https://doi.org/10.1109/TCAD.2024.3383347
+      pdf_url: https://www.cse.cuhk.edu.hk/~byu/papers/J115-TCAD2024-ChatEDA.pdf
+      access_basis: legal_author_copy
+  - id: nature_machine_intelligence
+    year: 2025
+    topic: "LLM 置信度校准"
+    descriptor: venues/nature_machine_intelligence.yaml
+    official_identity_url: https://doi.org/10.1038/s42256-024-00976-7
+    paper:
+      title: "What large language models know and what people think they know"
+      authors:
+        - Mark Steyvers
+        - Heliodoro Tejeda
+        - Aakriti Kumar
+        - Catarina Belem
+        - Sheer Karny
+        - Xinyue Hu
+        - Lukas W. Mayer
+        - Padhraic Smyth
+      doi: 10.1038/s42256-024-00976-7
+      metadata_source_url: https://www.nature.com/articles/s42256-024-00976-7
+      landing_url: https://www.nature.com/articles/s42256-024-00976-7
+      pdf_url: https://arxiv.org/pdf/2401.13835
+      access_basis: legal_author_copy
+  - id: nature_chemistry
+    year: 2025
+    topic: "三金属铋(I)烯丙基阳离子"
+    descriptor: venues/nature_chemistry.yaml
+    official_identity_url: https://doi.org/10.1038/s41557-024-01691-x
+    paper:
+      title: "A trimetallic bismuth(I)-based allyl cation"
+      authors:
+        - Davide Spinnato
+        - Nils Nöthling
+        - Markus Leutzsch
+        - Maurice van Gastel
+        - Lucas Wagner
+        - Frank Neese
+        - Josep Cornella
+      doi: 10.1038/s41557-024-01691-x
+      metadata_source_url: https://www.nature.com/articles/s41557-024-01691-x
+      landing_url: https://www.nature.com/articles/s41557-024-01691-x
+      pdf_url: https://europepmc.org/api/getPdf?pmcid=PMC11794141
+      access_basis: official_open_access
+  - id: nature_computational_science
+    year: 2025
+    topic: "复杂系统深度主动优化"
+    descriptor: venues/nature_computational_science.yaml
+    official_identity_url: https://doi.org/10.1038/s43588-025-00858-x
+    paper:
+      title: "Deep active optimization for complex systems"
+      authors:
+        - Ye Wei
+        - Bo Peng
+        - Ruiwen Xie
+        - Yangtao Chen
+        - Yu Qin
+        - Peng Wen
+        - Stefan Bauer
+        - Po-Yen Tung
+        - Dierk Raabe
+      doi: 10.1038/s43588-025-00858-x
+      metadata_source_url: https://www.nature.com/articles/s43588-025-00858-x
+      landing_url: https://www.nature.com/articles/s43588-025-00858-x
+      pdf_url: https://europepmc.org/api/getPdf?pmcid=PMC12457189
+      access_basis: official_open_access
+  - id: nature_communications
+    year: 2025
+    topic: "GNN 分子生成器"
+    descriptor: venues/nature_communications.yaml
+    official_identity_url: https://doi.org/10.1038/s41467-025-59439-1
+    paper:
+      title: "Using GNN property predictors as molecule generators"
+      authors:
+        - Félix Therrien
+        - Edward H. Sargent
+        - Oleksandr Voznyy
+      doi: 10.1038/s41467-025-59439-1
+      metadata_source_url: https://www.nature.com/articles/s41467-025-59439-1
+      landing_url: https://www.nature.com/articles/s41467-025-59439-1
+      pdf_url: https://europepmc.org/api/getPdf?pmcid=PMC12062463
+      access_basis: official_open_access
+  - id: nature_catalysis
+    year: 2025
+    topic: "钙钛矿太阳能 CO2 C2 烃合成"
+    descriptor: venues/nature_catalysis.yaml
+    official_identity_url: https://doi.org/10.1038/s41929-025-01292-y
+    paper:
+      title: "Perovskite-driven solar C2 hydrocarbon synthesis from CO2"
+      authors:
+        - Virgil Andrei
+        - Inwhan Roh
+        - Jia-An Lin
+        - Joshua Lee
+        - Yu Shan
+        - Chung-Kuan Lin
+        - Steve Shelton
+        - Erwin Reisner
+        - Peidong Yang
+      doi: 10.1038/s41929-025-01292-y
+      metadata_source_url: https://www.nature.com/articles/s41929-025-01292-y
+      landing_url: https://www.nature.com/articles/s41929-025-01292-y
+      pdf_url: https://api.repository.cam.ac.uk/server/api/core/bitstreams/08a4045d-24e1-4e64-9a24-3903df433c55/content
+      access_basis: official_open_access
+  - id: nature_biotechnology
+    year: 2025
+    topic: "纳米载体全鼠单细胞深度学习成像"
+    descriptor: venues/nature_biotechnology.yaml
+    official_identity_url: https://doi.org/10.1038/s41587-024-02528-1
+    paper:
+      title: "Nanocarrier imaging at single-cell resolution across entire mouse bodies with deep learning"
+      authors:
+        - Jie Luo
+        - Muge Molbay
+        - Ying Chen
+        - Izabela Horvath
+        - Karoline Kadletz
+        - Benjamin Kick
+        - Shan Zhao
+        - Rami Al-Maskari
+        - Inderjeet Singh
+        - Mayar Ali
+        - Harsharan Singh Bhatia
+        - David-Paul Minde
+        - Moritz Negwer
+        - Luciano Hoeher
+        - Gian Marco Calandra
+        - Bernhard Groschup
+        - Jinpeng Su
+        - Ceren Kimna
+        - Zhouyi Rong
+        - Nikolas Galensowske
+        - Mihail Ivilinov Todorov
+        - Denise Jeridi
+        - Tzu-Lun Ohn
+        - Stefan Roth
+        - Alba Simats
+        - Vikramjeet Singh
+        - Igor Khalin
+        - Chenchen Pan
+        - Bernardo A. Arús
+        - Oliver T. Bruns
+        - Reinhard Zeidler
+        - Arthur Liesz
+        - Ulrike Protzer
+        - Nikolaus Plesnila
+        - Siegfried Ussar
+        - Farida Hellal
+        - Johannes Paetzold
+        - Markus Elsner
+        - Hendrik Dietz
+        - Ali Erturk
+      doi: 10.1038/s41587-024-02528-1
+      metadata_source_url: https://www.nature.com/articles/s41587-024-02528-1
+      landing_url: https://www.nature.com/articles/s41587-024-02528-1
+      pdf_url: https://europepmc.org/api/getPdf?pmcid=PMC12700832
+      access_basis: official_open_access
+  - id: nature_biomedical_engineering
+    year: 2025
+    topic: "大基因整合的 prime editing 与重组酶"
+    descriptor: venues/nature_biomedical_engineering.yaml
+    official_identity_url: https://doi.org/10.1038/s41551-024-01227-1
+    paper:
+      title: "Efficient site-specific integration of large genes in mammalian cells via continuously evolved recombinases and prime editing"
+      authors:
+        - Smriti Pandey
+        - Xin D. Gao
+        - Nicholas A. Krasnow
+        - Amber McElroy
+        - Y. Allen Tao
+        - Jordyn E. Duby
+        - Benjamin J. Steinbeck
+        - Julia McCreary
+        - Sarah E. Pierce
+        - Jakub Tolar
+        - Torsten B. Meissner
+        - Elliot L. Chaikof
+        - Mark J. Osborn
+        - David R. Liu
+      doi: 10.1038/s41551-024-01227-1
+      metadata_source_url: https://www.nature.com/articles/s41551-024-01227-1
+      landing_url: https://www.nature.com/articles/s41551-024-01227-1
+      pdf_url: https://europepmc.org/api/getPdf?pmcid=PMC11754103
+      access_basis: official_open_access
+  - id: cell
+    year: 2024
+    topic: "果蝇突触位点电子显微镜神经递质分类"
+    descriptor: venues/cell.yaml
+    official_identity_url: https://doi.org/10.1016/j.cell.2024.03.016
+    paper:
+      title: "Neurotransmitter classification from electron microscopy images at synaptic sites in Drosophila melanogaster"
+      authors:
+        - Nils Eckstein
+        - Alexander Shakeel Bates
+        - Andrew Champion
+        - Michelle Du
+        - Yijie Yin
+        - Philipp Schlegel
+        - Alicia Kun-Yang Lu
+        - Thomson Rymer
+        - Samantha Finley-May
+        - Tyler Paterson
+        - Ruchi Parekh
+        - Sven Dorkenwald
+        - Arie Matsliah
+        - Szi-Chieh Yu
+        - Claire McKellar
+        - Amy Sterling
+        - Katharina Eichler
+        - Marta Costa
+        - Sebastian Seung
+        - Mala Murthy
+        - Volker Hartenstein
+        - Gregory S.X.E. Jefferis
+        - Jan Funke
+      doi: 10.1016/j.cell.2024.03.016
+      metadata_source_url: https://api.crossref.org/works/10.1016/j.cell.2024.03.016
+      landing_url: https://www.cell.com/cell/fulltext/S0092-8674(24)00307-6
+      pdf_url: https://api.repository.cam.ac.uk/server/api/core/bitstreams/d1289795-69bc-411e-bc29-48806e1d49cb/content
+      access_basis: legal_author_copy
+  - id: science
+    year: 2024
+    topic: "蛋白质宇宙的结构域百科"
+    descriptor: venues/science.yaml
+    official_identity_url: https://doi.org/10.1126/science.adq4946
+    paper:
+      title: "Exploring structural diversity across the protein universe with The Encyclopedia of Domains"
+      authors:
+        - Andy M. Lau
+        - Nicola Bordin
+        - Shaun M. Kandathil
+        - Ian Sillitoe
+        - Vaishali P. Waman
+        - Jude Wells
+        - Christine A. Orengo
+        - David T. Jones
+      doi: 10.1126/science.adq4946
+      metadata_source_url: https://api.crossref.org/works/10.1126/science.adq4946
+      landing_url: https://www.science.org/doi/10.1126/science.adq4946
+      pdf_url: https://europepmc.org/api/getPdf?pmcid=PMC7618865
+      access_basis: legal_author_copy

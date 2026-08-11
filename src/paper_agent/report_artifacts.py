@@ -104,7 +104,13 @@ def _numeric_evidence(claim: Mapping[str, Any]) -> bool:
                 return True
             unit = ref.get("evidence_unit")
             if isinstance(unit, Mapping):
-                for key in ("value", "source_value"):
+                # Some source-grounded protocol facts are intentionally kept as
+                # non-scalar evidence (for example, a training split changing
+                # from 70% to 10%).  In those cases ``value``/``source_value``
+                # describe the qualitative result, while the atomic evidence
+                # claim carries the reported numbers.  Treat that bound claim
+                # as evidence too; this does not synthesize or infer a number.
+                for key in ("value", "source_value", "claim"):
                     value = unit.get(key)
                     if (
                         isinstance(value, (int, float))
@@ -270,12 +276,24 @@ def report_artifact_hash(
     """Bind every mutable or generated structured input to one audit digest."""
     return content_hash({
         "document": document,
-        "claims": list(claims),
+        "claims": list(_ordered_claims(claims)),
         "coverage": _coverage_dict(coverage),
         "comparison_groups": comparison_groups,
         "claim_relations": list(claim_relations),
         "bibliography": bibliography,
     })
+
+
+def _ordered_claims(
+    claims: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    """Return the sole canonical order used for claim hashing and persistence."""
+    claim_ids = [item.get("claim_id") for item in claims]
+    if any(not isinstance(item, str) or not item for item in claim_ids):
+        raise ReportVerificationError("claims require non-empty string claim_id values")
+    if len(set(claim_ids)) != len(claim_ids):
+        raise ReportVerificationError("claims contain duplicate claim_id values")
+    return tuple(sorted(claims, key=lambda item: str(item["claim_id"])))
 
 
 def audit_search_limitations(
@@ -1120,6 +1138,7 @@ class ReportArtifactStore:
             raise ReportVerificationError(
                 "search audit is not publication-ready: " + "; ".join(blockers)
             )
+        ordered_claims = _ordered_claims(claims)
         try:
             canonical_comparison_groups = require_exact_comparison_groups(
                 claims, comparison_groups
@@ -1143,7 +1162,7 @@ class ReportArtifactStore:
             audit,
             plan=plan,
             document=document,
-            claims=claims,
+            claims=ordered_claims,
             coverage=coverage,
             comparison_groups=canonical_comparison_groups,
             claim_relations=canonical_claim_relations,
@@ -1169,7 +1188,6 @@ class ReportArtifactStore:
             )
             rendered_diff = render_report_diff(diff)
         report_run_id = str(document["report_run_id"])
-        ordered_claims = tuple(sorted(claims, key=lambda item: str(item["claim_id"])))
         files: dict[str, Any] = {
             "REPORT_PLAN.json": plan,
             "SEARCH_AUDIT.json": search_audit,
