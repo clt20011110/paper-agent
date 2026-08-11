@@ -122,6 +122,37 @@ def test_default_resolver_order_uses_only_metadata_evidence_and_preserves_licens
     assert all(candidate.raw_evidence_hash is not None for candidate in candidates)
 
 
+def test_neurips_official_public_pdf_routes_directly_before_authorized_skill() -> None:
+    source = PaperSource(
+        "neurips-source",
+        "paper-1",
+        "neurips_proceedings",
+        "NeurIPS-2024-abc123",
+        landing_url="https://proceedings.neurips.cc/paper_files/paper/2024/hash/abc123-Abstract-Conference.html",
+        pdf_url="https://proceedings.neurips.cc/paper_files/paper/2024/hash/abc123-Paper-Conference.pdf",
+        publication_version=PublicationVersion.PUBLISHED,
+        host_type="official",
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+    )
+    resolved = default_resolver_registry().resolve(
+        ResolverContext(paper=paper(), official_sources=(source,), retrieved_at=NOW)
+    )
+    service = RecordingService(
+        policy=SimpleNamespace(version="v1"), probes=[], fetches=[]
+    )
+
+    attempt = default_download_provider_registry(service).probe(
+        resolved[0], ProbeContext("personal_research", NOW)
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].resolver == "publisher_public"
+    assert resolved[0].access_basis is AccessBasis.PUBLIC_READ_ONLY
+    assert attempt.provider == "public_direct"
+    assert len(service.probes) == 1
+    assert service.probes[0][0] == resolved[0]
+
+
 def test_official_subscription_source_is_preserved_without_being_promoted_to_public() -> None:
     lookup = FixtureLookup(evidence_fixture())
     candidates = default_resolver_registry().resolve(

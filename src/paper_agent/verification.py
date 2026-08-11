@@ -8,6 +8,7 @@ from itertools import combinations
 from typing import Any, Mapping
 
 from .domain import (
+    AccessBasis,
     CollectionMembership,
     MembershipStatus,
     Paper,
@@ -223,10 +224,14 @@ class MetadataCoordinator:
 
     def _record_source_details(self, paper_id: str, entry: SourceEntry) -> None:
         metadata = entry.metadata
-        publication_version = metadata.get("publication_version", PublicationVersion.UNKNOWN)
+        publication_version = entry.publication_version
+        if publication_version is PublicationVersion.UNKNOWN:
+            publication_version = PublicationVersion(
+                metadata.get("publication_version", PublicationVersion.UNKNOWN)
+            )
         self.repository.connection.execute(
             "UPDATE paper_sources SET publication_version = ? WHERE provider = ? AND external_id = ?",
-            (PublicationVersion(publication_version), entry.provider, entry.external_id),
+            (publication_version, entry.provider, entry.external_id),
         )
         citation_count = metadata.get("citation_count")
         citation_count_as_of = metadata.get("citation_count_as_of")
@@ -277,7 +282,10 @@ class MetadataCoordinator:
 
     def _entries_for_paper(self, paper_id: str) -> tuple[SourceEntry, ...]:
         source_rows = self.repository.connection.execute(
-            "SELECT source_id, provider, external_id, landing_url, raw_metadata_json FROM paper_sources WHERE paper_id = ?",
+            """SELECT source_id, provider, external_id, landing_url, pdf_url,
+                      publication_version, license, host_type, access_basis,
+                      raw_metadata_json
+               FROM paper_sources WHERE paper_id = ?""",
             (paper_id,),
         ).fetchall()
         entries: list[SourceEntry] = []
@@ -301,6 +309,11 @@ class MetadataCoordinator:
                     venue_name=fields.get("venue_name"),
                     landing_url=source["landing_url"],
                     metadata=json.loads(source["raw_metadata_json"]),
+                    pdf_url=source["pdf_url"],
+                    publication_version=PublicationVersion(source["publication_version"]),
+                    license=source["license"],
+                    host_type=source["host_type"],
+                    access_basis=AccessBasis(source["access_basis"]),
                 )
             )
         return tuple(entries)

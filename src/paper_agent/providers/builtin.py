@@ -441,6 +441,11 @@ def _source_entry(provider: str, record: Mapping[str, Any]) -> SourceEntry:
         ),
         landing_url=_text(record.get("landing_url") or record.get("url") or record.get("URL") or record.get("html_url")),
         metadata={key: value for key, value in record.items() if key not in {"content", "authors"}},
+        pdf_url=_text(record.get("pdf_url")),
+        publication_version=_publication_version(record.get("publication_version")),
+        license=_text(record.get("license")),
+        host_type=_text(record.get("host_type")),
+        access_basis=_source_access_basis(record),
     )
 
 
@@ -532,6 +537,12 @@ def _access_basis(record: Mapping[str, Any]) -> AccessBasis:
     if record.get("license"):
         return AccessBasis.OPEN_LICENSE
     return AccessBasis.PUBLIC_READ_ONLY
+
+
+def _source_access_basis(record: Mapping[str, Any]) -> AccessBasis:
+    if record.get("access_basis"):
+        return AccessBasis(str(record["access_basis"]))
+    return AccessBasis.UNKNOWN
 
 
 class BuiltinProvider:

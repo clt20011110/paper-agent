@@ -289,6 +289,8 @@ class PaperRepository:
             PaperSource(
                 source_id=source_id_for(entry.provider, entry.external_id), paper_id=paper.paper_id,
                 provider=entry.provider, external_id=entry.external_id, landing_url=entry.landing_url,
+                pdf_url=entry.pdf_url, publication_version=entry.publication_version,
+                license=entry.license, host_type=entry.host_type, access_basis=entry.access_basis,
                 raw_metadata=entry.metadata,
             )
         )

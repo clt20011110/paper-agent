@@ -1,6 +1,14 @@
 import pytest
 
-from paper_agent.domain import CollectionMembership, MembershipStatus, Paper, PaperSource, SourceEntry
+from paper_agent.domain import (
+    AccessBasis,
+    CollectionMembership,
+    MembershipStatus,
+    Paper,
+    PaperSource,
+    PublicationVersion,
+    SourceEntry,
+)
 from paper_agent.repository import PaperRepository
 from paper_agent.storage import Database
 
@@ -37,6 +45,35 @@ def test_same_provider_source_is_idempotent_and_never_rebinds(tmp_path) -> None:
 
     assert repository.find_paper(provider="openalex", external_id="W1").paper_id == paper.paper_id
     assert database.connection.execute("SELECT queue_type FROM manual_queue").fetchone()[0] == "merge_conflict"
+    database.close()
+
+
+def test_ingest_preserves_typed_official_public_pdf_metadata(tmp_path) -> None:
+    database, repository = _repository(tmp_path)
+    paper = repository.ingest(SourceEntry(
+        "neurips_proceedings",
+        "NeurIPS-2024-abc123",
+        "Public conference paper",
+        landing_url="https://proceedings.neurips.cc/paper_files/paper/2024/hash/abc123-Abstract-Conference.html",
+        pdf_url="https://proceedings.neurips.cc/paper_files/paper/2024/hash/abc123-Paper-Conference.pdf",
+        publication_version=PublicationVersion.PUBLISHED,
+        host_type="official",
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+    ))
+
+    row = database.connection.execute(
+        """SELECT pdf_url, publication_version, license, host_type, access_basis
+           FROM paper_sources WHERE paper_id = ?""",
+        (paper.paper_id,),
+    ).fetchone()
+
+    assert tuple(row) == (
+        "https://proceedings.neurips.cc/paper_files/paper/2024/hash/abc123-Paper-Conference.pdf",
+        "published",
+        None,
+        "official",
+        "public_read_only",
+    )
     database.close()
 
 

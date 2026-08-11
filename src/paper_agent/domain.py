@@ -388,6 +388,11 @@ class SourceEntry(Model):
     venue_name: str | None = None
     landing_url: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    pdf_url: str | None = None
+    publication_version: PublicationVersion = PublicationVersion.UNKNOWN
+    license: str | None = None
+    host_type: str | None = None
+    access_basis: AccessBasis = AccessBasis.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)

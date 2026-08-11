@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from paper_agent.domain import AccessBasis, PublicationVersion
 from paper_agent.http_transport import ControlledHTTPTransport, HTTPProviderDelegate
 from paper_agent.provider_runtime import ProviderPolicyDenied, ProviderRequestError, ProviderRuntime, ProviderRuntimePolicy
 from paper_agent.providers.api import CrawlWindow, VenueDescriptor
@@ -136,10 +137,27 @@ def test_neurips_uses_year_page_maps_official_ids_and_paginates_cached_html() ->
 
     assert opener.calls[0][0].full_url == "https://proceedings.neurips.cc/paper_files/paper/2024"
     assert len(opener.calls) == 1
-    assert first.next_cursor == "1" and second.next_cursor is None
+    assert first.next_cursor == "1" and second.next_cursor == "2"
     assert first.entries[0].external_id == "NeurIPS-2024-abc123"
     assert first.entries[0].authors == ("Ada Lovelace", "Grace Hopper")
+    assert first.entries[0].pdf_url == (
+        "https://proceedings.neurips.cc/paper_files/paper/2024/hash/"
+        "abc123-Paper-Conference.pdf"
+    )
+    assert first.entries[0].publication_version is PublicationVersion.PUBLISHED
+    assert first.entries[0].host_type == "official"
+    assert first.entries[0].access_basis is AccessBasis.PUBLIC_READ_ONLY
+    assert first.entries[0].metadata["language"] == "en"
+    assert first.entries[0].metadata["document_type"] == "proceedings-article"
+    assert second.entries[0].title == "Second Paper"
     assert second.entries[0].landing_url.endswith("def456-Abstract-Conference.html")
+
+    third = adapter.discover(descriptor, window, second.next_cursor)
+    assert third.next_cursor is None
+    assert third.entries[0].title == "Dataset Track Paper"
+    assert third.entries[0].pdf_url.endswith(
+        "data789-Paper-Datasets_and_Benchmarks_Track.pdf"
+    )
 
 
 def test_neurips_legacy_page_accepts_unclassified_items_and_plain_abstract_suffix() -> None:
@@ -153,6 +171,9 @@ def test_neurips_legacy_page_accepts_unclassified_items_and_plain_abstract_suffi
 
     assert batch.entries[0].external_id == "NeurIPS-2020-legacy123"
     assert batch.entries[0].landing_url.endswith("legacy123-Abstract.html")
+    assert batch.entries[0].pdf_url.endswith("legacy123-Paper.pdf")
+    assert batch.entries[0].metadata["language"] == "en"
+    assert batch.entries[0].metadata["document_type"] == "proceedings-article"
 
 
 def test_pmlr_resolves_exact_icml_volume_then_maps_volume_page_without_pdf_fetch() -> None:

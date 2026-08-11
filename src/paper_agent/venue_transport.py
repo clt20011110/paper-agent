@@ -290,22 +290,39 @@ def _neurips(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -
                 (
                     value
                     for value in _nodes(item, "a")
-                    if re.search(r"-Abstract(?:-[A-Za-z]+)?\.html$", value.attributes.get("href", ""))
+                    if re.search(r"-Abstract(?:-[A-Za-z0-9_]+)?\.html$", value.attributes.get("href", ""))
                 ),
                 None,
             )
             if anchor is None:
                 continue
             href = anchor.attributes["href"]
-            stable = re.sub(r"-Abstract(?:-[A-Za-z]+)?\.html$", "", href.rsplit("/", 1)[-1])
+            stable = re.sub(r"-Abstract(?:-[A-Za-z0-9_]+)?\.html$", "", href.rsplit("/", 1)[-1])
+            landing_url = _absolute(url, href)
+            attribute_title = anchor.attributes.get("title", "").strip()
+            title = (
+                anchor.text
+                if not attribute_title or attribute_title.casefold() == "paper title"
+                else attribute_title
+            )
             entries.append(
                 {
                     "external_id": f"NeurIPS-{year}-{stable}",
-                    "title": anchor.attributes.get("title") or anchor.text,
+                    "title": title,
                     "authors": _authors(_first(item, "span", "paper-authors")),
                     "year": year,
                     "venue": f"NeurIPS {year}",
-                    "landing_url": _absolute(url, href),
+                    "landing_url": landing_url,
+                    "pdf_url": re.sub(
+                        r"-Abstract(?P<track>-[A-Za-z0-9_]+)?\.html$",
+                        r"-Paper\g<track>.pdf",
+                        landing_url,
+                    ),
+                    "publication_version": "published",
+                    "host_type": "official",
+                    "access_basis": "public_read_only",
+                    "language": "en",
+                    "document_type": "proceedings-article",
                     "track": (_first(item, "span", "paper-track-badge") or _HTMLNode("span", {})).text or "conference",
                 }
             )
