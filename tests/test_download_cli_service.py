@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from paper_agent.artifacts import ArtifactMetadataConflict, ArtifactStore
+from paper_agent.authorized_skill_adapter import AuthorizedSkillAdapterError
 from paper_agent.canonical import canonical_json
 from paper_agent.domain import (
     AccessBasis,
@@ -910,6 +911,63 @@ def test_authorized_skill_unattended_grant_stays_manual_without_a_queue(
     ).fetchone()[0] == 0
 
 
+@pytest.mark.parametrize(
+    "landing_url",
+    (
+        None,
+        "https://www.nature.com/articles/no-landing.pdf",
+        "https://www.nature.com/doi/epdf/no-landing",
+    ),
+    ids=("missing", "candidate-pdf-fallback", "epdf-viewer"),
+)
+def test_authorized_queue_requires_a_distinct_non_pdf_publisher_landing_url(
+    tmp_path: Path,
+    database: Database,
+    monkeypatch,
+    landing_url: str | None,
+) -> None:
+    candidate_url = "https://www.nature.com/articles/no-landing.pdf"
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/no-landing",
+        url=candidate_url,
+    )
+    database.connection.execute(
+        "UPDATE paper_sources SET landing_url = ? WHERE paper_id = ?",
+        (landing_url, paper_id),
+    )
+    database.connection.commit()
+    _approved_authorized_grant(database, paper_id, domain="www.nature.com")
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    service = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        authorized=True,
+        planner=FakeAuthorizedLunaPlanner(calls=[]),
+    )
+    service.provider_terms.update(_nature_terms())
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+
+    result = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert result.status == "manual_required"
+    assert not options.queue_path.exists()
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM authorized_download_queue_reservations"
+    ).fetchone()[0] == 0
+
+
 def test_authorized_luna_manual_decision_is_durable(tmp_path: Path, database: Database, monkeypatch) -> None:
     paper_id = _paper(
         database,
@@ -1019,6 +1077,9 @@ def test_authorized_queue_is_created_after_public_pass_excludes_public_success_a
     with queue_path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert [row["paper_id"] for row in rows] == [restricted_paper]
+    assert [row["url"] for row in rows] == [
+        "https://www.nature.com/articles/restricted"
+    ]
     assert fetcher.calls == ["https://www.nature.com/articles/open.pdf"]
     database.connection.execute(
         """INSERT INTO download_candidates(
@@ -1038,7 +1099,11 @@ def test_authorized_queue_is_created_after_public_pass_excludes_public_success_a
     database.connection.commit()
     _stage_authorized_article(options.output_dir, doi="10.1038/restricted")
 
-    resumed = service.run(
+    resumed_service = _service(
+        tmp_path, database, fetcher, authorized=True, planner=planner,
+    )
+    resumed_service.provider_terms.update(_nature_terms())
+    resumed = resumed_service.run(
         paper_ids=[open_paper, restricted_paper],
         authorization_grant_id="download-grant",
         authorized_skill=options,
@@ -1049,12 +1114,175 @@ def test_authorized_queue_is_created_after_public_pass_excludes_public_success_a
     assert resumed.run.for_paper(open_paper).resumed is True
     assert resumed.run.for_paper(restricted_paper).status.value == "downloaded"
     assert fetcher.calls == ["https://www.nature.com/articles/open.pdf"]
+    attempted_candidate = database.connection.execute(
+        """SELECT candidate.url
+           FROM download_attempts AS attempt
+           JOIN download_candidates AS candidate
+             ON candidate.candidate_id = attempt.candidate_id
+           WHERE attempt.provider = 'authorized_skill'"""
+    ).fetchone()
+    assert attempted_candidate["url"] == (
+        "https://www.nature.com/articles/restricted.pdf"
+    )
     manual = database.connection.execute(
         "SELECT status, resolution_json FROM manual_queue WHERE paper_id = ?",
         (restricted_paper,),
     ).fetchone()
     assert manual["status"] == "resolved"
     assert json.loads(manual["resolution_json"])["status"] == "downloaded"
+
+
+def test_authorized_queue_resume_rejects_reservation_not_present_in_csv(
+    tmp_path: Path, database: Database, monkeypatch,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/reserved",
+        url="https://www.nature.com/articles/reserved.pdf",
+    )
+    extra_paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/extra",
+        paper_id="paper-extra",
+        url="https://www.nature.com/articles/extra.pdf",
+    )
+    _approved_authorized_grant(
+        database, paper_id, domain="www.nature.com", max_papers=2
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    service = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        authorized=True,
+        planner=FakeAuthorizedLunaPlanner(calls=[]),
+    )
+    service.provider_terms.update(_nature_terms())
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+    waiting = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+    assert waiting.status == "manual_required"
+    database.connection.execute(
+        """INSERT INTO download_candidates(
+               candidate_id, paper_id, resolver, url, landing_url,
+               publication_version, host, license, access_basis, retrieved_at,
+               raw_evidence_hash, provenance_json
+           )
+           SELECT 'candidate-extra-reservation', ?, resolver, url, landing_url,
+                  publication_version, host, license, access_basis, retrieved_at,
+                  raw_evidence_hash, provenance_json
+             FROM download_candidates
+            WHERE candidate_id = (
+                SELECT candidate_id
+                  FROM authorized_download_queue_reservations
+                 WHERE paper_id = ?
+            )""",
+        (extra_paper_id, paper_id),
+    )
+    database.connection.execute(
+        """INSERT INTO authorized_download_queue_reservations(
+               authorization_grant_id, paper_id, candidate_id, run_id,
+               queue_path, queue_item_hash, reserved_at, collection_id,
+               collection_snapshot_hash, selection_snapshot_hash
+           )
+           SELECT authorization_grant_id, ?, 'candidate-extra-reservation', run_id,
+                  queue_path, queue_item_hash, reserved_at, collection_id,
+                  collection_snapshot_hash, selection_snapshot_hash
+             FROM authorized_download_queue_reservations
+            WHERE paper_id = ?""",
+        (extra_paper_id, paper_id),
+    )
+    database.connection.commit()
+
+    resumed = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        authorized=True,
+        planner=FakeAuthorizedLunaPlanner(calls=[]),
+    )
+    resumed.provider_terms.update(_nature_terms())
+    with pytest.raises(AuthorizedSkillAdapterError, match="exactly match"):
+        resumed.run(
+            paper_ids=[paper_id],
+            authorization_grant_id="download-grant",
+            authorized_skill=options,
+        )
+
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM download_attempts WHERE provider = 'authorized_skill'"
+    ).fetchone()[0] == 0
+
+
+def test_legacy_pdf_url_queue_and_reservation_fail_closed_without_migration(
+    tmp_path: Path, database: Database, monkeypatch,
+) -> None:
+    candidate_url = "https://www.nature.com/articles/legacy.pdf"
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/legacy",
+        url=candidate_url,
+    )
+    _approved_authorized_grant(database, paper_id, domain="www.nature.com")
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    service = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        authorized=True,
+        planner=FakeAuthorizedLunaPlanner(calls=[]),
+    )
+    service.provider_terms.update(_nature_terms())
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+    waiting = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+    assert waiting.status == "manual_required"
+    options.queue_path.chmod(0o644)
+    legacy_payload = options.queue_path.read_text(encoding="utf-8").replace(
+        "https://www.nature.com/articles/legacy,",
+        f"{candidate_url},",
+    )
+    options.queue_path.write_text(legacy_payload, encoding="utf-8")
+
+    resumed = _service(
+        tmp_path,
+        database,
+        Fetcher(),
+        authorized=True,
+        planner=FakeAuthorizedLunaPlanner(calls=[]),
+    )
+    resumed.provider_terms.update(_nature_terms())
+    with pytest.raises(AuthorizedSkillAdapterError, match="DOI publisher"):
+        resumed.run(
+            paper_ids=[paper_id],
+            authorization_grant_id="download-grant",
+            authorized_skill=options,
+        )
+
+    assert candidate_url in options.queue_path.read_text(encoding="utf-8")
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM download_attempts WHERE provider = 'authorized_skill'"
+    ).fetchone()[0] == 0
 
 
 def test_authorized_queue_resume_keeps_completed_rows_in_the_immutable_csv(

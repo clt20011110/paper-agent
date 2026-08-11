@@ -12,8 +12,10 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import re
 import sysconfig
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from .artifacts import ArtifactStore
 from .authorized_skill_adapter import (
@@ -27,6 +29,7 @@ from .authorized_skill_runtime import AuthorizedSkillRuntime, AuthorizedSkillRun
 from .authorized_luna import AuthorizedLunaPlanner
 from .canonical import canonical_json, content_hash
 from .domain import (
+    AccessLocationCandidate,
     DownloadResult,
     DownloadStatus,
     FetchDecisionStatus,
@@ -480,7 +483,7 @@ class Stage3DownloadService:
         )
         if not plan.items:
             return None
-        if queue.csv_path.is_file():
+        if queue.has_queue_file():
             frozen_items = queue.frozen_items()
             frozen_plan = _validate_frozen_queue(
                 papers,
@@ -508,11 +511,11 @@ class Stage3DownloadService:
             )
             queue.prepare(frozen_plan.items)
             frozen_keys = {
-                (item.paper_id, item.doi.lower(), item.url)
-                for item in frozen_items
+                (item.paper_id, item.doi.lower(), item.url, item.candidate_url)
+                for item in frozen_plan.items
             }
             planned_keys = {
-                (item.paper_id, item.doi.lower(), item.url)
+                (item.paper_id, item.doi.lower(), item.url, item.candidate_url)
                 for item in plan.items
             }
             if not planned_keys <= frozen_keys:
@@ -527,26 +530,27 @@ class Stage3DownloadService:
                     run_id=run_id,
                     authorization_grant_id=authorization_grant_id,
                     paper_id=item.paper_id,
-                    url=item.url,
+                    url=item.candidate_url,
                 )
-                for item in frozen_items
+                for item in frozen_plan.items
             ):
                 raise AuthorizedSkillAdapterError(
                     "authorized queue contains a paper outside the public fallback set"
                 )
         else:
-            _reserve_queue_plan(
-                service,
-                plan,
-                run_id=run_id,
-                queue_path=queue.csv_path,
-                authorization_grant_id=authorization_grant_id,
-                purpose=str(self.download_config["purpose"]),
-                now=now,
-                skill_digest=ready.installed_content_sha256,
-                dependency_digest=ready.dependency_lock_sha256,
-            )
-            queue.prepare(plan.items)
+            with service.database.transaction():
+                _reserve_queue_plan(
+                    service,
+                    plan,
+                    run_id=run_id,
+                    queue_path=queue.csv_path,
+                    authorization_grant_id=authorization_grant_id,
+                    purpose=str(self.download_config["purpose"]),
+                    now=now,
+                    skill_digest=ready.installed_content_sha256,
+                    dependency_digest=ready.dependency_lock_sha256,
+                )
+                queue.prepare(plan.items)
         return _AuthorizedHandoff(runtime, queue, frozenset(plan.candidate_ids))
 
     def _validate_without_writes(
@@ -1151,7 +1155,9 @@ def _queue_items(
 
     items: list[SkillQueueItem] = []
     candidate_ids: list[str] = []
-    urls: set[str] = set()
+    candidate_urls: set[str] = set()
+    browser_urls: set[str] = set()
+    queue_dois: set[str] = set()
     reserved_paper_ids: set[str] = set()
     results = {item.paper_id: item for item in public_result.papers}
     for item in papers:
@@ -1171,10 +1177,20 @@ def _queue_items(
             except FetchRejected:
                 continue
             if (
-                candidate.url in urls
+                candidate.url in candidate_urls
                 or not authorized_publisher_host_matches(doi, candidate.host)
             ):
                 continue
+            try:
+                browser_url = _authorized_browser_queue_url(candidate, doi)
+            except AuthorizedSkillAdapterError:
+                continue
+            if browser_url in browser_urls:
+                continue
+            if doi.lower() in queue_dois:
+                raise AuthorizedSkillAdapterError(
+                    "authorized queue requires unique DOIs"
+                )
             try:
                 service.require_authorized_handoff(
                     authorization_grant_id,
@@ -1196,16 +1212,25 @@ def _queue_items(
                 SkillQueueItem(
                     item.paper.paper_id,
                     doi,
-                    candidate.url,
+                    browser_url,
                     item.paper.title,
+                    candidate.url,
                 )
             )
-            urls.add(candidate.url)
+            candidate_urls.add(candidate.url)
+            browser_urls.add(browser_url)
+            queue_dois.add(doi.lower())
             reserved_paper_ids.add(item.paper.paper_id)
             candidate_ids.append(candidate.candidate_id)
             break
+    ordered = tuple(sorted(
+        zip(items, candidate_ids, strict=True),
+        key=lambda value: value[0].paper_id,
+    ))
     return _AuthorizedQueuePlan(
-        tuple(items), tuple(candidate_ids), authorization_scope
+        tuple(item for item, _candidate_id in ordered),
+        tuple(candidate_id for _item, candidate_id in ordered),
+        authorization_scope,
     )
 
 
@@ -1229,31 +1254,59 @@ def _validate_frozen_queue(
     reserved_paper_ids: set[str] = set()
     expected: list[SkillQueueItem] = []
     candidate_ids: list[str] = []
-    resolved_queue_path = str(queue_path.resolve())
-    for item in items:
+    resolved_queue_path = str(queue_path.absolute())
+    reservations = _authorized_reservation_map(
+        service,
+        items,
+        run_id=run_id,
+        queue_path=resolved_queue_path,
+        authorization_grant_id=authorization_grant_id,
+        authorization_scope=authorization_scope,
+    )
+    for queue_index, item in enumerate(items, 1):
         paper = selected.get(item.paper_id)
         if (
             paper is None
             or paper.doi is None
             or paper.doi.strip().lower() != item.doi.lower()
+            or paper.title != item.title
         ):
             raise AuthorizedSkillAdapterError(
                 "authorized queue does not match the selected papers"
             )
-        item_hash = _queue_item_hash(item, authorization_scope)
-        candidate = service.load_reserved_handoff_candidate(
-            authorization_grant_id,
-            run_id=run_id,
-            paper_id=item.paper_id,
-            queue_path=resolved_queue_path,
-            queue_item_hash=item_hash,
-            collection_id=authorization_scope.collection_id,
-            collection_snapshot_hash=authorization_scope.collection_snapshot_hash,
-            selection_snapshot_hash=authorization_scope.selection_snapshot_hash,
-        )
-        if candidate.url != item.url:
+        reservation = reservations[item.paper_id]
+        try:
+            candidate = service.load_candidate(str(reservation["candidate_id"]))
+        except FetchRejected as error:
             raise AuthorizedSkillAdapterError(
-                "authorized queue URL differs from its durable reservation"
+                "authorized queue row has no matching durable reservation"
+            ) from error
+        stored_item_hash = str(reservation["queue_item_hash"])
+        if candidate.paper_id != item.paper_id:
+            raise AuthorizedSkillAdapterError(
+                "authorized queue candidate differs from its durable reservation"
+            )
+        try:
+            browser_url = _authorized_browser_queue_url(candidate, item.doi)
+        except AuthorizedSkillAdapterError as error:
+            raise AuthorizedSkillAdapterError(
+                "authorized queue landing URL differs from its durable reservation"
+            ) from error
+        if browser_url != item.url:
+            raise AuthorizedSkillAdapterError(
+                "authorized queue landing URL differs from its durable reservation"
+            )
+        expected_item = SkillQueueItem(
+            item.paper_id, item.doi, item.url, item.title, candidate.url
+        )
+        if _queue_item_hash(
+            expected_item,
+            authorization_scope,
+            candidate=candidate,
+            queue_index=queue_index,
+        ) != stored_item_hash:
+            raise AuthorizedSkillAdapterError(
+                "authorized queue row differs from its durable reservation"
             )
         service.require_authorized_handoff(
             authorization_grant_id,
@@ -1270,9 +1323,7 @@ def _validate_frozen_queue(
             selection_snapshot_hash=authorization_scope.selection_snapshot_hash,
         )
         reserved_paper_ids.add(item.paper_id)
-        expected.append(
-            SkillQueueItem(item.paper_id, item.doi, item.url, paper.title)
-        )
+        expected.append(expected_item)
         candidate_ids.append(candidate.candidate_id)
     return _AuthorizedQueuePlan(
         tuple(expected), tuple(candidate_ids), authorization_scope
@@ -1291,12 +1342,18 @@ def _reserve_queue_plan(
     skill_digest: str,
     dependency_digest: str,
 ) -> None:
-    resolved_queue_path = str(queue_path.resolve())
+    resolved_queue_path = str(queue_path.absolute())
     reserved_paper_ids: set[str] = set()
     with service.database.transaction():
-        for item, candidate_id in zip(plan.items, plan.candidate_ids, strict=True):
+        for queue_index, (item, candidate_id) in enumerate(
+            zip(plan.items, plan.candidate_ids, strict=True), 1
+        ):
             candidate = service.load_candidate(candidate_id)
-            if candidate.paper_id != item.paper_id or candidate.url != item.url:
+            if (
+                candidate.paper_id != item.paper_id
+                or item.candidate_url != candidate.url
+                or _authorized_browser_queue_url(candidate, item.doi) != item.url
+            ):
                 raise AuthorizedSkillAdapterError(
                     "authorized queue item differs from its persisted candidate"
                 )
@@ -1305,7 +1362,12 @@ def _reserve_queue_plan(
                 candidate,
                 run_id=run_id,
                 queue_path=resolved_queue_path,
-                queue_item_hash=_queue_item_hash(item, plan.authorization_scope),
+                queue_item_hash=_queue_item_hash(
+                    item,
+                    plan.authorization_scope,
+                    candidate=candidate,
+                    queue_index=queue_index,
+                ),
                 purpose=purpose,
                 provider="authorized_skill",
                 mode=_AUTHORIZED_SKILL_EXECUTION_MODE,
@@ -1318,18 +1380,159 @@ def _reserve_queue_plan(
                 selection_snapshot_hash=plan.authorization_scope.selection_snapshot_hash,
             )
             reserved_paper_ids.add(item.paper_id)
+        reservations = _authorized_reservation_map(
+            service,
+            plan.items,
+            run_id=run_id,
+            queue_path=resolved_queue_path,
+            authorization_grant_id=authorization_grant_id,
+            authorization_scope=plan.authorization_scope,
+        )
+        for queue_index, (item, candidate_id) in enumerate(
+            zip(plan.items, plan.candidate_ids, strict=True), 1
+        ):
+            candidate = service.load_candidate(candidate_id)
+            reservation = reservations[item.paper_id]
+            if (
+                reservation["candidate_id"] != candidate_id
+                or reservation["queue_item_hash"]
+                != _queue_item_hash(
+                    item,
+                    plan.authorization_scope,
+                    candidate=candidate,
+                    queue_index=queue_index,
+                )
+            ):
+                raise AuthorizedSkillAdapterError(
+                    "authorized queue reservations differ from the complete plan"
+                )
 
 
 def _queue_item_hash(
-    item: SkillQueueItem, authorization_scope: DownloadScopeBinding
+    item: SkillQueueItem,
+    authorization_scope: DownloadScopeBinding,
+    *,
+    candidate: AccessLocationCandidate,
+    queue_index: int,
 ) -> str:
+    if (
+        not item.candidate_url
+        or candidate.candidate_id == ""
+        or candidate.paper_id != item.paper_id
+        or candidate.url != item.candidate_url
+        or queue_index < 1
+    ):
+        raise AuthorizedSkillAdapterError(
+            "authorized queue item is not bound to its complete candidate"
+        )
     return content_hash({
+        "schema_version": "2",
+        "queue_index": queue_index,
         "paper_id": item.paper_id,
         "doi": item.doi,
-        "url": item.url,
+        "landing_url": item.url,
         "title": item.title,
+        "candidate_id": candidate.candidate_id,
+        "candidate_url": item.candidate_url,
+        "candidate_sha256": content_hash(candidate.to_dict()),
         "authorization_scope": authorization_scope.to_dict(),
     })
+
+
+def _authorized_reservation_map(
+    service: DownloadService,
+    items: Sequence[SkillQueueItem],
+    *,
+    run_id: str,
+    queue_path: str,
+    authorization_grant_id: str,
+    authorization_scope: DownloadScopeBinding,
+) -> dict[str, Mapping[str, str | None]]:
+    rows = service.list_authorized_handoff_reservations(run_id=run_id)
+    expected_paper_ids = {item.paper_id for item in items}
+    if (
+        len(rows) != len(items)
+        or len({str(row["paper_id"]) for row in rows}) != len(rows)
+        or {str(row["paper_id"]) for row in rows} != expected_paper_ids
+        or any(
+            row["authorization_grant_id"] != authorization_grant_id
+            or row["run_id"] != run_id
+            or row["queue_path"] != queue_path
+            or row["collection_id"] != authorization_scope.collection_id
+            or row["collection_snapshot_hash"]
+            != authorization_scope.collection_snapshot_hash
+            or row["selection_snapshot_hash"]
+            != authorization_scope.selection_snapshot_hash
+            for row in rows
+        )
+    ):
+        raise AuthorizedSkillAdapterError(
+            "authorized queue reservations do not exactly match the CSV"
+        )
+    return {str(row["paper_id"]): row for row in rows}
+
+
+def _authorized_browser_queue_url(
+    candidate: AccessLocationCandidate, doi: str
+) -> str:
+    """Choose the audited browser landing URL without weakening candidate binding."""
+
+    if not candidate.landing_url:
+        raise AuthorizedSkillAdapterError(
+            "authorized queue requires an explicit publisher landing URL"
+        )
+    candidate_parts = urlsplit(candidate.url)
+    landing_parts = urlsplit(candidate.landing_url)
+    try:
+        same_endpoint = (
+            candidate_parts.scheme == "https"
+            and landing_parts.scheme == "https"
+            and candidate_parts.hostname is not None
+            and landing_parts.hostname is not None
+            and candidate_parts.username is None
+            and candidate_parts.password is None
+            and landing_parts.username is None
+            and landing_parts.password is None
+            and candidate.host is not None
+            and candidate.host.lower().rstrip(".")
+            == candidate_parts.hostname.lower().rstrip(".")
+            and candidate_parts.hostname.lower().rstrip(".")
+            == landing_parts.hostname.lower().rstrip(".")
+            and (candidate_parts.port or 443) == (landing_parts.port or 443)
+            and (candidate_parts.port or 443) == 443
+            and authorized_publisher_host_matches(doi, candidate.host)
+            and authorized_publisher_host_matches(doi, candidate_parts.hostname)
+            and authorized_publisher_host_matches(doi, landing_parts.hostname)
+            and _normalized_url_identity(candidate_parts)
+            != _normalized_url_identity(landing_parts)
+            and not _looks_like_pdf_landing(landing_parts)
+        )
+    except ValueError as error:
+        raise AuthorizedSkillAdapterError(
+            "authorized queue landing URL is invalid"
+        ) from error
+    if not same_endpoint:
+        raise AuthorizedSkillAdapterError(
+            "authorized queue landing URL must match the candidate domain"
+        )
+    return candidate.landing_url
+
+
+def _normalized_url_identity(value: Any) -> tuple[str, str, int, str, str]:
+    return (
+        value.scheme.lower(),
+        (value.hostname or "").lower().rstrip("."),
+        value.port or 443,
+        unquote(value.path or "/"),
+        value.query,
+    )
+
+
+def _looks_like_pdf_landing(value: Any) -> bool:
+    path = unquote(value.path or "").lower()
+    return path.endswith(".pdf") or bool(
+        re.search(r"/doi/(?:pdf|epdf)(?:/|$)", path)
+    )
 
 
 def _has_authorized_attempt(

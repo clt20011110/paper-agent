@@ -720,6 +720,39 @@ class DownloadService:
         collection_snapshot_hash: str | None = None,
         selection_snapshot_hash: str | None = None,
     ) -> AccessLocationCandidate:
+        candidate, stored_queue_item_hash = self.load_reserved_handoff_binding(
+            grant_id,
+            run_id=run_id,
+            paper_id=paper_id,
+            queue_path=queue_path,
+            collection_id=collection_id,
+            collection_snapshot_hash=collection_snapshot_hash,
+            selection_snapshot_hash=selection_snapshot_hash,
+        )
+        if stored_queue_item_hash != queue_item_hash:
+            raise FetchRejected(
+                "authorized queue row has no matching durable reservation"
+            )
+        return candidate
+
+    def load_reserved_handoff_binding(
+        self,
+        grant_id: str,
+        *,
+        run_id: str,
+        paper_id: str,
+        queue_path: str,
+        collection_id: str | None = None,
+        collection_snapshot_hash: str | None = None,
+        selection_snapshot_hash: str | None = None,
+    ) -> tuple[AccessLocationCandidate, str]:
+        """Load the exact reserved candidate before reproving its row hash.
+
+        The durable reservation supplies the candidate identity on resume.  A
+        caller must still recompute and compare ``queue_item_hash`` from that
+        candidate before exposing the queue.
+        """
+
         row = self.database.connection.execute(
             """SELECT candidate_id, run_id, queue_path, queue_item_hash,
                       collection_id, collection_snapshot_hash,
@@ -731,19 +764,36 @@ class DownloadService:
         expected = (
             run_id,
             queue_path,
-            queue_item_hash,
             collection_id,
             collection_snapshot_hash,
             selection_snapshot_hash,
         )
         if row is None or tuple(row[key] for key in (
-            "run_id", "queue_path", "queue_item_hash", "collection_id",
-            "collection_snapshot_hash", "selection_snapshot_hash",
+            "run_id", "queue_path", "collection_id", "collection_snapshot_hash",
+            "selection_snapshot_hash",
         )) != expected:
             raise FetchRejected(
                 "authorized queue row has no matching durable reservation"
             )
-        return self._load_candidate(str(row["candidate_id"]))
+        return (
+            self._load_candidate(str(row["candidate_id"])),
+            str(row["queue_item_hash"]),
+        )
+
+    def list_authorized_handoff_reservations(
+        self, *, run_id: str
+    ) -> tuple[dict[str, str | None], ...]:
+        """Return the complete durable reservation set for one Stage 3 run."""
+
+        rows = self.database.connection.execute(
+            """SELECT authorization_grant_id, paper_id, candidate_id, run_id,
+                      queue_path, queue_item_hash, collection_id,
+                      collection_snapshot_hash, selection_snapshot_hash
+               FROM authorized_download_queue_reservations
+               WHERE run_id = ? ORDER BY paper_id, authorization_grant_id""",
+            (run_id,),
+        ).fetchall()
+        return tuple({key: row[key] for key in row.keys()} for row in rows)
 
     def probe(
         self,
