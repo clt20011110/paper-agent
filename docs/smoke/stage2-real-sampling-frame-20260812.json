@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "evidence_type": "stage2_real_sampling_frame",
+  "status": "frame_frozen",
+  "source_commit": "00031f38d80bf3410b8ac88c463c9133f3b9cb09",
+  "provider": "crossref",
+  "live_network": true,
+  "captured_at": "2026-08-11T20:10:30.169251+00:00",
+  "query_spec": {
+    "path": "configs/stage2/real-sampling-crossref-v1.json",
+    "file_sha256": "cbbfe0be89f11b026b3e6a3962d708dc0c47c45776b2dbed9751efea2402cfa5",
+    "content_hash": "4f791d7b98a0581b3a8d47b534f9c40996db340fcf431c14c5e54cd63a046c85",
+    "topic_count": 6,
+    "query_count": 12,
+    "global_queries_per_second": 1.0
+  },
+  "raw_responses": {
+    "count": 12,
+    "total_bytes": 14329203,
+    "all_sha256_verified": true,
+    "items": [
+      {
+        "topic": "molecular_generation",
+        "query_language": "en",
+        "sha256": "6d154b544b0b1b554c871aa0e8c391c3a545ff69645ef853743a03077b1e151a",
+        "size_bytes": 2202257
+      },
+      {
+        "topic": "molecular_generation",
+        "query_language": "zh",
+        "sha256": "a56d4c87733c2a0b3b0bbe4484f1970e75d851c16b5999d49dbdc2291b3743ea",
+        "size_bytes": 278417
+      },
+      {
+        "topic": "protein_design_language_model",
+        "query_language": "en",
+        "sha256": "a00059840f43dea8ef564c08113166d8e17461a1f419b205f066d40be8e78932",
+        "size_bytes": 2284388
+      },
+      {
+        "topic": "protein_design_language_model",
+        "query_language": "zh",
+        "sha256": "e5708261f6a232d23e093280aaf00bb6528e7a26f64d13e486fb0bb1411c75da",
+        "size_bytes": 152033
+      },
+      {
+        "topic": "materials_discovery_generative_model",
+        "query_language": "en",
+        "sha256": "d2989c1b3dab93f77228aea0972f0a82c60de63d58dd384a9e64c9281c5d5611",
+        "size_bytes": 2079758
+      },
+      {
+        "topic": "materials_discovery_generative_model",
+        "query_language": "zh",
+        "sha256": "d4f6866b88f6c967cc8ebe56ef1461ae77ee059b5de425e9e55fb5e006fc3551",
+        "size_bytes": 155634
+      },
+      {
+        "topic": "drug_discovery_deep_learning",
+        "query_language": "en",
+        "sha256": "ce8170f8bf7372ec742185fc7a72b19c1b99526549522c325f2834800a969721",
+        "size_bytes": 2826307
+      },
+      {
+        "topic": "drug_discovery_deep_learning",
+        "query_language": "zh",
+        "sha256": "e0ff135f9ea35cec77a96855a917cf7bf5ccbdeb1df75a019a575f568067da0a",
+        "size_bytes": 298097
+      },
+      {
+        "topic": "llm_scientific_discovery",
+        "query_language": "en",
+        "sha256": "10637d1ae8425c7656a96ebdc1b59105ee537cdf0d3ba050cf62b548a9fc103f",
+        "size_bytes": 1881470
+      },
+      {
+        "topic": "llm_scientific_discovery",
+        "query_language": "zh",
+        "sha256": "04242026a53e5188108b433c6c7e84420e34fa91fef771b81ac4816748f02347",
+        "size_bytes": 158619
+      },
+      {
+        "topic": "diffusion_molecular_design",
+        "query_language": "en",
+        "sha256": "e664ba0510e2198a357081b2a61102ee93b0ca6e73153fd4e6c50f7fd47d4384",
+        "size_bytes": 1825701
+      },
+      {
+        "topic": "diffusion_molecular_design",
+        "query_language": "zh",
+        "sha256": "6c1a38935391cb3d34ca9fd750d50cba47d4252e43e7ae71e7540e375e3c74ff",
+        "size_bytes": 186522
+      }
+    ]
+  },
+  "private_snapshot": {
+    "schema_version": 1,
+    "sampling_policy_version": "stage2-crossref-real-v1",
+    "sampling_seed": 741,
+    "corpus_hash": "be873d5a432b6b643fc94d92a0b23ab046bde5a90b88815b27f9c9508b1df4b3",
+    "snapshot_hash": "4fad62156fb1461d30cecbd9f98f1f3699d64feda5778bfa364d4a63047dc774",
+    "file_sha256": "868a6956a011b34a8973e0b1c2ee4f2fd9226d21cf37a064eae439edf5ed320b",
+    "file_size_bytes": 24762946,
+    "natural_pair_count": 960,
+    "unique_paper_count": 921,
+    "unique_paper_family_count": 918,
+    "sampling_probability": 0.15625,
+    "topic_counts": {
+      "diffusion_molecular_design": 160,
+      "drug_discovery_deep_learning": 160,
+      "llm_scientific_discovery": 160,
+      "materials_discovery_generative_model": 160,
+      "molecular_generation": 160,
+      "protein_design_language_model": 160
+    },
+    "language_counts": {
+      "en": 720,
+      "zh": 240
+    },
+    "abstract_incomplete_count": 543,
+    "cross_language_match_count": 240
+  },
+  "hidden_real_freeze_frame": {
+    "dry_run_status": "validated",
+    "execution_status": "complete",
+    "pair_count": 150,
+    "sampling_probability": 0.15625,
+    "frame_hash": "43b18fd289b8082b9f04126ac3d685269480e2a590897032815229013a11afa7",
+    "file_sha256": "b15d9ccba6129ed31d0290a805812c837bc646170533f653caedead90e09c3f0",
+    "file_size_bytes": 18059
+  },
+  "capture_manifest": {
+    "file_sha256": "342247ba322d0abbf478e3bf92e75cf631730cc17294ffb26ab2a0200fb7df9d",
+    "file_size_bytes": 7578
+  },
+  "custody": {
+    "reference": "local-evaluator:stage2/crossref-real-v1-20260812",
+    "private_artifacts_committed": false,
+    "file_mode": "0600",
+    "directory_mode": "0700"
+  },
+  "release_gate_claimed": false,
+  "remaining_requirements": [
+    "curated sampling annotations",
+    "600-pair double annotation and third-person adjudication",
+    "structured replay, rationale audit, performance, soak, promotion, and release assembly"
+  ]
+}
