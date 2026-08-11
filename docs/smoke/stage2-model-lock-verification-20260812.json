@@ -1,0 +1,91 @@
+{
+  "bindings": [
+    {
+      "files": [
+        {
+          "actual_sha256": "c887aa6dd2598f908bf0582ca7068cc816585c7a1b6a07df305b631ede0cb174",
+          "expected_sha256": "c887aa6dd2598f908bf0582ca7068cc816585c7a1b6a07df305b631ede0cb174",
+          "matches": true,
+          "path": "README.md"
+        },
+        {
+          "actual_sha256": "13dcd6c31d9fec9d1d8e158702072f62d7fa7d312a64b9fe057bec9a08cfe41a",
+          "expected_sha256": "13dcd6c31d9fec9d1d8e158702072f62d7fa7d312a64b9fe057bec9a08cfe41a",
+          "matches": true,
+          "path": "config.json"
+        },
+        {
+          "actual_sha256": "d9e3e081faff1eefb84019509b2f5558fd74c1a05a2c7db22f74174fcedb5286",
+          "expected_sha256": "d9e3e081faff1eefb84019509b2f5558fd74c1a05a2c7db22f74174fcedb5286",
+          "matches": true,
+          "path": "model.safetensors"
+        },
+        {
+          "actual_sha256": "69564b696052886ed0ac63fa393e928384e0f8caada38c1f4864a9bfbf379c15",
+          "expected_sha256": "69564b696052886ed0ac63fa393e928384e0f8caada38c1f4864a9bfbf379c15",
+          "matches": true,
+          "path": "tokenizer.json"
+        }
+      ],
+      "lock_path": "/Users/chenletian/Documents/Codex/2026-08-09/cl/paper-agent/configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json",
+      "lock_sha256": "ad6774a493a3575ca551f78db65152d60a43016ef87422e0dccd8c1c1a737d1f",
+      "model_dir": "/Users/chenletian/.omlx/models/bge-reranker-v2-m3",
+      "model_id": "bge-reranker-v2-m3",
+      "status": "pass"
+    },
+    {
+      "files": [
+        {
+          "actual_sha256": "771b58cca5f45b018360375843eb55fa6991534ed20c78c5b18b5c39a16a492b",
+          "expected_sha256": "771b58cca5f45b018360375843eb55fa6991534ed20c78c5b18b5c39a16a492b",
+          "matches": true,
+          "path": "README.md"
+        },
+        {
+          "actual_sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+          "expected_sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+          "matches": true,
+          "path": "chat_template.jinja"
+        },
+        {
+          "actual_sha256": "19082a0ef21dee3840a8bab56ee5325ead177085285c63ea47e79a204a566a53",
+          "expected_sha256": "19082a0ef21dee3840a8bab56ee5325ead177085285c63ea47e79a204a566a53",
+          "matches": true,
+          "path": "config.json"
+        },
+        {
+          "actual_sha256": "0dcb3cdba0f43743875c861792685da5266aebcb58f7c0e345b9cd090bb0d289",
+          "expected_sha256": "0dcb3cdba0f43743875c861792685da5266aebcb58f7c0e345b9cd090bb0d289",
+          "matches": true,
+          "path": "model-00001-of-00002.safetensors"
+        },
+        {
+          "actual_sha256": "5abf861e7a13e7af805105270b2648634b41fda02238ae8ee1bd64628acce9b1",
+          "expected_sha256": "5abf861e7a13e7af805105270b2648634b41fda02238ae8ee1bd64628acce9b1",
+          "matches": true,
+          "path": "model-00002-of-00002.safetensors"
+        },
+        {
+          "actual_sha256": "87d95b037f57d101448b262059b7d28d65d55f60231100cdb1827d7cd44202cd",
+          "expected_sha256": "87d95b037f57d101448b262059b7d28d65d55f60231100cdb1827d7cd44202cd",
+          "matches": true,
+          "path": "model.safetensors.index.json"
+        },
+        {
+          "actual_sha256": "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4",
+          "expected_sha256": "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4",
+          "matches": true,
+          "path": "tokenizer.json"
+        }
+      ],
+      "lock_path": "/Users/chenletian/Documents/Codex/2026-08-09/cl/paper-agent/configs/stage2/models/qwen3.5-9b-8bit.lock.json",
+      "lock_sha256": "ec9227eab52573a921d737a1b36e7b069975034d9f4a843baa4e5a56c53e9e2c",
+      "model_dir": "/Users/chenletian/.omlx/models/qwen3.5-9b-8bit",
+      "model_id": "qwen3.5-9b-8bit",
+      "status": "pass"
+    }
+  ],
+  "schema_version": 1,
+  "stage": "stage2",
+  "status": "pass"
+}
