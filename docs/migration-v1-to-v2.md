@@ -54,6 +54,8 @@ paper-agent search plan \
 
 服务凭据只通过示例中列出的环境变量名称提供，例如 `CROSSREF_MAILTO`、`SEMANTIC_SCHOLAR_API_KEY`、`OPENALEX_API_KEY`、`NCBI_API_KEY`、`NCBI_EMAIL` 和 `UNPAYWALL_EMAIL`。不要把值写入 YAML、报告、SQLite 导出或版本库。
 
+默认下载矩阵已升级到 `download-access-v2`。它只把 Europe PMC 的 `cc by`/`cc-by` 许可证族标签用于 personal/internal 下载与保存，不把该标签提升为 CC BY 4.0，也不允许无具体版本的自动再分发。旧 v1 policy、run 和 FetchRequest 保持不可变；切换到 v2 后必须重新 probe 并创建绑定新 policy hash 的 run/request。
+
 ## 数据库升级与 Stage 4 恢复
 
 升级前先按运维文档备份 SQLite 与 artifact 目录。migration 16 会为 Stage 4 建立一次性付费调用

@@ -123,7 +123,7 @@ def test_relocated_config_resolves_shipped_processing_policies(tmp_path) -> None
     config = load_config(relocated)
 
     assert download_policy_path(tmp_path, config["download"]) == (
-        ROOT / "policies" / "download-access-v1.yaml"
+        ROOT / "policies" / "download-access-v2.yaml"
     )
     assert cli._analysis_policy_path(config, relocated) == (
         ROOT / "policies" / "artifact-processing-v1.yaml"

@@ -71,7 +71,7 @@ def database(tmp_path) -> Database:
 
 @pytest.fixture
 def policy() -> DownloadAccessPolicy:
-    return DownloadAccessPolicy.load(ROOT / "policies" / "download-access-v1.yaml")
+    return DownloadAccessPolicy.load(ROOT / "policies" / "download-access-v2.yaml")
 
 
 def terms(
@@ -273,11 +273,44 @@ def test_policy_classifies_every_publication_version(policy: DownloadAccessPolic
     assert outcomes == {version: FetchDecisionStatus.ALLOW for version in PublicationVersion}
 
 
-def test_unversioned_creative_commons_label_is_not_promoted_to_a_compatible_license(
+@pytest.mark.parametrize(
+    ("license_label", "purpose", "status", "reason"),
+    [
+        ("CC BY", "personal_research", FetchDecisionStatus.ALLOW, "compatible_open_license"),
+        ("CC-BY", "internal_analysis", FetchDecisionStatus.ALLOW, "compatible_open_license"),
+        (
+            "CC BY",
+            "redistribution",
+            FetchDecisionStatus.DENY,
+            "redistribution_requires_compatible_license",
+        ),
+    ],
+)
+def test_europe_pmc_cc_by_family_label_is_compatible_only_for_nonredistribution(
     policy: DownloadAccessPolicy,
+    license_label: str,
+    purpose: str,
+    status: FetchDecisionStatus,
+    reason: str,
 ) -> None:
     outcome = policy.decide(
-        candidate(license="CC-BY"), "internal_analysis", terms(), has_grant=False
+        candidate(license=license_label), purpose, terms(), has_grant=False
+    )
+
+    assert (outcome.status, outcome.reason_code) == (status, reason)
+
+
+@pytest.mark.parametrize("license_label", ["CC BY", "CC-BY"])
+def test_download_policy_v1_keeps_unversioned_cc_by_grant_gated(
+    license_label: str,
+) -> None:
+    policy = DownloadAccessPolicy.load(ROOT / "policies" / "download-access-v1.yaml")
+
+    outcome = policy.decide(
+        candidate(license=license_label),
+        "personal_research",
+        terms(),
+        has_grant=False,
     )
 
     assert outcome.status is FetchDecisionStatus.NEEDS_GRANT

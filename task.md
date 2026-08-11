@@ -548,6 +548,8 @@ FetchRequest 由协调端持久化并绑定 request_id、candidate/policy/purpos
 
 Crossref/OpenAlex/Semantic Scholar 返回 URL 不等于已获得下载、保存或再分发授权；Unpaywall 的 bronze 或 license=null 也不能自动提升为 open_license。fetch 前必须通过版本化 policy matrix，对 purpose（personal_research/internal_analysis/redistribution）× access_basis × license × publication_version × provider terms 产生 allow/needs_grant/manual/deny 及 reason code。默认只有与 purpose 相容且有条款证据的 open_license 可自动 allow；public_read_only、bronze/license=null、unknown 和 user_subscription 均不得自动保存，personal/internal 用途进入 needs_grant，条款无法机器判定时进入 manual，redistribution 在无兼容明确许可时 deny；user_supplied 不隐含再分发权。unknown/missing 不能被 require_access_basis=true 这种“非空检查”放行。
 
+Europe PMC core API 的 `cc by` 许可证族标签在 machine-readable OA 记录与 provider terms 同时成立时，仅对 personal_research/internal_analysis 兼容；未提供具体版本时不自动通过 redistribution。
+
 每个 DownloadProvider 必须声明：
 
 - 是否需要认证。
@@ -917,7 +919,7 @@ download:
   resolvers: [publisher_public, europe_pmc, unpaywall, arxiv]
   providers: [public_direct, europe_pmc, unpaywall_location, arxiv, authorized_skill, manual]
   purpose: personal_research
-  policy_matrix: "./policies/download-access-v1.yaml"
+  policy_matrix: "./policies/download-access-v2.yaml"
   require_access_basis: true
   treat_unknown_license_as_open: false
   authorized_skill:

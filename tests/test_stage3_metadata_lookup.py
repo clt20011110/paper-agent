@@ -56,7 +56,7 @@ def _config(*, metadata_lookup: bool) -> dict[str, Any]:
         "resolvers": list(DEFAULT_RESOLVER_ORDER),
         "providers": list(DEFAULT_PROVIDER_ORDER),
         "purpose": "personal_research",
-        "policy_matrix": "policies/download-access-v1.yaml",
+        "policy_matrix": "policies/download-access-v2.yaml",
         "authorized_skill": {"enabled": False},
     }
     if metadata_lookup:

@@ -388,7 +388,7 @@ def _download() -> dict[str, Any]:
         "resolvers": ["publisher_public", "europe_pmc", "unpaywall", "arxiv"],
         "providers": ["public_direct", "europe_pmc", "unpaywall_location", "arxiv", "authorized_skill", "manual"],
         "purpose": "personal_research",
-        "policy_matrix": "./policies/download-access-v1.yaml",
+        "policy_matrix": "./policies/download-access-v2.yaml",
         "require_access_basis": True,
         "treat_unknown_license_as_open": False,
         "authorized_skill": {

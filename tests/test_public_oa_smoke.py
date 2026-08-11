@@ -146,7 +146,7 @@ def test_public_oa_evidence_requires_a_persisted_pdf_artifact(tmp_path: Path) ->
                 "resultList": {"result": [{
                     "isOpenAccess": "Y",
                     "pmcid": smoke.PUBLIC_OA_SMOKE_PMCID,
-                    "license": "CC-BY-4.0",
+                    "license": "cc by",
                     "fullTextUrlList": {"fullTextUrl": [{
                         "availability": "Open access",
                         "documentStyle": "pdf",
@@ -203,6 +203,8 @@ def test_public_oa_evidence_requires_a_persisted_pdf_artifact(tmp_path: Path) ->
         )
 
         assert evidence["success"] is True
+        assert evidence["candidate"]["license"] == "cc by"
+        assert evidence["candidate"]["policy_reason_code"] == "compatible_open_license"
         assert evidence["artifact"]["byte_size"] == len(pdf.getvalue())
         artifact_path = service.artifact_root / evidence["artifact"]["relative_path"]
         artifact_path.write_bytes(b"")
