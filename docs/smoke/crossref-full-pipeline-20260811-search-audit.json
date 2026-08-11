@@ -1,0 +1,488 @@
+{
+  "completed_at": "2026-08-11T03:05:24.332937Z",
+  "crawl_execution_attempts": [
+    {
+      "attempt_no": 1,
+      "completed_at_epoch": 1786417528.42888,
+      "crawl_attempt_id": "crawl-attempt-7aee18fa9fe4557d884414e48948e2eb",
+      "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "elapsed_seconds": 4.0954430103302,
+      "started_at_epoch": 1786417524.333437,
+      "status": "complete"
+    }
+  ],
+  "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+  "cursor": {},
+  "error": null,
+  "incomplete_sources": [],
+  "incremental_diff": {
+    "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+    "metadata_changed_count": 0,
+    "new_count": 1,
+    "preprint_replaced_count": 0,
+    "recorded_at": "2026-08-11T03:05:24.332937Z",
+    "removed_count": 0,
+    "retracted_count": 0
+  },
+  "plan_hash": "ae9f3c432349f82b6019c5599e37a9b97ba9dd30a2305a930c9d1de11ecec85c",
+  "provider_rate_limits": [
+    {
+      "provider": "crossref",
+      "query_hash": "aaaf35a548ffaebe61867826bee0123908a54fa45d32e04f74b89c73780adbc7",
+      "query_id": "query-c336b99c256c5ed18fad809810f157d3",
+      "rate_limit": {
+        "x-rate-limit-interval": "1s",
+        "x-rate-limit-limit": "3"
+      },
+      "request_index": 0
+    }
+  ],
+  "provider_request_attempts": [
+    {
+      "accepted_count": 1,
+      "attempt_no": 1,
+      "citation_request_id": null,
+      "completed_at": "2026-08-11T03:05:24.332937Z",
+      "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "error": null,
+      "error_json": null,
+      "operation_key": "metadata:enrich:crossref:paper-5d7a8c77f3f851c49179af32100792ee",
+      "provider": "crossref",
+      "query_hash": "78bbca2bd33100d567a12601fd85c48c5df03513217af20c6d0b1c2992065e43",
+      "raw_returned_count": 1,
+      "request_attempt_id": "provider-request-3ffa71be99655cfc8a051cd76e4f53ad",
+      "request_charged": 1,
+      "requested_cursor": null,
+      "response_artifact_id": null,
+      "response_hash": "f60dade40f8b77e5065739c16197966eb15547f0c99e52aeb7b615af7ae52be1",
+      "role": "metadata_enricher",
+      "source_run_id": null,
+      "started_at": "2026-08-11T03:05:24.332937Z",
+      "status": "success"
+    },
+    {
+      "accepted_count": 0,
+      "attempt_no": 1,
+      "citation_request_id": null,
+      "completed_at": "2026-08-11T03:05:24.332937Z",
+      "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "error": null,
+      "error_json": null,
+      "operation_key": "metadata:verify:crossref:paper-5d7a8c77f3f851c49179af32100792ee",
+      "provider": "crossref",
+      "query_hash": "6b1dd2bba785e50141cb81d41b60eff82189d29c1a5ec8277b72b0a1b5875545",
+      "raw_returned_count": 0,
+      "request_attempt_id": "provider-request-45b26eaf9aff5d40b52a9bdb3c63262a",
+      "request_charged": 1,
+      "requested_cursor": null,
+      "response_artifact_id": null,
+      "response_hash": "9d3eef6cfb926f4c3b44de0a1b039019b0b97d9f2dee52bbdd167981d1455d68",
+      "role": "metadata_verifier",
+      "source_run_id": null,
+      "started_at": "2026-08-11T03:05:24.332937Z",
+      "status": "success"
+    },
+    {
+      "accepted_count": 1,
+      "attempt_no": 1,
+      "citation_request_id": null,
+      "completed_at": "2026-08-11T03:05:24.332937Z",
+      "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "error": null,
+      "error_json": null,
+      "operation_key": "fanout:crossref:search:7ace331e65df345ab031f57f221282a82cde41419494ede9ad6694692f04bf5d:",
+      "provider": "crossref",
+      "query_hash": "7ace331e65df345ab031f57f221282a82cde41419494ede9ad6694692f04bf5d",
+      "raw_returned_count": 1,
+      "request_attempt_id": "provider-request-d4eec08514a450d9be3d7a690b53b318",
+      "request_charged": 1,
+      "requested_cursor": null,
+      "response_artifact_id": null,
+      "response_hash": "ce90436bc3675ea78c671fc882f4b0cf9bc3e60d16582eabcd90977a4dced874",
+      "role": "search",
+      "source_run_id": null,
+      "started_at": "2026-08-11T03:05:24.332937Z",
+      "status": "success"
+    }
+  ],
+  "queries": [
+    {
+      "alias_group": null,
+      "completed_at": "2026-08-11T03:05:24.332937Z",
+      "cursor": null,
+      "error": null,
+      "error_json": null,
+      "filters": {},
+      "filters_json": "{}",
+      "page": "paper-5d7a8c77f3f851c49179af32100792ee",
+      "provider": "crossref",
+      "provider_params": {
+        "paper_id": "paper-5d7a8c77f3f851c49179af32100792ee"
+      },
+      "provider_params_json": "{\"paper_id\":\"paper-5d7a8c77f3f851c49179af32100792ee\"}",
+      "provider_version": "2.0.0a0",
+      "query_compiler_version": "metadata-enrich-v1",
+      "query_hash": "78bbca2bd33100d567a12601fd85c48c5df03513217af20c6d0b1c2992065e43",
+      "query_id": "query-63c5c2caeb12587dae496df2bf68f1bc",
+      "query_text": "paper-5d7a8c77f3f851c49179af32100792ee",
+      "request_attempt_id": "provider-request-3ffa71be99655cfc8a051cd76e4f53ad",
+      "requested_at": "2026-08-11T03:05:24.332937Z",
+      "response_artifact_id": null,
+      "response_hash": "7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+      "returned_count": 1,
+      "role": "metadata_enricher",
+      "search_plan_id": "search-ae9f3c432349",
+      "source_run_id": "crawl-35c90562062c5d01ba18a03d98272d49:crossref:metadata_enricher",
+      "status": "complete"
+    },
+    {
+      "alias_group": null,
+      "completed_at": "2026-08-11T03:05:24.332937Z",
+      "cursor": null,
+      "error": null,
+      "error_json": null,
+      "filters": {},
+      "filters_json": "{}",
+      "page": "paper-5d7a8c77f3f851c49179af32100792ee",
+      "provider": "crossref",
+      "provider_params": {
+        "paper_id": "paper-5d7a8c77f3f851c49179af32100792ee"
+      },
+      "provider_params_json": "{\"paper_id\":\"paper-5d7a8c77f3f851c49179af32100792ee\"}",
+      "provider_version": "2.0.0a0",
+      "query_compiler_version": "metadata-verify-v1",
+      "query_hash": "6b1dd2bba785e50141cb81d41b60eff82189d29c1a5ec8277b72b0a1b5875545",
+      "query_id": "query-fee17f80f06e5c69b6330193fd04f03e",
+      "query_text": "paper-5d7a8c77f3f851c49179af32100792ee",
+      "request_attempt_id": "provider-request-45b26eaf9aff5d40b52a9bdb3c63262a",
+      "requested_at": "2026-08-11T03:05:24.332937Z",
+      "response_artifact_id": null,
+      "response_hash": null,
+      "returned_count": 0,
+      "role": "metadata_verifier",
+      "search_plan_id": "search-ae9f3c432349",
+      "source_run_id": "crawl-35c90562062c5d01ba18a03d98272d49:crossref:metadata_verifier",
+      "status": "complete"
+    },
+    {
+      "alias_group": "q-smoke",
+      "completed_at": "2026-08-11T03:05:24.332937Z",
+      "cursor": null,
+      "error": null,
+      "error_json": null,
+      "filters": {
+        "native_applied_filters": {
+          "date_from": "2025-01-01",
+          "date_to": "2025-12-31"
+        },
+        "post_filters": {
+          "document_types": [
+            "article",
+            "proceedings-article",
+            "book-chapter"
+          ],
+          "languages": [
+            "en"
+          ]
+        },
+        "requested_filters": {
+          "date_from": "2025-01-01",
+          "date_to": "2025-12-31",
+          "document_types": [
+            "article",
+            "proceedings-article",
+            "book-chapter"
+          ],
+          "fields": [],
+          "languages": [
+            "en"
+          ],
+          "venues": []
+        }
+      },
+      "filters_json": "{\"native_applied_filters\":{\"date_from\":\"2025-01-01\",\"date_to\":\"2025-12-31\"},\"post_filters\":{\"document_types\":[\"article\",\"proceedings-article\",\"book-chapter\"],\"languages\":[\"en\"]},\"requested_filters\":{\"date_from\":\"2025-01-01\",\"date_to\":\"2025-12-31\",\"document_types\":[\"article\",\"proceedings-article\",\"book-chapter\"],\"fields\":[],\"languages\":[\"en\"],\"venues\":[]}}",
+      "page": "1",
+      "provider": "crossref",
+      "provider_params": {
+        "campaign_candidates_returned": 1,
+        "campaign_requests_made": 1,
+        "filter": "from-pub-date:2025-01-01,until-pub-date:2025-12-31",
+        "order": "asc",
+        "query.bibliographic": "machine learning",
+        "request_audit": [
+          {
+            "api_version": "rest-v1",
+            "cache_source": "provider_or_runtime",
+            "completed_at": "2026-08-11T03:05:25.537996+00:00",
+            "content_type": "application/json",
+            "cursor": null,
+            "etag": null,
+            "last_modified": null,
+            "provider": "crossref",
+            "query_hash": "aaaf35a548ffaebe61867826bee0123908a54fa45d32e04f74b89c73780adbc7",
+            "rate_limit": {
+              "x-rate-limit-interval": "1s",
+              "x-rate-limit-limit": "3"
+            },
+            "replay_scope": "crawl-35c90562062c5d01ba18a03d98272d49",
+            "requested_at": "2026-08-11T03:05:24.334071+00:00",
+            "response_artifact_hash": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+            "response_sha256": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+            "response_size_bytes": 10345,
+            "status": "success",
+            "url": "https://api.crossref.org/works?query.bibliographic=machine+learning&filter=from-pub-date%3A2025-01-01%2Cuntil-pub-date%3A2025-12-31&rows=1&sort=published&order=asc&mailto=84181669%2Bclt20011110%40users.noreply.github.com"
+          }
+        ],
+        "rows": 1,
+        "sort": "published"
+      },
+      "provider_params_json": "{\"campaign_candidates_returned\":1,\"campaign_requests_made\":1,\"filter\":\"from-pub-date:2025-01-01,until-pub-date:2025-12-31\",\"order\":\"asc\",\"query.bibliographic\":\"machine learning\",\"request_audit\":[{\"api_version\":\"rest-v1\",\"cache_source\":\"provider_or_runtime\",\"completed_at\":\"2026-08-11T03:05:25.537996+00:00\",\"content_type\":\"application/json\",\"cursor\":null,\"etag\":null,\"last_modified\":null,\"provider\":\"crossref\",\"query_hash\":\"aaaf35a548ffaebe61867826bee0123908a54fa45d32e04f74b89c73780adbc7\",\"rate_limit\":{\"x-rate-limit-interval\":\"1s\",\"x-rate-limit-limit\":\"3\"},\"replay_scope\":\"crawl-35c90562062c5d01ba18a03d98272d49\",\"requested_at\":\"2026-08-11T03:05:24.334071+00:00\",\"response_artifact_hash\":\"5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a\",\"response_sha256\":\"5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a\",\"response_size_bytes\":10345,\"status\":\"success\",\"url\":\"https://api.crossref.org/works?query.bibliographic=machine+learning&filter=from-pub-date%3A2025-01-01%2Cuntil-pub-date%3A2025-12-31&rows=1&sort=published&order=asc&mailto=84181669%2Bclt20011110%40users.noreply.github.com\"}],\"rows\":1,\"sort\":\"published\"}",
+      "provider_version": "2.0.0a0",
+      "query_compiler_version": "2",
+      "query_hash": "7ace331e65df345ab031f57f221282a82cde41419494ede9ad6694692f04bf5d",
+      "query_id": "query-c336b99c256c5ed18fad809810f157d3",
+      "query_text": "machine learning",
+      "request_attempt_id": "provider-request-d4eec08514a450d9be3d7a690b53b318",
+      "requested_at": "2026-08-11T03:05:24.332937Z",
+      "response_artifact_id": "artifact-5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+      "response_hash": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+      "returned_count": 1,
+      "role": "search",
+      "search_plan_id": "search-ae9f3c432349",
+      "source_run_id": "crawl-35c90562062c5d01ba18a03d98272d49:crossref:search:q-smoke",
+      "status": "complete"
+    }
+  ],
+  "rounds": [],
+  "run_id": "search-run-live-crossref-20260811030524",
+  "schema_version": "1",
+  "search_plan_id": "search-ae9f3c432349",
+  "sources": [
+    {
+      "completed_at": "2026-08-11T03:05:24.332937Z",
+      "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "cursor": {
+        "cursor": null
+      },
+      "cursor_json": "{\"cursor\":null}",
+      "error": null,
+      "error_count": 0,
+      "error_json": null,
+      "excluded": 0,
+      "full_text_available": 0,
+      "included": 0,
+      "metrics": {
+        "error_count": 0,
+        "excluded": 0,
+        "full_text_available": 0,
+        "included": 0,
+        "overlap": 0,
+        "raw_discovered": 1,
+        "screened": 0,
+        "unique_after_dedup": 0
+      },
+      "overlap": 0,
+      "provider": "crossref",
+      "provider_registration_id": null,
+      "provider_version": "2.0.0a0",
+      "raw_discovered": 1,
+      "raw_response_artifact_id": null,
+      "raw_response_hash": "7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+      "role": "metadata_enricher",
+      "screened": 0,
+      "source_run_id": "crawl-35c90562062c5d01ba18a03d98272d49:crossref:metadata_enricher",
+      "started_at": "2026-08-11T03:05:24.332937Z",
+      "status": "complete",
+      "unique_after_dedup": 0,
+      "updated_at": "2026-08-11T03:05:24.332937Z"
+    },
+    {
+      "completed_at": "2026-08-11T03:05:24.332937Z",
+      "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "cursor": {
+        "cursor": null
+      },
+      "cursor_json": "{\"cursor\":null}",
+      "error": null,
+      "error_count": 0,
+      "error_json": null,
+      "excluded": 0,
+      "full_text_available": 0,
+      "included": 0,
+      "metrics": {
+        "error_count": 0,
+        "excluded": 0,
+        "full_text_available": 0,
+        "included": 0,
+        "overlap": 0,
+        "raw_discovered": 0,
+        "screened": 0,
+        "unique_after_dedup": 0
+      },
+      "overlap": 0,
+      "provider": "crossref",
+      "provider_registration_id": null,
+      "provider_version": "2.0.0a0",
+      "raw_discovered": 0,
+      "raw_response_artifact_id": null,
+      "raw_response_hash": null,
+      "role": "metadata_verifier",
+      "screened": 0,
+      "source_run_id": "crawl-35c90562062c5d01ba18a03d98272d49:crossref:metadata_verifier",
+      "started_at": "2026-08-11T03:05:24.332937Z",
+      "status": "complete",
+      "unique_after_dedup": 0,
+      "updated_at": "2026-08-11T03:05:24.332937Z"
+    },
+    {
+      "completed_at": "2026-08-11T03:05:24.332937Z",
+      "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "cursor": {
+        "cursor": null
+      },
+      "cursor_json": "{\"cursor\":null}",
+      "error": null,
+      "error_count": 0,
+      "error_json": null,
+      "excluded": 1,
+      "full_text_available": 0,
+      "included": 0,
+      "metrics": {
+        "error_count": 0,
+        "excluded": 1,
+        "full_text_available": 0,
+        "included": 0,
+        "overlap": 0,
+        "raw_discovered": 1,
+        "screened": 1,
+        "unique_after_dedup": 1
+      },
+      "overlap": 0,
+      "provider": "crossref",
+      "provider_registration_id": null,
+      "provider_version": "2.0.0a0",
+      "raw_discovered": 1,
+      "raw_response_artifact_id": "artifact-5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+      "raw_response_hash": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+      "role": "search:query:q-smoke",
+      "screened": 1,
+      "source_run_id": "crawl-35c90562062c5d01ba18a03d98272d49:crossref:search:q-smoke",
+      "started_at": "2026-08-11T03:05:24.332937Z",
+      "status": "complete",
+      "unique_after_dedup": 1,
+      "updated_at": "2026-08-11T03:05:24.332937Z"
+    }
+  ],
+  "started_at": "2026-08-11 03:05:24",
+  "stats": {
+    "alarm_codes": [],
+    "campaign_usage_v1": {
+      "candidates_returned": 2,
+      "elapsed_seconds": 4.095213374996092,
+      "requests_made": 3
+    },
+    "crossref:metadata_enricher": {
+      "error_count": 0,
+      "excluded": 0,
+      "full_text_available": 0,
+      "included": 0,
+      "overlap": 0,
+      "raw_discovered": 1,
+      "screened": 0,
+      "unique_after_dedup": 0
+    },
+    "crossref:metadata_verifier": {
+      "error_count": 0,
+      "excluded": 0,
+      "full_text_available": 0,
+      "included": 0,
+      "overlap": 0,
+      "raw_discovered": 0,
+      "screened": 0,
+      "unique_after_dedup": 0
+    },
+    "crossref:search:query:q-smoke": {
+      "error_count": 0,
+      "excluded": 1,
+      "full_text_available": 0,
+      "included": 0,
+      "overlap": 0,
+      "raw_discovered": 1,
+      "screened": 1,
+      "unique_after_dedup": 1
+    },
+    "pipeline_outcome_v1": {
+      "alarm_codes": [],
+      "arxiv_candidate_ids": [],
+      "citation_round_ids": [],
+      "eligible_paper_ids": [
+        "paper-5d7a8c77f3f851c49179af32100792ee"
+      ],
+      "fanout": {
+        "budget_exhausted": false,
+        "candidates_returned": 1,
+        "incomplete": false,
+        "outcomes": [
+          {
+            "error": null,
+            "provider": "crossref",
+            "status": "success"
+          }
+        ],
+        "requests_made": 1
+      },
+      "paper_ids": [
+        "paper-5d7a8c77f3f851c49179af32100792ee"
+      ],
+      "stage2": {},
+      "status": "complete"
+    },
+    "stage2": {}
+  },
+  "status": "complete",
+  "totals": {
+    "candidates_accepted": 2,
+    "candidates_returned": 2,
+    "citation_rounds": {
+      "error_count": 0,
+      "needs_review": 0,
+      "new_included_unique": 0,
+      "overlap": 0,
+      "raw_discovered": 0,
+      "screened_unique": 0,
+      "unique_after_dedup": 0
+    },
+    "provider_rate_limit_observations": 1,
+    "provider_request_attempts": 3,
+    "queries": 3,
+    "requests_made": 3,
+    "rounds": 0,
+    "sources": {
+      "error_count": 0,
+      "excluded": 1,
+      "full_text_available": 0,
+      "included": 0,
+      "overlap": 0,
+      "raw_discovered": 2,
+      "screened": 1,
+      "unique_after_dedup": 1
+    }
+  },
+  "window": {
+    "date_from": "2025-01-01",
+    "date_to": "2025-12-31",
+    "document_types": [
+      "article",
+      "proceedings-article",
+      "book-chapter"
+    ],
+    "fields": [],
+    "include_arxiv_candidates": false,
+    "languages": [
+      "en"
+    ],
+    "user_seeds": [],
+    "venue_fallback_graph": [],
+    "venues": []
+  }
+}

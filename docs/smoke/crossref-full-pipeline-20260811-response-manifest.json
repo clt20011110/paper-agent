@@ -1,0 +1,56 @@
+{
+  "responses": [
+    {
+      "committed_snapshot_encoding": "base64",
+      "committed_snapshot_file": "crossref-full-pipeline-20260811-search.json.b64",
+      "content_type": "application/json",
+      "operation": "search",
+      "provider": "crossref",
+      "rate_limit": {
+        "x-rate-limit-interval": "1s",
+        "x-rate-limit-limit": "3"
+      },
+      "response_artifact_hash": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+      "response_sha256": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+      "response_size_bytes": 10345,
+      "runtime_cas_relative_path": "artifacts/5e/5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+      "status": "success",
+      "url": "https://api.crossref.org/works?query.bibliographic=machine+learning&filter=from-pub-date%3A2025-01-01%2Cuntil-pub-date%3A2025-12-31&rows=1&sort=published&order=asc&mailto=84181669%2Bclt20011110%40users.noreply.github.com"
+    },
+    {
+      "committed_snapshot_encoding": "base64",
+      "committed_snapshot_file": "crossref-full-pipeline-20260811-enrich.json.b64",
+      "content_type": "application/json",
+      "operation": "enrich",
+      "provider": "crossref",
+      "rate_limit": {
+        "x-rate-limit-interval": "1s",
+        "x-rate-limit-limit": "5"
+      },
+      "response_artifact_hash": "7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+      "response_sha256": "7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+      "response_size_bytes": 10325,
+      "runtime_cas_relative_path": "artifacts/7c/7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+      "status": "success",
+      "url": "https://api.crossref.org/works/10.1007%2F978-981-97-8705-0_9"
+    },
+    {
+      "committed_snapshot_encoding": "base64",
+      "committed_snapshot_file": "crossref-full-pipeline-20260811-verify.json.b64",
+      "content_type": "application/json",
+      "operation": "verify",
+      "provider": "crossref",
+      "rate_limit": {
+        "x-rate-limit-interval": "1s",
+        "x-rate-limit-limit": "3"
+      },
+      "response_artifact_hash": "a5a57fed39e7af7dfd94aeaaed4a90b6a934a7372704358fcac93a99c972a91e",
+      "response_sha256": "a5a57fed39e7af7dfd94aeaaed4a90b6a934a7372704358fcac93a99c972a91e",
+      "response_size_bytes": 3259,
+      "runtime_cas_relative_path": "artifacts/a5/a5a57fed39e7af7dfd94aeaaed4a90b6a934a7372704358fcac93a99c972a91e",
+      "status": "success",
+      "url": "https://api.crossref.org/works?query.bibliographic=10.1007%2F978-981-97-8705-0_9&rows=1&mailto=84181669%2Bclt20011110%40users.noreply.github.com"
+    }
+  ],
+  "schema_version": "1"
+}

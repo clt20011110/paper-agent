@@ -1,0 +1,98 @@
+{
+  "constraint": "exactly search, enrich, verify; three sockets maximum",
+  "operations": [
+    {
+      "operation": "search",
+      "provider": "crossref",
+      "request_audit_indexes": [
+        0
+      ],
+      "status": "success"
+    },
+    {
+      "operation": "enrich",
+      "provider": "crossref",
+      "request_audit_indexes": [
+        1
+      ],
+      "status": "success"
+    },
+    {
+      "operation": "verify",
+      "provider": "crossref",
+      "request_audit_indexes": [
+        2
+      ],
+      "status": "success"
+    }
+  ],
+  "requests": [
+    {
+      "api_version": "rest-v1",
+      "cache_source": "provider_or_runtime",
+      "completed_at": "2026-08-11T03:05:25.537996+00:00",
+      "content_type": "application/json",
+      "cursor": null,
+      "etag": null,
+      "last_modified": null,
+      "provider": "crossref",
+      "query_hash": "aaaf35a548ffaebe61867826bee0123908a54fa45d32e04f74b89c73780adbc7",
+      "rate_limit": {
+        "x-rate-limit-interval": "1s",
+        "x-rate-limit-limit": "3"
+      },
+      "replay_scope": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "requested_at": "2026-08-11T03:05:24.334071+00:00",
+      "response_artifact_hash": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+      "response_sha256": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+      "response_size_bytes": 10345,
+      "status": "success",
+      "url": "https://api.crossref.org/works?query.bibliographic=machine+learning&filter=from-pub-date%3A2025-01-01%2Cuntil-pub-date%3A2025-12-31&rows=1&sort=published&order=asc&mailto=84181669%2Bclt20011110%40users.noreply.github.com"
+    },
+    {
+      "api_version": "rest-v1",
+      "cache_source": "provider_or_runtime",
+      "completed_at": "2026-08-11T03:05:26.669354+00:00",
+      "content_type": "application/json",
+      "cursor": null,
+      "etag": null,
+      "last_modified": null,
+      "provider": "crossref",
+      "query_hash": "177c958f05f32c2c62a2eab23716c5180f3d488216b6191957837a5e8b836903",
+      "rate_limit": {
+        "x-rate-limit-interval": "1s",
+        "x-rate-limit-limit": "5"
+      },
+      "replay_scope": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "requested_at": "2026-08-11T03:05:25.554346+00:00",
+      "response_artifact_hash": "7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+      "response_sha256": "7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+      "response_size_bytes": 10325,
+      "status": "success",
+      "url": "https://api.crossref.org/works/10.1007%2F978-981-97-8705-0_9"
+    },
+    {
+      "api_version": "rest-v1",
+      "cache_source": "provider_or_runtime",
+      "completed_at": "2026-08-11T03:05:28.419966+00:00",
+      "content_type": "application/json",
+      "cursor": null,
+      "etag": null,
+      "last_modified": null,
+      "provider": "crossref",
+      "query_hash": "3b725b7f31699e8ae4956e24cda126e6e9d3ea02098784b286db70c05bbd7fa8",
+      "rate_limit": {
+        "x-rate-limit-interval": "1s",
+        "x-rate-limit-limit": "3"
+      },
+      "replay_scope": "crawl-35c90562062c5d01ba18a03d98272d49",
+      "requested_at": "2026-08-11T03:05:26.677022+00:00",
+      "response_artifact_hash": "a5a57fed39e7af7dfd94aeaaed4a90b6a934a7372704358fcac93a99c972a91e",
+      "response_sha256": "a5a57fed39e7af7dfd94aeaaed4a90b6a934a7372704358fcac93a99c972a91e",
+      "response_size_bytes": 3259,
+      "status": "success",
+      "url": "https://api.crossref.org/works?query.bibliographic=10.1007%2F978-981-97-8705-0_9&rows=1&mailto=84181669%2Bclt20011110%40users.noreply.github.com"
+    }
+  ],
+  "schema_version": "1"
+}

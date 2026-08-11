@@ -1,0 +1,276 @@
+{
+  "captured_at": "2026-08-11T03:05:28.419966Z",
+  "constraints": {
+    "actual_outbound_requests": 3,
+    "citation_snowball": false,
+    "expected_operations": [
+      "search",
+      "enrich",
+      "verify"
+    ],
+    "max_candidates": 2,
+    "outbound_request_limit": 3,
+    "page_size": 1,
+    "pdf_requested": false,
+    "redirects_followed": false,
+    "transport_retry_attempts": 1
+  },
+  "network": {
+    "actual_outbound_requests": 3,
+    "response_manifest_path": "crossref-full-pipeline-20260811-response-manifest.json",
+    "response_manifest_sha256": "7e524856af470123a711c54e62369858a10101903df8f7d049a0105f02d5ec2d",
+    "responses": [
+      {
+        "committed_snapshot_encoding": "base64",
+        "committed_snapshot_file": "crossref-full-pipeline-20260811-search.json.b64",
+        "content_type": "application/json",
+        "operation": "search",
+        "provider": "crossref",
+        "rate_limit": {
+          "x-rate-limit-interval": "1s",
+          "x-rate-limit-limit": "3"
+        },
+        "response_artifact_hash": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+        "response_sha256": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+        "response_size_bytes": 10345,
+        "runtime_cas_relative_path": "artifacts/5e/5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+        "status": "success",
+        "url": "https://api.crossref.org/works?query.bibliographic=machine+learning&filter=from-pub-date%3A2025-01-01%2Cuntil-pub-date%3A2025-12-31&rows=1&sort=published&order=asc&mailto=84181669%2Bclt20011110%40users.noreply.github.com"
+      },
+      {
+        "committed_snapshot_encoding": "base64",
+        "committed_snapshot_file": "crossref-full-pipeline-20260811-enrich.json.b64",
+        "content_type": "application/json",
+        "operation": "enrich",
+        "provider": "crossref",
+        "rate_limit": {
+          "x-rate-limit-interval": "1s",
+          "x-rate-limit-limit": "5"
+        },
+        "response_artifact_hash": "7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+        "response_sha256": "7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+        "response_size_bytes": 10325,
+        "runtime_cas_relative_path": "artifacts/7c/7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+        "status": "success",
+        "url": "https://api.crossref.org/works/10.1007%2F978-981-97-8705-0_9"
+      },
+      {
+        "committed_snapshot_encoding": "base64",
+        "committed_snapshot_file": "crossref-full-pipeline-20260811-verify.json.b64",
+        "content_type": "application/json",
+        "operation": "verify",
+        "provider": "crossref",
+        "rate_limit": {
+          "x-rate-limit-interval": "1s",
+          "x-rate-limit-limit": "3"
+        },
+        "response_artifact_hash": "a5a57fed39e7af7dfd94aeaaed4a90b6a934a7372704358fcac93a99c972a91e",
+        "response_sha256": "a5a57fed39e7af7dfd94aeaaed4a90b6a934a7372704358fcac93a99c972a91e",
+        "response_size_bytes": 3259,
+        "runtime_cas_relative_path": "artifacts/a5/a5a57fed39e7af7dfd94aeaaed4a90b6a934a7372704358fcac93a99c972a91e",
+        "status": "success",
+        "url": "https://api.crossref.org/works?query.bibliographic=10.1007%2F978-981-97-8705-0_9&rows=1&mailto=84181669%2Bclt20011110%40users.noreply.github.com"
+      }
+    ]
+  },
+  "network_history": {
+    "current_run_outbound_requests": 3,
+    "prior_attempts": [
+      {
+        "actual_outbound_requests": 1,
+        "label": "pre-page-size-fix diagnostic",
+        "reason": "page_size was not frozen; rows=100 exhausted the candidate budget",
+        "result": "incomplete",
+        "source_commit": "2129ea7"
+      },
+      {
+        "actual_outbound_requests": 3,
+        "label": "scope-field diagnostic",
+        "reason": "scope_field_unverified because Crossref returned an empty subject list",
+        "result": "incomplete",
+        "source_commit": "64ee6c0e434fe1e7a75ec6397d4af0d807ce63b9"
+      }
+    ],
+    "session_cumulative_outbound_requests": 7
+  },
+  "operator": {
+    "contact": "84181669+clt20011110@users.noreply.github.com",
+    "credentials_used": false
+  },
+  "pipeline": {
+    "budget_exhausted": false,
+    "crawl_run_id": "crawl-35c90562062c5d01ba18a03d98272d49",
+    "fanout_incomplete": false,
+    "paper_count": 1,
+    "provider_outcomes": [
+      {
+        "error": null,
+        "provider": "crossref",
+        "status": "success"
+      }
+    ],
+    "run_id": "search-run-live-crossref-20260811030524",
+    "scope_eligible_count": 1,
+    "stage2_screener": "DeterministicFakeScreener (provider-smoke-only; not Stage 2 release evidence)",
+    "status": "complete"
+  },
+  "provider_manifest": {
+    "canonical_manifest_hash": "bd608c6f8cc60e33a579b9217b77a6420615f67e877da497245d4611ac1366e1",
+    "enabled": true,
+    "mode": "api",
+    "path": "providers/crossref.yaml",
+    "rate_limit": {
+      "cache_ttl_seconds": 3600,
+      "global_qps": 5,
+      "max_concurrency": 4
+    },
+    "raw_file_sha256": "e172fd76b73dd9faf3386e3f0f37ba29f1fbc53a0ec8a2e969833f22a36f36d0",
+    "required": true,
+    "roles": [
+      "metadata_enricher",
+      "metadata_verifier",
+      "search"
+    ],
+    "version": "2.0.0a0"
+  },
+  "purpose": "controlled live Crossref full SearchPipeline smoke",
+  "query_plan": {
+    "approval": {
+      "approval_method": "cli_hash",
+      "approved_at": "2026-08-11T03:05:24Z",
+      "approved_by": "84181669+clt20011110@users.noreply.github.com",
+      "approved_hash": "ae9f3c432349f82b6019c5599e37a9b97ba9dd30a2305a930c9d1de11ecec85c"
+    },
+    "budgets": {
+      "max_candidates": 2,
+      "max_requests": 3,
+      "max_seconds": 45,
+      "saturation": {
+        "consecutive_low_yield_rounds": 1,
+        "min_unique_included_yield": 0.05
+      }
+    },
+    "file_sha256": "43451365ff944c28c3f5e84370738cc51995510e401957baaa43198ed07c6200",
+    "page_size": 1,
+    "path": "crossref-full-pipeline-20260811-query-plan.json",
+    "plan_hash": "ae9f3c432349f82b6019c5599e37a9b97ba9dd30a2305a930c9d1de11ecec85c",
+    "plan_id": "search-ae9f3c432349",
+    "required_providers": [
+      "crossref"
+    ],
+    "required_roles": [
+      "search"
+    ],
+    "runtime_file_sha256": "7f009767690e392bb4332243393341500eec0e946e334a63ad535410f591abcf",
+    "snapshot_normalization": "committed JSON adds one trailing LF; approval hash and parsed content are unchanged",
+    "status": "approved"
+  },
+  "rate_quota_credit_evidence": {
+    "credit": {
+      "reason": "Crossref responses did not include an allowlisted credit header",
+      "status": "unavailable"
+    },
+    "quota": {
+      "reason": "Crossref responses did not include an allowlisted quota header",
+      "status": "unavailable"
+    },
+    "rate": {
+      "requests": [
+        {
+          "x-rate-limit-interval": "1s",
+          "x-rate-limit-limit": "3"
+        },
+        {
+          "x-rate-limit-interval": "1s",
+          "x-rate-limit-limit": "5"
+        },
+        {
+          "x-rate-limit-interval": "1s",
+          "x-rate-limit-limit": "3"
+        }
+      ],
+      "status": "observed"
+    }
+  },
+  "safety": {
+    "credentials_or_cookies_recorded": false,
+    "crossref_metadata_endpoints_only": true,
+    "no_pdf_request_observed": true,
+    "no_redirect_observed": true,
+    "raw_responses_embedded_in_attestation": false
+  },
+  "schema_version": "1",
+  "search_audit": {
+    "attempt_response_join": [
+      {
+        "attempt_request_charged": 1,
+        "attempt_status": "success",
+        "join_valid": true,
+        "operation": "enrich",
+        "query_id": "query-63c5c2caeb12587dae496df2bf68f1bc",
+        "query_request_attempt_id": "provider-request-3ffa71be99655cfc8a051cd76e4f53ad",
+        "raw_response_sha256": "7c965790f2b4049f91f5f101595cdf8e688053029ef7084f877fd8d7377ff119",
+        "request_attempt_id": "provider-request-3ffa71be99655cfc8a051cd76e4f53ad",
+        "role": "metadata_enricher"
+      },
+      {
+        "attempt_request_charged": 1,
+        "attempt_status": "success",
+        "join_valid": true,
+        "operation": "verify",
+        "query_id": "query-fee17f80f06e5c69b6330193fd04f03e",
+        "query_request_attempt_id": "provider-request-45b26eaf9aff5d40b52a9bdb3c63262a",
+        "raw_response_sha256": "a5a57fed39e7af7dfd94aeaaed4a90b6a934a7372704358fcac93a99c972a91e",
+        "request_attempt_id": "provider-request-45b26eaf9aff5d40b52a9bdb3c63262a",
+        "role": "metadata_verifier"
+      },
+      {
+        "attempt_request_charged": 1,
+        "attempt_status": "success",
+        "join_valid": true,
+        "operation": "search",
+        "query_id": "query-c336b99c256c5ed18fad809810f157d3",
+        "query_request_attempt_id": "provider-request-d4eec08514a450d9be3d7a690b53b318",
+        "raw_response_sha256": "5e2443acb31a3eea458cbd2c3dd1dd77a0eef9206d9474db54f81c57261e9c6a",
+        "request_attempt_id": "provider-request-d4eec08514a450d9be3d7a690b53b318",
+        "role": "search"
+      }
+    ],
+    "file_sha256": "748909d2ad37ec7035d761ba99f498ad7f463eea943f6c96d3a9428f8e886c73",
+    "path": "crossref-full-pipeline-20260811-search-audit.json",
+    "status": "complete",
+    "totals": {
+      "candidates_accepted": 2,
+      "candidates_returned": 2,
+      "citation_rounds": {
+        "error_count": 0,
+        "needs_review": 0,
+        "new_included_unique": 0,
+        "overlap": 0,
+        "raw_discovered": 0,
+        "screened_unique": 0,
+        "unique_after_dedup": 0
+      },
+      "provider_rate_limit_observations": 1,
+      "provider_request_attempts": 3,
+      "queries": 3,
+      "requests_made": 3,
+      "rounds": 0,
+      "sources": {
+        "error_count": 0,
+        "excluded": 1,
+        "full_text_available": 0,
+        "included": 0,
+        "overlap": 0,
+        "raw_discovered": 2,
+        "screened": 1,
+        "unique_after_dedup": 1
+      }
+    }
+  },
+  "source_commit": "64ee6c0e434fe1e7a75ec6397d4af0d807ce63b9",
+  "transport_audit": {
+    "file_sha256": "cc69d8451acec7d2ef733cfbfee0516c0b7bfdf14cad8e7241287ec4442f2d9f",
+    "path": "crossref-full-pipeline-20260811-transport-audit.json"
+  }
+}
