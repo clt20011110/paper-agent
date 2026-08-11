@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "trust_manifest_type": "stage2-hidden-evaluator",
+  "trust_manifest_id": "replace-before-production",
+  "keys": [
+    {
+      "key_id": "example-retired-key",
+      "algorithm": "Ed25519",
+      "purpose": "stage2-hidden-promotion",
+      "public_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "status": "retired"
+    }
+  ]
+}

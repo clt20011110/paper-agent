@@ -13,6 +13,43 @@ Paper Agent 的 SQLite 数据库、冻结计划、grant、模型 release 和报�
    过期、撤销或内容漂移的 grant 不能修补后继续使用，必须创建新 draft 并重新批准。
 4. 记录操作者、配置 hash、plan hash、release hash 和预期预算。`--dry-run` 只验证本地绑定，
    不能证明远程站点、学校订阅、模型或浏览器会话可用。
+5. 使用 schema-v3 Stage 2 release 时，确认 `PAPER_AGENT_STAGE2_HIDDEN_TRUST` 已指向部署控制的
+   evaluator public-key manifest。该路径不能由 release bundle 指定；密钥、签名、轮换与事故边界按
+   [hidden evaluator custody runbook](security/stage2-hidden-evaluator-custody.md) 执行。
+
+## Stage 2 晋级与 release 组装
+
+隔离 evaluator 优先运行 `stage2-evaluator promote`，而不是手工构造 hidden gate 结论。先在全局
+`--dry-run` 下提供完整的 `--manifest`、`--private-labels`、重复的 `--candidate ID=PATH` 与
+`--submission ID=PATH`、incumbent/selected/evaluator/run IDs、`--state-root`、key ID、RFC 3339
+`--issued-at`、`--trust-manifest`、`--signing-key-file` 和不存在的 `--output`。dry-run 只读取并验证
+公共 sampling manifest、schema-v2 candidates、trust 和 output 边界；它不读取 private labels、
+submissions 或私钥，不创建 output，也不消费 marker。确认结构化 `status: "validated"` 后，只移除
+`--dry-run` 并执行一次完全相同的命令。
+
+私钥文件必须是当前用户拥有的 non-symlink regular file，精确模式 `0600`，不超过 16 KiB，内容为
+一个 canonical unencrypted Ed25519 PKCS#8 PEM。当前 CLI 不直接调用 HSM/secret-manager signing
+API。真实 promotion 在 `<state-root>/<gold-manifest-hash>.promotion.json` 原子记录一次性消费；gate
+failure 也会生成 signed failure 并消费 holdout。如果 marker 已存在，即使 attestation 因后续签名或
+写盘错误缺失，也不得删除 marker 或以新 evaluator/run ID 重试同一 holdout。
+
+`stage2-evaluator attest --payload --signing-key-file --trust-manifest --output` 只签已有 public-safe
+payload，不运行 hidden evaluation、不管理 marker；只有另一个已审阅的一次性 evaluator 已完成这些
+职责时才可使用。release builder 只接收 public-safe attestation，并在 bundle 外显式提供 trust：
+
+```sh
+paper-agent --dry-run stage2-release assemble \
+  --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
+  --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
+  --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --output /absolute/path/to/release-bundle/stage2-release.json
+```
+
+candidate 与 output 必须具有同一 parent，evidence 与其引用必须留在该 bundle root，trust 必须在
+root 外，output 必须不存在。assembly dry-run 重算全部 public gates、验证 hidden attestation 和相同路径边界，但不写
+output；成功后只移除 `--dry-run` 执行真实组装。private labels、raw submissions、私钥和 marker state
+不能进入 bundle。组装后的生产加载才使用 `PAPER_AGENT_STAGE2_HIDDEN_TRUST`；它不替代 evaluator
+或 assembler 的显式 `--trust-manifest`。
 
 ## 运行、观察和恢复
 
@@ -77,8 +114,25 @@ audit 与 audit-shard 的子租约：仍有效时保持 blocked，无有效租�
 故障恢复逻辑。
 
 授权下载只在 CLI 已输出 `authorized_queue_path` 后交给 `download-authorized-papers`。生成该队列时
-需要有效 grant 及 `--authorized-skill-queue`、`--authorized-skill-output`、至少一个
-`--authorized-skill-root`；CLI 不启动或接管浏览器会话。报告执行则使用已批准的 ReportPlan bundle：
+需要有效 attended grant，以及 `--authorized-skill-queue`、`--authorized-skill-output`、至少一个
+`--authorized-skill-root` 和 `--authorized-skill-zip`。ZIP、安装内容、dependency lock 或 grant digest
+漂移会 fail closed；`--authorized-skill-audit` 只用于已审阅的显式覆盖，省略时使用内置 audit。
+CLI 不启动或接管浏览器会话。
+
+第一次 download 的 `manual_required` 表示 immutable CSV 已冻结等待 handoff，不是完成。不得编辑、
+重排或追加该 CSV。使用 digest 匹配的 skill 依次执行 `plan`、小批量 `next --unscanned --limit 2`、
+fixed browser pass、每批 `stage`，最后统一 `audit`；fixed pass 每篇使用 30 秒延迟与 5 秒 jitter，
+每批使用新 event JSONL。UI fallback 只能在完整 fixed pass 和 audit 后作为第二轮处理。CAPTCHA、403、
+429、access denied、登录失效、缺少/歧义授权 PDF link 或 `stopQueue: true` 必须立即停止，让用户在
+同一可见浏览器修复，不能猜 selector、读取会话材料或绕过限制。
+
+每个待导入 DOI 必须有 `complete`/`complete_no_si` final ledger，article 与全部已发现 PDF SI 通过
+校验并记录 SHA-256。然后以完全相同的 config、run ID、database、selection、grant、queue、output、
+root、ZIP 和 audit 参数重跑原 download 命令；CLI 重验全部绑定后只导入 ledger 匹配的
+`article.pdf`。队列漂移、`manual_required`、缺 article 或缺已发现 SI 都必须保留为人工状态，不能
+宣称完成或用新参数覆盖原 run。
+
+报告执行则使用已批准的 ReportPlan bundle：
 `report --plan` 还须有 database、output root 以及 `--policy` 或相同 v2 config 的 summary policy。
 `--processing-grant` 始终写作 `ARTIFACT_SHA256=GRANT_ID`。
 单个论文、可选来源或可重试模型请求失败可以保留并让其他工作继续，但 required source 失败、

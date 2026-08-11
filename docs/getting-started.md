@@ -79,6 +79,70 @@ calibrator、threshold 和 release bundle；`configs/stage2/models/*.lock.json` 
 锁定输入，不等于 release 已通过。随后用同一 approved QueryPlan 和
 `--stage2-release` 运行 `doctor`，确认模型 ID、revision、digest 和本地 endpoint。
 
+schema-v3 release 不能手写或仅修改 schema version。隔离 evaluator 优先用一次性的
+`stage2-evaluator promote` 同时执行 hidden gate、创建持久 marker 并签名。先做 public-only
+dry-run；虽然 private/key/state/output 参数仍为必填，但这一步不读取 private labels、submission
+或私钥，不接触 marker，也不创建 output：
+
+```sh
+paper-agent --dry-run stage2-evaluator promote \
+  --manifest /secure/evaluator/gold-manifest.json \
+  --private-labels /secure/evaluator/private-labels.json \
+  --candidate incumbent=/secure/evaluator/incumbent-candidate-v2.json \
+  --candidate challenger=/secure/evaluator/challenger-candidate-v2.json \
+  --submission incumbent=/secure/evaluator/incumbent-submission.json \
+  --submission challenger=/secure/evaluator/challenger-submission.json \
+  --incumbent-candidate-id incumbent \
+  --selected-candidate-id challenger \
+  --evaluator-id evaluator-team-1 \
+  --evaluation-run-id promotion-2026-08-11 \
+  --state-root /secure/evaluator/state \
+  --evaluator-key-id evaluator-key-2026-08 \
+  --issued-at 2026-08-11T08:00:00Z \
+  --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --signing-key-file /secure/evaluator/hidden-promotion-key.pem \
+  --output /secure/transfer/hidden-promotion-attestation.json
+```
+
+确认 `status: "validated"` 后只移除 `--dry-run`，以相同参数执行一次。真实 promotion 的通过和失败
+都会消费 `<state-root>/<gold-manifest-hash>.promotion.json`；失败会保留签名失败证明，但不能用于
+production release，也不能删除 marker 后重试。私钥必须是当前用户拥有、非 symlink、精确 `0600`、
+不超过 16 KiB 的 canonical unencrypted Ed25519 PKCS#8 PEM；当前 CLI 不直接调用 HSM 或
+secret-manager signing API。`stage2-evaluator attest` 的必需选项是 `--payload`、
+`--signing-key-file`、`--trust-manifest` 和 `--output`；它只用于已有独立一次性 evaluator 的
+public-safe payload，本身不执行 hidden evaluation 或 marker 管理。
+
+release builder 只接收 public-safe attestation，并将它放入完整 evidence index。candidate 与 output
+具有同一 parent，evidence 和全部引用留在该 bundle root 内，trust manifest 位于 root 外。先验证，
+再组装：
+
+```sh
+paper-agent --dry-run stage2-release assemble \
+  --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
+  --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
+  --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --output /absolute/path/to/release-bundle/stage2-release.json
+```
+
+dry-run 重算相同 public gates、验证 hidden attestation 与路径边界，但不写 output；成功后只移除
+`--dry-run` 执行一次真实 assembly。output 已存在时不会覆盖。private labels、raw submissions、
+私钥和 marker state 永远不能进入 release bundle。
+
+生产 release 使用 schema v3，并在加载时重算公共 gate evidence、验证 hidden evaluator 的
+Ed25519 promotion attestation。先将版本化 asset root 内的
+`configs/stage2/hidden-evaluator-trust.example.json` 复制到受保护的部署路径，替换其中退役示例
+公钥为已审阅的 active evaluator 公钥；该文件不应放入 release bundle。再设置：
+
+```sh
+export PAPER_AGENT_STAGE2_HIDDEN_TRUST=/absolute/path/to/deployment/hidden-evaluator-trust.json
+```
+
+没有该变量（或 embedding application 明确传入等价 `hidden_trust_path`）时，生产 release 会
+fail closed。该变量只供已组装 release 的 `doctor`、search/filter/workflow 等加载路径使用；
+evaluator 与 assembler 使用各自显式的 `--trust-manifest`，不能从 release bundle 或环境隐式选择。
+完整的密钥托管、dry-run、marker、attestation transfer、rotation 和 compromise 响应见
+[Stage 2 hidden evaluator custody runbook](security/stage2-hidden-evaluator-custody.md)。
+
 服务凭据只通过配置声明的环境变量提供，例如 `CROSSREF_MAILTO`、
 `SEMANTIC_SCHOLAR_API_KEY`、`OPENALEX_API_KEY`、`NCBI_API_KEY`、`NCBI_EMAIL` 和
 `UNPAYWALL_EMAIL`。不要把值写入 YAML、shell history、SQLite 导出、日志或报告。
@@ -143,8 +207,14 @@ grant；全文及其受限派生物进入 Luna/Sol 前必须另有匹配的 proc
 只读重验这些绑定，不写入 snapshot、run 或 artifact。
 
 typed workflow 当前只接受 public provider download grant；authorized-skill/digest-bound grant 必须
-使用独立 `paper-agent download` 命令并显式提供 queue、output、skill root、ZIP/audit 等 handoff
-输入。静态 `paper_ids: []` 会被拒绝，绝不会回退到全局最新 Stage 2 选择。
+使用独立 `paper-agent download` 命令并显式提供 queue、output、至少一个 skill root 和原始 ZIP；
+`--authorized-skill-audit` 只是对内置 audit manifest 的可选、已审阅覆盖。第一次 download 冻结
+immutable CSV 并返回 `manual_required`；随后按匹配 digest 的 skill 完成 fixed browser pass、
+`stage` 和 `audit`，最后以完全相同 run/grant/queue/output/root/ZIP/audit 参数重跑 download，CLI
+才会从 final ledger 导入已验证 article。固定 pass 使用每篇 30 秒和 5 秒 jitter；CAPTCHA、403、
+429、access denied 或缺少授权 PDF 链接必须立即停止。完整命令与恢复闭环见根目录
+[README](../README.md#授权下载与报告执行)。静态 `paper_ids: []` 会被拒绝，绝不会回退到全局最新
+Stage 2 选择。
 
 ```sh
 paper-agent --dry-run run --workflow /absolute/path/to/workflow.json \

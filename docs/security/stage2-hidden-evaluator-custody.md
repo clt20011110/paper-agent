@@ -1,0 +1,132 @@
+# Stage 2 hidden evaluator custody and promotion
+
+Production Stage 2 release schema v3 has two independently verified inputs: public raw gate evidence and a signed statement from the team that holds the hidden labels. The signed statement does not carry labels, pair IDs, annotations, raw predictions, scores, or private marker state.
+
+The evaluator and the deployment verifier share only a reviewed Ed25519 public-key trust manifest. A release bundle cannot select or replace that trust root. The evaluator uses an explicit `--trust-manifest` for `stage2-evaluator attest`, `stage2-evaluator promote`, and `stage2-release assemble`. Commands that load an already assembled production release instead use the deployment environment variable `PAPER_AGENT_STAGE2_HIDDEN_TRUST`, or the equivalent `hidden_trust_path` Python argument. The environment variable does not replace the explicit evaluator or assembler option.
+
+## Trust-root deployment
+
+The shipped [`hidden-evaluator-trust.example.json`](../../configs/stage2/hidden-evaluator-trust.example.json) is deliberately unusable: its only key is a retired all-zero placeholder, it has no active key, and it contains no private key. Copy it to a protected deployment configuration location, replace its identity and key list with the evaluator's real Ed25519 public key, and activate only the intended key. Do not put the resulting manifest inside a release bundle, source checkout, artifact directory, or user-writable shared path.
+
+The manifest is validated against `stage2-hidden-evaluator-trust.schema.json`. It must contain an active Ed25519 key whose purpose is `stage2-hidden-promotion`; its content hash is bound into each promotion attestation. Record the reviewed manifest hash, key ID, evaluator identity, activation time, and approver in the custody record.
+
+## Private-key file contract
+
+Paper Agent does not generate evaluator keys. Generate and retain the Ed25519 key with organization-approved tooling in the isolated evaluator environment. The private key must never enter a release bundle, Git repository, CI log, ticket, chat, test fixture, database export, or report artifact.
+
+Both evaluator CLI commands accept only `--signing-key-file`. The file must be:
+
+- a canonical, unencrypted PKCS#8 PEM containing one Ed25519 private key;
+- a regular file, not a symbolic link;
+- owned by the current effective user;
+- exactly mode `0600`; and
+- no larger than 16 KiB.
+
+Set the mode before use and verify ownership in the isolated environment:
+
+```sh
+chmod 600 /secure/evaluator/hidden-promotion-key.pem
+```
+
+The current CLI cannot address an HSM or secret-manager signing API directly. A secret manager may materialize a short-lived file only if the organization permits it and the file satisfies the contract above. A hardware-backed or callback-based signer requires a separately reviewed integration; do not export an HSM key merely to make the file CLI work.
+
+Transfer only the corresponding canonical padded-base64 32-byte public key to the deployment trust-manifest maintainer.
+
+## Preferred sealed promotion
+
+`stage2-evaluator promote` is the preferred production path. It validates the public 600-pair sampling manifest and every schema-v2 benchmark candidate before opening private labels or submissions. Candidate and submission mappings are repeatable `ID=PATH` arguments and must name exactly the same candidate IDs.
+
+First run the public-only validation. The paths for private labels, submissions, key, state, and output are still syntactically required, but dry-run does not read the private labels, submissions, or key, does not touch the state root or consume a marker, and does not create the output or its parent:
+
+```sh
+paper-agent --dry-run stage2-evaluator promote \
+  --manifest /secure/evaluator/gold-manifest.json \
+  --private-labels /secure/evaluator/private-labels.json \
+  --candidate incumbent=/secure/evaluator/incumbent-candidate-v2.json \
+  --candidate challenger=/secure/evaluator/challenger-candidate-v2.json \
+  --submission incumbent=/secure/evaluator/incumbent-submission.json \
+  --submission challenger=/secure/evaluator/challenger-submission.json \
+  --incumbent-candidate-id incumbent \
+  --selected-candidate-id challenger \
+  --evaluator-id evaluator-team-1 \
+  --evaluation-run-id promotion-2026-08-11 \
+  --state-root /secure/evaluator/state \
+  --evaluator-key-id evaluator-key-2026-08 \
+  --issued-at 2026-08-11T08:00:00Z \
+  --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --signing-key-file /secure/evaluator/hidden-promotion-key.pem \
+  --output /secure/transfer/hidden-promotion-attestation.json
+```
+
+Review the structured `status: "validated"` result and the frozen public inputs. Then remove only `--dry-run` and run the exact same command once. `--issued-at` must be an RFC 3339 timestamp. The optional `--bootstrap-iterations` and `--bootstrap-seed` default to `2000` and `0`; if overridden, record them before opening the holdout.
+
+Public manifest/candidate errors, invalid trust, a missing or mismatched key, and a pre-existing output are rejected before private evaluation and marker consumption. Once a valid sealed evaluation completes, the evaluator atomically creates:
+
+```text
+<state-root>/<gold-manifest-hash>.promotion.json
+```
+
+That marker is the authoritative one-shot state. A passing or failing gate consumes the same holdout. A selected candidate that fails a gate still produces a signed public-safe failure attestation and the command reports `status: "failed"`; preserve both the attestation and marker for audit, but never assemble that result into a production release. If signing or output persistence fails after the marker was claimed, the marker can exist without a transferable attestation. Do not delete it or retry against the same holdout. Investigate the failure and use a new frozen holdout for a new promotion. Never infer reusability from terminal output alone; inspect the protected marker state.
+
+## Advanced payload-only attestation
+
+`stage2-evaluator attest` validates and signs an already prepared public-safe schema-v1 payload. It does not evaluate hidden data and does not create or consume a promotion marker. Use it only when a separately reviewed sealed evaluator has already enforced equivalent one-shot holdout custody; it is not a way to bypass `promote` marker semantics.
+
+Validate the payload/trust/output binding without reading the private key or creating output:
+
+```sh
+paper-agent --dry-run stage2-evaluator attest \
+  --payload /secure/transfer/hidden-promotion-signing-input.json \
+  --signing-key-file /secure/evaluator/hidden-promotion-key.pem \
+  --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --output /secure/transfer/hidden-promotion-attestation.json
+```
+
+After review, remove only `--dry-run` and run the same command. The real command requires the private key to match the payload's active `evaluator_key_id` in the exact trust manifest. The output path must not already exist.
+
+## Release assembly
+
+Transfer only the signed public-safe attestation to the release builder. The builder places it in the frozen evidence index's `hidden_attestation` FileRef alongside the gold-manifest commitment and all public structured-replay, rationale, parity, benchmark, and soak raw evidence. Private labels, raw hidden submissions, the private key, and evaluator marker state must remain outside the release bundle.
+
+The schema-v2 benchmark candidate and output must have the same parent directory. The evidence index and every referenced evidence artifact must stay inside that release-bundle root. The deployment trust manifest must be outside the root. Validate the complete assembly without writing output:
+
+```sh
+paper-agent --dry-run stage2-release assemble \
+  --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
+  --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
+  --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --output /absolute/path/to/release-bundle/stage2-release.json
+```
+
+Dry-run reads and verifies the same public evidence and hidden attestation as the real assembly, enforces the path and absent-output rules, and does not create the output or its parent. After reviewing the structured summary, remove only `--dry-run` and run the same command. Assembly never overwrites an existing destination. It recomputes all public gates, verifies the hidden signature and exact candidate/model/calibrator/threshold/manifest/split bindings, and emits the schema-v3 envelope only when every gate passes.
+
+## Production verification
+
+A production bundle has `schema_version: "3"` and exactly these top-level fields: `schema_version`, `profile`, `reranker_lock`, `adjudicator_lock`, `calibration`, `release_gate`, and `runtime`. Its `release_gate` has exactly:
+
+```json
+{
+  "candidate_id": "<same as profile>",
+  "evaluation_manifest_hash": "<lowercase sha256>",
+  "evidence": {
+    "path": "stage2-release-evidence.json",
+    "sha256": "<lowercase sha256>"
+  }
+}
+```
+
+Before a production command loads this completed release, set the deployment-controlled trust path:
+
+```sh
+export PAPER_AGENT_STAGE2_HIDDEN_TRUST=/secure/deployment/hidden-evaluator-trust.json
+```
+
+`load_stage2_release(..., hidden_trust_path=...)` is the equivalent Python API for an embedding application. If neither input is supplied, a v3 release fails closed. The loader again recomputes public gates and verifies the attestation; it does not trust a release or evidence `passed` field. A schema-v2 benchmark candidate remains useful before throughput gating, but production loading rejects it.
+
+The signature proves that a currently trusted evaluator key attested to the exact frozen bindings. It does not protect against a stolen evaluator private key, compromise of the deployment trust root, or a modified verifier/wheel; those are separate security incidents.
+
+## Rotation and compromise
+
+For rotation, add the new public key as `active` in a newly reviewed deployment trust manifest, distribute that manifest atomically, then issue new attestations whose `trust_manifest_hash` matches it. Retain the old key as `retired` only for historical audit; it cannot sign a new promotion. A release attested under the old trust-manifest hash must be re-evaluated and re-signed before it can load against the new trust root.
+
+On suspected private-key, evaluator-host, or trust-manifest compromise: remove the affected key from active use, replace the deployment trust manifest, invalidate pending promotions, and run hidden evaluation with a newly generated key and holdout. Preserve only non-sensitive hashes, timestamps, evaluator identity, marker hash, and incident references in audit records. Do not repair a signed release in place, delete a consumed marker, or disclose hidden data while investigating.

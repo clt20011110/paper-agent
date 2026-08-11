@@ -74,6 +74,59 @@ python3 -m venv .venv
 
 `--dry-run` 只证明配置、计划和本地 release 可以装载，不证明实时来源、学校订阅或模型服务可用。
 
+Stage 2 production release 现为 schema v3：公共门禁从原始 evidence 重算，hidden promotion
+必须由部署侧 `PAPER_AGENT_STAGE2_HIDDEN_TRUST` 指向的 Ed25519 trust manifest 验签；release
+bundle 不能携带或选择这个 trust root。先阅读
+[hidden evaluator custody runbook](docs/security/stage2-hidden-evaluator-custody.md)，再配置该环境变量。
+
+生产 release 的顺序是 `promote → assemble → load`。优先在隔离 evaluator 中使用一次性
+`promote`；`--candidate` 与 `--submission` 是可重复的 `ID=PATH`，两边 ID 集合必须完全一致：
+
+```sh
+paper-agent --dry-run stage2-evaluator promote \
+  --manifest /secure/evaluator/gold-manifest.json \
+  --private-labels /secure/evaluator/private-labels.json \
+  --candidate incumbent=/secure/evaluator/incumbent-candidate-v2.json \
+  --candidate challenger=/secure/evaluator/challenger-candidate-v2.json \
+  --submission incumbent=/secure/evaluator/incumbent-submission.json \
+  --submission challenger=/secure/evaluator/challenger-submission.json \
+  --incumbent-candidate-id incumbent \
+  --selected-candidate-id challenger \
+  --evaluator-id evaluator-team-1 \
+  --evaluation-run-id promotion-2026-08-11 \
+  --state-root /secure/evaluator/state \
+  --evaluator-key-id evaluator-key-2026-08 \
+  --issued-at 2026-08-11T08:00:00Z \
+  --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --signing-key-file /secure/evaluator/hidden-promotion-key.pem \
+  --output /secure/transfer/hidden-promotion-attestation.json
+```
+
+dry-run 不读取 private labels、submission 或私钥，不消费 marker，也不创建 output；确认
+`status: "validated"` 后，只移除 `--dry-run`，以完全相同参数执行一次。真实执行无论 gate
+通过还是失败都会消费该 holdout；失败也会生成签名失败证明，不能组装为 release，更不能删除
+`<state-root>/<manifest-hash>.promotion.json` 后重试。私钥必须是当前用户拥有、非 symlink、精确
+`0600`、不超过 16 KiB 的 canonical unencrypted Ed25519 PKCS#8 PEM。当前 CLI 不直接支持 HSM
+或 secret-manager signing API。
+
+release builder 将 public-safe attestation 放入 evidence index 后，先 dry-run，再用同一参数组装：
+
+```sh
+paper-agent --dry-run stage2-release assemble \
+  --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
+  --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
+  --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --output /absolute/path/to/release-bundle/stage2-release.json
+```
+
+candidate 与 output 必须具有同一 parent，evidence 与所有 evidence 引用必须留在该 bundle root；
+trust manifest 必须在 root 外，output 必须不存在。dry-run 重算同样的门禁但不写 output；验证后只移除 `--dry-run`
+执行组装。`stage2-evaluator attest --payload --signing-key-file --trust-manifest --output` 只适用于
+另一个已审阅的一次性 evaluator 已经生成 public-safe payload 的场景；它本身不运行 hidden
+evaluation，也不创建 marker，不能用来绕过 `promote`。组装完成后，`PAPER_AGENT_STAGE2_HIDDEN_TRUST`
+才用于 `doctor`、search/filter/workflow 等生产 release 加载；evaluator 与 assembler 始终使用显式
+`--trust-manifest`。完整的 dry-run、失败、轮换和事故语义见上述 custody runbook。
+
 ## Typed workflow 与恢复
 
 `run` 和 `resume` 只接受冻结的 typed workflow manifest；两者都必须提供
@@ -169,20 +222,26 @@ grant 会在 service/provider 构造前拒绝；请改用下述独立 `paper-age
 
 ## 授权下载与报告执行
 
-`download` 默认只走公开来源。只有配置已启用授权 skill、有效 download grant 已批准，且下列
-三个 handoff 参数同时给出时，CLI 才会生成审计过的浏览器队列；它不会自行登录或驱动浏览器：
+`download` 默认只走公开来源。只有配置已启用授权 skill、有效 attended download grant 已批准，且
+下列 queue、output、skill root、原始 ZIP 四个运行时输入同时给出时，CLI 才会生成审计过的浏览器
+队列；它不会自行登录或驱动浏览器：
 按 Stage 2 run 选择时默认只处理 `relevant`；只有用户显式传入 `--include-needs-review`
 才会把人工复核队列一并送入 Stage 3。
 
 ```sh
-paper-agent --config /absolute/path/to/research.yaml download \
+paper-agent --config /absolute/path/to/research.yaml --run-id <stage3-run-id> download \
   --database /absolute/path/to/papers.sqlite3 \
   --filter-run-id <stage2-run-id> --grant-id <download-grant-id> \
   --selection-snapshot /absolute/path/to/download-selection-snapshot.json \
   --authorized-skill-queue /absolute/path/to/authorized-queue.csv \
   --authorized-skill-output /absolute/path/to/authorized-output \
-  --authorized-skill-root /absolute/path/to/download-authorized-papers
+  --authorized-skill-root /absolute/path/to/download-authorized-papers \
+  --authorized-skill-zip /absolute/path/to/download-authorized-papers-skill.zip
 ```
+
+`--authorized-skill-audit` 只用于显式选择另一个已经审阅的 audit manifest；省略时使用 wheel
+内置的版本化 audit。原始 ZIP、安装内容或 dependency digest 任一不匹配都会 fail closed。download
+命令不会从 doctor 的环境默认值推断 ZIP，应显式传入上述文件。
 
 当 grant 使用 `collection_snapshot_hash` 或 `selection_snapshot_hash` 时，download 命令必须提供
 与该哈希一致的 `--collection-snapshot` / `--selection-snapshot`。快照采用
@@ -221,9 +280,31 @@ PY
 `collection_id="<已存在的 collection ID>"`。CLI 加载时还会确认每个 paper ID 存在，且
 collection snapshot 的全部论文在该 collection 中仍有非 `not_member` membership。
 
-JSON 中的 `authorized_queue_path` 才是交给 `$download-authorized-papers` 的输入；该 skill
-只通过用户可见、已登录的浏览器会话处理它。CAPTCHA、403、429 或登录修复会停止受影响队列，
-不应把 cookie、密码、OTP 或 session 信息交给 CLI、skill 或日志。
+第一次运行通常返回 `manual_required` 和 `authorized_queue_path`。这表示队列已冻结并等待 attended
+browser handoff，不是下载成功。完整闭环如下：
+
+1. 把 JSON 中的 `authorized_queue_path` 原样交给 `$download-authorized-papers`；队列是只读、不可变的
+   grant/run/selection 绑定，不能手工增删行、替换 URL 或重排。
+2. 用 skill 的 `paper_queue.py plan`（传入 `--csv <authorized_queue_path>` 和
+   `--output <authorized_output>`）检查队列，再用相同 CSV/output 调用小批量
+   `next --unscanned --limit 2`。在用户可见、已登录的浏览器中运行固定 publisher pass；每篇基准
+   延迟为 30 秒、jitter 为 5 秒，并为每批使用全新的 browser event JSONL。
+3. 每批下载完成后用 `paper_queue.py stage`，传入同一 `--csv`、`--output`，以及
+   `--downloads <browser-download-directory> --events <fresh-events.jsonl> --wait-seconds 30` 做校验、
+   复制和哈希；完成整个 fixed pass 后再以同一 CSV/output 运行 `paper_queue.py audit`，不能把 UI
+   fallback 穿插在 fixed pass 中。
+4. CAPTCHA、403、429、access denied、登录失效、缺少或歧义的授权 PDF 链接、`stopQueue: true`
+   都必须立即停止，由用户修复同一可见会话；不得读取 cookie、密码、OTP、token，猜测 selector，
+   或绕过访问控制。
+5. 对将要导入的每个 DOI，ledger 必须是 `complete` 或 `complete_no_si`，article 与所有已发现 PDF SI
+   均已通过校验并记录 SHA-256；`manual_required`、缺 article 或缺已发现 SI 都不能作为成功。
+6. 最后以完全相同的 config、`--run-id`、database、selection、grant、queue、output、skill root、ZIP
+   和 audit 参数重新运行原 download 命令。CLI 会再次验证 immutable queue、grant 与全部 digest，
+   只从 final ledger 导入匹配 SHA-256 的 `article.pdf`；它不会在这一步启动浏览器。
+
+队列或输入有任何漂移时必须保留旧审计证据并创建新的 run/handoff；scope 或 digest 改变时还必须
+创建新 grant，不能改旧 CSV 后继续。
+skill 自身的 `plan/next/stage/audit/recover` 细节以已安装、digest 匹配的 `SKILL.md` 为准。
 
 报告执行不是 `report --plan-only` 的别名。推荐的 workflow-bound 链路要求原四阶段 workflow
 已经完整结束（包括成功完成 Stage 4）；未完成或失败的 Stage 4 应先恢复，不能交给报告阶段。

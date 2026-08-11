@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import json
 from pathlib import Path
 import tomllib
+
+import pytest
 
 import paper_agent.analysis as analysis_module
 from paper_agent import __version__
@@ -21,6 +24,10 @@ from paper_agent.resources import (
     stage2_model_lock_paths,
 )
 from paper_agent.storage import Database
+from paper_agent.stage2_hidden_attestation import (
+    HiddenPromotionAttestationError,
+    hidden_evaluator_trust_from_document,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -73,6 +80,9 @@ def test_release_assets_use_one_versioned_source_and_wheel_layout() -> None:
         "configs/*.yaml",
         "configs/*.json",
     ]
+    assert data_files[f"{installed_root}/configs/stage2"] == [
+        "configs/stage2/*.json"
+    ]
     assert data_files[f"{installed_root}/configs/stage2/models"] == [
         "configs/stage2/models/*.json"
     ]
@@ -85,6 +95,14 @@ def test_release_assets_use_one_versioned_source_and_wheel_layout() -> None:
 
     assert release_asset_root() == ROOT
     assert all(path.is_file() for path in stage2_model_lock_paths())
+    trust_example = (
+        release_asset_root() / "configs/stage2/hidden-evaluator-trust.example.json"
+    )
+    assert trust_example.is_file()
+    with pytest.raises(HiddenPromotionAttestationError, match="no active key"):
+        hidden_evaluator_trust_from_document(
+            json.loads(trust_example.read_text(encoding="utf-8"))
+        )
     assert all(path.is_file() for path in example_config_paths())
     assert public_oa_terms_path().is_file()
     assert (paper_agent_skill_directory() / "SKILL.md").is_file()
