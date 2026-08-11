@@ -28,9 +28,11 @@ class ProviderTrust:
     independence_group: str
     upstream_families: frozenset[str]
     authority_rank: int = 3
+    authority: str = "scholarly_graph"
 
     @classmethod
     def from_manifest(cls, manifest: Mapping[str, Any]) -> ProviderTrust:
+        authority = str(manifest["authority"])
         return cls(
             provider=str(manifest["provider"]),
             roles=frozenset(ProviderRole(role) for role in manifest["roles"]),
@@ -44,7 +46,8 @@ class ProviderTrust:
                 "oa_index": 3,
                 "user": 4,
                 "discovery_enhancement": 5,
-            }[str(manifest["authority"])],
+            }[authority],
+            authority=authority,
         )
 
 
@@ -130,6 +133,10 @@ class MetadataVerification:
             if (
                 first_trust
                 and second_trust
+                and ProviderRole.METADATA_VERIFIER in first_trust.roles
+                and ProviderRole.METADATA_VERIFIER in second_trust.roles
+                and first_trust.authority != "discovery_enhancement"
+                and second_trust.authority != "discovery_enhancement"
                 and providers_are_independent(first_trust, second_trust)
                 and _core(first) is not None
                 and _core(first) == _core(second)

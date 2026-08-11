@@ -26,8 +26,16 @@ def trust(
     group: str | None = None,
     upstreams: frozenset[str] | None = None,
     authority_rank: int = 3,
+    authority: str = "scholarly_graph",
 ) -> ProviderTrust:
-    return ProviderTrust(provider, roles, group or provider, upstreams or frozenset({provider}), authority_rank)
+    return ProviderTrust(
+        provider,
+        roles,
+        group or provider,
+        upstreams or frozenset({provider}),
+        authority_rank,
+        authority,
+    )
 
 
 def entry(provider: str, **metadata) -> SourceEntry:
@@ -78,6 +86,106 @@ def test_two_independent_sources_or_official_record_verify_identity() -> None:
     assert independent.status is VerificationStatus.VERIFIED
     assert independent.supporting_providers == ("crossref", "openalex")
     assert authoritative.status is VerificationStatus.VERIFIED
+
+
+def test_only_declared_non_discovery_verifiers_supply_independent_votes() -> None:
+    verifier = MetadataVerification(
+        {
+            "crossref": trust("crossref", upstreams=frozenset({"crossref"}), authority="registry"),
+            "openalex": trust("openalex", upstreams=frozenset({"openalex"})),
+            "exa": trust(
+                "exa",
+                roles=frozenset({ProviderRole.SEARCH}),
+                upstreams=frozenset({"exa"}),
+                authority_rank=5,
+                authority="discovery_enhancement",
+            ),
+        }
+    )
+
+    one_verifier = verifier.verify((entry("crossref"), entry("exa")))
+    two_verifiers = verifier.verify((entry("crossref"), entry("openalex")))
+
+    assert one_verifier.status is VerificationStatus.SINGLE_SOURCE
+    assert one_verifier.supporting_providers == ("crossref", "exa")
+    assert two_verifiers.status is VerificationStatus.VERIFIED
+    assert two_verifiers.supporting_providers == ("crossref", "openalex")
+
+
+def test_role_and_authority_are_separate_verifier_requirements() -> None:
+    crossref = trust("crossref", upstreams=frozenset({"crossref"}), authority="registry")
+    discovery_verifier = trust(
+        "optional_index",
+        upstreams=frozenset({"optional_index"}),
+        authority_rank=5,
+        authority="discovery_enhancement",
+    )
+    search_graph = trust(
+        "search_graph",
+        roles=frozenset({ProviderRole.SEARCH}),
+        upstreams=frozenset({"search_graph"}),
+    )
+    verifier = MetadataVerification(
+        {item.provider: item for item in (crossref, discovery_verifier, search_graph)}
+    )
+
+    assert verifier.verify((entry("crossref"), entry("optional_index"))).status is VerificationStatus.SINGLE_SOURCE
+    assert verifier.verify((entry("crossref"), entry("search_graph"))).status is VerificationStatus.SINGLE_SOURCE
+
+
+def test_discovery_search_sources_remain_provenance_without_verifying(tmp_path) -> None:
+    trusts = {
+        name: trust(
+            name,
+            roles=frozenset({ProviderRole.SEARCH}),
+            upstreams=frozenset({name}),
+            authority_rank=5,
+            authority="discovery_enhancement",
+        )
+        for name in ("exa", "gemini_search")
+    }
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        repository = PaperRepository(database)
+        coordinator = MetadataCoordinator(repository, trusts)
+
+        paper = coordinator.merge_batch(batch(entry("exa")))[0]
+        coordinator.merge_batch(batch(entry("gemini_search")))
+
+        assert repository.get_paper(paper.paper_id).verification_status is VerificationStatus.SINGLE_SOURCE
+        providers = database.connection.execute(
+            "SELECT provider FROM paper_sources WHERE paper_id = ? ORDER BY provider",
+            (paper.paper_id,),
+        ).fetchall()
+        provenance_sources = database.connection.execute(
+            """
+            SELECT DISTINCT paper_sources.provider
+            FROM paper_field_provenance
+            JOIN paper_sources USING (source_id)
+            WHERE paper_field_provenance.paper_id = ?
+            ORDER BY paper_sources.provider
+            """,
+            (paper.paper_id,),
+        ).fetchall()
+
+        assert [row[0] for row in providers] == ["exa", "gemini_search"]
+        assert [row[0] for row in provenance_sources] == ["exa", "gemini_search"]
+
+
+def test_manifest_freezes_authority_separately_from_rank() -> None:
+    frozen = ProviderTrust.from_manifest(
+        {
+            "provider": "exa",
+            "roles": ["search"],
+            "authority": "discovery_enhancement",
+            "independence_group": "exa",
+            "upstream_families": ["exa"],
+        }
+    )
+
+    assert frozen.roles == frozenset({ProviderRole.SEARCH})
+    assert frozen.authority == "discovery_enhancement"
+    assert frozen.authority_rank == 5
 
 
 def test_core_metadata_conflicts_are_not_silently_resolved() -> None:
