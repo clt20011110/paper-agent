@@ -70,6 +70,7 @@ class AuthorizedLunaPlanner:
             or metadata.reasoning_effort != "low"
             or metadata.actual_model != "gpt-5.6-luna"
             or metadata.actual_profile != "stage3_authorized_luna"
+            or metadata.output_hash != content_hash(dict(result.output))
         ):
             raise ValueError(
                 "Luna invocation metadata does not match the frozen authorized-download profile"

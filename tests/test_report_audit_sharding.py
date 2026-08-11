@@ -473,6 +473,7 @@ def test_sharded_audit_invocation_cannot_be_reused_by_repair(
                     metadata,
                     invocation_id=self.first_shard_invocation_id,
                 )
+            metadata = replace(metadata, output_hash=content_hash(output))
             return report_audit.CodexExecResult(output, metadata)
 
     reusing = ReusingRepair()

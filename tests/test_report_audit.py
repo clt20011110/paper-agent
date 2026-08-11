@@ -20,6 +20,7 @@ from paper_agent.report_audit import (
     ReportBundle,
 )
 from paper_agent.report_facts import ReportFactError
+from paper_agent.report_invocations import report_invocation_metadata_hash
 from test_report_reduce import _fixture
 
 
@@ -39,6 +40,8 @@ class FakeAuditSol:
     wrong_actual_model: bool = False
     arbitrary_repair: bool = False
     reuse_invocation: bool = False
+    wrong_output_hash: bool = False
+    missing_output_hash: bool = False
 
     def invoke(self, request):
         self.calls.append(request)
@@ -114,6 +117,13 @@ class FakeAuditSol:
             actual_profile=PROFILE,
             schema_path=request.schema_path,
             prompt_path=request.prompt_path,
+            output_hash=(
+                None
+                if self.missing_output_hash
+                else "0" * 64
+                if self.wrong_output_hash
+                else content_hash(output)
+            ),
         )
         return CodexExecResult(output, metadata)
 
@@ -147,7 +157,10 @@ def _audit_fixture(tmp_path: Path) -> AuditFixture:
                 return result
             output = deepcopy(dict(result.output))
             output["blocks"][0]["text"] += " " + DISCLOSURE
-            return CodexExecResult(output, result.metadata)
+            return CodexExecResult(
+                output,
+                replace(result.metadata, output_hash=content_hash(output)),
+            )
 
     reduce.database.connection.execute(
         """INSERT OR IGNORE INTO report_plans(
@@ -342,6 +355,88 @@ def test_passing_audit_publishes_once_and_resume_is_free(tmp_path: Path) -> None
         assert fixture.reduce.database.connection.execute(
             "SELECT COUNT(*) FROM claim_evidence WHERE report_run_id = 'report-1'"
         ).fetchone()[0] == expected_evidence
+    finally:
+        fixture.reduce.database.close()
+
+
+def test_legacy_invocation_metadata_replays_with_its_original_registry_hash(
+    tmp_path: Path,
+) -> None:
+    fixture = _audit_fixture(tmp_path)
+    observability_fields = (
+        "output_hash",
+        "usage_available",
+        "input_tokens",
+        "cached_input_tokens",
+        "cache_write_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens",
+        "cost_usd",
+    )
+    sources = (
+        (
+            "report_reduce_nodes",
+            "report_reduce_node_id",
+            "node_id",
+            "reduce",
+        ),
+        (
+            "report_audit_steps",
+            "report_audit_step_id",
+            "step_name",
+            "audit_step",
+        ),
+        (
+            "report_audit_shard_steps",
+            "report_audit_shard_step_id",
+            "audit_pass || ':' || node_id",
+            "audit_shard",
+        ),
+    )
+    try:
+        first = fixture.run()
+        paid_calls = len(fixture.fake.calls)
+        connection = fixture.reduce.database.connection
+        for table, identity, node_key, phase in sources:
+            rows = connection.execute(
+                f"""SELECT {identity} AS row_id, {node_key} AS node_key,
+                           invocation_metadata_json
+                      FROM {table}
+                     WHERE report_run_id = 'report-1' AND status = 'complete'"""
+            ).fetchall()
+            for row in rows:
+                metadata_document = json.loads(row["invocation_metadata_json"])
+                for field in observability_fields:
+                    metadata_document.pop(field, None)
+                connection.execute(
+                    f"UPDATE {table} SET invocation_metadata_json = ? WHERE {identity} = ?",
+                    (
+                        json.dumps(
+                            metadata_document,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        row["row_id"],
+                    ),
+                )
+                connection.execute(
+                    """UPDATE report_sol_invocations SET metadata_hash = ?
+                       WHERE report_run_id = 'report-1' AND phase = ?
+                         AND node_key = ?""",
+                    (
+                        report_invocation_metadata_hash(metadata_document),
+                        phase,
+                        row["node_key"],
+                    ),
+                )
+        connection.commit()
+
+        resumed = fixture.run()
+
+        assert first.status == resumed.status == "complete"
+        assert resumed.resumed_steps == ("audit_a",)
+        assert len(fixture.fake.calls) == paid_calls
     finally:
         fixture.reduce.database.close()
 
@@ -905,6 +1000,21 @@ def test_bad_actual_model_is_terminal_and_resume_never_repays(tmp_path: Path) ->
         assert step["status"] == "failed"
         assert step["dispatch_count"] == 1
         assert step["budget_calls_reserved"] == 2
+    finally:
+        fixture.reduce.database.close()
+
+
+@pytest.mark.parametrize("fault", ("missing", "wrong"))
+def test_bad_audit_output_hash_is_terminal(tmp_path: Path, fault: str) -> None:
+    fixture = _audit_fixture(tmp_path)
+    fixture.fake.wrong_output_hash = fault == "wrong"
+    fixture.fake.missing_output_hash = fault == "missing"
+    try:
+        result = fixture.run()
+
+        assert result.status == "failed"
+        assert len(fixture.fake.calls) == 1
+        assert not (fixture.root / "reports/latest.md").exists()
     finally:
         fixture.reduce.database.close()
 

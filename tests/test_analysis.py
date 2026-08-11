@@ -108,6 +108,7 @@ class FakeInvoker:
             "paper-analysis.schema.json", self.coordinator.schema_hash, request.input_hash,
             "paper-analysis.md", self.coordinator.prompt_hash, "rendered", None, 1,
             self.actual_model, self.actual_profile,
+            output_hash=content_hash(output),
         )
         return CodexExecResult(output, metadata)
 
@@ -604,7 +605,10 @@ def test_abstract_label_locator_must_bind_real_field_and_source_text(
                 "source_text": source_text,
                 "locator": locator,
             }]
-            return CodexExecResult(output, result.metadata)
+            return CodexExecResult(
+                output,
+                replace(result.metadata, output_hash=content_hash(output)),
+            )
 
     database, coordinator = _coordinator(tmp_path, LocatorInvoker)
     holder["coordinator"] = coordinator

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 from paper_agent.authorized_luna import AuthorizedLunaPlanner
+from paper_agent.canonical import content_hash
 from paper_agent.codex_exec import CodexExecResult, InvocationMetadata
 from paper_agent.stage3_pipeline import LunaPlannerInput
 
@@ -15,6 +16,7 @@ class FakeInvoker:
     calls: list[object] | None = None
     actual_model: str | None = "gpt-5.6-luna"
     actual_profile: str | None = "stage3_authorized_luna"
+    wrong_output_hash: bool = False
 
     def invoke(self, request):
         assert self.calls is not None
@@ -33,6 +35,7 @@ class FakeInvoker:
             "authorized-browser-result.schema.json", "a" * 64, request.input_hash,
             "authorized-browser.md", "b" * 64, "c" * 64, None, 1,
             self.actual_model, self.actual_profile,
+            output_hash="0" * 64 if self.wrong_output_hash else content_hash(output),
         )
         return CodexExecResult(output, metadata)
 
@@ -63,6 +66,13 @@ def test_planner_rejects_candidate_substitution() -> None:
     planner = AuthorizedLunaPlanner(FakeInvoker(candidate_id="other", calls=[]))
 
     with pytest.raises(ValueError, match="binding mismatch"):
+        planner(LunaPlannerInput("candidate-1", "paper-1", None, "manual", "reason"))
+
+
+def test_planner_rejects_an_output_hash_mismatch() -> None:
+    planner = AuthorizedLunaPlanner(FakeInvoker(calls=[], wrong_output_hash=True))
+
+    with pytest.raises(ValueError, match="frozen authorized-download profile"):
         planner(LunaPlannerInput("candidate-1", "paper-1", None, "manual", "reason"))
 
 

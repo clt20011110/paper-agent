@@ -12,6 +12,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from paper_agent.analysis_cli_service import AnalysisCliService, AnalysisInputManifest
 from paper_agent.artifacts import ArtifactStore
+from paper_agent.canonical import content_hash
 from paper_agent.codex_exec import CodexExecResult, InvocationMetadata
 from paper_agent.processing import ArtifactProcessingPolicy
 from paper_agent.storage import Database
@@ -82,6 +83,8 @@ class FakeInvoker:
     prompt_hash: str
     schema_hash: str
     calls: list[object]
+    wrong_output_hash: bool = False
+    missing_output_hash: bool = False
 
     def invoke(self, request):
         self.calls.append(request)
@@ -96,7 +99,19 @@ class FakeInvoker:
             "label_evidence": [], "evidence_units": [], "comparison_eligibility": "not_comparable",
             "missing_fields": (["full_text"] if payload["input_scope"] != "full_pdf" else ["comparison_evidence"]),
         }
-        metadata = InvocationMetadata("fixture", "stage4_analysis_luna", "gpt-5.6-luna", "medium", "paper-analysis.schema.json", self.schema_hash, request.input_hash, "paper-analysis.md", self.prompt_hash, "rendered", None, 1, "gpt-5.6-luna", "stage4_analysis_luna")
+        metadata = InvocationMetadata(
+            "fixture", "stage4_analysis_luna", "gpt-5.6-luna", "medium",
+            "paper-analysis.schema.json", self.schema_hash, request.input_hash,
+            "paper-analysis.md", self.prompt_hash, "rendered", None, 1,
+            "gpt-5.6-luna", "stage4_analysis_luna",
+            output_hash=(
+                None
+                if self.missing_output_hash
+                else "0" * 64
+                if self.wrong_output_hash
+                else content_hash(output)
+            ),
+        )
         return CodexExecResult(output, metadata)
 
 
@@ -415,6 +430,44 @@ def test_authorized_stage3_artifact_resume_does_not_repeat_codex(tmp_path) -> No
         second = service.run("analysis-ok", AnalysisInputManifest(stage3_artifact_ids=("pdf-1",)))
         assert first.result and first.result.for_paper("paper-1").status == "complete"
         assert second.result and second.result.for_paper("paper-1").resumed
+        assert len(calls) == 1
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize("fault", ("missing", "wrong"))
+def test_analysis_rejects_an_invalid_live_output_hash(
+    tmp_path: Path, fault: str
+) -> None:
+    database, store = _prepared(
+        tmp_path, license="CC-BY-4.0", access_basis="open_license"
+    )
+    calls: list[object] = []
+    try:
+        from paper_agent.analysis import PaperAnalysisCoordinator
+
+        template = PaperAnalysisCoordinator(
+            database, store, _service(database, store, None).gate
+        )
+        service = _service(
+            database,
+            store,
+            lambda: FakeInvoker(
+                template.prompt_hash,
+                template.schema_hash,
+                calls,
+                wrong_output_hash=fault == "wrong",
+                missing_output_hash=fault == "missing",
+            ),
+        )
+
+        result = service.run(
+            "analysis-output-hash",
+            AnalysisInputManifest(stage3_artifact_ids=("pdf-1",)),
+        )
+
+        assert result.result is not None
+        assert result.result.for_paper("paper-1").status == "failed"
         assert len(calls) == 1
     finally:
         database.close()

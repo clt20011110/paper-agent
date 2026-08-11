@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -8,11 +9,14 @@ from pathlib import Path
 import pytest
 
 from paper_agent.codex_exec import CodexExecResult
+from paper_agent.canonical import content_hash
 from paper_agent.config import load_config
 from paper_agent.report_artifacts import ReportArtifactStore
+from paper_agent.report_audit import ReportAuditCoordinator
 from paper_agent.report_config import ReportConfigError, ReportResources, ReportRuntimeConfig
 from paper_agent.report_execution_service import ReportExecutionService
 from paper_agent.report_plan import ReportPlanBundle
+from paper_agent.report_reduce import SolReduceCoordinator
 
 from test_report_audit import DISCLOSURE, FakeAuditSol
 from test_report_reduce import _fixture
@@ -43,7 +47,10 @@ def _service(
                 return result
             output = deepcopy(dict(result.output))
             output["blocks"][0]["text"] += " " + DISCLOSURE
-            return CodexExecResult(output, result.metadata)
+            return CodexExecResult(
+                output,
+                replace(result.metadata, output_hash=content_hash(output)),
+            )
 
     holder["reduce"] = DisclosureFinal()
     audit_calls = []
@@ -66,6 +73,218 @@ def test_report_execution_runs_reduce_then_audit_and_resumes(tmp_path) -> None:
         assert first.audit is not None and first.audit.audit_passes == ("A",)
         assert second.status == "complete"
         assert second.audit is not None and second.audit.resumed_steps == ("audit_a",)
+    finally:
+        fixture.database.close()
+
+
+def test_report_preflight_budget_exhaustion_is_observable_and_free(
+    tmp_path,
+) -> None:
+    fixture = _fixture(
+        tmp_path, max_input_tokens=10_000_000, summary_size=100_000
+    )
+    try:
+        service = _service(fixture, tmp_path)
+        first = service.run(
+            "report-preflight-budget",
+            "pipeline-preflight-budget",
+            _bundle(fixture),
+        )
+        second = service.run(
+            "report-preflight-budget",
+            "pipeline-preflight-budget",
+            _bundle(fixture),
+        )
+
+        assert first.status == second.status == "incomplete"
+        assert first.alarm_codes == second.alarm_codes == (
+            "report.codex_budget_exhausted",
+        )
+        assert first.error == second.error
+        assert first.error is not None
+        assert first.error["type"] == "SolBudgetError"
+        assert first.codex_budget is not None
+        assert first.codex_budget.calls_reserved == 0
+        assert first.codex_budget.input_tokens_reserved == 0
+        assert first.codex_budget.approved_call_limit == 300
+        assert first.codex_budget.approved_input_token_limit == 10_000_000
+        assert fixture.calls == []
+        pipeline = fixture.database.connection.execute(
+            "SELECT status, completed_at FROM pipeline_runs WHERE run_id = ?",
+            ("pipeline-preflight-budget",),
+        ).fetchone()
+        report = fixture.database.connection.execute(
+            "SELECT status, completed_at FROM report_runs WHERE report_run_id = ?",
+            ("report-preflight-budget",),
+        ).fetchone()
+        nodes = fixture.database.connection.execute(
+            """SELECT status, dispatch_count, budget_calls_reserved,
+                      budget_tokens_reserved
+                 FROM report_reduce_nodes WHERE report_run_id = ?""",
+            ("report-preflight-budget",),
+        ).fetchall()
+        assert pipeline["status"] == report["status"] == "incomplete"
+        assert pipeline["completed_at"] is not None
+        assert report["completed_at"] is not None
+        assert nodes
+        assert {tuple(row) for row in nodes} == {("pending", 0, 0, 0)}
+    finally:
+        fixture.database.close()
+
+
+def test_transaction_budget_exhaustion_is_incomplete_and_resume_is_free(
+    tmp_path, monkeypatch
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    original = SolReduceCoordinator._reserve_budget_and_claim
+    claims = 0
+
+    def exhaust_second_claim(self, report_run_id, plan, *args, **kwargs):
+        nonlocal claims
+        claims += 1
+        if claims == 2:
+            audit_bounds = args[-1]
+            plan = {
+                **plan,
+                "budget": {
+                    **plan["budget"],
+                    "max_sol_calls": 2 + int(audit_bounds.worst_case_calls),
+                },
+            }
+        return original(self, report_run_id, plan, *args, **kwargs)
+
+    monkeypatch.setattr(
+        SolReduceCoordinator, "_reserve_budget_and_claim", exhaust_second_claim
+    )
+    try:
+        service = _service(fixture, tmp_path)
+        first = service.run(
+            "report-transaction-budget",
+            "pipeline-transaction-budget",
+            _bundle(fixture),
+        )
+        paid_calls = len(fixture.calls)
+        second = service.run(
+            "report-transaction-budget",
+            "pipeline-transaction-budget",
+            _bundle(fixture),
+        )
+
+        assert first.status == second.status == "incomplete"
+        assert first.error is not None
+        assert first.error["type"] == "SolBudgetError"
+        assert first.alarm_codes == ("report.codex_budget_exhausted",)
+        assert paid_calls == 1
+        assert len(fixture.calls) == paid_calls
+        assert first.codex_budget == second.codex_budget
+        assert first.codex_budget is not None
+        assert first.codex_budget.calls_reserved == 2
+        assert first.codex_budget.input_tokens_reserved > 0
+        assert first.codex_budget.approved_call_limit == 300
+        row = fixture.database.connection.execute(
+            """SELECT status, error_json FROM report_reduce_nodes
+               WHERE report_run_id = ? AND status = 'failed'""",
+            ("report-transaction-budget",),
+        ).fetchone()
+        pipeline_status = fixture.database.connection.execute(
+            "SELECT status FROM pipeline_runs WHERE run_id = ?",
+            ("pipeline-transaction-budget",),
+        ).fetchone()[0]
+        assert json.loads(row["error_json"])["error"] == "SolBudgetError"
+        assert pipeline_status == "incomplete"
+    finally:
+        fixture.database.close()
+
+
+def test_audit_claim_budget_exhaustion_is_incomplete_and_resume_is_free(
+    tmp_path, monkeypatch
+) -> None:
+    fixture = _fixture(tmp_path, max_input_tokens=50_000_000)
+    original = ReportAuditCoordinator._claim_step
+    injected = False
+
+    def exhaust_claim(self, report_run_id, *args, **kwargs):
+        nonlocal injected
+        if not injected:
+            with self.database.transaction() as connection:
+                used = connection.execute(
+                    """SELECT COALESCE(SUM(calls), 0) FROM (
+                           SELECT budget_calls_reserved AS calls
+                           FROM report_reduce_nodes WHERE report_run_id = ?
+                           UNION ALL
+                           SELECT budget_calls_reserved
+                           FROM report_audit_steps WHERE report_run_id = ?
+                       )""",
+                    (report_run_id, report_run_id),
+                ).fetchone()[0]
+                connection.execute(
+                    """UPDATE report_audit_steps
+                       SET budget_calls_reserved = budget_calls_reserved + ?
+                       WHERE report_run_id = ? AND step_name = 'audit_a'""",
+                    (300 - int(used), report_run_id),
+                )
+            injected = True
+        return original(self, report_run_id, *args, **kwargs)
+
+    monkeypatch.setattr(ReportAuditCoordinator, "_claim_step", exhaust_claim)
+    try:
+        service = _service(fixture, tmp_path)
+        first = service.run(
+            "report-audit-budget", "pipeline-audit-budget", _bundle(fixture)
+        )
+        paid_calls = len(fixture.calls)
+        with fixture.database.transaction() as connection:
+            connection.execute(
+                "UPDATE report_audit_runs SET status = 'failed' WHERE report_run_id = ?",
+                ("report-audit-budget",),
+            )
+            connection.execute(
+                "UPDATE report_runs SET status = 'failed' WHERE report_run_id = ?",
+                ("report-audit-budget",),
+            )
+            connection.execute(
+                "UPDATE pipeline_runs SET status = 'failed' WHERE run_id = ?",
+                ("pipeline-audit-budget",),
+            )
+        second = service.run(
+            "report-audit-budget", "pipeline-audit-budget", _bundle(fixture)
+        )
+
+        assert first.status == second.status == "incomplete"
+        assert first.error is not None
+        assert first.error["type"] == "ReportAuditBudgetError"
+        assert first.alarm_codes == second.alarm_codes == (
+            "report.codex_budget_exhausted",
+        )
+        assert first.codex_budget == second.codex_budget
+        assert first.codex_budget is not None
+        assert first.codex_budget.calls_reserved == 300
+        assert len(fixture.calls) == paid_calls
+        audit_step = fixture.database.connection.execute(
+            """SELECT status, dispatch_count FROM report_audit_steps
+               WHERE report_run_id = ? AND step_name = 'audit_a'""",
+            ("report-audit-budget",),
+        ).fetchone()
+        audit_run = fixture.database.connection.execute(
+            """SELECT status, error_json FROM report_audit_runs
+               WHERE report_run_id = ?""",
+            ("report-audit-budget",),
+        ).fetchone()
+        report_status = fixture.database.connection.execute(
+            "SELECT status FROM report_runs WHERE report_run_id = ?",
+            ("report-audit-budget",),
+        ).fetchone()[0]
+        pipeline_status = fixture.database.connection.execute(
+            "SELECT status FROM pipeline_runs WHERE run_id = ?",
+            ("pipeline-audit-budget",),
+        ).fetchone()[0]
+        assert tuple(audit_step) == ("pending", 0)
+        assert audit_run["status"] == report_status == pipeline_status == "incomplete"
+        assert json.loads(audit_run["error_json"]) == {
+            "error": "ReportAuditBudgetError",
+            "event_code": "report.codex_budget_exhausted",
+            "message": "Sol call budget is exhausted before audit dispatch",
+        }
     finally:
         fixture.database.close()
 
@@ -135,11 +354,20 @@ def test_disabled_summary_skips_inputs_database_and_model_work(tmp_path) -> None
             "SELECT COUNT(*) FROM report_runs"
         ).fetchone()[0]
 
-        result = service.run("report-disabled", "pipeline-disabled", _bundle(fixture))
+        statements = []
+        fixture.database.connection.set_trace_callback(statements.append)
+        try:
+            result = service.run(
+                "report-disabled", "pipeline-disabled", _bundle(fixture)
+            )
+        finally:
+            fixture.database.connection.set_trace_callback(None)
 
         assert result.status == "complete" and result.skipped and not result.dry_run
+        assert result.codex_budget is None
         assert service.last_reduce is None and service.last_audit is None
         assert fixture.calls == []
+        assert statements == []
         assert fixture.database.connection.execute(
             "SELECT COUNT(*) FROM report_runs"
         ).fetchone()[0] == before

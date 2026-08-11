@@ -374,6 +374,27 @@ class SolReduceCoordinator:
             output_limits,
             audit_bounds,
         )
+        attempts = int(approved_plan["budget"]["max_retries"]) + 1
+        generation_calls = len(reduce_plan.nodes) * attempts
+        generation_bound = sum(prompt_bounds.values()) * attempts
+        budget_error: SolBudgetError | None = None
+        if (
+            generation_calls + audit_bounds.worst_case_calls
+            > int(approved_plan["budget"]["max_sol_calls"])
+        ):
+            budget_error = SolBudgetError(
+                "rendered Sol call bound leaves no room for the frozen audit/repair gate"
+            )
+        elif (
+            generation_bound + audit_bounds.worst_case_input_tokens
+            > int(approved_plan["budget"]["max_input_tokens"])
+        ):
+            budget_error = SolBudgetError(
+                "rendered Sol prompt upper bound plus audit/repair reserve exceeds the approved input-token budget"
+            )
+        if budget_error is not None:
+            self._set_run_status(report_run_id, pipeline_run_id, "incomplete")
+            raise budget_error
         owner = worker_id or f"report-worker-{uuid4()}"
         self._recover_stale_nodes(report_run_id, self._now())
         self._set_run_status(report_run_id, pipeline_run_id, "running")
@@ -1178,17 +1199,6 @@ class SolReduceCoordinator:
             )
         except ReportAuditBudgetError as error:
             raise SolBudgetError(str(error)) from error
-        attempts = int(plan["budget"]["max_retries"]) + 1
-        generation_bound = sum(prompt_bounds.values()) * attempts
-        generation_calls = len(reduce_plan.nodes) * attempts
-        if generation_calls + audit_bounds.worst_case_calls > int(plan["budget"]["max_sol_calls"]):
-            raise SolBudgetError(
-                "rendered Sol call bound leaves no room for the frozen audit/repair gate"
-            )
-        if generation_bound + audit_bounds.worst_case_input_tokens > int(plan["budget"]["max_input_tokens"]):
-            raise SolBudgetError(
-                "rendered Sol prompt upper bound plus audit/repair reserve exceeds the approved input-token budget"
-            )
         return prompt_bounds, output_limits, audit_bounds
 
     @staticmethod
@@ -1466,6 +1476,8 @@ class SolReduceCoordinator:
             self._validate_metadata(
                 result.metadata, node, input_hash, rendered_prompt_hash
             )
+            if result.metadata.output_hash != content_hash(dict(result.output)):
+                raise SolOutputError("Sol invocation output hash does not match its result")
             self._validate_output(
                 report_run_id,
                 plan,
@@ -1916,6 +1928,10 @@ class SolReduceCoordinator:
         except TypeError as error:
             raise ReportReduceError("persisted Sol invocation metadata is malformed") from error
         self._validate_metadata(metadata, node, input_hash, rendered_hash)
+        if metadata.output_hash is not None and metadata.output_hash != row["output_hash"]:
+            raise ReportReduceError(
+                f"completed node invocation output has drifted: {node.node_id}"
+            )
         if row["invocation_id"] != metadata.invocation_id:
             raise ReportReduceError(
                 f"completed node invocation identity has drifted: {node.node_id}"

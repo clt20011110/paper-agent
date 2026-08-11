@@ -1319,7 +1319,10 @@ class ReportAuditCoordinator:
             row["schema_name"],
             row["schema_hash"],
         )
-        metadata = _metadata(row["invocation_metadata_json"])
+        metadata_document = _json_mapping(
+            row["invocation_metadata_json"], "Sol invocation metadata"
+        )
+        metadata = _metadata(metadata_document)
         expected_metadata = (
             PROFILE,
             MODEL,
@@ -1367,6 +1370,10 @@ class ReportAuditCoordinator:
             or int(row["budget_tokens_reserved"])
             != int(actual_tokens) * (MAX_RETRIES + 1)
             or row["output_hash"] != content_hash(output)
+            or (
+                metadata.output_hash is not None
+                and metadata.output_hash != row["output_hash"]
+            )
             or len(canonical_json(output)) > int(row["output_byte_limit"])
         ):
             raise ReportAuditError("persisted reduce invocation binding has drifted")
@@ -1377,7 +1384,7 @@ class ReportAuditCoordinator:
                 invocation_id=metadata.invocation_id,
                 phase="reduce",
                 node_key=str(row["node_id"]),
-                metadata=asdict(metadata),
+                metadata=metadata_document,
             )
         except ReportInvocationError as error:
             raise ReportAuditError(str(error)) from error
@@ -1393,7 +1400,10 @@ class ReportAuditCoordinator:
             raise ReportAuditError("reduce invocation ledger is incomplete")
         invocation_ids: list[str] = []
         for row in rows:
-            metadata = _metadata(row["invocation_metadata_json"])
+            metadata_document = _json_mapping(
+                row["invocation_metadata_json"], "Sol invocation metadata"
+            )
+            metadata = _metadata(metadata_document)
             if row["invocation_id"] != metadata.invocation_id:
                 raise ReportAuditError("reduce invocation identity has drifted")
             try:
@@ -1403,7 +1413,7 @@ class ReportAuditCoordinator:
                     invocation_id=metadata.invocation_id,
                     phase="reduce",
                     node_key=str(row["node_id"]),
-                    metadata=asdict(metadata),
+                    metadata=metadata_document,
                 )
             except ReportInvocationError as error:
                 raise ReportAuditError(str(error)) from error
@@ -1434,10 +1444,13 @@ class ReportAuditCoordinator:
             for row in self.database.connection.execute(
                 statement, (report_run_id,)
             ).fetchall():
-                metadata = _metadata(row["invocation_metadata_json"])
+                metadata_document = _json_mapping(
+                    row["invocation_metadata_json"], "Sol invocation metadata"
+                )
+                metadata = _metadata(metadata_document)
                 expected[(phase, str(row["node_key"]))] = (
                     metadata.invocation_id,
-                    report_invocation_metadata_hash(asdict(metadata)),
+                    report_invocation_metadata_hash(metadata_document),
                 )
         for row in self.database.connection.execute(
             """SELECT audit_pass, node_id, invocation_metadata_json
@@ -1445,10 +1458,13 @@ class ReportAuditCoordinator:
                WHERE report_run_id = ? AND status = 'complete'""",
             (report_run_id,),
         ).fetchall():
-            metadata = _metadata(row["invocation_metadata_json"])
+            metadata_document = _json_mapping(
+                row["invocation_metadata_json"], "Sol invocation metadata"
+            )
+            metadata = _metadata(metadata_document)
             expected[("audit_shard", f"{row['audit_pass']}:{row['node_id']}")] = (
                 metadata.invocation_id,
-                report_invocation_metadata_hash(asdict(metadata)),
+                report_invocation_metadata_hash(metadata_document),
             )
         persisted = {
             (str(row["phase"]), str(row["node_key"])): (
@@ -2938,6 +2954,10 @@ class ReportAuditCoordinator:
             )
             result = self.invoker_factory().invoke(request_value)
             self._validate_metadata(result.metadata, call_kind, input_hash, rendered_hash)
+            if result.metadata.output_hash != content_hash(dict(result.output)):
+                raise ReportAuditOutputError(
+                    "Sol invocation output hash does not match its audit result"
+                )
             self._validate_step_output(
                 call_kind, result.output, expected_coverage, bundle, payload
             )
@@ -3074,6 +3094,10 @@ class ReportAuditCoordinator:
             self._validate_metadata(
                 result.metadata, "quality_audit", input_hash, rendered_hash
             )
+            if result.metadata.output_hash != content_hash(dict(result.output)):
+                raise ReportAuditOutputError(
+                    "Sol invocation output hash does not match its audit result"
+                )
             self._validate_step_output(
                 "quality_audit", result.output, spec.coverage, bundle, spec.payload
             )
@@ -3421,7 +3445,10 @@ class ReportAuditCoordinator:
             or int(row["output_byte_limit"]) != AUDIT_OUTPUT_BYTE_LIMIT
         ):
             raise ReportAuditError("completed audit shard input has drifted")
-        metadata = _metadata(row["invocation_metadata_json"])
+        metadata_document = _json_mapping(
+            row["invocation_metadata_json"], "Sol invocation metadata"
+        )
+        metadata = _metadata(metadata_document)
         self._validate_metadata(metadata, "quality_audit", input_hash, rendered_hash)
         try:
             require_report_invocation(
@@ -3430,13 +3457,17 @@ class ReportAuditCoordinator:
                 invocation_id=metadata.invocation_id,
                 phase="audit_shard",
                 node_key=f"{row['audit_pass']}:{row['node_id']}",
-                metadata=asdict(metadata),
+                metadata=metadata_document,
             )
         except ReportInvocationError as error:
             raise ReportAuditError(str(error)) from error
         output = _json_mapping(row["output_json"], "audit shard output")
         if (
             content_hash(output) != row["output_hash"]
+            or (
+                metadata.output_hash is not None
+                and metadata.output_hash != row["output_hash"]
+            )
             or len(canonical_json(output)) > AUDIT_OUTPUT_BYTE_LIMIT
         ):
             raise ReportAuditError("completed audit shard output has drifted")
@@ -3748,7 +3779,10 @@ class ReportAuditCoordinator:
             )
         ):
             raise ReportAuditError("completed audit step input has drifted")
-        metadata = _metadata(row["invocation_metadata_json"])
+        metadata_document = _json_mapping(
+            row["invocation_metadata_json"], "Sol invocation metadata"
+        )
+        metadata = _metadata(metadata_document)
         self._validate_metadata(metadata, call_kind, input_hash, rendered_hash)
         try:
             require_report_invocation(
@@ -3757,7 +3791,7 @@ class ReportAuditCoordinator:
                 invocation_id=metadata.invocation_id,
                 phase="audit_step",
                 node_key=str(row["step_name"]),
-                metadata=asdict(metadata),
+                metadata=metadata_document,
             )
         except ReportInvocationError as error:
             raise ReportAuditError(str(error)) from error
@@ -3769,6 +3803,10 @@ class ReportAuditCoordinator:
         )
         if (
             content_hash(output) != row["output_hash"]
+            or (
+                metadata.output_hash is not None
+                and metadata.output_hash != row["output_hash"]
+            )
             or len(canonical_json(output)) > output_limit
         ):
             raise ReportAuditError("completed audit step output hash has drifted")
@@ -4807,7 +4845,9 @@ def _default_rubric_path() -> Path:
     raise ReportAuditError("frozen report audit rubric is unavailable")
 
 
-def _metadata(value: str | bytes | None) -> InvocationMetadata:
+def _metadata(
+    value: str | bytes | Mapping[str, Any] | None,
+) -> InvocationMetadata:
     document = _json_mapping(value, "Sol invocation metadata")
     try:
         return InvocationMetadata(**document)
@@ -4815,7 +4855,9 @@ def _metadata(value: str | bytes | None) -> InvocationMetadata:
         raise ReportAuditError("Sol invocation metadata is malformed") from error
 
 
-def _json_mapping(value: str | bytes | None, label: str) -> Mapping[str, Any]:
+def _json_mapping(
+    value: str | bytes | Mapping[str, Any] | None, label: str
+) -> Mapping[str, Any]:
     try:
         document = json.loads(value) if isinstance(value, (str, bytes)) else value
     except json.JSONDecodeError as error:

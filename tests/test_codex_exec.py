@@ -20,6 +20,7 @@ from paper_agent.codex_exec import (
     FROZEN_PROFILES,
     prepare_service_schema,
 )
+from paper_agent.canonical import content_hash
 
 
 SCHEMA = {
@@ -124,6 +125,113 @@ def test_invocation_uses_exact_isolated_argv_and_sanitized_environment() -> None
     assert PROMPT not in repr(result.metadata)
     assert result.metadata.prompt_hash != PROMPT
     assert result.metadata.rendered_prompt_hash != result.metadata.prompt_hash
+    assert result.metadata.output_hash == content_hash(dict(result.output))
+    assert result.metadata.usage_available is False
+    assert result.metadata.input_tokens is None
+    assert result.metadata.cost_usd is None
+
+
+def test_invocation_records_only_jsonl_usage_facts_and_keeps_missing_cost_unknown() -> None:
+    class UsageRunner(FakeRunner):
+        def __call__(self, *args, **kwargs):
+            result = super().__call__(*args, **kwargs)
+            result.stdout += "\n".join((
+                json.dumps({
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "private response body"},
+                }),
+                json.dumps({
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 120,
+                        "cached_input_tokens": 80,
+                        "cache_write_input_tokens": 4,
+                        "output_tokens": 12,
+                        "reasoning_output_tokens": 3,
+                        "total_tokens": 139,
+                    },
+                }),
+            )) + "\n"
+            return result
+
+    result = CodexExec(runner=UsageRunner([0])).invoke(_request())
+
+    assert result.metadata.usage_available is True
+    assert (
+        result.metadata.input_tokens,
+        result.metadata.cached_input_tokens,
+        result.metadata.cache_write_input_tokens,
+        result.metadata.output_tokens,
+        result.metadata.reasoning_output_tokens,
+        result.metadata.total_tokens,
+    ) == (120, 80, 4, 12, 3, 139)
+    assert result.metadata.cost_usd is None
+    assert "private response body" not in repr(result.metadata)
+
+
+def test_multiple_completed_turns_in_one_process_are_rejected() -> None:
+    class DuplicateUsageRunner(FakeRunner):
+        def __call__(self, *args, **kwargs):
+            result = super().__call__(*args, **kwargs)
+            event = json.dumps({
+                "type": "turn.completed", "usage": {"input_tokens": 1},
+            })
+            result.stdout += event + "\n" + event + "\n"
+            return result
+
+    with pytest.raises(CodexOutputError, match="multiple turn.completed"):
+        CodexExec(runner=DuplicateUsageRunner([0])).invoke(_request())
+
+
+def test_retry_usage_is_aggregated_only_when_every_attempt_reports_usage() -> None:
+    class RetryUsageRunner(FakeRunner):
+        def __init__(self, *, first_usage: bool) -> None:
+            super().__init__([1, 0])
+            self.first_usage = first_usage
+
+        def __call__(self, *args, **kwargs):
+            result = super().__call__(*args, **kwargs)
+            attempt = len(self.calls)
+            if attempt > 1 or self.first_usage:
+                result.stdout += json.dumps({
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 10 * attempt,
+                        "cached_input_tokens": 2 * attempt,
+                        "output_tokens": attempt,
+                    },
+                }) + "\n"
+            return result
+
+    complete = CodexExec(runner=RetryUsageRunner(first_usage=True)).invoke(_request())
+    unknown = CodexExec(runner=RetryUsageRunner(first_usage=False)).invoke(_request())
+
+    assert complete.metadata.attempts == 2
+    assert complete.metadata.usage_available is True
+    assert (
+        complete.metadata.input_tokens,
+        complete.metadata.cached_input_tokens,
+        complete.metadata.output_tokens,
+    ) == (30, 6, 3)
+    assert complete.metadata.total_tokens is None
+    assert unknown.metadata.attempts == 2
+    assert unknown.metadata.usage_available is False
+    assert unknown.metadata.input_tokens is None
+    assert unknown.metadata.output_tokens is None
+
+
+@pytest.mark.parametrize("value", (-1, True, "12"))
+def test_invalid_jsonl_usage_is_not_recorded_as_a_number(value: object) -> None:
+    class BadUsageRunner(FakeRunner):
+        def __call__(self, *args, **kwargs):
+            result = super().__call__(*args, **kwargs)
+            result.stdout += json.dumps({
+                "type": "turn.completed", "usage": {"input_tokens": value},
+            }) + "\n"
+            return result
+
+    with pytest.raises(CodexOutputError, match="usage field is invalid"):
+        CodexExec(runner=BadUsageRunner([0])).invoke(_request())
 
 
 def test_stage4b_requires_its_call_kind_schema_and_hashes() -> None:
@@ -361,6 +469,24 @@ def test_retry_returns_second_success_and_never_resumes_a_session() -> None:
     assert result.metadata.attempts == 2
     assert all("resume" not in call["argv"] and "--last" not in call["argv"] for call in runner.calls)
     assert result.metadata.invocation_id
+
+
+def test_failed_attempt_model_mismatch_cannot_be_hidden_by_a_later_success() -> None:
+    class WrongFirstModelRunner(FakeRunner):
+        def __call__(self, *args, **kwargs):
+            result = super().__call__(*args, **kwargs)
+            if len(self.calls) == 1:
+                result.stdout = json.dumps({
+                    "type": "thread.started", "model": "gpt-5.6-sol",
+                }) + "\n"
+            return result
+
+    runner = WrongFirstModelRunner([1, 0])
+
+    with pytest.raises(CodexModelMismatchError, match="mismatch"):
+        CodexExec(runner=runner).invoke(_request())
+
+    assert len(runner.calls) == 1
 
 
 def test_metadata_model_mismatch_and_malformed_jsonl_fail_closed() -> None:

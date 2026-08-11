@@ -715,6 +715,7 @@ class PaperAnalysisCoordinator:
             or metadata.reasoning_effort != "medium"
             or metadata.actual_model != "gpt-5.6-luna"
             or metadata.actual_profile != ANALYSIS_PROFILE
+            or metadata.output_hash != content_hash(dict(output))
         ):
             raise AnalysisValidationError(
                 "Luna invocation metadata does not match the frozen analysis profile"

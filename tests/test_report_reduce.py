@@ -32,6 +32,7 @@ from paper_agent.report_plan import (
 from paper_agent.report_artifacts import ReportArtifactStore
 from paper_agent.report_audit import ReportAuditCoordinator, stage4b_audit_config_hash
 from paper_agent.report_config import ReportResources
+from paper_agent.report_invocations import report_invocation_metadata_hash
 from paper_agent.report_reduce import (
     PROFILE,
     REASONING_EFFORT,
@@ -325,6 +326,8 @@ class FakeSol:
     reuse_invocation_id: str | None = None
     add_corpus_stat: bool = False
     corpus_calculation: str | None = None
+    wrong_output_hash_once: bool = False
+    missing_output_hash_once: bool = False
 
     def invoke(self, request):
         self.calls.append(request)
@@ -422,7 +425,16 @@ class FakeSol:
             actual_profile=actual_profile,
             schema_path=request.schema_path,
             prompt_path=request.prompt_path,
+            output_hash=(
+                None
+                if self.missing_output_hash_once
+                else "0" * 64
+                if self.wrong_output_hash_once
+                else content_hash(output)
+            ),
         )
+        self.wrong_output_hash_once = False
+        self.missing_output_hash_once = False
         return CodexExecResult(output, metadata)
 
 
@@ -1425,6 +1437,66 @@ def test_actual_sol_metadata_must_be_present_and_exact(tmp_path: Path, metadata_
         fixture.database.close()
 
 
+@pytest.mark.parametrize("fault", ("missing", "wrong"))
+def test_actual_sol_output_hash_must_match_the_result(
+    tmp_path: Path, fault: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    fixture.fake.wrong_output_hash_once = fault == "wrong"
+    fixture.fake.missing_output_hash_once = fault == "missing"
+    try:
+        result = fixture.run("report-output-hash", "pipeline-output-hash")
+
+        assert result.status == "failed"
+        assert "output hash" in fixture.database.connection.execute(
+            """SELECT error_json FROM report_reduce_nodes
+               WHERE report_run_id = 'report-output-hash' AND status = 'failed'"""
+        ).fetchone()[0]
+    finally:
+        fixture.database.close()
+
+
+def test_legacy_completed_node_without_metadata_output_hash_still_replays(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    try:
+        first = fixture.run("report-legacy-hash", "pipeline-legacy-hash")
+        calls = len(fixture.calls)
+        row = fixture.database.connection.execute(
+            """SELECT report_reduce_node_id, node_id, invocation_id,
+                      invocation_metadata_json
+               FROM report_reduce_nodes
+               WHERE report_run_id = 'report-legacy-hash'
+               ORDER BY node_id LIMIT 1"""
+        ).fetchone()
+        metadata = json.loads(row["invocation_metadata_json"])
+        metadata.pop("output_hash")
+        fixture.database.connection.execute(
+            """UPDATE report_reduce_nodes SET invocation_metadata_json = ?
+               WHERE report_reduce_node_id = ?""",
+            (json.dumps(metadata), row["report_reduce_node_id"]),
+        )
+        fixture.database.connection.execute(
+            """UPDATE report_sol_invocations SET metadata_hash = ?
+               WHERE report_run_id = 'report-legacy-hash' AND phase = 'reduce'
+                 AND node_key = ? AND invocation_id = ?""",
+            (
+                report_invocation_metadata_hash(metadata),
+                row["node_id"],
+                row["invocation_id"],
+            ),
+        )
+        fixture.database.connection.commit()
+
+        resumed = fixture.run("report-legacy-hash", "pipeline-legacy-hash")
+
+        assert first.status == resumed.status == "generation_complete"
+        assert len(fixture.calls) == calls
+    finally:
+        fixture.database.close()
+
+
 def test_bundle_and_persisted_stage4_drift_stop_before_dispatch(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     changed_corpus = deepcopy(fixture.corpus)
@@ -1460,7 +1532,19 @@ def test_rendered_prompt_preflight_catches_cost_hidden_by_declared_input_tokens(
             fixture.run("report-budget", "pipeline-budget")
 
         assert fixture.calls == []
-        assert fixture.database.connection.execute("SELECT COUNT(*) FROM report_runs").fetchone()[0] == 0
+        report = fixture.database.connection.execute(
+            "SELECT status FROM report_runs WHERE report_run_id = 'report-budget'"
+        ).fetchone()
+        pipeline = fixture.database.connection.execute(
+            "SELECT status FROM pipeline_runs WHERE run_id = 'pipeline-budget'"
+        ).fetchone()
+        nodes = fixture.database.connection.execute(
+            """SELECT status, dispatch_count, budget_calls_reserved
+               FROM report_reduce_nodes WHERE report_run_id = 'report-budget'"""
+        ).fetchall()
+        assert report["status"] == pipeline["status"] == "incomplete"
+        assert nodes
+        assert {tuple(row) for row in nodes} == {("pending", 0, 0)}
     finally:
         fixture.database.close()
 

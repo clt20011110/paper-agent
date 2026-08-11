@@ -23,6 +23,7 @@ from uuid import uuid4
 
 from jsonschema import Draft202012Validator
 
+from .canonical import content_hash
 from .schema import schema_directory, schema_registry
 
 
@@ -125,6 +126,15 @@ CALL_KIND_PROMPTS: Mapping[CallKind, str] = MappingProxyType({
 ENV_ALLOWLIST = frozenset({
     "CODEX_HOME", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "SYSTEMROOT", "TMP", "USER", "WINDIR",
 })
+
+USAGE_FIELDS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "total_tokens",
+)
 
 
 def prompt_directory() -> Path:
@@ -373,6 +383,15 @@ class InvocationMetadata:
     actual_profile: str | None
     schema_path: str | None = None
     prompt_path: str | None = None
+    output_hash: str | None = None
+    usage_available: bool = False
+    input_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    cache_write_input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +411,15 @@ class DoctorReport:
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExecutionResult:
+    process: subprocess.CompletedProcess[str]
+    attempts: int
+    actual_model: str | None
+    actual_profile: str | None
+    usage: Mapping[str, int] | None
 
 
 class CodexExec:
@@ -486,20 +514,15 @@ class CodexExec:
             result_path = workdir / "last-message.json"
             schema_path.write_text(json.dumps(service_schema, ensure_ascii=False, sort_keys=True), encoding="utf-8")
             argv = self._argv(profile, workdir, schema_path, result_path)
-            completed = self._run_with_retry(argv, workdir, profile, rendered_prompt)
+            execution = self._run_with_retry(argv, workdir, profile, rendered_prompt)
+            completed = execution.process
             if completed.returncode != 0:
                 raise CodexProcessError(f"codex exec exited with status {completed.returncode}")
             output = self._read_output(result_path)
             self._validate_output(output, service_schema)
-            actual_model, actual_profile = self._actual_invocation_metadata(completed.stdout)
-            if actual_model is not None and actual_model != profile.model:
-                raise CodexModelMismatchError(
-                    f"codex invocation model mismatch: expected {profile.model}, got {actual_model}"
-                )
-            if actual_profile is not None and actual_profile != profile.name:
-                raise CodexModelMismatchError(
-                    f"codex invocation profile mismatch: expected {profile.name}, got {actual_profile}"
-                )
+            actual_model = execution.actual_model
+            actual_profile = execution.actual_profile
+            usage = execution.usage
             metadata = InvocationMetadata(
                 invocation_id=invocation_id,
                 profile=profile.name,
@@ -512,11 +535,19 @@ class CodexExec:
                 prompt_hash=prompt_hash,
                 rendered_prompt_hash=rendered_prompt_hash,
                 call_kind=request.call_kind,
-                attempts=self._attempt_count(completed),
+                attempts=execution.attempts,
                 actual_model=actual_model,
                 actual_profile=actual_profile,
                 schema_path=request.schema_path,
                 prompt_path=request.prompt_path,
+                output_hash=content_hash(output),
+                usage_available=usage is not None,
+                input_tokens=None if usage is None else usage.get("input_tokens"),
+                cached_input_tokens=None if usage is None else usage.get("cached_input_tokens"),
+                cache_write_input_tokens=None if usage is None else usage.get("cache_write_input_tokens"),
+                output_tokens=None if usage is None else usage.get("output_tokens"),
+                reasoning_output_tokens=None if usage is None else usage.get("reasoning_output_tokens"),
+                total_tokens=None if usage is None else usage.get("total_tokens"),
             )
             return CodexExecResult(MappingProxyType(output), metadata)
 
@@ -546,7 +577,8 @@ class CodexExec:
 
     def _run_with_retry(
         self, argv: Sequence[str], workdir: Path, profile: CodexExecProfile, prompt: str,
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> _ExecutionResult:
+        usages: list[dict[str, int] | None] = []
         for attempt in range(profile.max_retries + 1):
             try:
                 completed = self._runner(
@@ -554,25 +586,65 @@ class CodexExec:
                     input=prompt, capture_output=True, text=True, check=False,
                 )
             except subprocess.TimeoutExpired as error:
+                stdout = error.stdout
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode("utf-8")
+                actual_model, actual_profile, usage = (
+                    self._actual_invocation_metadata(stdout)
+                )
+                self._validate_actual_invocation(
+                    profile, actual_model, actual_profile
+                )
+                usages.append(usage)
                 if attempt == profile.max_retries:
                     raise CodexTimeoutError("codex exec timed out") from error
                 continue
+            actual_model, actual_profile, usage = self._actual_invocation_metadata(
+                completed.stdout
+            )
+            self._validate_actual_invocation(profile, actual_model, actual_profile)
+            usages.append(usage)
+            result = _ExecutionResult(
+                completed,
+                attempt + 1,
+                actual_model,
+                actual_profile,
+                self._aggregate_usage(usages),
+            )
             if completed.returncode == 0:
-                return self._with_attempt(completed, attempt + 1)
+                return result
             if attempt == profile.max_retries:
-                return self._with_attempt(completed, attempt + 1)
+                return result
         raise AssertionError("unreachable retry state")
 
     @staticmethod
-    def _with_attempt(completed: subprocess.CompletedProcess[str], attempts: int) -> subprocess.CompletedProcess[str]:
-        # CompletedProcess intentionally has no extension field.  The private
-        # marker remains process-local and carries no prompt or response bytes.
-        setattr(completed, "_paper_agent_attempts", attempts)
-        return completed
+    def _validate_actual_invocation(
+        profile: CodexExecProfile,
+        actual_model: str | None,
+        actual_profile: str | None,
+    ) -> None:
+        if actual_model is not None and actual_model != profile.model:
+            raise CodexModelMismatchError(
+                f"codex invocation model mismatch: expected {profile.model}, got {actual_model}"
+            )
+        if actual_profile is not None and actual_profile != profile.name:
+            raise CodexModelMismatchError(
+                f"codex invocation profile mismatch: expected {profile.name}, got {actual_profile}"
+            )
 
     @staticmethod
-    def _attempt_count(completed: subprocess.CompletedProcess[str]) -> int:
-        return int(getattr(completed, "_paper_agent_attempts", 1))
+    def _aggregate_usage(
+        usages: Sequence[Mapping[str, int] | None],
+    ) -> dict[str, int] | None:
+        if not usages or any(usage is None for usage in usages):
+            return None
+        complete = tuple(usage for usage in usages if usage is not None)
+        totals = {
+            field: sum(usage[field] for usage in complete)
+            for field in USAGE_FIELDS
+            if all(field in usage for usage in complete)
+        }
+        return totals or None
 
     def _safe_environment(self, workdir: Path) -> dict[str, str]:
         environment = {name: self._environment[name] for name in ENV_ALLOWLIST if name in self._environment}
@@ -638,12 +710,13 @@ class CodexExec:
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
             argv = self._argv(profile, workdir, schema_path, result_path)
             try:
-                completed = self._run_with_retry(
+                execution = self._run_with_retry(
                     argv, workdir, profile,
                     "Return only the structured confirmation requested by the output schema.",
                 )
             except CodexExecError:
                 return "unavailable"
+            completed = execution.process
             if completed.returncode != 0:
                 return "unavailable"
             try:
@@ -677,12 +750,16 @@ class CodexExec:
             raise CodexOutputError(f"codex final result violates output schema at {location}: {errors[0].message}")
 
     @staticmethod
-    def _actual_invocation_metadata(stdout: str | None) -> tuple[str | None, str | None]:
-        """Read an exposed JSONL model field without retaining event contents."""
+    def _actual_invocation_metadata(
+        stdout: str | None,
+    ) -> tuple[str | None, str | None, dict[str, int] | None]:
+        """Read exposed JSONL facts without retaining event contents."""
         if not stdout:
-            return None
+            return None, None, None
         models: set[str] = set()
         profiles: set[str] = set()
+        usage: dict[str, int] | None = None
+        completed_turns = 0
         for line in stdout.splitlines():
             try:
                 event = json.loads(line)
@@ -696,8 +773,29 @@ class CodexExec:
             for key in ("profile", "profile_name"):
                 if isinstance(event.get(key), str):
                     profiles.add(event[key])
+            if event.get("type") == "turn.completed":
+                completed_turns += 1
+                if completed_turns > 1:
+                    raise CodexOutputError(
+                        "codex --json stdout contains multiple turn.completed events"
+                    )
+                if event.get("usage") is None:
+                    continue
+                if not isinstance(event["usage"], Mapping):
+                    raise CodexOutputError("codex invocation usage must be a JSON object")
+                parsed: dict[str, int] = {}
+                for key in USAGE_FIELDS:
+                    value = event["usage"].get(key)
+                    if value is None:
+                        continue
+                    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                        raise CodexOutputError(
+                            f"codex invocation usage field is invalid: {key}"
+                        )
+                    parsed[key] = value
+                usage = parsed or None
         if len(models) > 1:
             raise CodexModelMismatchError("codex invocation metadata reported multiple models")
         if len(profiles) > 1:
             raise CodexModelMismatchError("codex invocation metadata reported multiple profiles")
-        return next(iter(models), None), next(iter(profiles), None)
+        return next(iter(models), None), next(iter(profiles), None), usage
