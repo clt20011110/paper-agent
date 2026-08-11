@@ -47,6 +47,7 @@ def search_audit(database_path: Path, crawl_run_id: str) -> dict[str, Any]:
             raise ValueError(f"unknown crawl_run_id: {crawl_run_id}")
         sources = _sources(connection, crawl_run_id)
         queries = _queries(connection, crawl_run_id)
+        provider_rate_limits = _provider_rate_limits(queries)
         request_attempts = _request_attempts(connection, crawl_run_id)
         execution_attempts = [
             _row(row)
@@ -81,6 +82,7 @@ def search_audit(database_path: Path, crawl_run_id: str) -> dict[str, Any]:
                 _ROUND_METRICS,
             ),
             "queries": len(queries),
+            "provider_rate_limit_observations": len(provider_rate_limits),
             "provider_request_attempts": len(request_attempts),
             "requests_made": sum(
                 int(attempt["request_charged"]) for attempt in request_attempts
@@ -98,6 +100,7 @@ def search_audit(database_path: Path, crawl_run_id: str) -> dict[str, Any]:
         ],
         "sources": sources,
         "queries": queries,
+        "provider_rate_limits": provider_rate_limits,
         "provider_request_attempts": request_attempts,
         "crawl_execution_attempts": execution_attempts,
         "rounds": rounds,
@@ -161,6 +164,27 @@ def _request_attempts(
         }
         for row in rows
     ]
+
+
+def _provider_rate_limits(queries: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    observations = []
+    for query in queries:
+        parameters = query.get("provider_params")
+        if not isinstance(parameters, Mapping):
+            continue
+        for request_index, request in enumerate(parameters.get("request_audit", ())):
+            if not isinstance(request, Mapping) or not request.get("rate_limit"):
+                continue
+            observations.append(
+                {
+                    "provider": request.get("provider") or query["provider"],
+                    "query_id": query["query_id"],
+                    "request_index": request_index,
+                    "query_hash": request.get("query_hash"),
+                    "rate_limit": dict(request["rate_limit"]),
+                }
+            )
+    return observations
 
 
 def _rounds(connection: sqlite3.Connection, crawl_run_id: str) -> list[dict[str, Any]]:

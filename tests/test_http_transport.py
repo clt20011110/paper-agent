@@ -60,6 +60,33 @@ def test_crossref_request_sets_contact_timeout_and_response_artifact() -> None:
     assert len(payload["raw_response_artifact_hash"]) == 64
 
 
+def test_request_audit_collects_only_allowlisted_rate_limit_headers() -> None:
+    def opener(request, timeout):
+        return Response(
+            b'{"message":{"items":[]}}',
+            {
+                "Content-Type": "application/json",
+                "rAtElImIt-ReMaInInG": "48",
+                "X-Rate-Limit-Interval": "1s",
+                "X-CREDIT-USED": "2.5",
+                "Authorization": "Bearer secret",
+                "Set-Cookie": "session=secret",
+                "X-Request-Id": "internal-id",
+            },
+        )
+
+    payload = ControlledHTTPTransport(
+        "https://example.test/contact", opener=opener
+    )("crossref", "search", {"query": "x", "page_size": 1})
+
+    assert payload["_request_audit"][0]["rate_limit"] == {
+        "ratelimit-remaining": "48",
+        "x-rate-limit-interval": "1s",
+        "x-credit-used": "2.5",
+    }
+    assert "secret" not in str(payload["_request_audit"])
+
+
 def test_conditional_request_reuses_cached_body_on_not_modified() -> None:
     count = 0
 
@@ -67,7 +94,14 @@ def test_conditional_request_reuses_cached_body_on_not_modified() -> None:
         nonlocal count
         count += 1
         if count == 1:
-            return Response(b'{"message":{"items":[]}}', {"Content-Type": "application/json", "ETag": "one"})
+            return Response(
+                b'{"message":{"items":[]}}',
+                {
+                    "Content-Type": "application/json",
+                    "ETag": "one",
+                    "RateLimit-Remaining": "7",
+                },
+            )
         assert request.get_header("If-none-match") == "one"
         raise HTTPError(request.full_url, 304, "not modified", Message(), BytesIO())
 
@@ -75,6 +109,8 @@ def test_conditional_request_reuses_cached_body_on_not_modified() -> None:
     first = transport("crossref", "search", {"query": "x", "page_size": 1})
     second = transport("crossref", "search", {"query": "x", "page_size": 1})
     assert first["raw_response_artifact_hash"] == second["raw_response_artifact_hash"]
+    assert first["_request_audit"][0]["rate_limit"] == {"ratelimit-remaining": "7"}
+    assert second["_request_audit"][0]["rate_limit"] == {"ratelimit-remaining": "7"}
 
 
 def test_retry_after_is_exposed_for_rate_limits() -> None:
@@ -87,6 +123,7 @@ def test_retry_after_is_exposed_for_rate_limits() -> None:
     with pytest.raises(RetryableProviderError) as error:
         transport("crossref", "search", {"query": "x", "page_size": 1})
     assert error.value.retry_after == 3
+    assert transport.request_audit[0]["retry_after_seconds"] == 3
 
 
 def test_cloudflare_403_is_classified_as_external_challenge() -> None:

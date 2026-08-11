@@ -45,6 +45,27 @@ _METADATA_PROVIDERS = (
     "unpaywall",
 )
 _S2_FIELDS = "paperId,title,abstract,authors,year,venue,externalIds,publicationDate,url"
+_RATE_LIMIT_HEADERS = frozenset(
+    {
+        "retry-after",
+        "ratelimit-limit",
+        "ratelimit-remaining",
+        "ratelimit-reset",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+        "x-rate-limit-limit",
+        "x-rate-limit-interval",
+        "x-rate-limit-remaining",
+        "x-rate-limit-reset",
+        "x-quota-limit",
+        "x-quota-remaining",
+        "x-quota-reset",
+        "x-credit-limit",
+        "x-credit-remaining",
+        "x-credit-used",
+    }
+)
 
 
 class DelegatedOperationResult(Protocol):
@@ -80,6 +101,7 @@ class CachedResponse:
     etag: str | None
     last_modified: str | None
     content_type: str = ""
+    rate_limit: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,6 +550,8 @@ class ControlledHTTPTransport:
                 error=str(error),
                 completed_at=datetime.now(UTC).isoformat(),
             )
+            if isinstance(error, ProviderRequestError) and error.retry_after is not None:
+                request_record["retry_after_seconds"] = error.retry_after
             raise
         response_hash = sha256(response.body).hexdigest()
         request_record.update(
@@ -538,6 +562,7 @@ class ControlledHTTPTransport:
             etag=response.etag,
             last_modified=response.last_modified,
             cache_source="persistent" if replayed is not None else "provider_or_runtime",
+            rate_limit=dict(response.rate_limit),
             completed_at=datetime.now(UTC).isoformat(),
         )
         if self.response_artifacts is not None:
@@ -572,6 +597,7 @@ class ControlledHTTPTransport:
                     response.headers.get("ETag"),
                     response.headers.get("Last-Modified"),
                     response.headers.get("Content-Type", ""),
+                    _rate_limit_headers(response.headers),
                 )
         except HTTPError as error:
             if error.code == 304 and cached:
@@ -892,6 +918,14 @@ def _retry_after(value: str | None) -> float | None:
     if value.isdigit():
         return float(value)
     return max(0.0, parsedate_to_datetime(value).timestamp() - __import__("time").time())
+
+
+def _rate_limit_headers(headers: Any) -> dict[str, str]:
+    return {
+        name.casefold(): str(value)
+        for name, value in headers.items()
+        if name.casefold() in _RATE_LIMIT_HEADERS
+    }
 
 
 def _xml_object(element: ElementTree.Element) -> dict[str, Any]:

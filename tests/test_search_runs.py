@@ -11,6 +11,7 @@ from paper_agent.search_runs import (
     SearchRunCoordinator,
     SourceMetrics,
 )
+from paper_agent.search_audit import search_audit
 from paper_agent.storage import Database
 
 
@@ -228,6 +229,64 @@ def test_query_audit_replays_exact_actual_request(tmp_path) -> None:
         assert source["raw_response_hash"] == "openalex-response-hash"
     finally:
         database.close()
+
+
+def test_search_audit_expands_persisted_provider_rate_limits(tmp_path) -> None:
+    database, coordinator = _coordinator(tmp_path)
+    database_path = database.path
+    try:
+        request_audit = (
+            {
+                "provider": "openalex",
+                "query_hash": "first-request",
+                "rate_limit": {
+                    "ratelimit-remaining": "48",
+                    "x-credit-used": "2.5",
+                },
+            },
+            {
+                "provider": "openalex",
+                "query_hash": "second-request",
+                "rate_limit": {},
+            },
+        )
+        _record(
+            coordinator,
+            "openalex",
+            _batch("openalex", request_audit=request_audit),
+        )
+    finally:
+        database.close()
+
+    audit = search_audit(database_path, "crawl-1")
+
+    assert audit["totals"]["provider_rate_limit_observations"] == 1
+    assert audit["provider_rate_limits"] == [
+        {
+            "provider": "openalex",
+            "query_id": audit["queries"][0]["query_id"],
+            "request_index": 0,
+            "query_hash": "first-request",
+            "rate_limit": {
+                "ratelimit-remaining": "48",
+                "x-credit-used": "2.5",
+            },
+        }
+    ]
+
+
+def test_search_audit_has_empty_provider_rate_limits_without_observations(tmp_path) -> None:
+    database, coordinator = _coordinator(tmp_path)
+    database_path = database.path
+    try:
+        _record(coordinator, "openalex", _batch("openalex"))
+    finally:
+        database.close()
+
+    audit = search_audit(database_path, "crawl-1")
+
+    assert audit["provider_rate_limits"] == []
+    assert audit["totals"]["provider_rate_limit_observations"] == 0
 
 
 def test_paginated_batches_accumulate_raw_and_error_counts(tmp_path) -> None:

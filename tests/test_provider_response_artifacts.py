@@ -57,6 +57,7 @@ def test_provider_response_replays_exact_bytes_after_process_restart(tmp_path) -
             {
                 "Content-Type": "application/json",
                 "ETag": '"frozen-response"',
+                "RateLimit-Remaining": "9",
             },
         )
 
@@ -138,6 +139,8 @@ def test_provider_response_replays_exact_bytes_after_process_restart(tmp_path) -
     assert replayed["raw_response_artifact_hash"] == first["raw_response_artifact_hash"]
     assert replayed["_request_audit"][0]["cache_source"] == "persistent"
     assert replayed["_request_audit"][0]["replay_scope"] == "crawl-1"
+    assert first["_request_audit"][0]["rate_limit"] == {"ratelimit-remaining": "9"}
+    assert replayed["_request_audit"][0]["rate_limit"] == {}
 
     fresh_body = b'{"status":"ok","message":{"items":[{"DOI":"10.1/fresh"}]}}'
 
