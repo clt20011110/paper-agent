@@ -89,6 +89,7 @@ from .stage2_evaluator import (
 from .stage2_hidden_attestation import load_hidden_evaluator_trust
 from .stage2_promotion_artifacts import (
     run_promotion_evaluation,
+    validate_promotion_public_evidence,
     validate_promotion_candidate_bundles,
 )
 from .stage2_release_assembly import (
@@ -340,8 +341,14 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     promote.add_argument("--private-labels", required=True, type=Path)
     promote.add_argument("--candidate", action="append", required=True, metavar="ID=PATH")
     promote.add_argument("--submission", action="append", required=True, metavar="ID=PATH")
+    promote.add_argument(
+        "--public-evidence",
+        action="append",
+        required=True,
+        metavar="ID=PATH",
+        help="public-only Stage 2 evidence with evidence_type=stage2_public_promotion_evidence",
+    )
     promote.add_argument("--incumbent-candidate-id", required=True)
-    promote.add_argument("--selected-candidate-id", required=True)
     promote.add_argument("--evaluator-id", required=True)
     promote.add_argument("--evaluation-run-id", required=True)
     promote.add_argument("--state-root", required=True, type=Path)
@@ -745,7 +752,7 @@ def _assert_attestation_output_absent(path: Path) -> None:
 
 
 def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
-    """Run exactly one sealed promotion batch and sign only its selected result.
+    """Run exactly one sealed promotion batch and sign only its frozen winner.
 
     All public bindings, trust material, private-key custody, and the empty
     output reservation are checked before private labels or predictions are
@@ -756,7 +763,10 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
 
     candidate_paths = _stage2_promotion_paths(args.candidate, "candidate")
     submission_paths = _stage2_promotion_paths(args.submission, "submission")
-    _validate_stage2_promotion_controls(args, candidate_paths, submission_paths)
+    public_evidence_paths = _stage2_promotion_paths(args.public_evidence, "public evidence")
+    _validate_stage2_promotion_controls(
+        args, candidate_paths, submission_paths, public_evidence_paths
+    )
     try:
         # A gold manifest and v2 bundles are public inputs.  Do this before
         # touching labels or submissions so malformed mappings cannot consume
@@ -767,6 +777,9 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
         manifest.validate_sampling_structure()
         validate_promotion_candidate_bundles(
             candidate_paths, expected_manifest_hash=manifest.hash()
+        )
+        validate_promotion_public_evidence(
+            candidate_paths, public_evidence_paths, manifest.hash()
         )
     except (OSError, ValueError, TypeError, KeyError):
         raise CliUsageError("Stage 2 promotion public inputs are invalid") from None
@@ -781,7 +794,7 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
     if args.dry_run:
         return {
             "command": "stage2-evaluator.promote",
-            "candidate_id": args.selected_candidate_id,
+            "candidate_id": None,
             "evaluation_manifest_hash": manifest.hash(),
             "evaluation_run_id": args.evaluation_run_id,
             "evaluated": False,
@@ -812,6 +825,7 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
                 private_labels_path=args.private_labels,
                 submission_paths=submission_paths,
                 candidate_bundle_paths=candidate_paths,
+                public_evidence_paths=public_evidence_paths,
                 evaluator_id=args.evaluator_id,
                 state_root=args.state_root,
                 incumbent_candidate_id=args.incumbent_candidate_id,
@@ -819,7 +833,7 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
                 bootstrap_iterations=args.bootstrap_iterations,
                 bootstrap_seed=args.bootstrap_seed,
             )
-            signing = evaluation.candidates[args.selected_candidate_id]
+            signing = evaluation.candidates[evaluation.winner_candidate_id]
             payload = signing.attestation_payload(
                 evaluator_key_id=args.evaluator_key_id,
                 trust_manifest_hash=trust.manifest_hash,
@@ -852,7 +866,7 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
     passed = bool(payload["result_summary"]["passed"])
     return {
         "command": "stage2-evaluator.promote",
-        "candidate_id": args.selected_candidate_id,
+        "candidate_id": evaluation.winner_candidate_id,
         "evaluation_manifest_hash": evaluation.evaluation_manifest_hash,
         "evaluation_run_id": evaluation.evaluation_run_id,
         "promotion_marker_hash": evaluation.promotion_marker_hash,
@@ -886,12 +900,12 @@ def _validate_stage2_promotion_controls(
     args: argparse.Namespace,
     candidate_paths: Mapping[str, Path],
     submission_paths: Mapping[str, Path],
+    public_evidence_paths: Mapping[str, Path],
 ) -> None:
     identifiers = (
         *candidate_paths,
         *submission_paths,
         args.incumbent_candidate_id,
-        args.selected_candidate_id,
         args.evaluator_id,
         args.evaluation_run_id,
         args.evaluator_key_id,
@@ -899,13 +913,12 @@ def _validate_stage2_promotion_controls(
     for value in identifiers:
         if not _STAGE2_PROMOTION_IDENTIFIER.fullmatch(value):
             raise CliUsageError("Stage 2 promotion identifiers are invalid")
-    if set(candidate_paths) != set(submission_paths):
-        raise CliUsageError("Stage 2 promotion candidate and submission mappings must match")
+    if set(candidate_paths) != set(submission_paths) or set(candidate_paths) != set(public_evidence_paths):
+        raise CliUsageError("Stage 2 promotion candidate, submission, and public evidence mappings must match")
     if (
         args.incumbent_candidate_id not in candidate_paths
-        or args.selected_candidate_id not in candidate_paths
     ):
-        raise CliUsageError("Stage 2 promotion incumbent and selected candidates must be submitted")
+        raise CliUsageError("Stage 2 promotion incumbent candidate must be submitted")
     if not _stage2_promotion_date_time(args.issued_at):
         raise CliUsageError("Stage 2 promotion issued-at is not a schema-valid date-time")
     if args.bootstrap_iterations <= 0:

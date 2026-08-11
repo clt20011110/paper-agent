@@ -21,9 +21,9 @@ Paper Agent 的 SQLite 数据库、冻结计划、grant、模型 release 和报�
 
 隔离 evaluator 优先运行 `stage2-evaluator promote`，而不是手工构造 hidden gate 结论。先在全局
 `--dry-run` 下提供完整的 `--manifest`、`--private-labels`、重复的 `--candidate ID=PATH` 与
-`--submission ID=PATH`、incumbent/selected/evaluator/run IDs、`--state-root`、key ID、RFC 3339
+`--submission ID=PATH`、重复的 `--public-evidence ID=PATH`、incumbent/evaluator/run IDs、`--state-root`、key ID、RFC 3339
 `--issued-at`、`--trust-manifest`、`--signing-key-file` 和不存在的 `--output`。dry-run 只读取并验证
-公共 sampling manifest、schema-v2 candidates、trust 和 output 边界；它不读取 private labels、
+公共 sampling manifest、schema-v2 candidates、公共质量/性能 evidence、trust 和 output 边界；它不读取 private labels、
 submissions 或私钥，不创建 output，也不消费 marker。确认结构化 `status: "validated"` 后，只移除
 `--dry-run` 并执行一次完全相同的命令。
 

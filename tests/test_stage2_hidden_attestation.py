@@ -52,6 +52,10 @@ def _bindings() -> HiddenPromotionBindings:
         threshold_hashes=path_hashes,
         hidden_pair_universe_hashes={"hidden_hard": "f" * 64, "hidden_real": HASH},
         hidden_split_pair_counts={"hidden_hard": 150, "hidden_real": 150},
+        public_gate_artifact_hashes={
+            name: HASH for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")
+        },
+        throughput_runs=(1.0, 1.0, 1.0),
     )
 
 
@@ -67,6 +71,7 @@ def _payload(*, trust_hash: str, bindings: HiddenPromotionBindings | None = None
         "evaluation_run_id": "promotion-1",
         "prediction_submission_hash": HASH,
         "promotion_marker_hash": "1" * 64,
+        "winner_candidate_id": active_bindings.candidate_id,
         "consumed_hidden_splits": ["hidden_hard", "hidden_real"],
         "gate_policy_hash": HIDDEN_PROMOTION_GATE_POLICY_HASH,
         "result_summary": {
@@ -230,6 +235,16 @@ def test_rejects_non_passing_hidden_gate_summary(summary: dict) -> None:
     changed = issue_hidden_promotion_attestation(changed_payload, PRIVATE_KEY)
 
     with pytest.raises(HiddenPromotionAttestationError, match="gates did not pass"):
+        _verify(changed, trust, bindings)
+
+
+def test_rejects_attestation_whose_signed_winner_is_not_the_release_candidate() -> None:
+    document, trust, bindings = _signed_document()
+    changed_payload = deepcopy(document["payload"])
+    changed_payload["winner_candidate_id"] = "candidate-2"
+    changed = issue_hidden_promotion_attestation(changed_payload, PRIVATE_KEY)
+
+    with pytest.raises(HiddenPromotionAttestationError, match="signed winner"):
         _verify(changed, trust, bindings)
 
 

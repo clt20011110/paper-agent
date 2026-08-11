@@ -30,6 +30,18 @@
         "qwen": {"$ref": "#/$defs/sha256"}
       }
     },
+    "publicGateHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["structured_replay", "rationale", "parity", "benchmark", "soak"],
+      "properties": {
+        "structured_replay": {"$ref": "#/$defs/sha256"},
+        "rationale": {"$ref": "#/$defs/sha256"},
+        "parity": {"$ref": "#/$defs/sha256"},
+        "benchmark": {"$ref": "#/$defs/sha256"},
+        "soak": {"$ref": "#/$defs/sha256"}
+      }
+    },
     "payload": {
       "type": "object",
       "additionalProperties": false,
@@ -51,6 +63,9 @@
         "hidden_split_pair_counts",
         "prediction_submission_hash",
         "promotion_marker_hash",
+        "winner_candidate_id",
+        "public_gate_artifact_hashes",
+        "throughput_runs",
         "consumed_hidden_splits",
         "gate_policy_hash",
         "result_summary"
@@ -89,6 +104,14 @@
         },
         "prediction_submission_hash": {"$ref": "#/$defs/sha256"},
         "promotion_marker_hash": {"$ref": "#/$defs/sha256"},
+        "winner_candidate_id": {"type": "string", "minLength": 1},
+        "public_gate_artifact_hashes": {"$ref": "#/$defs/publicGateHashes"},
+        "throughput_runs": {
+          "type": "array",
+          "items": {"type": "number", "exclusiveMinimum": 0},
+          "minItems": 3,
+          "maxItems": 3
+        },
         "consumed_hidden_splits": {
           "type": "array",
           "prefixItems": [

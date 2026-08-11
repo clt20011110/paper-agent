@@ -16,6 +16,7 @@ from paper_agent import cli
 from paper_agent.canonical import canonical_json, content_hash
 from paper_agent.stage2_evaluator import load_hidden_evaluator_private_key
 from paper_agent.stage2_hidden_attestation import HIDDEN_PROMOTION_GATE_POLICY_HASH
+from paper_agent.stage2_evaluation import GateResult
 from paper_agent.stage2_promotion_artifacts import (
     PrivatePromotionArtifactError,
     PromotionSigningInput,
@@ -44,6 +45,9 @@ def _payload(*, trust_manifest_hash: str = "a" * 64) -> dict[str, object]:
         "hidden_split_pair_counts": {"hidden_hard": 150, "hidden_real": 150},
         "prediction_submission_hash": "5" * 64,
         "promotion_marker_hash": "6" * 64,
+        "winner_candidate_id": "candidate-1",
+        "public_gate_artifact_hashes": {name: "7" * 64 for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")},
+        "throughput_runs": [1, 1, 1],
         "consumed_hidden_splits": ["hidden_hard", "hidden_real"],
         "gate_policy_hash": HIDDEN_PROMOTION_GATE_POLICY_HASH,
         "result_summary": {
@@ -317,8 +321,8 @@ def _promote_argv(
         "--private-labels", str(tmp_path / "private-labels.json"),
         "--candidate", candidate_id + "=" + str(tmp_path / "candidate.json"),
         "--submission", candidate_id + "=" + str(tmp_path / "private-submission.json"),
+        "--public-evidence", candidate_id + "=" + str(tmp_path / "public-evidence.json"),
         "--incumbent-candidate-id", candidate_id,
-        "--selected-candidate-id", candidate_id,
         "--evaluator-id", "isolated-evaluator-1",
         "--evaluation-run-id", "evaluation-1",
         "--state-root", str(tmp_path / "sealed-state"),
@@ -354,12 +358,18 @@ def _patch_promote_public_preflight(
         "validate_promotion_candidate_bundles",
         lambda _paths, *, expected_manifest_hash: None,
     )
+    monkeypatch.setattr(
+        cli,
+        "validate_promotion_public_evidence",
+        lambda _candidates, _evidence, _manifest_hash: None,
+    )
 
 
 def _promotion_evaluation(payload: dict[str, object]) -> object:
     signing = SimpleNamespace(attestation_payload=lambda **_kwargs: payload)
     return SimpleNamespace(
         candidates={"candidate-1": signing},
+        winner_candidate_id="candidate-1",
         evaluation_manifest_hash=payload["evaluation_manifest_hash"],
         evaluation_run_id=payload["evaluation_run_id"],
         promotion_marker_hash="7" * 64,
@@ -383,6 +393,9 @@ def _promotion_signing_input(*, passed: bool = True) -> PromotionSigningInput:
         hidden_split_pair_counts={"hidden_hard": 150, "hidden_real": 150},
         prediction_submission_hash="5" * 64,
         promotion_marker_hash="7" * 64,
+        winner_candidate_id="candidate-1",
+        public_gate_artifact_hashes={name: "8" * 64 for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")},
+        throughput_runs=(1, 1, 1),
         consumed_hidden_splits=("hidden_hard", "hidden_real"),
         gate_policy_hash=HIDDEN_PROMOTION_GATE_POLICY_HASH,
         passed=passed,
@@ -393,9 +406,20 @@ def _promotion_signing_input(*, passed: bool = True) -> PromotionSigningInput:
 def _promotion_evaluation_from_signing(signing: PromotionSigningInput) -> object:
     return SimpleNamespace(
         candidates={signing.candidate_id: signing},
+        winner_candidate_id=signing.winner_candidate_id,
         evaluation_manifest_hash=signing.evaluation_manifest_hash,
         evaluation_run_id=signing.evaluation_run_id,
         promotion_marker_hash=signing.promotion_marker_hash,
+    )
+
+
+def _verified_public_gates() -> SimpleNamespace:
+    return SimpleNamespace(
+        gates={
+            name: SimpleNamespace(evidence_hash="a" * 64, gate=GateResult(True, ()))
+            for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")
+        },
+        throughput_runs=(100, 100, 100),
     )
 
 
@@ -488,7 +512,17 @@ def test_stage2_evaluator_promote_real_failed_gate_consumes_marker(
         lambda _paths, *, expected_manifest_hash: None,
     )
     monkeypatch.setattr(
+        cli,
+        "validate_promotion_public_evidence",
+        lambda _candidates, _evidence, _manifest_hash: None,
+    )
+    monkeypatch.setattr(
         artifacts_io, "candidate_artifacts_from_v2_bundle", lambda _path: candidate
+    )
+    monkeypatch.setattr(
+        artifacts_io,
+        "_public_release_evidence",
+        lambda *_args: {"candidate": _verified_public_gates()},
     )
     key_path = tmp_path / "evaluator-private.pem"
     key = _write_private_key(key_path)
@@ -535,13 +569,27 @@ def test_stage2_evaluator_promote_dry_run_never_reads_private_inputs_key_or_mark
     assert not output.exists() and not output.parent.exists()
 
 
+def test_stage2_evaluator_promote_does_not_accept_operator_selected_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_promote_public_preflight(monkeypatch)
+    argv = _promote_argv(
+        tmp_path,
+        trust_path=tmp_path / "unused-trust.json",
+        key_path=tmp_path / "unused-key.pem",
+        output=tmp_path / "attestation.json",
+    ) + ["--dry-run", "--selected-candidate-id", "candidate-1"]
+
+    with pytest.raises(SystemExit):
+        cli.main(argv)
+
+
 @pytest.mark.parametrize(
     ("option", "value"),
     (
         ("--candidate", "bad candidate=/tmp/candidate.json"),
         ("--submission", "bad submission=/tmp/submission.json"),
         ("--incumbent-candidate-id", "bad incumbent"),
-        ("--selected-candidate-id", "bad selected"),
         ("--evaluator-id", "bad evaluator"),
         ("--evaluation-run-id", "bad evaluation"),
         ("--evaluator-key-id", "bad key"),
@@ -613,6 +661,13 @@ def test_stage2_evaluator_promote_public_preflight_validates_sampling_and_manife
             (set(paths), expected_manifest_hash)
         ),
     )
+    monkeypatch.setattr(
+        cli,
+        "validate_promotion_public_evidence",
+        lambda candidates, _evidence, manifest_hash: observed.append(
+            (set(candidates), manifest_hash, "public")
+        ),
+    )
     trust_path = tmp_path / "deployment-trust.json"
     _write_trust_manifest(trust_path, Ed25519PrivateKey.generate())
 
@@ -622,7 +677,11 @@ def test_stage2_evaluator_promote_public_preflight_validates_sampling_and_manife
         key_path=tmp_path / "unused.pem",
         output=tmp_path / "attestation.json",
     ) + ["--dry-run"]) == 0
-    assert observed == ["sampling", ({"candidate-1"}, "b" * 64)]
+    assert observed == [
+        "sampling",
+        ({"candidate-1"}, "b" * 64),
+        ({"candidate-1"}, "b" * 64, "public"),
+    ]
 
 
 def test_stage2_evaluator_promote_rejects_invalid_sampling_before_candidate_or_key(

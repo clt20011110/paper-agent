@@ -92,8 +92,9 @@ paper-agent --dry-run stage2-evaluator promote \
   --candidate challenger=/secure/evaluator/challenger-candidate-v2.json \
   --submission incumbent=/secure/evaluator/incumbent-submission.json \
   --submission challenger=/secure/evaluator/challenger-submission.json \
+  --public-evidence incumbent=/secure/evaluator/incumbent-public-evidence.json \
+  --public-evidence challenger=/secure/evaluator/challenger-public-evidence.json \
   --incumbent-candidate-id incumbent \
-  --selected-candidate-id challenger \
   --evaluator-id evaluator-team-1 \
   --evaluation-run-id promotion-2026-08-11 \
   --state-root /secure/evaluator/state \
@@ -104,7 +105,9 @@ paper-agent --dry-run stage2-evaluator promote \
   --output /secure/transfer/hidden-promotion-attestation.json
 ```
 
-确认 `status: "validated"` 后只移除 `--dry-run`，以相同参数执行一次。真实 promotion 的通过和失败
+确认 `status: "validated"` 后只移除 `--dry-run`，以相同参数执行一次。真实 promotion 从冻结的
+paired hidden comparison、公共质量和性能 evidence 自动选择唯一 winner；操作员不能指定候选。release
+assembly 会再次从 evidence 重算这些门。真实 promotion 的通过和失败
 都会消费 `<state-root>/<gold-manifest-hash>.promotion.json`；失败会保留签名失败证明，但不能用于
 production release，也不能删除 marker 后重试。私钥必须是当前用户拥有、非 symlink、精确 `0600`、
 不超过 16 KiB 的 canonical unencrypted Ed25519 PKCS#8 PEM；当前 CLI 不直接调用 HSM 或

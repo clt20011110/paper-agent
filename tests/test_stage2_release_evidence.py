@@ -110,6 +110,9 @@ def _attestation(
         },
         "prediction_submission_hash": HASH,
         "promotion_marker_hash": HASH,
+        "winner_candidate_id": candidate_id,
+        "public_gate_artifact_hashes": {name: HASH for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")},
+        "throughput_runs": [1, 1, 1],
         "consumed_hidden_splits": ["hidden_hard", "hidden_real"],
         "gate_policy_hash": HASH,
         "result_summary": {
@@ -602,6 +605,19 @@ def test_release_evidence_index_verifies_every_bound_file(tmp_path: Path) -> Non
     index = load_stage2_release_evidence_index(path)
 
     assert index.candidate_id == "candidate-1"
+
+
+def test_public_promotion_evidence_does_not_require_a_circular_hidden_attestation(
+    tmp_path: Path,
+) -> None:
+    path, document = _index(tmp_path)
+    document["evidence_type"] = "stage2_public_promotion_evidence"
+    document.pop("hidden_attestation")
+    path.write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
+
+    index = load_stage2_release_evidence_index(path)
+
+    assert index.hidden_attestation is None
     assert tuple(index.public_gates) == (
         "structured_replay",
         "rationale",

@@ -551,6 +551,17 @@ def verify_stage2_release_evidence_index(
         manifest = gold_manifest_from_document(
             index.gold_manifest.read_json(index.bundle_root)
         )
+        public_evidence = verify_public_stage2_gates(index)
+        if not public_evidence.passed:
+            failures = [
+                f"{name}: {failure}"
+                for name, result in public_evidence.gates.items()
+                for failure in result.gate.failures
+            ]
+            raise Stage2ReleaseError(
+                "Stage 2 public release gates did not pass: "
+                + ("; ".join(failures) or "a recomputed gate failed")
+            )
         hidden_bindings = HiddenPromotionBindings(
             candidate_id=candidate_id,
             evaluation_manifest_hash=evaluation_manifest_hash,
@@ -568,24 +579,20 @@ def verify_stage2_release_evidence_index(
                 split.value: sum(pair.split is split for pair in manifest.pairs)
                 for split in (GoldSplit.HIDDEN_HARD, GoldSplit.HIDDEN_REAL)
             },
+            public_gate_artifact_hashes={
+                name: gate.evidence_hash
+                for name, gate in public_evidence.gates.items()
+            },
+            throughput_runs=public_evidence.throughput_runs,
         )
+        if index.hidden_attestation is None:
+            raise Stage2ReleaseError("Stage 2 release evidence requires a hidden attestation")
         attestation_document = index.hidden_attestation.read_json(index.bundle_root)
         verify_hidden_promotion_attestation(
             attestation_document,
             hidden_trust,
             expected_bindings=hidden_bindings,
         )
-        public_evidence = verify_public_stage2_gates(index)
-        if not public_evidence.passed:
-            failures = [
-                f"{name}: {failure}"
-                for name, result in public_evidence.gates.items()
-                for failure in result.gate.failures
-            ]
-            raise Stage2ReleaseError(
-                "Stage 2 public release gates did not pass: "
-                + ("; ".join(failures) or "a recomputed gate failed")
-            )
         artifacts = {
             "promotion": index.hidden_attestation.sha256,
             **{

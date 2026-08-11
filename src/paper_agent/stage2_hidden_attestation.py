@@ -29,6 +29,8 @@ _RELEASE_BINDING_FIELDS = (
     "threshold_hashes",
     "hidden_pair_universe_hashes",
     "hidden_split_pair_counts",
+    "public_gate_artifact_hashes",
+    "throughput_runs",
 )
 
 
@@ -46,6 +48,8 @@ class HiddenPromotionBindings:
     threshold_hashes: Mapping[str, str]
     hidden_pair_universe_hashes: Mapping[str, str]
     hidden_split_pair_counts: Mapping[str, int]
+    public_gate_artifact_hashes: Mapping[str, str]
+    throughput_runs: tuple[float, float, float]
 
     def document(self) -> dict[str, Any]:
         return {
@@ -57,6 +61,8 @@ class HiddenPromotionBindings:
             "threshold_hashes": dict(self.threshold_hashes),
             "hidden_pair_universe_hashes": dict(self.hidden_pair_universe_hashes),
             "hidden_split_pair_counts": dict(self.hidden_split_pair_counts),
+            "public_gate_artifact_hashes": dict(self.public_gate_artifact_hashes),
+            "throughput_runs": list(self.throughput_runs),
         }
 
 
@@ -206,6 +212,10 @@ def verify_hidden_promotion_attestation(
             )
     if payload["gate_policy_hash"] != HIDDEN_PROMOTION_GATE_POLICY_HASH:
         raise HiddenPromotionAttestationError("hidden promotion gate policy hash is invalid")
+    if payload["winner_candidate_id"] != payload["candidate_id"]:
+        raise HiddenPromotionAttestationError(
+            "hidden promotion candidate is not the signed winner"
+        )
     summary = payload["result_summary"]
     if summary["passed"] is not True or summary["failures"]:
         raise HiddenPromotionAttestationError("hidden promotion gates did not pass")

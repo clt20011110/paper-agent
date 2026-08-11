@@ -4,6 +4,7 @@ from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ from paper_agent.stage2_evaluation import (
     GoldManifest,
     GoldPair,
     GoldSplit,
+    GateResult,
     PathCalibrator,
     Prediction,
     Stage2Decision,
@@ -34,6 +36,21 @@ from paper_agent.stage2_promotion_artifacts import (
 
 def _hash(value: object) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _verified_public_gates(
+    *, throughput: tuple[float, float, float] = (100, 100, 100),
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        gates={
+            name: SimpleNamespace(
+                evidence_hash="a" * 64,
+                gate=GateResult(True, ()),
+            )
+            for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")
+        },
+        throughput_runs=throughput,
+    )
 
 
 def _gold() -> tuple[GoldManifest, dict[str, object]]:
@@ -200,17 +217,23 @@ def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_fail
         encoding="utf-8",
     )
     monkeypatch.setattr(artifacts_io, "candidate_artifacts_from_v2_bundle", lambda _path: candidate)
+    monkeypatch.setattr(
+        artifacts_io,
+        "_public_release_evidence",
+        lambda *_args: {"candidate": _verified_public_gates()},
+    )
 
     result = run_promotion_evaluation(
         manifest_path=manifest_path,
         private_labels_path=labels_path,
         submission_paths={"candidate": submission_path},
         candidate_bundle_paths={"candidate": tmp_path / "candidate-v2.json"},
+        public_evidence_paths={"candidate": tmp_path / "public-evidence.json"},
         evaluator_id="synthetic-evaluator",
         state_root=tmp_path / "state",
         incumbent_candidate_id="candidate",
         evaluation_run_id="synthetic-run",
-        bootstrap_iterations=10,
+        bootstrap_iterations=100,
     )
 
     unsigned = result.candidates["candidate"].document()
@@ -224,3 +247,73 @@ def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_fail
     assert payload["evaluator_id"] == "synthetic-evaluator"
     assert payload["prediction_submission_hash"] == result.candidates["candidate"].prediction_submission_hash
     assert (tmp_path / "state" / f"{manifest.hash()}.promotion.json").is_file()
+
+
+def test_orchestration_derives_the_paired_hidden_winner_not_an_operator_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, labels_document = _gold()
+    labels = private_gold_labels_from_document(labels_document, manifest=manifest)
+    incumbent = _candidate(manifest, labels, "incumbent")
+    challenger = _candidate(manifest, labels, "challenger")
+    manifest_path = tmp_path / "gold.json"
+    labels_path = tmp_path / "private-labels.json"
+    incumbent_submission = tmp_path / "incumbent-submission.json"
+    challenger_submission = tmp_path / "challenger-submission.json"
+    write_gold_manifest(manifest_path, manifest)
+    labels_path.write_text(json.dumps(labels_document), encoding="utf-8")
+    incumbent_submission.write_text(
+        json.dumps(promotion_submission_document(
+            _submission(manifest, labels, incumbent, reject_all=True)
+        )),
+        encoding="utf-8",
+    )
+    challenger_submission.write_text(
+        json.dumps(promotion_submission_document(_submission(manifest, labels, challenger))),
+        encoding="utf-8",
+    )
+    candidate_paths = {
+        "incumbent": tmp_path / "incumbent-v2.json",
+        "challenger": tmp_path / "challenger-v2.json",
+    }
+    artifacts = {"incumbent": incumbent, "challenger": challenger}
+    monkeypatch.setattr(
+        artifacts_io,
+        "candidate_artifacts_from_v2_bundle",
+        lambda path: artifacts[path.stem.removesuffix("-v2")],
+    )
+    monkeypatch.setattr(
+        artifacts_io,
+        "_public_release_evidence",
+        lambda *_args: {
+            "incumbent": _verified_public_gates(throughput=(100, 100, 100)),
+            "challenger": _verified_public_gates(throughput=(120, 120, 120)),
+        },
+    )
+    monkeypatch.setattr(
+        artifacts_io, "promotion_gate", lambda _result: GateResult(True, ())
+    )
+
+    result = run_promotion_evaluation(
+        manifest_path=manifest_path,
+        private_labels_path=labels_path,
+        submission_paths={
+            "incumbent": incumbent_submission,
+            "challenger": challenger_submission,
+        },
+        candidate_bundle_paths=candidate_paths,
+        public_evidence_paths={
+            "incumbent": tmp_path / "incumbent-public-evidence.json",
+            "challenger": tmp_path / "challenger-public-evidence.json",
+        },
+        evaluator_id="synthetic-evaluator",
+        state_root=tmp_path / "state",
+        incumbent_candidate_id="incumbent",
+        evaluation_run_id="synthetic-run",
+        bootstrap_iterations=100,
+    )
+
+    assert result.winner_candidate_id == "challenger"
+    winner = result.candidates[result.winner_candidate_id]
+    assert winner.winner_candidate_id == winner.candidate_id
+    assert winner.passed

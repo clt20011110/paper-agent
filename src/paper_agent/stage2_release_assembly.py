@@ -232,6 +232,10 @@ def _require_evidence_contained(
     index: Stage2ReleaseEvidenceIndex,
     bundle_root: Path,
 ) -> None:
+    if index.hidden_attestation is None:
+        raise Stage2ReleaseAssemblyError(
+            "Stage 2 release evidence requires a hidden attestation"
+        )
     refs = [index.gold_manifest, index.hidden_attestation]
     for gate in index.public_gates.values():
         refs.append(gate.manifest)

@@ -15,12 +15,11 @@
     "calibrator_hashes",
     "threshold_hashes",
     "gold_manifest",
-    "hidden_attestation",
     "public_gates"
   ],
   "properties": {
     "schema_version": {"const": "1"},
-    "evidence_type": {"const": "stage2_release_evidence"},
+    "evidence_type": {"enum": ["stage2_release_evidence", "stage2_public_promotion_evidence"]},
     "candidate_id": {"type": "string", "minLength": 1},
     "evaluation_manifest_hash": {"$ref": "#/$defs/sha256"},
     "stage2_config_hash": {"$ref": "#/$defs/sha256"},
@@ -73,6 +72,16 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"evidence_type": {"const": "stage2_release_evidence"}}},
+      "then": {"required": ["hidden_attestation"]}
+    },
+    {
+      "if": {"properties": {"evidence_type": {"const": "stage2_public_promotion_evidence"}}},
+      "then": {"not": {"required": ["hidden_attestation"]}}
+    }
+  ],
   "$defs": {
     "sha256": {
       "type": "string",

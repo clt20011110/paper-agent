@@ -90,8 +90,9 @@ paper-agent --dry-run stage2-evaluator promote \
   --candidate challenger=/secure/evaluator/challenger-candidate-v2.json \
   --submission incumbent=/secure/evaluator/incumbent-submission.json \
   --submission challenger=/secure/evaluator/challenger-submission.json \
+  --public-evidence incumbent=/secure/evaluator/incumbent-public-evidence.json \
+  --public-evidence challenger=/secure/evaluator/challenger-public-evidence.json \
   --incumbent-candidate-id incumbent \
-  --selected-candidate-id challenger \
   --evaluator-id evaluator-team-1 \
   --evaluation-run-id promotion-2026-08-11 \
   --state-root /secure/evaluator/state \

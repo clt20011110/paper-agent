@@ -63,6 +63,9 @@ def _payload() -> dict[str, object]:
         "hidden_split_pair_counts": {"hidden_hard": 150, "hidden_real": 150},
         "prediction_submission_hash": "4" * 64,
         "promotion_marker_hash": "5" * 64,
+        "winner_candidate_id": "candidate-1",
+        "public_gate_artifact_hashes": {name: "6" * 64 for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")},
+        "throughput_runs": [1, 1, 1],
         "consumed_hidden_splits": ["hidden_hard", "hidden_real"],
         "gate_policy_hash": HIDDEN_PROMOTION_GATE_POLICY_HASH,
         "result_summary": {

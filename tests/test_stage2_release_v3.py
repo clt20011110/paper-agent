@@ -96,6 +96,8 @@ def _payload(
     calibrator_hashes: dict[str, str],
     threshold_hashes: dict[str, str],
     gold: object,
+    public_gate_artifact_hashes: dict[str, str],
+    throughput_runs: tuple[float, float, float],
 ) -> dict:
     return {
         "schema_version": "1",
@@ -126,6 +128,9 @@ def _payload(
         },
         "prediction_submission_hash": "1" * 64,
         "promotion_marker_hash": "2" * 64,
+        "winner_candidate_id": candidate_id,
+        "public_gate_artifact_hashes": public_gate_artifact_hashes,
+        "throughput_runs": list(throughput_runs),
         "consumed_hidden_splits": ["hidden_hard", "hidden_real"],
         "gate_policy_hash": HIDDEN_PROMOTION_GATE_POLICY_HASH,
         "result_summary": {
@@ -184,6 +189,14 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
         "threshold_hashes": threshold_hashes,
     })
     public_evidence._install_public_gate_evidence(root, evidence_path, evidence)
+    public_index = deepcopy(evidence)
+    public_index["evidence_type"] = "stage2_public_promotion_evidence"
+    public_index.pop("hidden_attestation")
+    public_index_path = root / "stage2-public-promotion-evidence.json"
+    _write_json(public_index_path, public_index)
+    verified_public = public_evidence.verify_public_stage2_gates(
+        public_evidence.load_stage2_release_evidence_index(public_index_path)
+    )
 
     private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
     public_key = private_key.public_key().public_bytes(
@@ -224,6 +237,11 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
             calibrator_hashes=calibrator_hashes,
             threshold_hashes=threshold_hashes,
             gold=gold,
+            public_gate_artifact_hashes={
+                name: gate.evidence_hash
+                for name, gate in verified_public.gates.items()
+            },
+            throughput_runs=verified_public.throughput_runs,
         ),
         private_key,
     )

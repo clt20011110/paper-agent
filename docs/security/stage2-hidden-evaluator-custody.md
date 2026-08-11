@@ -36,6 +36,8 @@ Transfer only the corresponding canonical padded-base64 32-byte public key to th
 
 `stage2-evaluator promote` is the preferred production path. It validates the public 600-pair sampling manifest and every schema-v2 benchmark candidate before opening private labels or submissions. Candidate and submission mappings are repeatable `ID=PATH` arguments and must name exactly the same candidate IDs.
 
+Each `--public-evidence` document uses `evidence_type: stage2_public_promotion_evidence`: it contains the same candidate binding, gold manifest, and raw public gate references as release evidence, but deliberately has no `hidden_attestation`. This lets the evaluator recompute quality, benchmark, and soak gates before the one-shot hidden comparison without a circular dependency.
+
 First run the public-only validation. The paths for private labels, submissions, key, state, and output are still syntactically required, but dry-run does not read the private labels, submissions, or key, does not touch the state root or consume a marker, and does not create the output or its parent:
 
 ```sh
@@ -46,8 +48,9 @@ paper-agent --dry-run stage2-evaluator promote \
   --candidate challenger=/secure/evaluator/challenger-candidate-v2.json \
   --submission incumbent=/secure/evaluator/incumbent-submission.json \
   --submission challenger=/secure/evaluator/challenger-submission.json \
+  --public-evidence incumbent=/secure/evaluator/incumbent-public-evidence.json \
+  --public-evidence challenger=/secure/evaluator/challenger-public-evidence.json \
   --incumbent-candidate-id incumbent \
-  --selected-candidate-id challenger \
   --evaluator-id evaluator-team-1 \
   --evaluation-run-id promotion-2026-08-11 \
   --state-root /secure/evaluator/state \
@@ -66,7 +69,7 @@ Public manifest/candidate errors, invalid trust, a missing or mismatched key, an
 <state-root>/<gold-manifest-hash>.promotion.json
 ```
 
-That marker is the authoritative one-shot state. A passing or failing gate consumes the same holdout. A selected candidate that fails a gate still produces a signed public-safe failure attestation and the command reports `status: "failed"`; preserve both the attestation and marker for audit, but never assemble that result into a production release. If signing or output persistence fails after the marker was claimed, the marker can exist without a transferable attestation. Do not delete it or retry against the same holdout. Investigate the failure and use a new frozen holdout for a new promotion. Never infer reusability from terminal output alone; inspect the protected marker state.
+That marker is the authoritative one-shot state. A passing or failing gate consumes the same holdout. The evaluator derives the candidate from the frozen paired hidden comparison and recomputed public quality/performance evidence; an operator cannot select a lower-ranked candidate. The signed winner binding includes the public gate artifacts and throughput, and must equal the release candidate. Release assembly independently recomputes the same gates. A failed winner still produces a signed public-safe failure attestation and the command reports `status: "failed"`; preserve both the attestation and marker for audit, but never assemble that result into a production release. If signing or output persistence fails after the marker was claimed, the marker can exist without a transferable attestation. Do not delete it or retry against the same holdout. Investigate the failure and use a new frozen holdout for a new promotion. Never infer reusability from terminal output alone; inspect the protected marker state.
 
 ## Advanced payload-only attestation
 

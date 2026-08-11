@@ -84,7 +84,7 @@ class Stage2ReleaseEvidenceIndex:
     calibrator_hashes: Mapping[str, str]
     threshold_hashes: Mapping[str, str]
     gold_manifest: ArtifactRef
-    hidden_attestation: ArtifactRef
+    hidden_attestation: ArtifactRef | None
     public_gates: Mapping[str, GateEvidenceRefs]
 
     @property
@@ -137,12 +137,17 @@ def load_stage2_release_evidence_index_bytes(
         calibrator_hashes=_hash_binding(document["calibrator_hashes"]),
         threshold_hashes=_hash_binding(document["threshold_hashes"]),
         gold_manifest=ArtifactRef.from_document(document["gold_manifest"]),
-        hidden_attestation=ArtifactRef.from_document(document["hidden_attestation"]),
+        hidden_attestation=(
+            ArtifactRef.from_document(document["hidden_attestation"])
+            if document["evidence_type"] == "stage2_release_evidence"
+            else None
+        ),
         public_gates=MappingProxyType(gates),
     )
     _verify_all_refs(index)
     manifest = _verify_gold_manifest(index)
-    _validate_attestation_shape_and_binding(index, manifest)
+    if index.hidden_attestation is not None:
+        _validate_attestation_shape_and_binding(index, manifest)
     return index
 
 
@@ -162,7 +167,9 @@ def _hash_binding(document: Mapping[str, Any]) -> Mapping[str, str]:
 
 
 def _verify_all_refs(index: Stage2ReleaseEvidenceIndex) -> None:
-    refs = [index.gold_manifest, index.hidden_attestation]
+    refs = [index.gold_manifest]
+    if index.hidden_attestation is not None:
+        refs.append(index.hidden_attestation)
     for gate in index.public_gates.values():
         refs.append(gate.manifest)
         refs.extend(gate.records)
