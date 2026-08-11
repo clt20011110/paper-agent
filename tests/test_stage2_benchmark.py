@@ -56,7 +56,7 @@ class FakeOmlxTransport:
             scores = []
             for index, document in enumerate(payload["documents"]):
                 title = document.splitlines()[0].removeprefix("Title: ")
-                score = -2.0 if title == "p-low" else 3.0
+                score = -2.0 if title == "p-low" else 0.5 if title == "p-gray" else 3.0
                 scores.append({"index": index, "relevance_score": score})
             return OmlxResponse(200, json.dumps({"results": scores}).encode())
         assert path == "/v1/chat/completions"
@@ -207,6 +207,30 @@ def test_performance_runner_executes_omlx_pipeline_and_writes_canonical_measurem
         "SELECT reason FROM filter_decisions WHERE run_id = 'performance-fixture' AND paper_id = 'p-gray'"
     ).fetchone()[0])
     assert gray_reason["reason_code"].startswith("performance_manifest_forced_qwen:")
+    database.close()
+
+
+def test_performance_manifest_is_the_exact_qwen_route_and_other_gray_cases_fail_open(
+    tmp_path: Path,
+) -> None:
+    transport = FakeOmlxTransport()
+    database, runner = _runner(tmp_path, transport)
+    spec = BenchmarkRunSpec.fixture(
+        kind="performance",
+        scenario="normal",
+        cases=_cases(),
+        stage2_config_hash=runner.profile.base_runtime_config_hash,
+        forced_qwen_pair_ids=("p-missing",),
+    )
+
+    record = runner.run(spec, _papers(), run_id="exact-performance-routing")
+
+    assert record.document()["qwen_pair_ids"] == ["p-missing"]
+    row = database.connection.execute(
+        "SELECT status FROM filter_decisions WHERE run_id = ? AND paper_id = ?",
+        ("exact-performance-routing", "p-gray"),
+    ).fetchone()
+    assert row["status"] == "needs_review"
     database.close()
 
 

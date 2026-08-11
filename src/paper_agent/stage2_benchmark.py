@@ -683,6 +683,8 @@ class _BenchmarkPipeline(Stage2Pipeline):
         route, probability = super()._reranker_route(paper, score)
         if paper.paper_id in self._forced_qwen_pair_ids:
             return CascadeRoute.ADJUDICATE, probability
+        if route is CascadeRoute.ADJUDICATE:
+            return CascadeRoute.NEEDS_REVIEW, probability
         return route, probability
 
     def _adjudication_reason(self, paper: Stage2Paper) -> str:
