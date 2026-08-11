@@ -147,7 +147,7 @@ def _draft() -> dict:
     sections = [
         {
             "id": section_id,
-            "title": section_id.replace("_", " "),
+            "title": f"中文章节：{section_id.replace('_', ' ')}",
             "subquestion_ids": ["rq1"] if section_id in {"field_taxonomy", "evidence_synthesis"} else [],
             "target_words": 300,
             "evidence_requirements": ["Every substantive fact has evidence"],
@@ -163,7 +163,8 @@ def _draft() -> dict:
     ]
     all_sections = list(REPORT_SECTION_IDS)
     return {
-        "objective": "Map the evidence without inventing results.",
+        "objective": "在不虚构结果的前提下梳理证据。",
+        "report_language": "zh-CN",
         "audience": "Researchers",
         "primary_question": "What methods are supported?",
         "subquestions": [{"id": "rq1", "question": "Which methods have direct evidence?"}],
@@ -229,6 +230,11 @@ def test_compiled_report_plan_binds_frozen_inputs_prompts_and_required_contract(
 
     assert plan["plan_hash"] == second["plan_hash"]
     assert plan["plan_id"] == second["plan_id"]
+    assert plan["report_language"] == "zh-CN"
+    assert json.loads(canonical_json(plan))["report_language"] == "zh-CN"
+    language_drift = deepcopy(plan)
+    language_drift["report_language"] = "en"
+    assert approved_content_hash(language_drift) != plan["plan_hash"]
     assert plan["query_plan_hash"] == HASH
     assert plan["corpus_snapshot_hash"] == corpus["snapshot_hash"]
     assert plan["search_audit_pack_hash"] == audit["pack_hash"]
@@ -242,6 +248,30 @@ def test_compiled_report_plan_binds_frozen_inputs_prompts_and_required_contract(
     }
     assert set(REPORT_SECTION_IDS).issubset(section["id"] for section in plan["sections"])
     assert audit["source_audit_hash"] == corpus["search_audit_source_hash"]
+
+
+def test_report_language_defaults_for_legacy_drafts_and_rejects_other_values() -> None:
+    corpus, audit = _inputs()
+    legacy_draft = _draft()
+    legacy_draft.pop("report_language")
+    compiled = compile_report_plan(
+        legacy_draft,
+        corpus_snapshot=corpus,
+        search_audit_pack=audit,
+        created_at="2026-08-10T00:02:00Z",
+    )
+
+    assert compiled["report_language"] == "zh-CN"
+
+    unsupported = _draft()
+    unsupported["report_language"] = "en"
+    with pytest.raises(ReportPlanError, match="report_language must be zh-CN"):
+        compile_report_plan(
+            unsupported,
+            corpus_snapshot=corpus,
+            search_audit_pack=audit,
+            created_at="2026-08-10T00:02:00Z",
+        )
 
 
 def test_approval_is_detached_and_business_drift_is_rejected() -> None:
@@ -450,6 +480,8 @@ def test_store_keeps_approved_bundle_immutable_and_validates_on_load(tmp_path) -
 
     bundle = store.load_bundle(approved["plan_id"])
     assert bundle.plan == approved
+    assert bundle.plan["report_language"] == "zh-CN"
+    assert json.loads(store.approved_path(approved["plan_id"]).read_text())["report_language"] == "zh-CN"
     assert bundle.corpus_snapshot == corpus
     assert json.loads(store.latest_path.read_text()) == {
         "plan_id": approved["plan_id"],

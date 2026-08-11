@@ -82,6 +82,7 @@ def _bundle() -> dict:
     return {
         "plan": {
             "plan_hash": "a" * 64,
+            "report_language": "zh-CN",
             "sections": [
                 {"id": section_id, "title": section_id} for section_id in sections
             ],
@@ -259,6 +260,7 @@ def test_shared_budget_rejects_an_unshardable_repair_before_any_call() -> None:
 def test_shared_preflight_budget_includes_frozen_bibliography_bytes() -> None:
     plan = {
         "plan_hash": "a" * 64,
+        "report_language": "zh-CN",
         "sections": [{"id": "evidence"}],
         "paper_memberships": [{"paper_id": "p1", "section_ids": ["evidence"]}],
     }
@@ -296,6 +298,7 @@ def test_shared_preflight_repeats_custom_rubric_in_every_audit_shard(
 ) -> None:
     plan = {
         "plan_hash": "a" * 64,
+        "report_language": "zh-CN",
         "sections": [{"id": "evidence"}],
         "paper_memberships": [{"paper_id": "p1", "section_ids": ["evidence"]}],
     }

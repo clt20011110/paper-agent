@@ -66,6 +66,7 @@ def _bundle() -> dict:
     return {
         "plan": {
             "report_run_id": "report-1", "objective": "测试领域综述",
+            "report_language": "zh-CN",
             "sections": [{"id": "evidence", "title": "证据综合"}],
         },
         "search_audit": {
@@ -74,7 +75,10 @@ def _bundle() -> dict:
             "budget_exhausted": False,
             "limitations": [],
         },
-        "corpus_snapshot": {"papers": [{"paper_id": "p1", "input_scope": "full_pdf"}]},
+        "corpus_snapshot": {"papers": [{
+            "paper_id": "p1", "input_scope": "full_pdf",
+            "publication_status": "peer_reviewed",
+        }]},
         "claims": [claim],
         "coverage": {
             "complete": True, "missing_paper_ids": [], "uncovered_claim_ids": [],
@@ -164,6 +168,118 @@ def test_verifier_renderer_and_immutable_publish(tmp_path) -> None:
             comparison_groups={}, claim_relations=[], document=bundle["document"],
             coverage=bundle["coverage"], bibliography=bundle["bibliography"], audit=audit,
         )
+
+
+def test_zh_cn_verifier_rejects_an_all_english_report() -> None:
+    bundle = _bundle()
+    bundle["plan"]["objective"] = "Evidence review"
+    bundle["plan"]["sections"][0]["title"] = "Evidence synthesis"
+    bundle["claims"][0]["claim_text"] = "The method reaches the measured result."
+
+    with pytest.raises(ReportVerificationError, match="objective must contain CJK"):
+        verify_report(
+            plan=bundle["plan"], document=bundle["document"], claims=bundle["claims"],
+            coverage=bundle["coverage"], bibliography=bundle["bibliography"],
+            search_audit=bundle["search_audit"], corpus_snapshot=bundle["corpus_snapshot"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    (("section", "section title must contain CJK"), ("claim", "claim_text must contain CJK")),
+)
+def test_zh_cn_verifier_checks_section_titles_and_claim_text(
+    target: str, message: str
+) -> None:
+    bundle = _bundle()
+    if target == "section":
+        bundle["plan"]["sections"][0]["title"] = "Evidence synthesis"
+    else:
+        bundle["claims"][0]["claim_text"] = "The method reaches the measured result."
+
+    with pytest.raises(ReportVerificationError, match=message):
+        verify_report(
+            plan=bundle["plan"], document=bundle["document"], claims=bundle["claims"],
+            coverage=bundle["coverage"], bibliography=bundle["bibliography"],
+            search_audit=bundle["search_audit"], corpus_snapshot=bundle["corpus_snapshot"],
+        )
+
+
+def test_zh_cn_verifier_rejects_english_prose_despite_chinese_claim_and_caption() -> None:
+    bundle = _bundle()
+    bundle["document"]["blocks"][0]["text"] = "The method reaches 91%. [@p1]"
+
+    with pytest.raises(ReportVerificationError, match="prose/list_item block must contain CJK"):
+        verify_report(
+            plan=bundle["plan"], document=bundle["document"], claims=bundle["claims"],
+            coverage=bundle["coverage"], bibliography=bundle["bibliography"],
+            search_audit=bundle["search_audit"], corpus_snapshot=bundle["corpus_snapshot"],
+        )
+
+
+def test_table_caption_only_claim_requires_one_cjk_block_but_allows_numeric_cells() -> None:
+    bundle = _bundle()
+    bundle["document"]["blocks"][0].update({
+        "block_kind": "table_cell",
+        "text": "91 [@p1]",
+    })
+    bundle["document"]["blocks"][1]["text"] = "Supporting caption [@p1]"
+
+    with pytest.raises(ReportVerificationError, match="table/caption block"):
+        verify_report(
+            plan=bundle["plan"], document=bundle["document"], claims=bundle["claims"],
+            coverage=bundle["coverage"], bibliography=bundle["bibliography"],
+            search_audit=bundle["search_audit"], corpus_snapshot=None,
+        )
+
+    bundle["document"]["blocks"][1]["text"] = "中文说明 [@p1]"
+    verify_report(
+        plan=bundle["plan"], document=bundle["document"], claims=bundle["claims"],
+        coverage=bundle["coverage"], bibliography=bundle["bibliography"],
+        search_audit=bundle["search_audit"], corpus_snapshot=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("publication_status", "disclosure"),
+    (
+        (
+            "preprint",
+            "出版状态分层：预印本=1；预印本和研讨会论文与正式同行评审论文分层呈现，不视为同等证据。",
+        ),
+        (
+            "workshop",
+            "出版状态分层：研讨会论文=1；预印本和研讨会论文与正式同行评审论文分层呈现，不视为同等证据。",
+        ),
+    ),
+)
+def test_preprint_and_workshop_cohorts_require_exact_disclosure_in_body_and_sidecar(
+    publication_status: str, disclosure: str
+) -> None:
+    bundle = _bundle()
+    bundle["corpus_snapshot"]["papers"][0]["publication_status"] = publication_status
+
+    with pytest.raises(ReportVerificationError, match="publication-status limitations"):
+        verify_report(
+            plan=bundle["plan"], document=bundle["document"], claims=bundle["claims"],
+            coverage=bundle["coverage"], bibliography=bundle["bibliography"],
+            search_audit=bundle["search_audit"], corpus_snapshot=bundle["corpus_snapshot"],
+        )
+
+    bundle["document"]["blocks"][1]["text"] += " " + disclosure
+    verify_report(
+        plan=bundle["plan"], document=bundle["document"], claims=bundle["claims"],
+        coverage=bundle["coverage"], bibliography=bundle["bibliography"],
+        search_audit=bundle["search_audit"], corpus_snapshot=bundle["corpus_snapshot"],
+    )
+    markdown, sidecar = render_markdown(
+        plan=bundle["plan"], document=bundle["document"], claims=bundle["claims"],
+        bibliography=bundle["bibliography"], search_audit=bundle["search_audit"],
+        corpus_snapshot=bundle["corpus_snapshot"],
+    )
+
+    assert disclosure in markdown
+    assert disclosure in sidecar["search_limitations"]
 
 
 def test_report_directory_rejects_path_traversal(tmp_path) -> None:
@@ -304,6 +420,7 @@ def test_incremental_claim_relations_require_exact_evidence_diff_and_cardinality
 
 def test_resource_table_sidecar_is_deterministic_from_frozen_plan_and_corpus() -> None:
     plan = {
+        "report_language": "zh-CN",
         "artifacts": {"resource_tables": ["code-and-data"]},
         "paper_memberships": [
             {

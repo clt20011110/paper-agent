@@ -155,7 +155,7 @@ def _draft(max_input_tokens: int) -> dict:
     sections = [
         {
             "id": section_id,
-            "title": section_id.replace("_", " "),
+            "title": f"中文章节：{section_id.replace('_', ' ')}",
             "subquestion_ids": ["rq1"],
             "target_words": 300,
             "evidence_requirements": ["Every claim has evidence"],
@@ -165,7 +165,8 @@ def _draft(max_input_tokens: int) -> dict:
     ]
     all_sections = list(REPORT_SECTION_IDS)
     return {
-        "objective": "Synthesize the frozen evidence without adding papers.",
+        "objective": "综合冻结证据，不增加论文。",
+        "report_language": "zh-CN",
         "audience": "Researchers",
         "primary_question": "What does the frozen evidence support?",
         "subquestions": [{"id": "rq1", "question": "What does the evidence support?"}],
@@ -246,7 +247,7 @@ def _claim(report_run_id: str, section_id: str, record: AnalysisRecord) -> dict:
         "claim_key": key,
         "research_question_id": "rq1",
         "report_section": section_id,
-        "claim_text": f"{record.paper_id} has a measured result.",
+        "claim_text": f"论文 {record.paper_id} 具有测量结果。",
         "claim_type": "finding",
         "supporting_evidence": [reference],
         "contradicting_evidence": [],
@@ -295,7 +296,7 @@ def _corpus_claim(
         "claim_key": key,
         "research_question_id": "rq1",
         "report_section": section_id,
-        "claim_text": "The frozen search flow has two included papers.",
+        "claim_text": "冻结检索流程纳入了两篇论文。",
         "claim_type": "corpus_stat",
         "supporting_evidence": [reference],
         "contradicting_evidence": [],

@@ -37,6 +37,7 @@ RENDERER_VERSION = "report-markdown-v1"
 SUBSTANTIVE_KINDS = frozenset({"prose", "list_item", "table_cell", "caption"})
 PAPER_MARKER = re.compile(r"@([A-Za-z0-9._:-]+)")
 NUMBER = re.compile(r"(?<![A-Za-z0-9._:-])\d+(?:\.\d+)?(?:\s*[%×x])?")
+CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 CONFLICT_DISCLOSURE = re.compile(r"冲突|矛盾|不一致|相反|分歧")
 INCOMPARABLE_DISCLOSURE = re.compile(r"不可(?:直接)?比较|不具可比性")
 
@@ -146,6 +147,48 @@ def _sections(plan: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     return sections
 
 
+def _validate_report_language(
+    plan: Mapping[str, Any], claims: Sequence[Mapping[str, Any]]
+) -> None:
+    if plan.get("report_language") != "zh-CN":
+        raise ReportVerificationError("ReportPlan report_language must be zh-CN")
+    if CJK_TEXT.search(str(plan.get("objective") or "")) is None:
+        raise ReportVerificationError("zh-CN ReportPlan objective must contain CJK text")
+    for section_id, title in _sections(plan):
+        if CJK_TEXT.search(title) is None:
+            raise ReportVerificationError(
+                f"zh-CN section title must contain CJK text: {section_id}"
+            )
+    for claim in claims:
+        if CJK_TEXT.search(str(claim.get("claim_text") or "")) is None:
+            raise ReportVerificationError(
+                "zh-CN claim_text must contain CJK text: "
+                + str(claim.get("claim_id") or "<missing>")
+            )
+
+
+def _publication_status_disclosure(
+    corpus_snapshot: Mapping[str, Any],
+) -> str | None:
+    counts = {"preprint": 0, "workshop": 0}
+    for paper in corpus_snapshot.get("papers", ()):
+        status = str(paper.get("publication_status") or "")
+        if status in counts:
+            counts[status] += 1
+    cohorts = tuple(
+        (label, counts[status])
+        for status, label in (("preprint", "预印本"), ("workshop", "研讨会论文"))
+        if counts[status]
+    )
+    if not cohorts:
+        return None
+    return (
+        "出版状态分层："
+        + "、".join(f"{label}={count}" for label, count in cohorts)
+        + "；预印本和研讨会论文与正式同行评审论文分层呈现，不视为同等证据。"
+    )
+
+
 def _disclosures(search_audit: Mapping[str, Any], corpus_snapshot: Mapping[str, Any] | None) -> tuple[str, ...]:
     limitations = tuple(str(item) for item in search_audit.get("limitations", ()))
     snapshot = corpus_snapshot or {}
@@ -161,6 +204,9 @@ def _disclosures(search_audit: Mapping[str, Any], corpus_snapshot: Mapping[str, 
             + "、".join(f"{key}={scope[key]}" for key in sorted(scope))
             + "；全文、摘要和元数据证据已分层，缺失全文不作全文事实表述。"
         )
+    publication_status = _publication_status_disclosure(snapshot)
+    if publication_status is not None:
+        parts.append(publication_status)
     return tuple(dict.fromkeys(parts))
 
 
@@ -316,6 +362,7 @@ def verify_report(
     sections = _sections(plan)
     section_ids = {section_id for section_id, _ in sections}
     claim_by_id = _claim_map(claims)
+    _validate_report_language(plan, claims)
     try:
         require_exact_comparison_groups(claims, comparison_groups)
     except EvidenceValidationError as error:
@@ -346,6 +393,14 @@ def verify_report(
     for block in blocks:
         if block["block_kind"] not in SUBSTANTIVE_KINDS or block["section_id"] not in section_ids:
             raise ReportVerificationError("ReportDocument block is outside the frozen ReportPlan")
+        if (
+            block["block_kind"] in {"prose", "list_item"}
+            and CJK_TEXT.search(str(block["text"])) is None
+        ):
+            raise ReportVerificationError(
+                "zh-CN prose/list_item block must contain CJK text: "
+                + str(block["block_id"])
+            )
         claim_ids = tuple(str(item) for item in block["claim_ids"])
         citations = tuple(str(item) for item in block["citation_paper_ids"])
         if len(set(claim_ids)) != len(claim_ids) or len(set(citations)) != len(citations):
@@ -380,6 +435,17 @@ def verify_report(
     if missing_claims:
         raise ReportVerificationError(f"claims are absent from ReportDocument: {missing_claims}")
     for claim_id, claim_blocks in claims_to_blocks.items():
+        if (
+            not any(
+                block["block_kind"] in {"prose", "list_item"}
+                for block in claim_blocks
+            )
+            and not any(CJK_TEXT.search(str(block["text"])) for block in claim_blocks)
+        ):
+            raise ReportVerificationError(
+                "zh-CN claim without prose/list_item requires CJK text in a table/caption block: "
+                + claim_id
+            )
         evidence_papers = _paper_ids(claim_by_id[claim_id])
         citation_coverage = set().union(*(set(block["citation_paper_ids"]) for block in claim_blocks))
         if not evidence_papers.issubset(citation_coverage):
@@ -523,7 +589,9 @@ def verify_report(
     document_text = "\n".join(str(block["text"]) for block in blocks)
     missing_limitations = [item for item in limitations if item not in document_text]
     if missing_limitations:
-        raise ReportVerificationError("search or extraction limitations are absent from the report body")
+        raise ReportVerificationError(
+            "search, extraction, or publication-status limitations are absent from the report body"
+        )
     return {
         "renderer_version": RENDERER_VERSION,
         "plan_sections": [section_id for section_id, _ in sections],

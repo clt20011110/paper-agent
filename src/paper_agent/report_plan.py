@@ -344,6 +344,7 @@ def compile_report_plan(
     }
     fields = (
         "objective",
+        "report_language",
         "audience",
         "primary_question",
         "subquestions",
@@ -359,6 +360,7 @@ def compile_report_plan(
         "artifacts",
         "budget",
     )
+    source.setdefault("report_language", "zh-CN")
     missing = [field for field in fields if field not in source]
     if missing:
         raise ReportPlanError(f"ReportPlan draft is missing fields: {missing}")
@@ -368,7 +370,7 @@ def compile_report_plan(
         "plan_hash": "",
         "status": "draft",
         "created_at": timestamp,
-        **{field: source[field] for field in fields[:6]},
+        **{field: source[field] for field in fields},
         "query_plan_hash": corpus_snapshot["query_plan_hash"],
         "corpus_snapshot_hash": corpus_snapshot["snapshot_hash"],
         "search_audit_pack_hash": search_audit_pack["pack_hash"],
@@ -377,7 +379,6 @@ def compile_report_plan(
             if workflow_handoff is not None
             else None
         ),
-        **{field: source[field] for field in fields[6:]},
         "schema_hash": content_hash(report_schema),
         "prompt_hashes": prompt_hashes,
         "approval": None,
@@ -589,6 +590,8 @@ class ReportPlanStore:
 
 
 def _validate_plan_semantics(plan: Mapping[str, Any], corpus_snapshot: Mapping[str, Any]) -> None:
+    if plan.get("report_language") != "zh-CN":
+        raise ReportPlanError("ReportPlan report_language must be zh-CN")
     subquestions = tuple(str(item["id"]) for item in plan["subquestions"])
     if len(set(subquestions)) != len(subquestions):
         raise ReportPlanError("ReportPlan subquestion IDs must be unique")
