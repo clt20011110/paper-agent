@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import json
-from math import isfinite
 import os
 from pathlib import Path
 import re
@@ -32,6 +31,20 @@ from .stage2_evaluation import (
     PathCalibrator,
     ReleaseGateResult,
     ThresholdArtifact as ProbabilityThresholdArtifact,
+    GoldSplit,
+    gold_manifest_from_document,
+    pair_universe_hash,
+    phase3_release_gate,
+)
+from .stage2_hidden_attestation import (
+    HiddenPromotionBindings,
+    load_hidden_evaluator_trust,
+    verify_hidden_promotion_attestation,
+)
+from .stage2_public_gates import verify_public_stage2_gates
+from .stage2_release_evidence import (
+    Stage2ReleaseEvidenceIndex,
+    load_stage2_release_evidence_index,
 )
 from .stage2_pipeline import (
     ADJUDICATOR_SHARE_ALARM,
@@ -48,9 +61,6 @@ from .stage2_pipeline import (
 from .storage import Database
 
 
-RELEASE_ARTIFACT_NAMES = frozenset(
-    {"promotion", "structured_replay", "rationale", "parity", "benchmark", "soak"}
-)
 _RELEASE_FIELDS = frozenset({
     "schema_version", "profile", "reranker_lock", "adjudicator_lock",
     "calibration", "release_gate", "runtime",
@@ -64,13 +74,7 @@ _RUNTIME_FIELDS = frozenset({
     "omlx_base_url", "api_key_env", "prompt_version", "schema_version",
 })
 _RELEASE_GATE_FIELDS = frozenset({
-    "candidate_id", "evaluation_manifest_hash", "artifacts", "passed", "failures",
-    "throughput_runs",
-})
-_GATE_ARTIFACT_FIELDS = frozenset({
-    "schema_version", "gate", "candidate_id", "evaluation_manifest_hash",
-    "stage2_config_hash", "model_lock_hashes", "calibrator_hashes",
-    "threshold_hashes", "passed", "failures",
+    "candidate_id", "evaluation_manifest_hash", "evidence",
 })
 _PATH_NAMES = frozenset({CalibrationPath.RERANKER.value, CalibrationPath.QWEN.value})
 
@@ -230,21 +234,40 @@ class Stage2SearchScreener:
         return None
 
 
-def load_stage2_release(path: Path, plan: Mapping[str, Any]) -> ReleasedStage2:
-    """Load and bind a passed local release bundle to an approved QueryPlan."""
+def load_stage2_release(
+    path: Path,
+    plan: Mapping[str, Any],
+    *,
+    hidden_trust_path: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> ReleasedStage2:
+    """Load a v3 release and bind independent public/hidden evidence to its profile.
 
-    return _load_stage2_bundle(path, plan)
+    The hidden evaluator trust root is deployment-controlled: it is supplied as
+    an explicit path or through ``PAPER_AGENT_STAGE2_HIDDEN_TRUST``.  A release
+    bundle cannot select its own trust root.
+    """
+
+    values = environment if environment is not None else os.environ
+    trust_path = hidden_trust_path
+    if trust_path is None:
+        configured_path = values.get("PAPER_AGENT_STAGE2_HIDDEN_TRUST")
+        if configured_path:
+            trust_path = Path(configured_path)
+    return _load_stage2_bundle(path, plan, hidden_trust_path=trust_path)
 
 
 def load_stage2_benchmark_candidate(path: Path) -> ReleasedStage2:
     """Load frozen models, calibrations, thresholds, and runtime before throughput gates."""
 
-    return _load_stage2_bundle(path, None)
+    return _load_stage2_bundle(path, None, hidden_trust_path=None)
 
 
 def _load_stage2_bundle(
     path: Path,
     plan: Mapping[str, Any] | None,
+    *,
+    hidden_trust_path: Path | None,
 ) -> ReleasedStage2:
     released = plan is not None
     expected_screening_scope_hash: str | None = None
@@ -264,8 +287,17 @@ def _load_stage2_bundle(
         raise Stage2ReleaseError("legacy raw-score thresholds are forbidden in production releases")
     expected_fields = _RELEASE_FIELDS if released else _BENCHMARK_CANDIDATE_FIELDS
     _exact_fields(document, expected_fields, "Stage 2 bundle")
-    if document.get("schema_version") != "2":
-        raise Stage2ReleaseError("Stage 2 bundle must use schema_version 2")
+    expected_schema_version = "3" if released else "2"
+    if document.get("schema_version") != expected_schema_version:
+        raise Stage2ReleaseError(
+            f"Stage 2 {'release' if released else 'benchmark candidate'} must use "
+            f"schema_version {expected_schema_version}"
+        )
+    if released and hidden_trust_path is None:
+        raise Stage2ReleaseError(
+            "Stage 2 release requires a deployment-controlled hidden evaluator "
+            "trust manifest (hidden_trust_path or PAPER_AGENT_STAGE2_HIDDEN_TRUST)"
+        )
 
     profile_name = _text(document, "profile")
     if plan is not None and profile_name != plan["filter"]["profile"]:
@@ -362,13 +394,20 @@ def _load_stage2_bundle(
         for binding in (reranker_calibration, adjudicator_calibration)
     ):
         raise Stage2ReleaseError("Stage 2 thresholds do not match the base runtime config")
-    if gate_document is not None:
-        _release_gate(path, gate_document, profile_name, profile)
     if plan is not None:
         if profile.threshold_hash != plan["filter"]["thresholds_hash"]:
             raise Stage2ReleaseError("Stage 2 probability threshold bundle does not match QueryPlan")
         if profile.config_hash != plan["filter"]["config_hash"]:
             raise Stage2ReleaseError("Stage 2 release configuration does not match QueryPlan")
+    if gate_document is not None:
+        assert hidden_trust_path is not None
+        _release_gate(
+            path,
+            gate_document,
+            profile_name,
+            profile,
+            hidden_trust_path,
+        )
 
     return ReleasedStage2(
         profile_name,
@@ -384,29 +423,9 @@ def _release_gate(
     document: Mapping[str, Any],
     profile_name: str,
     profile: Stage2Profile,
+    hidden_trust_path: Path,
 ) -> ReleaseGateResult:
     _exact_fields(document, _RELEASE_GATE_FIELDS, "Stage 2 release gate")
-    artifacts = document.get("artifacts")
-    runs = document.get("throughput_runs")
-    failures = document.get("failures")
-    if not isinstance(artifacts, dict) or set(artifacts) != RELEASE_ARTIFACT_NAMES:
-        raise Stage2ReleaseError("Stage 2 release must bind all six Phase 3 gate artifacts")
-    if (
-        not isinstance(runs, list)
-        or len(runs) != 3
-        or any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not isfinite(value)
-            or value <= 0
-            for value in runs
-        )
-    ):
-        raise Stage2ReleaseError("Stage 2 release needs three throughput runs")
-    if not isinstance(failures, list) or not all(isinstance(item, str) for item in failures):
-        raise Stage2ReleaseError("Stage 2 release failures must be a list of strings")
-    if document.get("passed") is not True or failures:
-        raise Stage2ReleaseError("Stage 2 release has not passed every Phase 3 gate")
     candidate_id = _text(document, "candidate_id")
     evaluation_manifest_hash = _sha256_text(document, "evaluation_manifest_hash")
     if candidate_id != profile_name:
@@ -420,75 +439,130 @@ def _release_gate(
     ):
         raise Stage2ReleaseError("Stage 2 release gate and calibration gold manifest do not match")
 
-    artifact_hashes: dict[str, str] = {}
-    for gate_name in sorted(RELEASE_ARTIFACT_NAMES):
-        _, artifact_hash, artifact_bytes = _artifact(
-            release_path,
-            _object(artifacts, gate_name),
-        )
-        artifact_document = _json_object_bytes(
-            artifact_bytes,
-            f"Stage 2 {gate_name} gate artifact",
-        )
-        _validate_gate_artifact(
-            artifact_document,
-            gate_name,
-            candidate_id,
-            evaluation_manifest_hash,
-            profile,
-        )
-        artifact_hashes[gate_name] = artifact_hash
-    return ReleaseGateResult(
-        candidate_id,
-        evaluation_manifest_hash,
-        artifact_hashes,
-        GateResult(True, ()),
-        tuple(float(value) for value in runs),
+    evidence_path, _, _ = _artifact(
+        release_path,
+        _object(document, "evidence"),
     )
+    try:
+        index = load_stage2_release_evidence_index(evidence_path)
+        _validate_evidence_bindings(
+            index,
+            candidate_id=candidate_id,
+            evaluation_manifest_hash=evaluation_manifest_hash,
+            profile=profile,
+        )
+        manifest = gold_manifest_from_document(
+            index.gold_manifest.read_json(index.bundle_root)
+        )
+        hidden_bindings = HiddenPromotionBindings(
+            candidate_id=candidate_id,
+            evaluation_manifest_hash=evaluation_manifest_hash,
+            stage2_config_hash=profile.base_runtime_config_hash,
+            model_lock_hashes=_profile_model_lock_hashes(profile),
+            calibrator_hashes=_profile_calibrator_hashes(profile),
+            threshold_hashes=_profile_threshold_hashes(profile),
+            hidden_pair_universe_hashes={
+                split.value: pair_universe_hash(tuple(
+                    pair.pair_id for pair in manifest.pairs if pair.split is split
+                ))
+                for split in (GoldSplit.HIDDEN_HARD, GoldSplit.HIDDEN_REAL)
+            },
+            hidden_split_pair_counts={
+                split.value: sum(pair.split is split for pair in manifest.pairs)
+                for split in (GoldSplit.HIDDEN_HARD, GoldSplit.HIDDEN_REAL)
+            },
+        )
+        attestation_document = index.hidden_attestation.read_json(index.bundle_root)
+        verify_hidden_promotion_attestation(
+            attestation_document,
+            load_hidden_evaluator_trust(hidden_trust_path),
+            expected_bindings=hidden_bindings,
+        )
+        public_evidence = verify_public_stage2_gates(index)
+        if not public_evidence.passed:
+            failures = [
+                f"{name}: {failure}"
+                for name, result in public_evidence.gates.items()
+                for failure in result.gate.failures
+            ]
+            raise Stage2ReleaseError(
+                "Stage 2 public release gates did not pass: "
+                + ("; ".join(failures) or "a recomputed gate failed")
+            )
+        artifacts = {
+            "promotion": index.hidden_attestation.sha256,
+            **{
+                name: gate.evidence_hash
+                for name, gate in public_evidence.gates.items()
+            },
+        }
+        return phase3_release_gate(
+            candidate_id=candidate_id,
+            evaluation_manifest_hash=evaluation_manifest_hash,
+            artifacts={
+                "promotion": (artifacts["promotion"], GateResult(True, ())),
+                **{
+                    name: (artifacts[name], gate.gate)
+                    for name, gate in public_evidence.gates.items()
+                },
+            },
+            throughput_runs=public_evidence.throughput_runs,
+        )
+    except Stage2ReleaseError:
+        raise
+    except (OSError, ValueError) as error:
+        raise Stage2ReleaseError(
+            f"Stage 2 release evidence verification failed: {error}"
+        ) from error
 
 
-def _validate_gate_artifact(
-    document: Mapping[str, Any],
-    gate_name: str,
+def _validate_evidence_bindings(
+    index: Stage2ReleaseEvidenceIndex,
+    *,
     candidate_id: str,
     evaluation_manifest_hash: str,
     profile: Stage2Profile,
 ) -> None:
-    _exact_fields(document, _GATE_ARTIFACT_FIELDS, f"Stage 2 {gate_name} gate artifact")
-    if document.get("schema_version") != "1" or document.get("gate") != gate_name:
-        raise Stage2ReleaseError(f"Stage 2 {gate_name} gate artifact identity is invalid")
-    if document.get("candidate_id") != candidate_id:
-        raise Stage2ReleaseError(f"Stage 2 {gate_name} gate candidate does not match the release")
-    if document.get("evaluation_manifest_hash") != evaluation_manifest_hash:
-        raise Stage2ReleaseError(f"Stage 2 {gate_name} gate evaluation manifest does not match the release")
-    if document.get("stage2_config_hash") != profile.base_runtime_config_hash:
-        raise Stage2ReleaseError(f"Stage 2 {gate_name} gate runtime config does not match the release")
+    expected = {
+        "candidate_id": candidate_id,
+        "evaluation_manifest_hash": evaluation_manifest_hash,
+        "stage2_config_hash": profile.base_runtime_config_hash,
+        "model_lock_hashes": _profile_model_lock_hashes(profile),
+        "calibrator_hashes": _profile_calibrator_hashes(profile),
+        "threshold_hashes": _profile_threshold_hashes(profile),
+    }
+    for field, value in expected.items():
+        if getattr(index, field) != value:
+            raise Stage2ReleaseError(
+                f"Stage 2 release evidence {field} does not match the release profile"
+            )
+
+
+def _profile_model_lock_hashes(profile: Stage2Profile) -> dict[str, str]:
+    return {
+        CalibrationPath.RERANKER.value: profile.reranker_lock_hash,
+        CalibrationPath.QWEN.value: profile.adjudicator_lock_hash,
+    }
+
+
+def _profile_calibrator_hashes(profile: Stage2Profile) -> dict[str, str]:
     reranker = profile.reranker_calibration
     qwen = profile.adjudicator_calibration
     assert reranker is not None and qwen is not None
-    expected = {
-        "model_lock_hashes": {
-            CalibrationPath.RERANKER.value: profile.reranker_lock_hash,
-            CalibrationPath.QWEN.value: profile.adjudicator_lock_hash,
-        },
-        "calibrator_hashes": {
-            CalibrationPath.RERANKER.value: reranker.calibrator.hash(),
-            CalibrationPath.QWEN.value: qwen.calibrator.hash(),
-        },
-        "threshold_hashes": {
-            CalibrationPath.RERANKER.value: reranker.threshold.hash(),
-            CalibrationPath.QWEN.value: qwen.threshold.hash(),
-        },
+    return {
+        CalibrationPath.RERANKER.value: reranker.calibrator.hash(),
+        CalibrationPath.QWEN.value: qwen.calibrator.hash(),
     }
-    for field, expected_hashes in expected.items():
-        hashes = document.get(field)
-        if not isinstance(hashes, dict) or set(hashes) != _PATH_NAMES:
-            raise Stage2ReleaseError(f"Stage 2 {gate_name} gate {field} is incomplete")
-        if hashes != expected_hashes:
-            raise Stage2ReleaseError(f"Stage 2 {gate_name} gate {field} does not match the release")
-    failures = document.get("failures")
-    if document.get("passed") is not True or failures != []:
-        raise Stage2ReleaseError(f"Stage 2 {gate_name} gate did not pass")
+
+
+def _profile_threshold_hashes(profile: Stage2Profile) -> dict[str, str]:
+    reranker = profile.reranker_calibration
+    qwen = profile.adjudicator_calibration
+    assert reranker is not None and qwen is not None
+    return {
+        CalibrationPath.RERANKER.value: reranker.threshold.hash(),
+        CalibrationPath.QWEN.value: qwen.threshold.hash(),
+    }
 
 
 def _artifact(release_path: Path, document: Mapping[str, Any]) -> tuple[Path, str, bytes]:

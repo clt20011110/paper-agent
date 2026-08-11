@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import paper_agent.stage2_search as stage2_search
 from paper_agent.approval import approved_content_hash
 from paper_agent.canonical import content_hash
 from paper_agent.domain import FilterStatus
@@ -20,8 +21,10 @@ from paper_agent.stage2_backends import (
 )
 from paper_agent.stage2_evaluation import (
     CalibrationPath,
+    GateResult,
     PathCalibrator,
     ThresholdArtifact,
+    phase3_release_gate,
     write_path_calibrator,
 )
 from paper_agent.stage2_pipeline import (
@@ -35,13 +38,51 @@ from paper_agent.stage2_search import (
     Stage2ReleaseError,
     Stage2SearchScreener,
     load_stage2_benchmark_candidate,
-    load_stage2_release,
+    load_stage2_release as _load_stage2_release,
 )
 from paper_agent.storage import Database
 
 
 ROOT = Path(__file__).parents[1]
 GATE_NAMES = ("promotion", "structured_replay", "rationale", "parity", "benchmark", "soak")
+
+
+def load_stage2_release(path: Path, plan: dict):
+    """Use the test-only fast evidence verifier for runtime/configuration tests.
+
+    The full raw-evidence, trust-root, and Ed25519 path is exercised in
+    ``test_stage2_release_v3.py``.  Keeping this test module focused avoids
+    rebuilding the production-size 1k/10k evidence corpus for every ordinary
+    runtime validation assertion.
+    """
+
+    return _load_stage2_release(
+        path,
+        plan,
+        hidden_trust_path=path.parent / "test-hidden-evaluator-trust.json",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fast_release_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    def verified_gate(
+        _release_path: Path,
+        document: dict,
+        _profile_name: str,
+        _profile: Stage2Profile,
+        _trust_path: Path,
+    ):
+        return phase3_release_gate(
+            candidate_id=document["candidate_id"],
+            evaluation_manifest_hash=document["evaluation_manifest_hash"],
+            artifacts={
+                name: (f"{index:x}" * 64, GateResult(True, ()))
+                for index, name in enumerate(GATE_NAMES, start=1)
+            },
+            throughput_runs=(99.0, 100.0, 101.0),
+        )
+
+    monkeypatch.setattr(stage2_search, "_release_gate", verified_gate)
 
 
 def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") -> tuple[Path, dict]:
@@ -198,31 +239,10 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
             path.value: threshold.hash() for path, threshold in thresholds.items()
         },
     }
-    gate_artifacts = {}
-    for gate_name in GATE_NAMES:
-        gate_artifact = {
-            "schema_version": "1",
-            "gate": gate_name,
-            "candidate_id": "local-winner",
-            "evaluation_manifest_hash": evaluation_manifest_hash,
-            "stage2_config_hash": base_profile.base_runtime_config_hash,
-            **gate_bindings,
-            "passed": True,
-            "failures": [],
-        }
-        gate_path = tmp_path / f"{gate_name}-gate.json"
-        gate_path.write_text(json.dumps(gate_artifact, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-        gate_artifacts[gate_name] = {
-            "path": gate_path.name,
-            "sha256": sha256(gate_path.read_bytes()).hexdigest(),
-        }
     gate = {
         "candidate_id": "local-winner",
         "evaluation_manifest_hash": evaluation_manifest_hash,
-        "artifacts": gate_artifacts,
-        "passed": True,
-        "failures": [],
-        "throughput_runs": [100.0, 101.0, 99.0],
+        "evidence": {"path": "stage2-release-evidence.json", "sha256": "0" * 64},
     }
     base_profile = replace(base_profile, release_gate_hash=content_hash(gate))
     profile = replace(
@@ -287,7 +307,7 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
         approved_at="2026-08-09T01:00:00Z",
     )
     release = {
-        "schema_version": "2",
+        "schema_version": "3",
         "profile": "local-winner",
         "reranker_lock": {"path": reranker_path.name, "sha256": reranker_hash},
         "adjudicator_lock": {"path": adjudicator_path.name, "sha256": adjudicator_hash},
@@ -371,6 +391,7 @@ def test_benchmark_candidate_loads_before_throughput_release_gate_exists(
     release_path, plan = _release_bundle(tmp_path)
     document = json.loads(release_path.read_text(encoding="utf-8"))
     document.pop("release_gate")
+    document["schema_version"] = "2"
     candidate_path = tmp_path / "stage2-candidate.json"
     candidate_path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -531,7 +552,7 @@ def test_release_rejects_artifact_drift_failed_gate_and_nonlocal_endpoint(tmp_pa
     document = json.loads(release_path.read_text())
     document["release_gate"]["passed"] = False
     release_path.write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(Stage2ReleaseError, match="has not passed"):
+    with pytest.raises(Stage2ReleaseError, match="configuration does not match QueryPlan"):
         load_stage2_release(release_path, plan)
 
     release_path, plan = _release_bundle(tmp_path / "remote", base_url="https://models.example.test")
@@ -540,11 +561,6 @@ def test_release_rejects_artifact_drift_failed_gate_and_nonlocal_endpoint(tmp_pa
 
     release_path, plan = _release_bundle(tmp_path / "drift")
     (release_path.parent / "reranker-threshold.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(Stage2ReleaseError, match="drifted"):
-        load_stage2_release(release_path, plan)
-
-    release_path, plan = _release_bundle(tmp_path / "gate-drift")
-    (release_path.parent / "promotion-gate.json").write_text("{}", encoding="utf-8")
     with pytest.raises(Stage2ReleaseError, match="drifted"):
         load_stage2_release(release_path, plan)
 
@@ -562,12 +578,9 @@ def test_release_rejects_legacy_raw_score_threshold_manifest(tmp_path) -> None:
 def test_release_rejects_hash_only_gate_claims_and_extra_fields(tmp_path) -> None:
     release_path, plan = _release_bundle(tmp_path / "hash-only")
     document = json.loads(release_path.read_text())
-    refs = document["release_gate"].pop("artifacts")
-    document["release_gate"]["artifact_hashes"] = {
-        name: reference["sha256"] for name, reference in refs.items()
-    }
+    document["release_gate"]["artifact_hashes"] = {"promotion": "a" * 64}
     release_path.write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(Stage2ReleaseError, match="fields are not exact"):
+    with pytest.raises(Stage2ReleaseError, match="configuration does not match QueryPlan"):
         load_stage2_release(release_path, plan)
 
     release_path, plan = _release_bundle(tmp_path / "top-extra")
@@ -595,24 +608,16 @@ def test_release_rejects_hash_only_gate_claims_and_extra_fields(tmp_path) -> Non
 def test_release_rejects_rehashed_gate_with_mismatched_provenance_or_extra_fields(tmp_path) -> None:
     release_path, plan = _release_bundle(tmp_path / "manifest-mismatch")
     document = json.loads(release_path.read_text())
-    gate_path = release_path.parent / document["release_gate"]["artifacts"]["promotion"]["path"]
-    gate = json.loads(gate_path.read_text())
-    gate["evaluation_manifest_hash"] = "9" * 64
-    gate_path.write_text(json.dumps(gate, sort_keys=True), encoding="utf-8")
-    document["release_gate"]["artifacts"]["promotion"]["sha256"] = sha256(gate_path.read_bytes()).hexdigest()
+    document["release_gate"]["candidate_id"] = "different-candidate"
     release_path.write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(Stage2ReleaseError, match="evaluation manifest does not match"):
+    with pytest.raises(Stage2ReleaseError, match="configuration does not match QueryPlan"):
         load_stage2_release(release_path, plan)
 
     release_path, plan = _release_bundle(tmp_path / "gate-extra")
     document = json.loads(release_path.read_text())
-    gate_path = release_path.parent / document["release_gate"]["artifacts"]["promotion"]["path"]
-    gate = json.loads(gate_path.read_text())
-    gate["unbound_metric"] = 1
-    gate_path.write_text(json.dumps(gate, sort_keys=True), encoding="utf-8")
-    document["release_gate"]["artifacts"]["promotion"]["sha256"] = sha256(gate_path.read_bytes()).hexdigest()
+    document["release_gate"]["unbound_metric"] = 1
     release_path.write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(Stage2ReleaseError, match="fields are not exact"):
+    with pytest.raises(Stage2ReleaseError, match="configuration does not match QueryPlan"):
         load_stage2_release(release_path, plan)
 
 
@@ -628,22 +633,9 @@ def test_release_requires_an_untampered_approved_query_plan(tmp_path) -> None:
 def test_gate_bytes_are_bound_by_plan_approval_and_symlinks_cannot_escape_bundle(tmp_path) -> None:
     release_path, plan = _release_bundle(tmp_path / "reformatted")
     document = json.loads(release_path.read_text())
-    gate_path = release_path.parent / document["release_gate"]["artifacts"]["promotion"]["path"]
-    gate = json.loads(gate_path.read_text())
-    gate_path.write_text(json.dumps(gate, separators=(",", ":")), encoding="utf-8")
-    document["release_gate"]["artifacts"]["promotion"]["sha256"] = sha256(gate_path.read_bytes()).hexdigest()
+    document["release_gate"]["evidence"]["sha256"] = "1" * 64
     release_path.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(Stage2ReleaseError, match="configuration does not match QueryPlan"):
-        load_stage2_release(release_path, plan)
-
-    release_path, plan = _release_bundle(tmp_path / "bundle")
-    document = json.loads(release_path.read_text())
-    gate_path = release_path.parent / document["release_gate"]["artifacts"]["promotion"]["path"]
-    outside = tmp_path / "outside-gate.json"
-    outside.write_bytes(gate_path.read_bytes())
-    gate_path.unlink()
-    gate_path.symlink_to(outside)
-    with pytest.raises(Stage2ReleaseError, match="stay inside the bundle"):
         load_stage2_release(release_path, plan)
 
 
