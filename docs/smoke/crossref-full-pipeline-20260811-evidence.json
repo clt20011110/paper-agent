@@ -115,7 +115,7 @@
     "status": "complete"
   },
   "provider_manifest": {
-    "canonical_manifest_hash": "bd608c6f8cc60e33a579b9217b77a6420615f67e877da497245d4611ac1366e1",
+    "canonical_manifest_hash": "2c2d81167b83688737df2e09a4c6469691c960853de41a60b3c18e029306d235",
     "enabled": true,
     "mode": "api",
     "path": "providers/crossref.yaml",
@@ -124,7 +124,7 @@
       "global_qps": 5,
       "max_concurrency": 4
     },
-    "raw_file_sha256": "e172fd76b73dd9faf3386e3f0f37ba29f1fbc53a0ec8a2e969833f22a36f36d0",
+    "raw_file_sha256": "04d1eaf51a6efd5943fb67c1e0fd92748743f7ba92626cb3a2d767c0ef1f830a",
     "required": true,
     "roles": [
       "metadata_enricher",
