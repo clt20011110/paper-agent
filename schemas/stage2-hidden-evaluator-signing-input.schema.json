@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-hidden-evaluator-signing-input.schema.json",
+  "title": "Stage 2 hidden evaluator signing input",
+  "description": "The public-safe payload an evaluator may sign. Hidden labels, pair identifiers, raw predictions, scores, and private marker state are forbidden.",
+  "$ref": "https://paper-agent.dev/schemas/stage2-hidden-evaluator-attestation.schema.json#/$defs/payload"
+}
