@@ -121,7 +121,8 @@ def test_cli_typed_workflow_recovers_midway_with_only_fake_stage_boundaries(
         def run(self, **options: Any) -> SimpleNamespace:
             nonlocal pause_recovery_download
             run_id = options["run_id"]
-            assert options["filter_run_id"] == (
+            assert options["filter_run_id"] is None
+            assert options["source_filter_run_id"] == (
                 f"{run_id.replace(':download', ':filter')}:stage2"
             )
             calls.append(("download", run_id))
@@ -369,7 +370,8 @@ def test_offline_user_seed_workflow_handoff_and_report_are_end_to_end_resumable(
             download_attempts += 1
             run_id = options["run_id"]
             stage_calls.append(("download", run_id))
-            assert options["filter_run_id"] == "filter-1"
+            assert options["filter_run_id"] is None
+            assert options["source_filter_run_id"] == "filter-1"
             status = "incomplete" if download_attempts == 1 else "complete"
             save_pipeline(
                 self.database,

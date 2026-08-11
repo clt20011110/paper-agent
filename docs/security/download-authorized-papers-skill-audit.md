@@ -49,6 +49,10 @@ skill 使用用户已有浏览器登录态和可见的普通下载控件；不�
 - 本次候选实际需要的精确域名；
 - mode 默认 `attended`。只有 skill 声明支持、站点允许且用户对同一冻结 scope 显式批准时才允许 `unattended`。
 
+本次审计未声明 unattended 支持，provider contract 因而固定 `allows_unattended=false`。合法的
+unattended public-provider grant 不受此限制；但该 browser skill 收到 unattended grant 时必须保持
+`manual_required`，不得创建队列或把 grant 伪装成 attended。
+
 ## 需要用户参与
 
 用户需要在选定浏览器中完成 Wiley、Nature/Springer 或 ACS 的机构/个人登录，并以目标页面实际出现正常 PDF 链接确认权限。CAPTCHA、403、429、缺授权链接和浏览器安全警告只能由用户处理；系统不会自动绕过。Chrome/Computer Use 回退只处理首轮固定流程留下的逐项失败，并保持相同 scope 与限速。

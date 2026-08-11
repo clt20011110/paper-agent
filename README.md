@@ -131,13 +131,15 @@ paper-agent resume --workflow /absolute/path/to/workflow.json \
 Analyze 的 `selection` 依次写 `{"from_step":"search"}`、
 `{"from_step":"filter"}` 和 `{"from_step":"download"}`。
 Download 还必须显式冻结 `include_needs_review`；默认建议为 `false`。空 Search 结果会保持
-为空，不会退化成筛选全库。`run --help` 只列命令参数；字段合同如下，未列字段会被拒绝：
+为空，不会退化成筛选全库。Download 的静态 `paper_ids: []` 也会 fail-close；Stage 3 不再把
+空 ID 列表解释成“读取全局最新 Stage 2 结果”。`run --help` 只列命令参数；字段合同如下，
+未列字段会被拒绝：
 
 | stage | typed step 字段（另含 `id`、`stage`） |
 | --- | --- |
 | `search` | `plan`、`stage2_release`、`snapshots`、`historical_replay` |
 | `filter` | `plan`、`stage2_release`、`selection`（单阶段为 `FileRef`；v2 链为 Search output ref） |
-| `download` | `selection`、`authorization_grant_id`、`provider_terms`；v2 另需 `include_needs_review` |
+| `download` | `selection`、`authorization_grant_id`、`provider_terms`、可选 `scope_snapshots`；v2 另需 `include_needs_review` |
 | `analyze` | `selection`（单阶段为 `FileRef`；v2 链为 Download output ref）、`processing_grant_id`、`policy` |
 | `report` | `plan`、`corpus_snapshot`、`search_audit`、`processing_grants`、`previous_report_run_id`、`policy`；handoff 生成的 manifest 另冻结 `artifact_root` DirectoryRef |
 
@@ -151,6 +153,19 @@ manifest 中直接追加 Report 会被拒绝。所有文件字段均为 `FileRef
 目录约束的 `DirectoryRef`，`snapshots` 元素为
 `{"provider":"...","file":<FileRef>}`；可选字段也必须显式写成 `null`。收到 SIGINT/SIGTERM
 时，已在运行的 step 会先返回到自己的安全点，工作流仅在 step 边界 checkpoint 为可恢复状态。
+
+使用 snapshot-scoped download grant 时，Download step 的 `scope_snapshots` 必须逐项冻结
+`snapshot_type`、`snapshot_id`、`snapshot_hash`、`collection_id` 和可选 `file`。首次从文件加载时
+使用 FileRef；已经校验并写入同一 SQLite 后可令 `file: null`，按 snapshot ID 恢复。adapter 会在
+任何 provider probe/fetch 前重算文件或数据库内容、核对 grant 的精确 snapshot hash，并确认本次
+选择的每篇论文都属于所有声明的 scope。旧清单仍可读取，但使用 snapshot-scoped grant 的旧
+Download step 必须补齐这些绑定后才能执行或恢复。
+
+当前 typed Download workflow 只支持 public provider grant。它没有冻结浏览器 queue/output、skill
+root、原始 ZIP 或 audit manifest，因而 `provider: authorized_skill` 或绑定 skill/dependency digest 的
+grant 会在 service/provider 构造前拒绝；请改用下述独立 `paper-agent download` authorized handoff。
+动态 Filter 输出会先解析成 exact paper IDs，再把这些 ID 直接交给 Stage 3，同时单独保留来源
+`filter_run_id` lineage；执行期间 Filter 表新增行不能扩大下载集合。
 
 ## 授权下载与报告执行
 

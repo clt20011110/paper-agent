@@ -127,10 +127,14 @@ class DownloadScopeSnapshotStore:
         path: str | Path,
         *,
         expected_type: str,
+        persist: bool = True,
     ) -> DownloadScopeSnapshot:
         document = json.loads(Path(path).read_text(encoding="utf-8"))
         snapshot = self._from_document(document, expected_type=expected_type)
-        self._persist(snapshot)
+        if persist:
+            self._persist(snapshot)
+        else:
+            self._validate_existing(snapshot)
         return snapshot
 
     def load_id(
@@ -242,21 +246,8 @@ class DownloadScopeSnapshotStore:
 
     def _persist(self, snapshot: DownloadScopeSnapshot) -> None:
         with self.database.transaction() as connection:
-            by_id = connection.execute(
-                "SELECT * FROM download_scope_snapshots WHERE snapshot_id = ?",
-                (snapshot.snapshot_id,),
-            ).fetchone()
-            by_hash = connection.execute(
-                "SELECT * FROM download_scope_snapshots WHERE snapshot_hash = ?",
-                (snapshot.snapshot_hash,),
-            ).fetchone()
-            for existing in (by_id, by_hash):
-                if existing is not None:
-                    if self._from_row(existing) != snapshot:
-                        raise DownloadError(
-                            "download scope snapshot conflicts with persisted content"
-                        )
-                    return
+            if self._validate_existing(snapshot):
+                return
             connection.execute(
                 """INSERT INTO download_scope_snapshots(
                        snapshot_id, snapshot_type, snapshot_hash, collection_id,
@@ -271,6 +262,26 @@ class DownloadScopeSnapshotStore:
                     snapshot.created_at,
                 ),
             )
+
+    def _validate_existing(self, snapshot: DownloadScopeSnapshot) -> bool:
+        by_id = self.database.connection.execute(
+            "SELECT * FROM download_scope_snapshots WHERE snapshot_id = ?",
+            (snapshot.snapshot_id,),
+        ).fetchone()
+        by_hash = self.database.connection.execute(
+            "SELECT * FROM download_scope_snapshots WHERE snapshot_hash = ?",
+            (snapshot.snapshot_hash,),
+        ).fetchone()
+        found = False
+        for existing in (by_id, by_hash):
+            if existing is None:
+                continue
+            found = True
+            if self._from_row(existing) != snapshot:
+                raise DownloadError(
+                    "download scope snapshot conflicts with persisted content"
+                )
+        return found
 
 
 def build_download_scope_snapshot(

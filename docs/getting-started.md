@@ -137,6 +137,15 @@ grant；全文及其受限派生物进入 Luna/Sol 前必须另有匹配的 proc
 只包含相对 manifest 目录的 `path` 与该文件的小写 SHA-256。最小 search step 的 JSON 和摘要生成
 命令见根目录 [README](../README.md#typed-workflow-与恢复)。先运行：
 
+若 Download 使用 collection/selection snapshot grant，在该 step 增加 `scope_snapshots`。每项写入
+`snapshot_type`、`snapshot_id`、`snapshot_hash`、`collection_id`，首次运行还应以 `file` FileRef
+固定原始 JSON；仅在 snapshot 已存在于同一 SQLite 时才可使用 `file: null`。workflow dry-run 会
+只读重验这些绑定，不写入 snapshot、run 或 artifact。
+
+typed workflow 当前只接受 public provider download grant；authorized-skill/digest-bound grant 必须
+使用独立 `paper-agent download` 命令并显式提供 queue、output、skill root、ZIP/audit 等 handoff
+输入。静态 `paper_ids: []` 会被拒绝，绝不会回退到全局最新 Stage 2 选择。
+
 ```sh
 paper-agent --dry-run run --workflow /absolute/path/to/workflow.json \
   --workflow-run-id <workflow-run-id>

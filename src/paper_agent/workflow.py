@@ -141,6 +141,36 @@ class FilterStep:
 
 
 @dataclass(frozen=True, slots=True)
+class DownloadScopeSnapshotRef:
+    """One exact collection or selection snapshot used by a download grant."""
+
+    snapshot_type: str
+    snapshot_id: str
+    snapshot_hash: str
+    collection_id: str | None
+    file: FileRef | None = None
+
+    def __post_init__(self) -> None:
+        if self.snapshot_type not in {"collection", "selection"}:
+            raise ValueError("workflow download snapshot type is invalid")
+        if not self.snapshot_id or not _is_hash(self.snapshot_hash):
+            raise ValueError("workflow download snapshot identity is invalid")
+        if self.snapshot_type == "collection" and not self.collection_id:
+            raise ValueError("workflow collection snapshot requires collection_id")
+        if self.snapshot_type == "selection" and self.collection_id is not None:
+            raise ValueError("workflow selection snapshot cannot set collection_id")
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "snapshot_type": self.snapshot_type,
+            "snapshot_id": self.snapshot_id,
+            "snapshot_hash": self.snapshot_hash,
+            "collection_id": self.collection_id,
+            "file": self.file.document() if self.file else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DownloadStep:
     step_id: str
     selection: FileRef | StepOutputRef
@@ -148,6 +178,19 @@ class DownloadStep:
     provider_terms: FileRef | None
     include_needs_review: bool | None = None
     stage: StageKind = StageKind.DOWNLOAD
+    scope_snapshots: tuple[DownloadScopeSnapshotRef, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.scope_snapshots is None:
+            return
+        types = tuple(item.snapshot_type for item in self.scope_snapshots)
+        if len(types) != len(set(types)):
+            raise ValueError("workflow download snapshot types must be unique")
+        order = {"collection": 0, "selection": 1}
+        if tuple(sorted(types, key=order.__getitem__)) != types:
+            raise ValueError(
+                "workflow download snapshots must order collection before selection"
+            )
 
     def document(self) -> dict[str, Any]:
         document: dict[str, Any] = {
@@ -159,11 +202,28 @@ class DownloadStep:
         }
         if self.include_needs_review is not None:
             document["include_needs_review"] = self.include_needs_review
+        if self.scope_snapshots is not None:
+            document["scope_snapshots"] = [
+                snapshot.document() for snapshot in self.scope_snapshots
+            ]
         return document
 
     def file_refs(self) -> tuple[FileRef, ...]:
         selection = (self.selection,) if isinstance(self.selection, FileRef) else ()
-        return (*selection, *((self.provider_terms,) if self.provider_terms else ()))
+        snapshots = (
+            tuple(
+                snapshot.file
+                for snapshot in self.scope_snapshots
+                if snapshot.file is not None
+            )
+            if self.scope_snapshots is not None
+            else ()
+        )
+        return (
+            *selection,
+            *((self.provider_terms,) if self.provider_terms else ()),
+            *snapshots,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1055,10 +1115,19 @@ def _step(value: object, root: Path, schema_version: str) -> StageSpec:
         fields = {"id", "stage", "selection", "authorization_grant_id", "provider_terms"}
         if schema_version == "2":
             fields.add("include_needs_review")
-        _exact(value, fields)
+        if set(value) not in {frozenset(fields), frozenset({*fields, "scope_snapshots"})}:
+            raise ValueError("workflow object has unexpected or missing fields")
         include_needs_review = value.get("include_needs_review")
         if include_needs_review is not None and not isinstance(include_needs_review, bool):
             raise ValueError("include_needs_review must be boolean")
+        scope_snapshots = None
+        if "scope_snapshots" in value:
+            raw_snapshots = value["scope_snapshots"]
+            if not isinstance(raw_snapshots, list):
+                raise ValueError("workflow download scope_snapshots must be a list")
+            scope_snapshots = tuple(
+                _download_scope_snapshot(item, root) for item in raw_snapshots
+            )
         return DownloadStep(
             step_id,
             _required_selection_ref(
@@ -1067,6 +1136,7 @@ def _step(value: object, root: Path, schema_version: str) -> StageSpec:
             _optional_text(value["authorization_grant_id"], "authorization_grant_id"),
             _optional_file_ref(value["provider_terms"], root, "provider terms"),
             include_needs_review,
+            scope_snapshots=scope_snapshots,
         )
     if stage is StageKind.ANALYZE:
         _exact(value, {"id", "stage", "selection", "processing_grant_id", "policy"})
@@ -1109,6 +1179,36 @@ def _snapshot(value: object, root: Path) -> SnapshotRef:
     if not isinstance(value["provider"], str) or not value["provider"]:
         raise ValueError("search snapshot provider is required")
     return SnapshotRef(value["provider"], _file_ref(value["file"], root, "search snapshot"))
+
+
+def _download_scope_snapshot(
+    value: object, root: Path
+) -> DownloadScopeSnapshotRef:
+    if not isinstance(value, dict):
+        raise ValueError("workflow download scope snapshot must be an object")
+    _exact(
+        value,
+        {"snapshot_type", "snapshot_id", "snapshot_hash", "collection_id", "file"},
+    )
+    snapshot_type = value["snapshot_type"]
+    snapshot_id = value["snapshot_id"]
+    snapshot_hash = value["snapshot_hash"]
+    collection_id = value["collection_id"]
+    if not isinstance(snapshot_type, str):
+        raise ValueError("workflow download snapshot type is invalid")
+    if not isinstance(snapshot_id, str):
+        raise ValueError("workflow download snapshot ID is invalid")
+    if not isinstance(snapshot_hash, str):
+        raise ValueError("workflow download snapshot hash is invalid")
+    if collection_id is not None and not isinstance(collection_id, str):
+        raise ValueError("workflow download snapshot collection_id is invalid")
+    return DownloadScopeSnapshotRef(
+        snapshot_type,
+        snapshot_id,
+        snapshot_hash,
+        collection_id,
+        _optional_file_ref(value["file"], root, "download scope snapshot"),
+    )
 
 
 def _step_output_ref(value: object, label: str) -> StepOutputRef:

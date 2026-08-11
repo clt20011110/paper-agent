@@ -282,6 +282,69 @@ def test_public_download_grant_runs_only_after_the_oa_pass(
     ).fetchone()[0] == 0
 
 
+def test_unattended_public_grant_preserves_mode_through_probe_and_fetch(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+    )
+    _approved_authorized_grant(
+        database,
+        paper_id,
+        provider="public_direct",
+        mode="unattended",
+    )
+    fetcher = Fetcher()
+
+    result = _service(tmp_path, database, fetcher, terms=_terms()).run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        run_id="unattended-public-grant",
+    )
+
+    assert result.status == "complete"
+    assert fetcher.calls == ["https://publisher.example/paper.pdf"]
+    assert database.connection.execute(
+        """SELECT authorization_grant_id FROM fetch_requests
+           WHERE status = 'consumed'"""
+    ).fetchone()[0] == "download-grant"
+
+
+def test_explicit_empty_paper_ids_never_fall_back_to_latest_stage2(
+    tmp_path: Path, database: Database,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.OPEN_LICENSE,
+        license="CC-BY-4.0",
+    )
+    database.connection.execute(
+        """INSERT INTO pipeline_runs(
+               run_id, stage, status, input_hash, config_hash, implementation_version
+           ) VALUES ('latest-stage2', 'stage-2', 'complete', 'input', 'config', 'test')"""
+    )
+    database.connection.execute(
+        """INSERT INTO filter_decisions(
+               filter_decision_id, run_id, paper_id, status, threshold_version,
+               reason, input_hash, implementation_version
+           ) VALUES ('latest-decision', 'latest-stage2', ?, 'relevant', 'v1',
+                     'selected', 'input', 'test')""",
+        (paper_id,),
+    )
+    database.connection.commit()
+    fetcher = Fetcher()
+
+    result = _service(tmp_path, database, fetcher, terms=_terms()).run(
+        paper_ids=[], run_id="explicit-empty-stage3"
+    )
+
+    assert result.status == "complete"
+    assert result.paper_ids == ()
+    assert fetcher.calls == []
+
+
 def test_dry_run_probes_and_validates_without_persisting_or_fetching(
     tmp_path: Path, database: Database,
 ) -> None:
@@ -384,7 +447,7 @@ def test_resolver_snapshot_is_deterministic_persisted_and_reused_on_resume(
            FROM pipeline_runs WHERE run_id = 'resolver-snapshot-run'"""
     ).fetchone()
     assert run["config_hash"] == snapshot.snapshot_hash
-    assert run["implementation_version"] == "stage3-cli-v5"
+    assert run["implementation_version"] == "stage3-cli-v6"
     artifact = database.connection.execute(
         """SELECT relative_path, artifact_kind, mime_type, provenance_json
            FROM artifacts WHERE sha256 = ?""",
@@ -675,7 +738,7 @@ def test_terminal_no_pdf_result_completes_and_resumes_without_refetch(
     assert database.connection.execute(
         "SELECT implementation_version FROM pipeline_runs WHERE run_id = ?",
         (first.run_id,),
-    ).fetchone()[0] == "stage3-cli-v5"
+    ).fetchone()[0] == "stage3-cli-v6"
     assert database.connection.execute(
         "SELECT COUNT(*) FROM download_attempts WHERE run_id = ?",
         (first.run_id,),
@@ -797,6 +860,54 @@ def test_authorized_skill_handoff_writes_queue_then_imports_only_staged_ledger(
         "SELECT planner_decision_id FROM download_attempts WHERE result_status = 'downloaded'"
     ).fetchone()
     assert attempt["planner_decision_id"].startswith("stage3-luna-")
+
+
+def test_authorized_skill_unattended_grant_stays_manual_without_a_queue(
+    tmp_path: Path, database: Database, monkeypatch,
+) -> None:
+    paper_id = _paper(
+        database,
+        access_basis=AccessBasis.PUBLIC_READ_ONLY,
+        license=None,
+        doi="10.1038/unattended",
+        url="https://www.nature.com/articles/unattended.pdf",
+    )
+    _approved_authorized_grant(
+        database,
+        paper_id,
+        domain="www.nature.com",
+        mode="unattended",
+    )
+    installed = _ready_authorized_runtime(tmp_path, monkeypatch)
+    planner = FakeAuthorizedLunaPlanner(calls=[])
+    fetcher = Fetcher()
+    service = _service(
+        tmp_path,
+        database,
+        fetcher,
+        authorized=True,
+        planner=planner,
+    )
+    service.provider_terms.update(_nature_terms())
+    options = AuthorizedSkillHandoffOptions(
+        queue_path=tmp_path / "handoff" / "papers.csv",
+        output_dir=tmp_path / "handoff-results",
+        skill_roots=(installed,),
+    )
+
+    result = service.run(
+        paper_ids=[paper_id],
+        authorization_grant_id="download-grant",
+        authorized_skill=options,
+    )
+
+    assert result.status == "manual_required"
+    assert fetcher.calls == []
+    assert planner.calls == []
+    assert not options.queue_path.exists()
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM authorized_download_queue_reservations"
+    ).fetchone()[0] == 0
 
 
 def test_authorized_luna_manual_decision_is_durable(tmp_path: Path, database: Database, monkeypatch) -> None:
@@ -1710,6 +1821,7 @@ def _approved_authorized_grant(
     collection_snapshot_hash: str | None = None,
     selection_snapshot_hash: str | None = None,
     provider: str = "authorized_skill",
+    mode: str = "attended",
 ) -> None:
     from paper_agent.grants import GrantStore
 
@@ -1719,7 +1831,8 @@ def _approved_authorized_grant(
         kind="download",
         actions=["download", "store"],
         purpose="personal_research",
-        mode="attended",
+        mode=mode,
+        allow_unattended=mode == "unattended",
         scope={
             "paper_ids": (
                 [paper_id]

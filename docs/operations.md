@@ -39,6 +39,18 @@ config、plan、release、selection、policy 和 report inputs）必须仍在原
 工作。plan、provider resolution、模型 revision、prompt/schema、grant、release 或 artifact hash
 不匹配时，停止恢复并重新计划/批准；不要通过新 run ID 绕过门禁。
 
+Download grant 若绑定 collection/selection snapshot，workflow Download step 也必须声明相同的
+`scope_snapshots` type、ID、hash 和 collection ID。恢复会在观察既有 child run 前从 FileRef 或
+SQLite 重新构造 snapshot，并重新检查 grant、成员关系、撤销和有效期；任何漂移都会在 provider
+probe/fetch 或浏览器队列副作用前停止。未声明该字段的旧 manifest 仍可读取，但不能借此运行一个
+snapshot-scoped grant。
+
+typed Download workflow 当前不承载 authorized browser handoff 文件，因此只允许 public provider
+grant；遇到 `provider=authorized_skill` 或 skill/dependency digest 绑定会提示改用独立
+`paper-agent download`。Filter 来源在 adapter 内先解析为 exact paper IDs，Stage 3 只接收该集合，
+并把原 `filter_run_id` 作为 lineage 保存；两者之间的 Filter 行变化不能扩大 scope。空静态 ID
+列表同样直接拒绝，不读取其他 Stage 2 run。
+
 Stage 4 在真正构造 Codex 调用前会持久领取一次性 dispatch。领取后若进程丢失、租约过期或
 返回结果无法确认，该论文与 workflow step 会进入 `failed_terminal`/`uncertain_terminal`；
 同一 run 的 `resume` 只返回该终态，绝不会再次付费调用。先检查调用审计和已有产物，再由操作者

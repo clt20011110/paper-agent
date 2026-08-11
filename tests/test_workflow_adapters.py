@@ -12,9 +12,16 @@ from typing import Any, Mapping
 import pytest
 import yaml
 
+from paper_agent.download_cli_service import select_stage3_paper_ids
+from paper_agent.downloads import (
+    DownloadScopeSnapshotStore,
+    build_download_scope_snapshot,
+)
+from paper_agent.grants import GrantStore
 from paper_agent.storage import Database
 from paper_agent.workflow import (
     AnalyzeStep,
+    DownloadScopeSnapshotRef,
     DownloadStep,
     FileRef,
     FilterStep,
@@ -40,6 +47,7 @@ from paper_agent.workflow_adapters import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+NOW = datetime(2026, 8, 11, 1, tzinfo=UTC)
 
 
 def _write(tmp_path: Path, name: str, value: object) -> FileRef:
@@ -62,6 +70,102 @@ def _context(tmp_path: Path, *, dry_run: bool = False) -> StepContext:
         child_run_id="workflow-7:step",
         dry_run=dry_run,
     )
+
+
+def _snapshot_scoped_download(
+    tmp_path: Path,
+    database: Database,
+    *,
+    include_collection: bool = False,
+    mode: str = "attended",
+    provider: str = "public_direct",
+) -> tuple[FileRef, tuple[DownloadScopeSnapshotRef, ...]]:
+    database.connection.execute(
+        "INSERT INTO papers(paper_id, title) VALUES ('paper-1', 'Paper')"
+    )
+    if include_collection:
+        database.connection.execute(
+            """INSERT INTO collections(collection_id, name, collection_type)
+               VALUES ('collection-1', 'Collection', 'seed_set')"""
+        )
+        database.connection.execute(
+            """INSERT INTO paper_collections(
+                   paper_id, collection_id, membership_status
+               ) VALUES ('paper-1', 'collection-1', 'official_confirmed')"""
+        )
+    database.connection.commit()
+    selection_file = _write(
+        tmp_path,
+        "download-selection.json",
+        {"schema_version": "1", "paper_ids": ["paper-1"]},
+    )
+    references: list[DownloadScopeSnapshotRef] = []
+    collection_hash = None
+    if include_collection:
+        collection_document = build_download_scope_snapshot(
+            "collection",
+            ["paper-1"],
+            collection_id="collection-1",
+            snapshot_id="collection-snapshot-1",
+            created_at="2026-08-11T00:00:00Z",
+        )
+        collection_path = tmp_path / "collection-snapshot.json"
+        collection_path.write_text(json.dumps(collection_document), encoding="utf-8")
+        collection_hash = str(collection_document["snapshot_hash"])
+        references.append(DownloadScopeSnapshotRef(
+            "collection",
+            "collection-snapshot-1",
+            collection_hash,
+            "collection-1",
+            _ref(collection_path),
+        ))
+    selection_document = build_download_scope_snapshot(
+        "selection",
+        ["paper-1"],
+        snapshot_id="selection-snapshot-1",
+        created_at="2026-08-11T00:00:00Z",
+    )
+    selection_path = tmp_path / "selection-snapshot.json"
+    selection_path.write_text(json.dumps(selection_document), encoding="utf-8")
+    selection_hash = str(selection_document["snapshot_hash"])
+    references.append(DownloadScopeSnapshotRef(
+        "selection",
+        "selection-snapshot-1",
+        selection_hash,
+        None,
+        _ref(selection_path),
+    ))
+    store = GrantStore(database)
+    draft = store.create_draft(
+        grant_id="workflow-download-grant",
+        kind="download",
+        actions=["download", "store"],
+        purpose="personal_research",
+        mode=mode,
+        allow_unattended=mode == "unattended",
+        scope={
+            "paper_ids": [],
+            "artifact_hashes": [],
+            "collection_ids": ["collection-1"] if include_collection else [],
+            "collection_snapshot_hash": collection_hash,
+            "selection_snapshot_hash": selection_hash,
+            "domains": ["publisher.example"],
+            "provider": provider,
+            "model": None,
+            "data_categories": ["full_text"],
+        },
+        max_papers=1,
+        expires_at="2026-08-12T00:00:00Z",
+        skill_digest="a" * 64 if provider == "authorized_skill" else None,
+        dependency_digest="b" * 64 if provider == "authorized_skill" else None,
+    )
+    store.approve(
+        draft,
+        draft["content_hash"],
+        approved_by="owner",
+        approved_at="2026-08-11T00:00:00Z",
+    )
+    return selection_file, tuple(references)
 
 
 def _stage3_binding(run_id: str = "workflow-7:download") -> dict[str, str]:
@@ -296,7 +400,7 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
     filtering.execute(context, filter_spec, filtering.validate(context, filter_spec))
 
     download = DownloadStageAdapter(download_factory)
-    download_spec = DownloadStep("step", selection, "download-grant", None)
+    download_spec = DownloadStep("step", selection, None, None)
     download.execute(context, download_spec, download.validate(context, download_spec))
 
     analysis = AnalyzeStageAdapter(analysis_factory)
@@ -328,6 +432,366 @@ def test_adapters_call_typed_services_with_fixed_child_run_id(
         assert database.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] > 0
 
 
+def test_download_scope_dry_run_revalidates_without_writes_or_service_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path, dry_run=True)
+    with Database(context.database_path) as database:
+        database.migrate()
+        selection, snapshots = _snapshot_scoped_download(tmp_path, database)
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {"download": {"purpose": "personal_research"}},
+    )
+    spec = DownloadStep(
+        "step",
+        selection,
+        "workflow-download-grant",
+        None,
+        False,
+        scope_snapshots=snapshots,
+    )
+    adapter = DownloadStageAdapter(
+        lambda *_args: pytest.fail("dry-run must not construct the Stage 3 service"),
+        clock=lambda: NOW,
+    )
+
+    identity = adapter.validate(context, spec)
+
+    assert len(identity.identity_hash) == 64
+    with Database(context.database_path, read_only=True) as database:
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM download_scope_snapshots"
+        ).fetchone()[0] == 0
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM pipeline_runs"
+        ).fetchone()[0] == 0
+
+
+def test_download_adapter_keeps_five_arg_factory_and_injects_exact_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    with Database(context.database_path) as database:
+        database.migrate()
+        selection, snapshots = _snapshot_scoped_download(
+            tmp_path, database, include_collection=True
+        )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {"download": {"purpose": "personal_research"}},
+    )
+    calls: list[Mapping[str, Any]] = []
+
+    @dataclass
+    class Service:
+        scope_membership: Any = None
+
+        def run(self, **kwargs: Any) -> SimpleNamespace:
+            calls.append(kwargs)
+            scope = kwargs["authorization_scope"]
+            assert self.scope_membership(
+                scope.collection_snapshot_hash,
+                "paper-1",
+                "collection",
+                "collection-1",
+            )
+            assert self.scope_membership(
+                scope.selection_snapshot_hash,
+                "paper-1",
+                "selection",
+                None,
+            )
+            return SimpleNamespace(
+                run_id=kwargs["run_id"],
+                paper_ids=("paper-1",),
+                status="complete",
+                dry_run=False,
+            )
+
+    def factory(_database, _config, _root, _artifacts, _terms):
+        return Service()
+
+    spec = DownloadStep(
+        "step",
+        selection,
+        "workflow-download-grant",
+        None,
+        False,
+        scope_snapshots=snapshots,
+    )
+    adapter = DownloadStageAdapter(factory, clock=lambda: NOW)
+
+    adapter.validate(context, spec)
+    with Database(context.database_path, read_only=True) as database:
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM download_scope_snapshots"
+        ).fetchone()[0] == 0
+    outcome = adapter.execute(context, spec, adapter.validate(context, spec))
+
+    assert outcome.status == "complete"
+    assert calls[0]["authorization_scope"].to_dict() == {
+        "collection_id": "collection-1",
+        "collection_snapshot_hash": snapshots[0].snapshot_hash,
+        "selection_snapshot_hash": snapshots[1].snapshot_hash,
+    }
+    with Database(context.database_path, read_only=True) as database:
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM download_scope_snapshots"
+        ).fetchone()[0] == 2
+
+
+def test_download_adapter_reloads_a_frozen_snapshot_by_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path, dry_run=True)
+    with Database(context.database_path) as database:
+        database.migrate()
+        selection, snapshots = _snapshot_scoped_download(tmp_path, database)
+        snapshot_store = DownloadScopeSnapshotStore(database)
+        assert snapshots[0].file is not None
+        snapshot_store.load_file(
+            snapshots[0].file.resolved_path, expected_type="selection"
+        )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {"download": {"purpose": "personal_research"}},
+    )
+    by_id = DownloadScopeSnapshotRef(
+        snapshots[0].snapshot_type,
+        snapshots[0].snapshot_id,
+        snapshots[0].snapshot_hash,
+        snapshots[0].collection_id,
+        None,
+    )
+    spec = DownloadStep(
+        "step",
+        selection,
+        "workflow-download-grant",
+        None,
+        False,
+        scope_snapshots=(by_id,),
+    )
+
+    DownloadStageAdapter(
+        lambda *_args: pytest.fail("validation must not construct the service"),
+        clock=lambda: NOW,
+    ).validate(context, spec)
+
+
+def test_download_scope_preflight_does_not_narrow_an_unattended_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    with Database(context.database_path) as database:
+        database.migrate()
+        selection, snapshots = _snapshot_scoped_download(
+            tmp_path, database, mode="unattended"
+        )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {"download": {"purpose": "personal_research"}},
+    )
+    spec = DownloadStep(
+        "step",
+        selection,
+        "workflow-download-grant",
+        None,
+        False,
+        scope_snapshots=snapshots,
+    )
+
+    identity = DownloadStageAdapter(
+        lambda *_args: pytest.fail("preflight must not construct the service"),
+        clock=lambda: NOW,
+    ).validate(context, spec)
+
+    assert len(identity.identity_hash) == 64
+
+
+def test_typed_workflow_rejects_an_authorized_skill_grant_before_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    with Database(context.database_path) as database:
+        database.migrate()
+        selection, snapshots = _snapshot_scoped_download(
+            tmp_path, database, provider="authorized_skill"
+        )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {"download": {"purpose": "personal_research"}},
+    )
+    spec = DownloadStep(
+        "step",
+        selection,
+        "workflow-download-grant",
+        None,
+        False,
+        scope_snapshots=snapshots,
+    )
+
+    with pytest.raises(ValueError, match="use direct paper-agent download"):
+        DownloadStageAdapter(
+            lambda *_args: pytest.fail("invalid handoff must not construct the service"),
+            clock=lambda: NOW,
+        ).validate(context, spec)
+
+
+def test_download_static_empty_selection_fails_closed_without_stage2_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path, dry_run=True)
+    selection = _write(
+        tmp_path,
+        "empty-download-selection.json",
+        {"schema_version": "1", "paper_ids": []},
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config", lambda _path: {}
+    )
+
+    with pytest.raises(ValueError, match="cannot be empty"):
+        DownloadStageAdapter(
+            lambda *_args: pytest.fail("empty selection must not construct the service")
+        ).validate(context, DownloadStep("step", selection, None, None, False))
+
+
+def test_legacy_download_step_rejects_a_snapshot_scoped_grant_before_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    with Database(context.database_path) as database:
+        database.migrate()
+        selection, _snapshots = _snapshot_scoped_download(tmp_path, database)
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {"download": {"purpose": "personal_research"}},
+    )
+    legacy = DownloadStep(
+        "step", selection, "workflow-download-grant", None, False
+    )
+
+    with pytest.raises(ValueError, match="must declare its grant scope snapshots"):
+        DownloadStageAdapter(
+            lambda *_args: pytest.fail("invalid scope must not construct the service"),
+            clock=lambda: NOW,
+        ).validate(context, legacy)
+
+
+def test_download_adapter_rejects_a_paper_outside_snapshot_before_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    with Database(context.database_path) as database:
+        database.migrate()
+        _selection_file, snapshots = _snapshot_scoped_download(tmp_path, database)
+        database.connection.execute(
+            "INSERT INTO papers(paper_id, title) VALUES ('paper-2', 'Outside')"
+        )
+        database.connection.commit()
+    outside = _write(
+        tmp_path,
+        "outside-selection.json",
+        {"schema_version": "1", "paper_ids": ["paper-2"]},
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {"download": {"purpose": "personal_research"}},
+    )
+    spec = DownloadStep(
+        "step",
+        outside,
+        "workflow-download-grant",
+        None,
+        False,
+        scope_snapshots=snapshots,
+    )
+
+    with pytest.raises(ValueError, match="outside the frozen selection snapshot"):
+        DownloadStageAdapter(
+            lambda *_args: pytest.fail("invalid membership must not construct the service"),
+            clock=lambda: NOW,
+        ).validate(context, spec)
+
+
+@pytest.mark.parametrize("drift", ["snapshot", "grant"])
+def test_completed_download_workflow_resume_rejects_scope_drift_before_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    context = _context(tmp_path)
+    database = Database(context.database_path)
+    database.migrate()
+    selection, snapshots = _snapshot_scoped_download(tmp_path, database)
+    config = _ref(context.config_path)
+    spec = DownloadStep(
+        "download",
+        selection,
+        "workflow-download-grant",
+        None,
+        False,
+        scope_snapshots=snapshots,
+    )
+    manifest = WorkflowManifest(
+        "snapshot-workflow",
+        config,
+        (spec,),
+        tmp_path / "workflow.json",
+        "2",
+    )
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config",
+        lambda _path: {"download": {"purpose": "personal_research"}},
+    )
+    service_calls: list[str] = []
+
+    @dataclass
+    class Service:
+        scope_membership: Any = None
+
+        def run(self, **kwargs: Any) -> SimpleNamespace:
+            service_calls.append(kwargs["run_id"])
+            return SimpleNamespace(
+                run_id=kwargs["run_id"],
+                paper_ids=("paper-1",),
+                status="complete",
+                dry_run=False,
+            )
+
+    adapter = DownloadStageAdapter(
+        lambda *_args: Service(), clock=lambda: NOW
+    )
+    orchestrator = SequentialWorkflowOrchestrator(
+        database,
+        manifest,
+        {StageKind.DOWNLOAD: adapter},
+        clock=lambda: NOW,
+    )
+    first = orchestrator.run("snapshot-workflow-run")
+    assert first["status"] == "complete"
+    assert service_calls == ["snapshot-workflow-run:download"]
+    if drift == "snapshot":
+        database.connection.execute(
+            """UPDATE download_scope_snapshots SET paper_ids_json = '["paper-other"]'
+               WHERE snapshot_id = 'selection-snapshot-1'"""
+        )
+        database.connection.commit()
+    else:
+        GrantStore(database).revoke(
+            "workflow-download-grant",
+            actor="owner",
+            event_at="2026-08-11T00:30:00Z",
+        )
+
+    with pytest.raises(ValueError, match="snapshot|revoked"):
+        orchestrator.resume("snapshot-workflow-run")
+
+    assert service_calls == ["snapshot-workflow-run:download"]
+    database.close()
+
+
 @pytest.mark.parametrize(
     ("eligible_paper_ids", "include_needs_review"),
     [
@@ -356,7 +820,7 @@ def test_v2_workflow_hands_exact_search_and_filter_outputs_to_download(
     download = DownloadStep(
         "download",
         StepOutputRef("filter"),
-        "download-grant",
+        None,
         None,
         include_needs_review,
     )
@@ -395,6 +859,20 @@ def test_v2_workflow_hands_exact_search_and_filter_outputs_to_download(
                ) VALUES ('stage2-current', 'stage-2', 'complete',
                          'filter-input', 'filter-config', 'test')"""
         )
+        for paper_id in eligible_paper_ids:
+            database.connection.execute(
+                "INSERT INTO papers(paper_id, title) VALUES (?, ?)",
+                (paper_id, paper_id),
+            )
+            database.connection.execute(
+                """INSERT INTO filter_decisions(
+                       filter_decision_id, run_id, paper_id, status,
+                       threshold_version, reason, input_hash,
+                       implementation_version
+                   ) VALUES (?, 'stage2-current', ?, 'relevant', 'v1',
+                             'selected', 'input', 'test')""",
+                (f"decision-{paper_id}", paper_id),
+            )
         database.connection.commit()
         return {
             "status": "complete",
@@ -408,7 +886,7 @@ def test_v2_workflow_hands_exact_search_and_filter_outputs_to_download(
             download_calls.append(kwargs)
             return SimpleNamespace(
                 run_id=kwargs["run_id"],
-                paper_ids=(),
+                paper_ids=tuple(kwargs["paper_ids"]),
                 status="complete",
                 dry_run=kwargs["dry_run"],
             )
@@ -436,9 +914,118 @@ def test_v2_workflow_hands_exact_search_and_filter_outputs_to_download(
     assert filter_calls[0]["paper_ids"] == eligible_paper_ids
     assert filter_calls[0]["paper_ids"] is not None
     assert len(download_calls) == 1
-    assert download_calls[0]["paper_ids"] == ()
-    assert download_calls[0]["filter_run_id"] == "stage2-current"
+    assert download_calls[0]["paper_ids"] == tuple(sorted(eligible_paper_ids))
+    assert download_calls[0]["filter_run_id"] is None
+    assert download_calls[0]["source_filter_run_id"] == "stage2-current"
     assert download_calls[0]["include_needs_review"] is include_needs_review
+
+
+def test_download_adapter_freezes_filter_membership_before_service_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    binding = {
+        "run_id": "stage2-frozen",
+        "stage": "stage-2",
+        "status": "complete",
+        "input_hash": "filter-input",
+        "config_hash": "filter-config",
+        "implementation_version": "test",
+    }
+    context = StepContext(
+        context.database_path,
+        context.config_path,
+        context.workflow_run_id,
+        context.child_run_id,
+        False,
+        (
+            StepResultRef(
+                "filter",
+                StageKind.FILTER,
+                "workflow-7:filter",
+                "a" * 64,
+                {
+                    "stage2_run_ids": ["stage2-frozen"],
+                    "_pipeline_binding": binding,
+                },
+            ),
+        ),
+    )
+    with Database(context.database_path) as database:
+        database.migrate()
+        database.connection.executemany(
+            "INSERT INTO papers(paper_id, title) VALUES (?, ?)",
+            (("paper-1", "First"), ("paper-2", "Second")),
+        )
+        database.connection.execute(
+            """INSERT INTO pipeline_runs(
+                   run_id, stage, status, input_hash, config_hash,
+                   implementation_version
+               ) VALUES ('stage2-frozen', 'stage-2', 'complete',
+                         'filter-input', 'filter-config', 'test')"""
+        )
+        database.connection.executemany(
+            """INSERT INTO filter_decisions(
+                   filter_decision_id, run_id, paper_id, status,
+                   threshold_version, reason, input_hash, implementation_version
+               ) VALUES (?, 'stage2-frozen', ?, ?, 'v1', 'selected', 'input', 'test')""",
+            (
+                ("decision-1", "paper-1", "relevant"),
+                ("decision-2", "paper-2", "irrelevant"),
+            ),
+        )
+        database.connection.commit()
+    monkeypatch.setattr(
+        "paper_agent.workflow_adapters.load_config", lambda _path: {}
+    )
+    calls: list[Mapping[str, Any]] = []
+
+    @dataclass
+    class Service:
+        database: Database
+
+        def run(self, **kwargs: Any) -> SimpleNamespace:
+            calls.append(kwargs)
+            selected = select_stage3_paper_ids(
+                self.database,
+                paper_ids=kwargs["paper_ids"],
+                filter_run_id=kwargs["filter_run_id"],
+                include_needs_review=kwargs["include_needs_review"],
+            )
+            return SimpleNamespace(
+                run_id=kwargs["run_id"],
+                paper_ids=selected,
+                status="complete",
+                dry_run=False,
+            )
+
+    def factory(database, _config, _root, _artifacts, _terms):
+        database.connection.execute(
+            """UPDATE filter_decisions SET status = CASE paper_id
+                   WHEN 'paper-1' THEN 'irrelevant' ELSE 'relevant' END
+               WHERE run_id = 'stage2-frozen'"""
+        )
+        database.connection.commit()
+        return Service(database)
+
+    spec = DownloadStep(
+        "step", StepOutputRef("filter"), None, None, False
+    )
+    adapter = DownloadStageAdapter(factory)
+    outcome = adapter.execute(context, spec, adapter.validate(context, spec))
+
+    assert outcome.payload["paper_ids"] == ["paper-1"]
+    assert outcome.payload["source_filter_run_id"] == "stage2-frozen"
+    assert calls[0]["paper_ids"] == ("paper-1",)
+    assert calls[0]["filter_run_id"] is None
+    assert calls[0]["source_filter_run_id"] == "stage2-frozen"
+    with Database(context.database_path, read_only=True) as database:
+        assert select_stage3_paper_ids(
+            database,
+            paper_ids=None,
+            filter_run_id="stage2-frozen",
+            include_needs_review=False,
+        ) == ("paper-2",)
 
 
 def test_v2_workflow_analyze_uses_the_exact_current_download_run(

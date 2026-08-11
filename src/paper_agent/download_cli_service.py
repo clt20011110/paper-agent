@@ -45,6 +45,7 @@ from .download_providers import (
     default_resolver_registry,
 )
 from .downloads import (
+    AuthorizationContext,
     DownloadAccessPolicy,
     DownloadScopeBinding,
     DownloadService,
@@ -75,7 +76,7 @@ from .stage3_metadata_lookup import (
 from .storage import Database
 
 
-IMPLEMENTATION_VERSION = "stage3-cli-v5"
+IMPLEMENTATION_VERSION = "stage3-cli-v6"
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +108,7 @@ _TERMINAL_DOWNLOAD_STATUSES = frozenset({
     DownloadStatus.NOT_AVAILABLE,
     DownloadStatus.FAILED_TERMINAL,
 })
+_AUTHORIZED_SKILL_EXECUTION_MODE = "attended"
 
 
 class Stage3DownloadService:
@@ -152,12 +154,12 @@ class Stage3DownloadService:
     def select_papers(
         self,
         *,
-        paper_ids: Sequence[str] = (),
+        paper_ids: Sequence[str] | None = None,
         filter_run_id: str | None = None,
         include_needs_review: bool = False,
     ) -> tuple[Stage3Paper, ...]:
         """Select explicit IDs or Stage 2 rows approved for downstream work."""
-        selected = _selected_ids(
+        selected = select_stage3_paper_ids(
             self.database,
             paper_ids=paper_ids,
             filter_run_id=filter_run_id,
@@ -184,8 +186,9 @@ class Stage3DownloadService:
     def run(
         self,
         *,
-        paper_ids: Sequence[str] = (),
+        paper_ids: Sequence[str] | None = None,
         filter_run_id: str | None = None,
+        source_filter_run_id: str | None = None,
         include_needs_review: bool = False,
         authorization_grant_id: str | None = None,
         run_id: str | None = None,
@@ -199,6 +202,16 @@ class Stage3DownloadService:
         adapter never accepts or derives an inline scope from configuration.
         """
         timestamp = _timestamp(self.clock())
+        authorization_context: AuthorizationContext | None = None
+        if authorization_grant_id is not None:
+            grant = GrantStore(self.database).load(
+                authorization_grant_id,
+                kind="download",
+                now=timestamp if dry_run else None,
+            )
+            authorization_context = authorization_scope.authorization_context(
+                mode=str(grant.document["mode"])
+            )
         papers = _normalize_source_timestamps(
             self.select_papers(
                 paper_ids=paper_ids,
@@ -221,6 +234,7 @@ class Stage3DownloadService:
             "paper_ids": selected_ids,
             "per_paper_resolver_inputs": _per_paper_resolver_inputs(papers),
             "filter_run_id": filter_run_id,
+            "source_filter_run_id": source_filter_run_id,
             "include_needs_review": include_needs_review,
             "authorization_grant_id": authorization_grant_id,
             "authorization_scope": authorization_scope.to_dict(),
@@ -242,10 +256,6 @@ class Stage3DownloadService:
         )
         providers = default_download_provider_registry(service)
         if dry_run:
-            if authorization_grant_id is not None:
-                GrantStore(self.database).load(
-                    authorization_grant_id, kind="download", now=timestamp
-                )
             decisions = self._validate_without_writes(
                 papers,
                 resolvers=resolvers,
@@ -255,6 +265,7 @@ class Stage3DownloadService:
                 now=timestamp,
                 run_id=resolved_run_id,
                 authorization_grant_id=authorization_grant_id,
+                authorization_context=authorization_context,
                 authorized_skill=authorized_skill,
                 authorization_scope=authorization_scope,
             )
@@ -318,6 +329,7 @@ class Stage3DownloadService:
         # An authorized-skill-bound grant cannot authorize these providers and
         # therefore remains unresolved for the audited browser handoff below.
         if authorization_grant_id is not None:
+            assert authorization_context is not None
             granted_public_pipeline = Stage3Pipeline(
                 resolvers=resolvers,
                 providers=providers,
@@ -326,7 +338,7 @@ class Stage3DownloadService:
                 run_id=resolved_run_id,
                 manual_queue=manual_queue,
                 public_authorization_grant_id=authorization_grant_id,
-                public_authorization_context=authorization_scope.authorization_context(),
+                public_authorization_context=authorization_context,
             )
             result = granted_public_pipeline.run(
                 papers,
@@ -366,6 +378,7 @@ class Stage3DownloadService:
                     runtime=handoff.runtime,
                     grant_store=GrantStore(self.database),
                     authorization_grant_id=authorization_grant_id,
+                    mode=_AUTHORIZED_SKILL_EXECUTION_MODE,
                     collection_id=authorization_scope.collection_id,
                     collection_snapshot_hash=authorization_scope.collection_snapshot_hash,
                     selection_snapshot_hash=authorization_scope.selection_snapshot_hash,
@@ -429,6 +442,14 @@ class Stage3DownloadService:
         if not isinstance(configured, Mapping) or not configured.get("enabled"):
             return None
         if authorization_grant_id is None or options is None:
+            return None
+        grant = GrantStore(self.database).load(
+            authorization_grant_id, kind="download"
+        )
+        if grant.document["mode"] != _AUTHORIZED_SKILL_EXECUTION_MODE:
+            # The audited browser skill currently declares attended-only
+            # operation.  An unattended grant remains manual and never creates
+            # a queue or browser side effect.
             return None
         try:
             runtime = AuthorizedSkillRuntime(
@@ -539,12 +560,16 @@ class Stage3DownloadService:
         now: str,
         run_id: str,
         authorization_grant_id: str | None,
+        authorization_context: AuthorizationContext | None,
         authorized_skill: AuthorizedSkillHandoffOptions | None,
         authorization_scope: DownloadScopeBinding,
     ) -> tuple[tuple[str, str, str], ...]:
         """Exercise exact probe/grant validation and roll back every database change."""
         decisions: list[tuple[str, str, str]] = []
         authorized_candidates: dict[str, list[str]] = {}
+        runtime_authorization = (
+            authorization_context or authorization_scope.authorization_context()
+        )
         try:
             with self.database.transaction():
                 for item in papers:
@@ -561,9 +586,12 @@ class Stage3DownloadService:
                     for candidate in candidates:
                         attempt = providers.probe(candidate, ProbeContext(
                             purpose, now, authorization_grant_id=authorization_grant_id,
-                            collection_id=authorization_scope.collection_id,
-                            collection_snapshot_hash=authorization_scope.collection_snapshot_hash,
-                            selection_snapshot_hash=authorization_scope.selection_snapshot_hash,
+                            mode=runtime_authorization.mode,
+                            skill_digest=runtime_authorization.skill_digest,
+                            dependency_digest=runtime_authorization.dependency_digest,
+                            collection_id=runtime_authorization.collection_id,
+                            collection_snapshot_hash=runtime_authorization.collection_snapshot_hash,
+                            selection_snapshot_hash=runtime_authorization.selection_snapshot_hash,
                         ))
                         decisions.append((item.paper.paper_id, attempt.provider, attempt.decision.status.value))
                         if attempt.decision.status in {
@@ -615,6 +643,12 @@ class Stage3DownloadService:
             authorization_grant_id, kind="download", now=now
         )
         if grant.document["scope"]["provider"] != "authorized_skill":
+            return
+        if grant.document["mode"] != _AUTHORIZED_SKILL_EXECUTION_MODE:
+            decisions.extend(
+                (paper_id, "authorized_skill", "manual")
+                for paper_id in sorted(authorized_candidates)
+            )
             return
         runtime = AuthorizedSkillRuntime(
             enabled=True,
@@ -1047,54 +1081,38 @@ def _safe_provider_terms() -> dict[str, ProviderTerms]:
     }
 
 
-def _selected_ids(
+def select_stage3_paper_ids(
     database: Database,
     *,
-    paper_ids: Sequence[str],
+    paper_ids: Sequence[str] | None,
     filter_run_id: str | None,
     include_needs_review: bool,
 ) -> tuple[str, ...]:
-    explicit = tuple(sorted(set(paper_ids)))
+    explicit = tuple(sorted(set(paper_ids or ())))
     if explicit:
         if filter_run_id is not None:
             raise ValueError("paper_ids and filter_run_id are mutually exclusive")
+        return explicit
+    if filter_run_id is None:
+        if paper_ids is None:
+            raise ValueError("paper_ids or filter_run_id is required for Stage 3")
         return explicit
     statuses = (FilterStatus.RELEVANT.value,)
     if include_needs_review:
         statuses += (FilterStatus.NEEDS_REVIEW.value,)
     placeholders = ", ".join("?" for _ in statuses)
-    if filter_run_id is not None:
-        run = database.connection.execute(
-            "SELECT stage, status FROM pipeline_runs WHERE run_id = ?",
-            (filter_run_id,),
-        ).fetchone()
-        if run is None or tuple(run) != ("stage-2", "complete"):
-            raise ValueError("filter_run_id must name a complete Stage 2 run")
-        rows = database.connection.execute(
-            f"""SELECT paper_id FROM filter_decisions
-                WHERE run_id = ? AND status IN ({placeholders}) ORDER BY paper_id""",
-            (filter_run_id, *statuses),
-        ).fetchall()
-    else:
-        rows = database.connection.execute(
-            f"""SELECT decision.paper_id FROM filter_decisions AS decision
-               JOIN pipeline_runs AS run ON run.run_id = decision.run_id
-               WHERE decision.status IN ({placeholders})
-                 AND run.stage = 'stage-2' AND run.status = 'complete'
-                 AND decision.rowid = (
-                   SELECT latest.rowid FROM filter_decisions AS latest
-                   JOIN pipeline_runs AS latest_run ON latest_run.run_id = latest.run_id
-                   WHERE latest.paper_id = decision.paper_id
-                     AND latest_run.stage = 'stage-2' AND latest_run.status = 'complete'
-                   ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1
-                 )
-               ORDER BY decision.paper_id""",
-            statuses,
-        ).fetchall()
-    selected = tuple(str(row["paper_id"]) for row in rows)
-    if not selected and filter_run_id is None:
-        raise ValueError("no Stage 2 papers were selected for Stage 3")
-    return selected
+    run = database.connection.execute(
+        "SELECT stage, status FROM pipeline_runs WHERE run_id = ?",
+        (filter_run_id,),
+    ).fetchone()
+    if run is None or tuple(run) != ("stage-2", "complete"):
+        raise ValueError("filter_run_id must name a complete Stage 2 run")
+    rows = database.connection.execute(
+        f"""SELECT paper_id FROM filter_decisions
+            WHERE run_id = ? AND status IN ({placeholders}) ORDER BY paper_id""",
+        (filter_run_id, *statuses),
+    ).fetchall()
+    return tuple(str(row["paper_id"]) for row in rows)
 
 
 def _sources_for(database: Database, paper_id: str) -> tuple[PaperSource, ...]:
@@ -1155,7 +1173,7 @@ def _queue_items(
                     candidate,
                     purpose=purpose,
                     provider="authorized_skill",
-                    mode="attended",
+                    mode=_AUTHORIZED_SKILL_EXECUTION_MODE,
                     now=now,
                     skill_digest=skill_digest,
                     dependency_digest=dependency_digest,
@@ -1234,7 +1252,7 @@ def _validate_frozen_queue(
             candidate,
             purpose=purpose,
             provider="authorized_skill",
-            mode="attended",
+            mode=_AUTHORIZED_SKILL_EXECUTION_MODE,
             now=now,
             skill_digest=skill_digest,
             dependency_digest=dependency_digest,
@@ -1282,7 +1300,7 @@ def _reserve_queue_plan(
                 queue_item_hash=_queue_item_hash(item, plan.authorization_scope),
                 purpose=purpose,
                 provider="authorized_skill",
-                mode="attended",
+                mode=_AUTHORIZED_SKILL_EXECUTION_MODE,
                 now=now,
                 skill_digest=skill_digest,
                 dependency_digest=dependency_digest,

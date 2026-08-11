@@ -75,6 +75,16 @@ Stage 3 实现版本升级为 `stage3-cli-v4`；升级后应使用同一哈希�
 如果旧 grant 已为该论文建立 reservation，v4 run 必须使用重新审阅并批准的新 grant ID，不能删除
 或覆盖旧 reservation 来绕过审计记录。
 
+typed Download workflow adapter 的 scope 合同升级后，旧 manifest 仍可解析；但若其 grant 绑定了
+collection/selection snapshot，必须生成包含 `scope_snapshots` 精确 type、ID、hash、collection ID
+及必要 FileRef 的新 manifest 和 workflow run。旧 workflow step identity 不会被原地改写。
+
+Stage 3 实现版本随后升级为 `stage3-cli-v6`：granted-public probe/fetch 使用已批准 grant 的真实
+attended/unattended mode；显式空 `paper_ids` 不再隐式读取全局最新 Stage 2 结果。typed workflow
+会把当前 Filter run 先解析为 exact IDs，并另存其 lineage；静态 `paper_ids: []` 必须修正为非空
+冻结选择。typed workflow 尚未冻结 authorized-skill handoff 路径，因此这类 grant 必须迁移到独立
+`paper-agent download` 调用，不能把旧 typed workflow 当作浏览器授权入口。
+
 ## 选择示例
 
 `example_config.yaml` 是跨会议、期刊和 arXiv 的完整示例，报告默认开启。`configs/abstract_focus.yaml`、`configs/journal_smoke.yaml` 和 `configs/smoke_supported.yaml` 保留其原有的窄范围 smoke 场景，并关闭报告生成。每一个示例都要求先生成并批准 QueryPlan；`content_hash: null` 表示它只是初始模板，不能用于无人值守执行。

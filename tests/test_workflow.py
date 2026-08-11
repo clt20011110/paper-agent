@@ -14,6 +14,7 @@ import pytest
 from paper_agent.storage import Database
 from paper_agent.workflow import (
     AnalyzeStep,
+    DownloadScopeSnapshotRef,
     DownloadStep,
     FileRef,
     FilterStep,
@@ -119,6 +120,86 @@ def test_manifest_is_strictly_typed_and_file_refs_are_frozen(tmp_path: Path) -> 
     (tmp_path / "config.json").write_text('{"changed": true}', encoding="utf-8")
     with pytest.raises(ValueError, match="drifted"):
         manifest.verify_files()
+
+
+def test_download_scope_snapshot_refs_round_trip_without_breaking_legacy_manifests(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.json"
+    selection = tmp_path / "selection.json"
+    snapshot = tmp_path / "download-selection.json"
+    config.write_text("{}", encoding="utf-8")
+    selection.write_text(
+        json.dumps({"schema_version": "1", "paper_ids": ["paper-1"]}),
+        encoding="utf-8",
+    )
+    snapshot.write_text("{}", encoding="utf-8")
+    legacy = WorkflowManifest(
+        "legacy-download",
+        _ref(config),
+        (DownloadStep("download", _ref(selection), None, None, False),),
+        tmp_path / "legacy-workflow.json",
+        "2",
+    )
+    legacy.source_path.write_text(json.dumps(legacy.document()), encoding="utf-8")
+
+    assert load_workflow_manifest(legacy.source_path).document() == legacy.document()
+    assert "scope_snapshots" not in legacy.document()["steps"][0]
+
+    scoped = WorkflowManifest(
+        "scoped-download",
+        _ref(config),
+        (
+            DownloadStep(
+                "download",
+                _ref(selection),
+                "grant-1",
+                None,
+                False,
+                scope_snapshots=(
+                    DownloadScopeSnapshotRef(
+                        "selection",
+                        "selection-1",
+                        "a" * 64,
+                        None,
+                        _ref(snapshot),
+                    ),
+                ),
+            ),
+        ),
+        tmp_path / "scoped-workflow.json",
+        "2",
+    )
+    scoped.source_path.write_text(json.dumps(scoped.document()), encoding="utf-8")
+    loaded = load_workflow_manifest(scoped.source_path)
+
+    assert loaded.document() == scoped.document()
+    assert loaded.steps[0].file_refs()[-1].resolved_path == snapshot
+    snapshot.write_text('{"drifted":true}', encoding="utf-8")
+    with pytest.raises(ValueError, match="drifted"):
+        loaded.verify_files()
+
+
+def test_download_step_keeps_the_legacy_positional_stage_argument(
+    tmp_path: Path,
+) -> None:
+    selection = tmp_path / "selection.json"
+    selection.write_text(
+        json.dumps({"schema_version": "1", "paper_ids": ["paper-1"]}),
+        encoding="utf-8",
+    )
+
+    step = DownloadStep(
+        "download",
+        _ref(selection),
+        None,
+        None,
+        False,
+        StageKind.DOWNLOAD,
+    )
+
+    assert step.stage is StageKind.DOWNLOAD
+    assert step.scope_snapshots is None
 
 
 def test_v1_rejects_multi_stage_workflows(tmp_path: Path) -> None:

@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 import sqlite3
 import sysconfig
-from typing import Any, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from .analysis import load_analysis_output_schema
@@ -24,7 +24,16 @@ from .analysis_cli_service import AnalysisCliService, load_analysis_input_manife
 from .artifacts import ArtifactStore
 from .canonical import content_hash
 from .config import load_config
-from .download_cli_service import Stage3DownloadService, load_provider_terms
+from .download_cli_service import (
+    Stage3DownloadService,
+    load_provider_terms,
+    select_stage3_paper_ids,
+)
+from .downloads import (
+    DownloadScopeBinding,
+    DownloadScopeSnapshot,
+    DownloadScopeSnapshotStore,
+)
 from .grants import GrantStore
 from .processing import ArtifactProcessingPolicy, ProcessingGate
 from .report_artifacts import ReportArtifactStore
@@ -287,16 +296,39 @@ class FilterStageAdapter(_WorkflowAdapter):
         return StageOutcome(_outcome_status(str(result["status"])), payload)
 
 
-DownloadServiceFactory = Callable[[Database, Mapping[str, Any], Path, Path, Mapping[str, Any] | None], Any]
+DownloadScopeMembership = Callable[[str, str, str, str | None], bool]
+DownloadServiceFactory = Callable[
+    [Database, Mapping[str, Any], Path, Path, Mapping[str, Any] | None], Any
+]
+
+
+class DownloadScopeMembershipService(Protocol):
+    """Minimal injection point required by a snapshot-scoped workflow."""
+
+    scope_membership: DownloadScopeMembership | None
 
 
 class DownloadStageAdapter(_WorkflowAdapter):
     expected_type = DownloadStep
     stage = StageKind.DOWNLOAD
-    contract_version = "3"
+    contract_version = "4"
 
-    def __init__(self, service_factory: DownloadServiceFactory | None = None) -> None:
+    def __init__(
+        self,
+        service_factory: DownloadServiceFactory | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.service_factory = service_factory or _download_service
+        self.clock = _trusted_clock(clock)
+
+    def validate(
+        self, context: StepContext, spec: DownloadStep
+    ) -> StageIdentity:
+        identity = super().validate(context, spec)
+        if not context.dry_run:
+            self._validate_scope_inputs(context, spec)
+        return identity
 
     def _validate_dry_inputs(self, context: StepContext, spec: DownloadStep) -> None:
         # Constructing the Stage 3 service would prepare provider state.  The
@@ -304,9 +336,45 @@ class DownloadStageAdapter(_WorkflowAdapter):
         # frozen local inputs without touching a provider or SQLite.
         load_config(context.config_path)
         if isinstance(spec.selection, FileRef):
-            _selection(spec.selection.resolved_path)
+            _download_selection(context, spec, require_upstream=False)
         if spec.provider_terms is not None:
             load_provider_terms(spec.provider_terms.resolved_path)
+        self._validate_scope_inputs(context, spec)
+
+    def _validate_scope_inputs(
+        self, context: StepContext, spec: DownloadStep
+    ) -> None:
+        if spec.scope_snapshots is None and spec.authorization_grant_id is None:
+            return
+        if not context.database_path.is_file():
+            raise ValueError(
+                "workflow download grants and scope snapshots require an existing database"
+            )
+        config = load_config(context.config_path)
+        with Database(context.database_path, read_only=True) as database:
+            binding, snapshots, _store = _download_scope(
+                database, spec, persist_files=False
+            )
+            selection = _download_selection(context, spec, require_upstream=False)
+            paper_ids = (
+                select_stage3_paper_ids(
+                    database,
+                    paper_ids=selection.paper_ids or (),
+                    filter_run_id=selection.filter_run_id,
+                    include_needs_review=bool(spec.include_needs_review),
+                )
+                if selection is not None
+                else ()
+            )
+            _validate_download_scope_binding(
+                database,
+                config,
+                spec,
+                binding,
+                snapshots,
+                paper_ids,
+                now=_ordered_timestamp(self.clock()),
+            )
 
     def observe(
         self, context: StepContext, spec: DownloadStep, identity: StageIdentity
@@ -318,38 +386,63 @@ class DownloadStageAdapter(_WorkflowAdapter):
         self, context: StepContext, spec: DownloadStep, identity: StageIdentity
     ) -> StageOutcome:
         del identity
-        selection = (
-            _selection(spec.selection.resolved_path)
-            if isinstance(spec.selection, FileRef)
-            else PaperSelection(
-                filter_run_id=_upstream_filter_run(context, spec.selection)
-            )
-        )
+        selection = _download_selection(context, spec, require_upstream=True)
+        assert selection is not None
         config = load_config(context.config_path)
         terms = load_provider_terms(spec.provider_terms.resolved_path) if spec.provider_terms else None
         with _database(context) as database:
-            service = self.service_factory(
-                database, config, context.config_path.parent, _artifact_root(context), terms,
+            binding, snapshots, snapshot_store = _download_scope(
+                database, spec, persist_files=not context.dry_run
             )
-            result = service.run(
+            paper_ids = select_stage3_paper_ids(
+                database,
                 paper_ids=selection.paper_ids or (),
                 filter_run_id=selection.filter_run_id,
+                include_needs_review=bool(spec.include_needs_review),
+            )
+            _validate_download_scope_binding(
+                database,
+                config,
+                spec,
+                binding,
+                snapshots,
+                paper_ids,
+                now=_ordered_timestamp(self.clock()),
+            )
+            service = self.service_factory(
+                database,
+                config,
+                context.config_path.parent,
+                _artifact_root(context),
+                terms,
+            )
+            _inject_download_scope_membership(
+                service,
+                snapshot_store.contains if snapshots else None,
+            )
+            result = service.run(
+                paper_ids=paper_ids,
+                filter_run_id=None,
+                source_filter_run_id=selection.filter_run_id,
                 include_needs_review=bool(spec.include_needs_review),
                 authorization_grant_id=spec.authorization_grant_id,
                 run_id=context.child_run_id,
                 dry_run=context.dry_run,
+                authorization_scope=binding,
             )
         payload: dict[str, Any] = {
             "run_id": result.run_id,
             "paper_ids": list(result.paper_ids),
             "stage_status": result.status,
             "dry_run": result.dry_run,
+            "authorization_scope": binding.to_dict(),
+            "source_filter_run_id": selection.filter_run_id,
         }
-        binding = _pipeline_binding_document(
+        pipeline_binding = _pipeline_binding_document(
             context, result.run_id, "stage-3-download"
         )
-        if binding is not None:
-            payload["_pipeline_binding"] = binding
+        if pipeline_binding is not None:
+            payload["_pipeline_binding"] = pipeline_binding
         return StageOutcome(_outcome_status(str(result.status)), payload)
 
 
@@ -637,6 +730,20 @@ def _download_service(
     )
 
 
+def _inject_download_scope_membership(
+    service: Any,
+    membership: DownloadScopeMembership | None,
+) -> None:
+    if membership is None:
+        return
+    if not hasattr(service, "scope_membership"):
+        raise TypeError(
+            "snapshot-scoped workflow download service must expose "
+            "scope_membership"
+        )
+    cast(DownloadScopeMembershipService, service).scope_membership = membership
+
+
 def _analysis_service(
     database: Database, artifact_store: ArtifactStore, policy: ArtifactProcessingPolicy,
     *, workers: int, allow_abstract_only: bool, output_schema_path: Path,
@@ -735,6 +842,141 @@ def _selection(path: Path) -> PaperSelection:
     if keys == {"schema_version", "filter_run_id"} and isinstance(value["filter_run_id"], str):
         return PaperSelection(filter_run_id=value["filter_run_id"])
     raise ValueError("workflow selection must contain paper_ids or filter_run_id")
+
+
+def _download_selection(
+    context: StepContext,
+    spec: DownloadStep,
+    *,
+    require_upstream: bool,
+) -> PaperSelection | None:
+    if isinstance(spec.selection, FileRef):
+        selection = _selection(spec.selection.resolved_path)
+        if selection.paper_ids == ():
+            raise ValueError("workflow download paper_ids selection cannot be empty")
+        return selection
+    if not context.upstream_results and not require_upstream:
+        return None
+    return PaperSelection(filter_run_id=_upstream_filter_run(context, spec.selection))
+
+
+def _download_scope(
+    database: Database,
+    spec: DownloadStep,
+    *,
+    persist_files: bool,
+) -> tuple[
+    DownloadScopeBinding,
+    tuple[DownloadScopeSnapshot, ...],
+    DownloadScopeSnapshotStore,
+]:
+    store = DownloadScopeSnapshotStore(database)
+    loaded: list[DownloadScopeSnapshot] = []
+    for reference in spec.scope_snapshots or ():
+        snapshot = (
+            store.load_file(
+                reference.file.resolved_path,
+                expected_type=reference.snapshot_type,
+                persist=persist_files,
+            )
+            if reference.file is not None
+            else store.load_id(
+                reference.snapshot_id, expected_type=reference.snapshot_type
+            )
+        )
+        expected = (
+            reference.snapshot_type,
+            reference.snapshot_id,
+            reference.snapshot_hash,
+            reference.collection_id,
+        )
+        actual = (
+            snapshot.snapshot_type,
+            snapshot.snapshot_id,
+            snapshot.snapshot_hash,
+            snapshot.collection_id,
+        )
+        if actual != expected:
+            raise ValueError("workflow download scope snapshot binding has drifted")
+        loaded.append(snapshot)
+    by_type = {snapshot.snapshot_type: snapshot for snapshot in loaded}
+    collection = by_type.get("collection")
+    selection = by_type.get("selection")
+    return (
+        DownloadScopeBinding(
+            collection_id=collection.collection_id if collection else None,
+            collection_snapshot_hash=(
+                collection.snapshot_hash if collection else None
+            ),
+            selection_snapshot_hash=selection.snapshot_hash if selection else None,
+        ),
+        tuple(loaded),
+        store,
+    )
+
+
+def _validate_download_scope_binding(
+    database: Database,
+    config: Mapping[str, Any],
+    spec: DownloadStep,
+    binding: DownloadScopeBinding,
+    snapshots: tuple[DownloadScopeSnapshot, ...],
+    paper_ids: tuple[str, ...],
+    *,
+    now: str,
+) -> None:
+    for snapshot in snapshots:
+        missing = set(paper_ids) - set(snapshot.paper_ids)
+        if missing:
+            raise ValueError(
+                "workflow download selection is outside the frozen "
+                f"{snapshot.snapshot_type} snapshot: {sorted(missing)}"
+            )
+    if spec.authorization_grant_id is None:
+        if snapshots:
+            raise ValueError(
+                "workflow download scope snapshots require authorization_grant_id"
+            )
+        return
+    grant = GrantStore(database).load(
+        spec.authorization_grant_id, kind="download", now=now
+    )
+    document = grant.document
+    scope = cast(Mapping[str, Any], document["scope"])
+    if (
+        scope["provider"] == "authorized_skill"
+        or document["skill_digest"] is not None
+        or document["dependency_digest"] is not None
+    ):
+        raise ValueError(
+            "typed workflow download does not carry an authorized skill handoff; "
+            "use direct paper-agent download for authorized_skill grants"
+        )
+    if spec.scope_snapshots is None and (
+        scope["collection_snapshot_hash"] is not None
+        or scope["selection_snapshot_hash"] is not None
+    ):
+        raise ValueError(
+            "legacy workflow download step must declare its grant scope snapshots"
+        )
+    if scope["collection_snapshot_hash"] != binding.collection_snapshot_hash:
+        raise ValueError("workflow collection snapshot does not match the download grant")
+    if scope["selection_snapshot_hash"] != binding.selection_snapshot_hash:
+        raise ValueError("workflow selection snapshot does not match the download grant")
+    collection_ids = tuple(scope["collection_ids"])
+    if collection_ids and binding.collection_id not in collection_ids:
+        raise ValueError("workflow collection_id does not match the download grant")
+    granted_papers = set(scope["paper_ids"])
+    if granted_papers and set(paper_ids) - granted_papers:
+        raise ValueError("workflow download selection exceeds the grant paper scope")
+    if len(paper_ids) > int(document["max_papers"]):
+        raise ValueError("workflow download selection exceeds grant max_papers")
+    try:
+        purpose = config["download"]["purpose"]
+    except (KeyError, TypeError) as error:
+        raise ValueError("workflow download configuration requires purpose") from error
+    if document["purpose"] != purpose:
+        raise ValueError("workflow download purpose does not match the grant")
 
 
 def _upstream_paper_ids(
