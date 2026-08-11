@@ -2,7 +2,7 @@
   "schema_version": 1,
   "evidence_type": "stage2_real_workload_frame",
   "status": "candidate_independent_frame_frozen",
-  "source_commit": "2e1edcae538e7d74b77e98757e87a31f88a4d353",
+  "source_commit": "ffc9ab46439b4a2a71f183e3c625091f3cd09d9b",
   "live_network": true,
   "sources": {
     "neurips_2024": {
@@ -64,6 +64,9 @@
       "abstract_missing_count": 100,
       "normal_qwen_count": 150,
       "stress_qwen_count": 300,
+      "missing_abstracts_in_normal_qwen_count": 100,
+      "missing_abstracts_in_stress_qwen_count": 100,
+      "normal_qwen_is_subset_of_stress_qwen": true,
       "papers_corpus_hash": "1506bcb81b3b00985f75b34971f66e281d01fedbf4356f9e8933b104fd5f529a",
       "file_sha256": "633938fafa9a075f36a1e6f4c9c938ce0578a3d816375234cba83199bc32deb6",
       "file_size_bytes": 1517410
@@ -75,7 +78,7 @@
       "file_size_bytes": 4826086
     },
     "selection_receipt": {
-      "file_sha256": "9642eaf922a682bcf79d3866e4d3a7fcdc0bbc72a8e20a5a9d75412afbb4c992",
+      "file_sha256": "f9d210a7a8e693f922ff8f8e783f31d87b4c397d46961b827bab58ded9f44aa1",
       "file_size_bytes": 1030651,
       "omitted_bindings": [
         "stage2_config_hash",
@@ -89,7 +92,7 @@
       "local-evaluator:stage2/neurips-2024-v1-20260812",
       "local-evaluator:stage2/neurips-2025-v1-20260812",
       "local-evaluator:stage2/crossref-benchmark-v1-20260812",
-      "local-evaluator:stage2/workload-frame-v1-20260812"
+      "local-evaluator:stage2/workload-frame-v2-20260812"
     ],
     "private_artifacts_committed": false,
     "file_mode": "0600",
