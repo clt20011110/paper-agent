@@ -438,8 +438,9 @@ Luna 和 Sol 只有带显式执行参数时才会启动。先以单个 venue 验
 
 最后一个汇总命令不调用模型，并对 run lineage、PDF/analysis/report CAS、一次性 Sol ledger、
 报告 manifest 与完整本地 verifier 做只读核验。受控矩阵不替代逐 provider 的 live transport 验收，
-也不替代 Stage 2 production release gate；边界和 20-venue 结果见
-[docs/acceptance/venue-e2e-matrix-20260811.md](docs/acceptance/venue-e2e-matrix-20260811.md)。
+也不替代 Stage 2 production release gate。最新的 20 个 venue 全当前运行结果见
+[docs/acceptance/venue-e2e-matrix-20260812.md](docs/acceptance/venue-e2e-matrix-20260812.md)，
+其验收 manifest 不导入历史行；2026-08-11 的“19 个当前运行 + NeurIPS 历史复用”记录仍保留供审计。
 需要提交机器可读证据时加 `--portable-paths --json-output /absolute/evidence.json`，本机 run/repository
 前缀会替换为 `$RUN_ROOT`/`$REPOSITORY_ROOT`。
 

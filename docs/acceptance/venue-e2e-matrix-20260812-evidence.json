@@ -1,0 +1,3249 @@
+{
+  "schema_version": "1",
+  "generated_at": "2026-08-11T21:42:56.426529Z",
+  "run_root": "$RUN_ROOT",
+  "summary": {
+    "venue_count": 20,
+    "catalog_venue_count": 20,
+    "passed": 20,
+    "failed": 0,
+    "coverage_complete": true,
+    "missing_venues": [],
+    "unexpected_venues": [],
+    "duplicate_venues": [],
+    "all_passed": true
+  },
+  "venue_catalog_root": "$REPOSITORY_ROOT/venues",
+  "acceptance_import_manifest": "$REPOSITORY_ROOT/configs/e2e/venue-e2e-acceptance-imports-20260812-current.json",
+  "verifier": {
+    "version": "paper-agent.venue-e2e-verifier.v2",
+    "path": "$REPOSITORY_ROOT/scripts/summarize_venue_e2e_matrix.py",
+    "sha256": "8009bf61ca3e62c6cfe12b3a71ffeb0e1fb16615771249d89adcc17bf24ff854"
+  },
+  "venues": [
+    {
+      "venue": "aaai",
+      "run_dir": "$RUN_ROOT/aaai-e2e",
+      "database": "$RUN_ROOT/aaai-e2e/papers.sqlite3",
+      "database_sha256": "c02e999399df19c366b5f3a4a707b9c29e68de40a007f2367ee199acd914798f",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "aaai-e2e-20260812-rerun-stage1",
+          "configured_run_id": "aaai-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-8e01ec3214d759f5a4fede608b2d1bd5",
+          "crawl_status": "complete",
+          "query_plan_id": "aaai-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "3311bdc965fbbc16a35381db1ca5854db515b4624a5509743ddf16e14d03fb16",
+          "query_plan_venues": [
+            "aaai"
+          ],
+          "paper_ids": [
+            "paper-938285daf26b5d338d3e693c38d64790"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "aaai-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-938285daf26b5d338d3e693c38d64790",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-938285daf26b5d338d3e693c38d64790"
+          ],
+          "decision_paper_ids": [
+            "paper-938285daf26b5d338d3e693c38d64790"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "aaai-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-938285daf26b5d338d3e693c38d64790",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-e30a3b36ad10ff94867cc1a3329823bb",
+          "candidate_id": "location-7a2bbc44647d3c996136a5b00117fade",
+          "artifact_id": "artifact-082b8ccd100962e8a79d4e1bb69f8fd4217e694beb253b9be9c7f427aa1c65f6",
+          "artifact_sha256": "082b8ccd100962e8a79d4e1bb69f8fd4217e694beb253b9be9c7f427aa1c65f6",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "aaai-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-938285daf26b5d338d3e693c38d64790",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-baf888868b44a7ff7229e73f2a305931b1355ace5338d0c504d0899e8273f88b",
+          "input_artifact_sha256": "baf888868b44a7ff7229e73f2a305931b1355ace5338d0c504d0899e8273f88b",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-356e6552ff5c03e346c2627b9bf8a822c3ce9d0a3cdb151f604e847ab77b5de8",
+          "output_artifact_sha256": "356e6552ff5c03e346c2627b9bf8a822c3ce9d0a3cdb151f604e847ab77b5de8",
+          "markdown_artifact_id": "artifact-b85208d666b8d6ef0298ec111670dca9a70bee9af5fd324efd68cbaf283bb592",
+          "markdown_artifact_sha256": "b85208d666b8d6ef0298ec111670dca9a70bee9af5fd324efd68cbaf283bb592",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "aaai-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "aaai-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "356e6552ff5c03e346c2627b9bf8a822c3ce9d0a3cdb151f604e847ab77b5de8"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-162e7f735340c66288eac3bce0281e414c840ce1b2604c7a64a69be53e0bd6b0",
+          "output_hash": "162e7f735340c66288eac3bce0281e414c840ce1b2604c7a64a69be53e0bd6b0",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/aaai-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "aaai-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/aaai-e2e/reports/aaai-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "aaai"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "3fddf1fdf215b1489d936376da3748711f7b890993d148d8d7a73edd4668df76",
+          "report_markdown_hash": "4eb4be69f075890ad36c883cf71647f44229007bbbddb4210a67b9106b2e5982",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "acl",
+      "run_dir": "$RUN_ROOT/acl-e2e",
+      "database": "$RUN_ROOT/acl-e2e/papers.sqlite3",
+      "database_sha256": "f5736037eeb1c866cd9708c42ae0117302b9e970f837f06f83d198332c2220d5",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "acl-e2e-20260812-rerun-stage1",
+          "configured_run_id": "acl-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-7f6403ed7dbc597eb4a259e55c68b075",
+          "crawl_status": "complete",
+          "query_plan_id": "acl-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "c041d3bd1fa7cae771527e8d113a4fa367e21459728b334e542bb576a5abbfe4",
+          "query_plan_venues": [
+            "acl"
+          ],
+          "paper_ids": [
+            "paper-ea9ee0d5468555bca9b558984523f5b0"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "acl-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-ea9ee0d5468555bca9b558984523f5b0",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-ea9ee0d5468555bca9b558984523f5b0"
+          ],
+          "decision_paper_ids": [
+            "paper-ea9ee0d5468555bca9b558984523f5b0"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "acl-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-ea9ee0d5468555bca9b558984523f5b0",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-d65e0d910bc502f3d3107e2f48e3ae21",
+          "candidate_id": "location-1172a2935ef13cfb62bf97bdff15c3ca",
+          "artifact_id": "artifact-f783a664c48a31b54b9212db5e99d7063fe5bfa5400ea0aa00cab609a1c47868",
+          "artifact_sha256": "f783a664c48a31b54b9212db5e99d7063fe5bfa5400ea0aa00cab609a1c47868",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "acl-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-ea9ee0d5468555bca9b558984523f5b0",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-e83482b1d09ad6bf8f8a70b51096971823e95d3510914c207ad32f29d397b2ad",
+          "input_artifact_sha256": "e83482b1d09ad6bf8f8a70b51096971823e95d3510914c207ad32f29d397b2ad",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-d972082943cd9c121f4be6b89766db51b5cdd0083e0a071c355ae74d7795c5da",
+          "output_artifact_sha256": "d972082943cd9c121f4be6b89766db51b5cdd0083e0a071c355ae74d7795c5da",
+          "markdown_artifact_id": "artifact-a890f4c91c9584467fcf25d8ae6960f320420bdde8a157f7037860d897d8fdf1",
+          "markdown_artifact_sha256": "a890f4c91c9584467fcf25d8ae6960f320420bdde8a157f7037860d897d8fdf1",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "acl-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "acl-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "d972082943cd9c121f4be6b89766db51b5cdd0083e0a071c355ae74d7795c5da"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-71504d43eb58b9f4130a176a8b2b71639aff72c69513e528da64dabb512f6c97",
+          "output_hash": "71504d43eb58b9f4130a176a8b2b71639aff72c69513e528da64dabb512f6c97",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/acl-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "acl-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/acl-e2e/reports/acl-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "acl"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "8e4885dbe88df8b1f1944e4fabb9966740eeb151f9ee71e61845a4703af743ba",
+          "report_markdown_hash": "bdf6eb72e353fedf64db2cba176c6f113f14097cb31fd49bb62751c3c14d1b0d",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "cell",
+      "run_dir": "$RUN_ROOT/cell-e2e",
+      "database": "$RUN_ROOT/cell-e2e/papers.sqlite3",
+      "database_sha256": "97ddc3e6ea25b5f2a074931e0380c6ae4e653a4f9d9ffb7495425b87737f7c5c",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "cell-e2e-20260812-rerun-stage1",
+          "configured_run_id": "cell-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-4a85fa369b9851cbadafde6dc1f1fee2",
+          "crawl_status": "complete",
+          "query_plan_id": "cell-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "1b5b037f8fafee0ee3634808bbd5bd585da963cc5c5b64befd6961418e9b8c1c",
+          "query_plan_venues": [
+            "cell"
+          ],
+          "paper_ids": [
+            "paper-a8107a14ec1c5e80b09230e694265cd1"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "cell-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-a8107a14ec1c5e80b09230e694265cd1",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-a8107a14ec1c5e80b09230e694265cd1"
+          ],
+          "decision_paper_ids": [
+            "paper-a8107a14ec1c5e80b09230e694265cd1"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "cell-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-a8107a14ec1c5e80b09230e694265cd1",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-0ed2b3086ac92a5b3a60fe16acc89e5b",
+          "candidate_id": "location-3717df6c8870cf021195c2417695f408",
+          "artifact_id": "artifact-59a7e1e8054f55b1fb3e77b7a81098e3a10e9ffc526f26724547d3ebbc6efd3d",
+          "artifact_sha256": "59a7e1e8054f55b1fb3e77b7a81098e3a10e9ffc526f26724547d3ebbc6efd3d",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "cell-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-a8107a14ec1c5e80b09230e694265cd1",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-6bea9f0c99e9d83d651ce80d48c006ec60b6005e3f3a24d69486d730c74b8228",
+          "input_artifact_sha256": "6bea9f0c99e9d83d651ce80d48c006ec60b6005e3f3a24d69486d730c74b8228",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-2473ee019462d51d7175bfa4fe3a63294eed1356055bb8cde4e3c6069c0eff1f",
+          "output_artifact_sha256": "2473ee019462d51d7175bfa4fe3a63294eed1356055bb8cde4e3c6069c0eff1f",
+          "markdown_artifact_id": "artifact-f219162cda76d79b754405e69c66f486f6ec3972c590a6358d9de03b2d7578ad",
+          "markdown_artifact_sha256": "f219162cda76d79b754405e69c66f486f6ec3972c590a6358d9de03b2d7578ad",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "cell-e2e-20260812-rerun:stage4b-v2",
+          "pipeline_status": "complete",
+          "report_run_id": "cell-e2e-20260812-rerun:report-v2",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "2473ee019462d51d7175bfa4fe3a63294eed1356055bb8cde4e3c6069c0eff1f"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-012fdabaf2e337acb5f96b488d2dd540c1d88b6e2262ad3962ffd577a425a6ae",
+          "output_hash": "012fdabaf2e337acb5f96b488d2dd540c1d88b6e2262ad3962ffd577a425a6ae",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/cell-e2e-20260812-rerun:report-v2"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "cell-e2e-20260812-rerun:report-v2",
+          "report_directory": "$RUN_ROOT/cell-e2e/reports/cell-e2e-20260812-rerun:report-v2",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "cell"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "f6c55f1335df9912777559af0c56b08deda32595dac758bdf633968346384eb4",
+          "report_markdown_hash": "50ca1e332ef066a1325a600723168df384e05a9afa4a810a4fad9e7339ffc783",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "cvpr",
+      "run_dir": "$RUN_ROOT/cvpr-e2e",
+      "database": "$RUN_ROOT/cvpr-e2e/papers.sqlite3",
+      "database_sha256": "c4185c7e9a124cc95fd3ae34c6e52961e08f08e256e16051d70bcc73f2ed187d",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "cvpr-e2e-20260812-rerun-stage1",
+          "configured_run_id": "cvpr-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-c43cdb93434955bba3a40689a84c4abc",
+          "crawl_status": "complete",
+          "query_plan_id": "cvpr-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "45085da638d04fc764ecab4fc42235313833a3c95415de2be0746366a0104870",
+          "query_plan_venues": [
+            "cvpr"
+          ],
+          "paper_ids": [
+            "paper-f2900fe1570a58c9a51f65f026d54d34"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "cvpr-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-f2900fe1570a58c9a51f65f026d54d34",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-f2900fe1570a58c9a51f65f026d54d34"
+          ],
+          "decision_paper_ids": [
+            "paper-f2900fe1570a58c9a51f65f026d54d34"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "cvpr-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-f2900fe1570a58c9a51f65f026d54d34",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-fae3865d017046b83a3825026776848a",
+          "candidate_id": "location-814bf7ce6fad328a1a10ba4cfe14eb17",
+          "artifact_id": "artifact-aa5d82ba2c17620988f17c23a3d297694a9c407d55457f11ad19bd6309e7dfbd",
+          "artifact_sha256": "aa5d82ba2c17620988f17c23a3d297694a9c407d55457f11ad19bd6309e7dfbd",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "cvpr-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-f2900fe1570a58c9a51f65f026d54d34",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-ab37fca3be141b0a4c2b8e392599c87c61b81522228b90229d0a9682d673d526",
+          "input_artifact_sha256": "ab37fca3be141b0a4c2b8e392599c87c61b81522228b90229d0a9682d673d526",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-ca99ec3386277afdececefea21b51d2a39f8d60bcbb9cfbce33611c947e2ce3f",
+          "output_artifact_sha256": "ca99ec3386277afdececefea21b51d2a39f8d60bcbb9cfbce33611c947e2ce3f",
+          "markdown_artifact_id": "artifact-ce59b7eb68b7b7d49d1410197daeff1f81f274658aed5959a27d7a9e9b9c15c8",
+          "markdown_artifact_sha256": "ce59b7eb68b7b7d49d1410197daeff1f81f274658aed5959a27d7a9e9b9c15c8",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "cvpr-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "cvpr-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "ca99ec3386277afdececefea21b51d2a39f8d60bcbb9cfbce33611c947e2ce3f"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-f39b27cebe9d2494864177bc5500375e918a64232af790efa2486353b183cc75",
+          "output_hash": "f39b27cebe9d2494864177bc5500375e918a64232af790efa2486353b183cc75",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/cvpr-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "cvpr-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/cvpr-e2e/reports/cvpr-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "cvpr"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "a5bfab0d5217f0ae2c8fb09a8bb861ef4f4aee85d5f257ef7ac449c6f5e96ea7",
+          "report_markdown_hash": "46909e085bd0e95f2b8bc1705517423a06e24979128175522cc8a66a16119a30",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "dac",
+      "run_dir": "$RUN_ROOT/dac-e2e",
+      "database": "$RUN_ROOT/dac-e2e/papers.sqlite3",
+      "database_sha256": "af32875a681c4fa9b3d5a689fb55594727cbdebc1283d4b2dbab708f7f7e3375",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "dac-e2e-20260812-rerun-stage1",
+          "configured_run_id": "dac-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-f49bbf8987ce50bda0c20d9f351d4783",
+          "crawl_status": "complete",
+          "query_plan_id": "dac-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "025c66173d85ed52805ed794c4fd3f42e3325a6a90083ce43da6c363ad63e198",
+          "query_plan_venues": [
+            "dac"
+          ],
+          "paper_ids": [
+            "paper-f974a2005be4532abc34e0b9040869fd"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "dac-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-f974a2005be4532abc34e0b9040869fd",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-f974a2005be4532abc34e0b9040869fd"
+          ],
+          "decision_paper_ids": [
+            "paper-f974a2005be4532abc34e0b9040869fd"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "dac-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-f974a2005be4532abc34e0b9040869fd",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-70faa32ac12b97054de11282d29cadad",
+          "candidate_id": "location-f29d20fcaea4f872b5a4e6873ae1f5a5",
+          "artifact_id": "artifact-8a357551eca7c0dcd47e530a8e5833c38d8d50e767fb55690cc4de89da239cbf",
+          "artifact_sha256": "8a357551eca7c0dcd47e530a8e5833c38d8d50e767fb55690cc4de89da239cbf",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "dac-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-f974a2005be4532abc34e0b9040869fd",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-cd2399920efd3b1f56d8e4e4276a573db61e81c1ac3be1df31e6e7adf36dc671",
+          "input_artifact_sha256": "cd2399920efd3b1f56d8e4e4276a573db61e81c1ac3be1df31e6e7adf36dc671",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-ebffb0d93335725c159588ea043508cef7d4afcf9cb22d391cec363cd539808b",
+          "output_artifact_sha256": "ebffb0d93335725c159588ea043508cef7d4afcf9cb22d391cec363cd539808b",
+          "markdown_artifact_id": "artifact-34fd2aff1646ee5434bd90c7402a07bf6f4d13082aeceb438d39ff8d908ef04d",
+          "markdown_artifact_sha256": "34fd2aff1646ee5434bd90c7402a07bf6f4d13082aeceb438d39ff8d908ef04d",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "dac-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "dac-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "ebffb0d93335725c159588ea043508cef7d4afcf9cb22d391cec363cd539808b"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-c4c94d29eb583ca6c918e9227ed6bc5c0e91036fce18f42582aa9749d7071080",
+          "output_hash": "c4c94d29eb583ca6c918e9227ed6bc5c0e91036fce18f42582aa9749d7071080",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/dac-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "dac-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/dac-e2e/reports/dac-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "dac"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "a22dd9006bb462f287a31a0103c52754775b6f45c9bc70332630edea078e8fe1",
+          "report_markdown_hash": "1bda72aa6d6dae1ffe46916f8b800bd865a5ce2f9c61a4199d5be46345ef1d7a",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "iccad",
+      "run_dir": "$RUN_ROOT/iccad-e2e",
+      "database": "$RUN_ROOT/iccad-e2e/papers.sqlite3",
+      "database_sha256": "b31f4d81f86265ef9b367d1181e0c62c8ec3e9f451f49f5a54c1897f3de5a764",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "iccad-e2e-20260812-rerun-stage1",
+          "configured_run_id": "iccad-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-441f02d80a8654409241a3d66b3fd82f",
+          "crawl_status": "complete",
+          "query_plan_id": "iccad-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "695ef515c05302e4beff8c98c68d7c068eeb7edd06e7a829cf1120f3d6f2c16e",
+          "query_plan_venues": [
+            "iccad"
+          ],
+          "paper_ids": [
+            "paper-1359888a087c55bfad2411b90e1b693b"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "iccad-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-1359888a087c55bfad2411b90e1b693b",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-1359888a087c55bfad2411b90e1b693b"
+          ],
+          "decision_paper_ids": [
+            "paper-1359888a087c55bfad2411b90e1b693b"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "iccad-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-1359888a087c55bfad2411b90e1b693b",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-f5d911830e7c6601b58a5dbe0a0a05f8",
+          "candidate_id": "location-fb7ffa37318d70e9081020274e58537a",
+          "artifact_id": "artifact-ad482a7c9d9192c0ebcb36fca6eb57f3f2b9b2f9df6009127c178c4f86fc949e",
+          "artifact_sha256": "ad482a7c9d9192c0ebcb36fca6eb57f3f2b9b2f9df6009127c178c4f86fc949e",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "iccad-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-1359888a087c55bfad2411b90e1b693b",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-e71bc38d4bb8e7c1d9c091a1bf50249a9da30f76bd38740337ed879f3ff47f61",
+          "input_artifact_sha256": "e71bc38d4bb8e7c1d9c091a1bf50249a9da30f76bd38740337ed879f3ff47f61",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-20642cdbc2a5d3398f9271dcdf3fe099335798e415790fb11a7ad65f223a460b",
+          "output_artifact_sha256": "20642cdbc2a5d3398f9271dcdf3fe099335798e415790fb11a7ad65f223a460b",
+          "markdown_artifact_id": "artifact-dca7057283401cb14acb8afeb0ea5b229f068b9a060adc5b4d31fc2c078a62ef",
+          "markdown_artifact_sha256": "dca7057283401cb14acb8afeb0ea5b229f068b9a060adc5b4d31fc2c078a62ef",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "iccad-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "iccad-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "20642cdbc2a5d3398f9271dcdf3fe099335798e415790fb11a7ad65f223a460b"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-b69b95208a09c37d384897334645cb03d42bbca656c4275b6351bb8c0148bb37",
+          "output_hash": "b69b95208a09c37d384897334645cb03d42bbca656c4275b6351bb8c0148bb37",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/iccad-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "iccad-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/iccad-e2e/reports/iccad-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "iccad"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "973ee7fa1378a5069bd060d6fbe1d6bfbe2b2c4517980070a9df65922ceaee1a",
+          "report_markdown_hash": "498bd9894d66265776854db79d5fe9ef78649833b0a82028e09c9466083674f1",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "iccv",
+      "run_dir": "$RUN_ROOT/iccv-e2e",
+      "database": "$RUN_ROOT/iccv-e2e/papers.sqlite3",
+      "database_sha256": "076ebc653ed074e34612b37edb61d0acb6511fb34a7430875344b328442ec6be",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "iccv-e2e-20260812-rerun-stage1",
+          "configured_run_id": "iccv-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-a8c7e243e98757d7bd75cda8fc8b4600",
+          "crawl_status": "complete",
+          "query_plan_id": "iccv-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "67c0e9a8ccc406976c27fcd00daee6243640a6d25139e7a5cc8ab482b0eef9d6",
+          "query_plan_venues": [
+            "iccv"
+          ],
+          "paper_ids": [
+            "paper-b5eef4d01e7d5bdda934b88e4dd65bc6"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "iccv-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-b5eef4d01e7d5bdda934b88e4dd65bc6",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-b5eef4d01e7d5bdda934b88e4dd65bc6"
+          ],
+          "decision_paper_ids": [
+            "paper-b5eef4d01e7d5bdda934b88e4dd65bc6"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "iccv-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-b5eef4d01e7d5bdda934b88e4dd65bc6",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-18d15a1efeaa8a5cea10c52a1d7164a5",
+          "candidate_id": "location-801a579675197b406aca0563c7610f69",
+          "artifact_id": "artifact-eb6e2fb8c1ba254e8bb86ce9c52942f6f9dfaf1d7583d941d9d208cbd2dca27b",
+          "artifact_sha256": "eb6e2fb8c1ba254e8bb86ce9c52942f6f9dfaf1d7583d941d9d208cbd2dca27b",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "iccv-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-b5eef4d01e7d5bdda934b88e4dd65bc6",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-de9a7ea6ebf81860286d08a8d8b4be2775c7eb74205aa54a971554448ad97dc1",
+          "input_artifact_sha256": "de9a7ea6ebf81860286d08a8d8b4be2775c7eb74205aa54a971554448ad97dc1",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-82c2aabf494e4d8b148d56864acf6fbcc146a3b50a6ee04e19c7f92f465166c7",
+          "output_artifact_sha256": "82c2aabf494e4d8b148d56864acf6fbcc146a3b50a6ee04e19c7f92f465166c7",
+          "markdown_artifact_id": "artifact-67f821b2f462b4829dba504b895a5677353b771ed773214a987156f13b9f3d59",
+          "markdown_artifact_sha256": "67f821b2f462b4829dba504b895a5677353b771ed773214a987156f13b9f3d59",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "iccv-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "iccv-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "82c2aabf494e4d8b148d56864acf6fbcc146a3b50a6ee04e19c7f92f465166c7"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-c651ccd7ec77738486badf4a65c43d669c2685cf355dc85aeb5716fd92c025b0",
+          "output_hash": "c651ccd7ec77738486badf4a65c43d669c2685cf355dc85aeb5716fd92c025b0",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/iccv-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "iccv-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/iccv-e2e/reports/iccv-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "iccv"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "9f39d9c0ae3d437c82056912e52143539e967899f228e7439a321c3740eac7cd",
+          "report_markdown_hash": "9feb00b7650bd8eb829ff7ab3d93558b772c3a81ca5974fafca6dd79d1aa0c4e",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "iclr",
+      "run_dir": "$RUN_ROOT/iclr-e2e",
+      "database": "$RUN_ROOT/iclr-e2e/papers.sqlite3",
+      "database_sha256": "054053138daf0c03d78c9417d5dad189f26a55d004028cd65a58e132a0cb64e8",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "iclr-e2e-20260812-rerun-v2-stage1",
+          "configured_run_id": "iclr-e2e-20260812-rerun-v2-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-df4b7144442e5e0d8a72c2a21d7348d1",
+          "crawl_status": "complete",
+          "query_plan_id": "iclr-e2e-20260812-rerun-v2-stage1",
+          "query_plan_hash": "92ba6a350b5a15e18c3dbadd2851a30a7910d1396efec3d3b76fd8a9fc82aa87",
+          "query_plan_venues": [
+            "iclr"
+          ],
+          "paper_ids": [
+            "paper-2da4915637995646907becf444cd1320"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "iclr-e2e-20260812-rerun-v2-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-2da4915637995646907becf444cd1320",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-2da4915637995646907becf444cd1320"
+          ],
+          "decision_paper_ids": [
+            "paper-2da4915637995646907becf444cd1320"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "iclr-e2e-20260812-rerun-v2-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-2da4915637995646907becf444cd1320",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-cffd9a2971df7117d128c05db68c0229",
+          "candidate_id": "location-84f4abc78ad53286a54d079115bc86f1",
+          "artifact_id": "artifact-f5cb5024bfba7cd5500bf242a487cbc4577bd9968e425473a10e1079f1770cc4",
+          "artifact_sha256": "f5cb5024bfba7cd5500bf242a487cbc4577bd9968e425473a10e1079f1770cc4",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "iclr-e2e-20260812-rerun-v2:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-2da4915637995646907becf444cd1320",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-785f6715432753353ed4325e9359531049b63e5719105bb5e8c7d7fb6f16e127",
+          "input_artifact_sha256": "785f6715432753353ed4325e9359531049b63e5719105bb5e8c7d7fb6f16e127",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-6497234a1884551775028355bbbcadd975a2c2c4a0f567023694b32fb86798b1",
+          "output_artifact_sha256": "6497234a1884551775028355bbbcadd975a2c2c4a0f567023694b32fb86798b1",
+          "markdown_artifact_id": "artifact-67206fd32afc1b928996ab84e5a2d3640ba7a52bbee17776382b0c0859d6b3ac",
+          "markdown_artifact_sha256": "67206fd32afc1b928996ab84e5a2d3640ba7a52bbee17776382b0c0859d6b3ac",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "iclr-e2e-20260812-rerun-v2:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "iclr-e2e-20260812-rerun-v2:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "6497234a1884551775028355bbbcadd975a2c2c4a0f567023694b32fb86798b1"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-2edda049c8e686c5c4a75f99765fec5fa6bb7cea8bab3553098eb9ab917da895",
+          "output_hash": "2edda049c8e686c5c4a75f99765fec5fa6bb7cea8bab3553098eb9ab917da895",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/iclr-e2e-20260812-rerun-v2:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "iclr-e2e-20260812-rerun-v2:report",
+          "report_directory": "$RUN_ROOT/iclr-e2e/reports/iclr-e2e-20260812-rerun-v2:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "iclr"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "fd76af90ce634a734b03183fd5582ef106316b4a391822af93f66841b5cd8858",
+          "report_markdown_hash": "9b3a11b2594f37fb6d5796c0f38378a8ed2bdcc8be5d7113e3cc8c142b457a53",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "icml",
+      "run_dir": "$RUN_ROOT/icml-e2e",
+      "database": "$RUN_ROOT/icml-e2e/papers.sqlite3",
+      "database_sha256": "974f6378f5669aaa46661cc6fc088c6430499e50666139f285030219e3a7b23d",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "icml-e2e-20260812-rerun-v2-stage1",
+          "configured_run_id": "icml-e2e-20260812-rerun-v2-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-716fa6f091ff503e884eba827106c362",
+          "crawl_status": "complete",
+          "query_plan_id": "icml-e2e-20260812-rerun-v2-stage1",
+          "query_plan_hash": "6d65cd91786a9cb688b961e1bf5d5098804348de06f7c8fdecde3197a3f75edc",
+          "query_plan_venues": [
+            "icml"
+          ],
+          "paper_ids": [
+            "paper-aa0f134e14935c7b9ff7b20c2a4cbed4"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "icml-e2e-20260812-rerun-v2-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-aa0f134e14935c7b9ff7b20c2a4cbed4",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-aa0f134e14935c7b9ff7b20c2a4cbed4"
+          ],
+          "decision_paper_ids": [
+            "paper-aa0f134e14935c7b9ff7b20c2a4cbed4"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "icml-e2e-20260812-rerun-v2-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-aa0f134e14935c7b9ff7b20c2a4cbed4",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-d42d9de4f28a711d4ebe30ec51605272",
+          "candidate_id": "location-0f4ccad98f89df8dcee87ee2d228ebb7",
+          "artifact_id": "artifact-974d56038f701f641e6d715ef4766d2a8e9ef711c93d5a47a038f5c4ac225696",
+          "artifact_sha256": "974d56038f701f641e6d715ef4766d2a8e9ef711c93d5a47a038f5c4ac225696",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "icml-e2e-20260812-rerun-v2:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-aa0f134e14935c7b9ff7b20c2a4cbed4",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-7500064c026b848ba0bf89cbe57623903e0a15019b84f95cd6ecd764f3bb2e6b",
+          "input_artifact_sha256": "7500064c026b848ba0bf89cbe57623903e0a15019b84f95cd6ecd764f3bb2e6b",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-0ab48535b4d9038b123e4f01a60dba7e65de59b30fd9a59b5c2b556274ca0afe",
+          "output_artifact_sha256": "0ab48535b4d9038b123e4f01a60dba7e65de59b30fd9a59b5c2b556274ca0afe",
+          "markdown_artifact_id": "artifact-1adada044ca94dfe2fe053da4e66b799c079c344f69316221cddf6445e45d6ac",
+          "markdown_artifact_sha256": "1adada044ca94dfe2fe053da4e66b799c079c344f69316221cddf6445e45d6ac",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "icml-e2e-20260812-rerun-v2:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "icml-e2e-20260812-rerun-v2:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "0ab48535b4d9038b123e4f01a60dba7e65de59b30fd9a59b5c2b556274ca0afe"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-d9c468d68bbec882a85b965a487743febad57d0ddc2f4cbb1b61d3aabfc1f15f",
+          "output_hash": "d9c468d68bbec882a85b965a487743febad57d0ddc2f4cbb1b61d3aabfc1f15f",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/icml-e2e-20260812-rerun-v2:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "icml-e2e-20260812-rerun-v2:report",
+          "report_directory": "$RUN_ROOT/icml-e2e/reports/icml-e2e-20260812-rerun-v2:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "icml"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "6458aff6656e4a66f4c7c50fd434347dad025bfb18d305c3f889594cf395da43",
+          "report_markdown_hash": "dd23167035f8baa397725c4ebc286f199c26fb0e5731eabfdd80f34ff870441c",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "ijcai",
+      "run_dir": "$RUN_ROOT/ijcai-e2e",
+      "database": "$RUN_ROOT/ijcai-e2e/papers.sqlite3",
+      "database_sha256": "29e0c4e9b071b5267bce8baec4486a623d2840b61bd876c5ce9292d3bac9c7e1",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "ijcai-e2e-20260812-rerun-stage1",
+          "configured_run_id": "ijcai-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-1a55a458ffd855c9bd1f1c7e6eb650ca",
+          "crawl_status": "complete",
+          "query_plan_id": "ijcai-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "8bdea68d00650dba9ffdb8270364e5e52af10e3bc1f2ec5cdd7f319940888f84",
+          "query_plan_venues": [
+            "ijcai"
+          ],
+          "paper_ids": [
+            "paper-47144af9bd2753c8b52352c82c4ebee3"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "ijcai-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-47144af9bd2753c8b52352c82c4ebee3",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-47144af9bd2753c8b52352c82c4ebee3"
+          ],
+          "decision_paper_ids": [
+            "paper-47144af9bd2753c8b52352c82c4ebee3"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "ijcai-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-47144af9bd2753c8b52352c82c4ebee3",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-69b7a0ea6bf5fa2bc77987bf41915660",
+          "candidate_id": "location-74d1aefa4b33a6410b90ae2673c7d7f6",
+          "artifact_id": "artifact-2f435b704f4151c206d999c222aad87a0574de81f0b73e569f48f346512ad8a0",
+          "artifact_sha256": "2f435b704f4151c206d999c222aad87a0574de81f0b73e569f48f346512ad8a0",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "ijcai-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-47144af9bd2753c8b52352c82c4ebee3",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-5529e8800f610b47248b7fc3af545c3b7dee218cecdb69693c3eeefe09121688",
+          "input_artifact_sha256": "5529e8800f610b47248b7fc3af545c3b7dee218cecdb69693c3eeefe09121688",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-d70aed2944d49ac0c1aaf5a221d88a7b1b30b1a1e7658993cf5e553b6a42d8bc",
+          "output_artifact_sha256": "d70aed2944d49ac0c1aaf5a221d88a7b1b30b1a1e7658993cf5e553b6a42d8bc",
+          "markdown_artifact_id": "artifact-3b2664794348835677aa9640167e9125d1472b2348c555dcbe94f4f0974e6d66",
+          "markdown_artifact_sha256": "3b2664794348835677aa9640167e9125d1472b2348c555dcbe94f4f0974e6d66",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "ijcai-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "ijcai-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "d70aed2944d49ac0c1aaf5a221d88a7b1b30b1a1e7658993cf5e553b6a42d8bc"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-d951835c78d841ac2baf25cc2257dd4b2a13364d961f04432efaf192430841a8",
+          "output_hash": "d951835c78d841ac2baf25cc2257dd4b2a13364d961f04432efaf192430841a8",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/ijcai-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "ijcai-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/ijcai-e2e/reports/ijcai-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "ijcai"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "2afe480cc9f7ec72beebc0f29d04d2f30cf5d5932b9d003ecda0a58727ef6f77",
+          "report_markdown_hash": "2a84d5a2bc4597cfb41f657771e62dfa79961d3f3cd987477c6d399403063826",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "nature_biomedical_engineering",
+      "run_dir": "$RUN_ROOT/nature_biomedical_engineering-e2e",
+      "database": "$RUN_ROOT/nature_biomedical_engineering-e2e/papers.sqlite3",
+      "database_sha256": "af6781f3d6ee94c93fd8130360d82f4293d5bd41c7e494859dbebd0a31919f32",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "nature_biomedical_engineering-e2e-20260812-rerun-stage1",
+          "configured_run_id": "nature_biomedical_engineering-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-8ca953c5168a5acc8e42c51ba6448158",
+          "crawl_status": "complete",
+          "query_plan_id": "nature_biomedical_engineering-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "a6e02baed3e907813e522265086736219b72139e6764061b1763a6798cc9e51a",
+          "query_plan_venues": [
+            "nature_biomedical_engineering"
+          ],
+          "paper_ids": [
+            "paper-a82d769238545140ab66faed895cebd6"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "nature_biomedical_engineering-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-a82d769238545140ab66faed895cebd6",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-a82d769238545140ab66faed895cebd6"
+          ],
+          "decision_paper_ids": [
+            "paper-a82d769238545140ab66faed895cebd6"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "nature_biomedical_engineering-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-a82d769238545140ab66faed895cebd6",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-a50d492578c34219bbf169b77595d177",
+          "candidate_id": "location-1c392a9e294085393b3a937076edafdd",
+          "artifact_id": "artifact-df4f126177a7b655774c660d841c5a6fd3bc808cc27d80088f375a272a5b7cd8",
+          "artifact_sha256": "df4f126177a7b655774c660d841c5a6fd3bc808cc27d80088f375a272a5b7cd8",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "nature_biomedical_engineering-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-a82d769238545140ab66faed895cebd6",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-46e96f5cc0fc1035b9a051bf3a7dc54d62678498aeefefe3ebfd621fd1c0e60e",
+          "input_artifact_sha256": "46e96f5cc0fc1035b9a051bf3a7dc54d62678498aeefefe3ebfd621fd1c0e60e",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-60bdd06fb225370d48239aad1f7ab6391591b822329bf43600ad10a39c267d34",
+          "output_artifact_sha256": "60bdd06fb225370d48239aad1f7ab6391591b822329bf43600ad10a39c267d34",
+          "markdown_artifact_id": "artifact-7cdf7b728e31a1578b1b222694ee62d0cf4366d8bd18af618f298b5e1459e72b",
+          "markdown_artifact_sha256": "7cdf7b728e31a1578b1b222694ee62d0cf4366d8bd18af618f298b5e1459e72b",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "nature_biomedical_engineering-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "nature_biomedical_engineering-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "60bdd06fb225370d48239aad1f7ab6391591b822329bf43600ad10a39c267d34"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-bf6d6a96651cf47e75241015d77fb51582480ce1b960fc8038409ed607aeb36a",
+          "output_hash": "bf6d6a96651cf47e75241015d77fb51582480ce1b960fc8038409ed607aeb36a",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/nature_biomedical_engineering-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "nature_biomedical_engineering-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/nature_biomedical_engineering-e2e/reports/nature_biomedical_engineering-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "nature_biomedical_engineering"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "4f013193b6ba6a1680aecdccc6c9df56ce1fe9fea2eabd7a5cc13b3c7e500ea8",
+          "report_markdown_hash": "d4eb3129dca635408c46973741c729eba0a4cbd240a150ad371b97d631badf3a",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "nature_biotechnology",
+      "run_dir": "$RUN_ROOT/nature_biotechnology-e2e",
+      "database": "$RUN_ROOT/nature_biotechnology-e2e/papers.sqlite3",
+      "database_sha256": "e5f75803aa058ad806ddd15fa6fb6c05ae1fe55fea0b0d43b255498e57f77fe7",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "nature_biotechnology-e2e-20260812-rerun-stage1",
+          "configured_run_id": "nature_biotechnology-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-8751ee889af25aa6bed0e0af8291fbd3",
+          "crawl_status": "complete",
+          "query_plan_id": "nature_biotechnology-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "29a79c3d9414ac74d739ec8bc1acaaa6f79c07acf090a3431e312e15e9c75d8e",
+          "query_plan_venues": [
+            "nature_biotechnology"
+          ],
+          "paper_ids": [
+            "paper-bdddce7ec51653c38ebbe66acd5e00e5"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "nature_biotechnology-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-bdddce7ec51653c38ebbe66acd5e00e5",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-bdddce7ec51653c38ebbe66acd5e00e5"
+          ],
+          "decision_paper_ids": [
+            "paper-bdddce7ec51653c38ebbe66acd5e00e5"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "nature_biotechnology-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-bdddce7ec51653c38ebbe66acd5e00e5",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-bef29388cb441237f66d3f5f975c5c03",
+          "candidate_id": "location-d494de99f86f6de31c814f810d084f15",
+          "artifact_id": "artifact-ef36e734ef58b6d9420f91e5388de5fd5ed38e873a059ec8e84d3ac2765981c4",
+          "artifact_sha256": "ef36e734ef58b6d9420f91e5388de5fd5ed38e873a059ec8e84d3ac2765981c4",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "nature_biotechnology-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-bdddce7ec51653c38ebbe66acd5e00e5",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-8b3c170c6c31385426eee0bb458921e973b326cb602666bd5931250881c4e7a7",
+          "input_artifact_sha256": "8b3c170c6c31385426eee0bb458921e973b326cb602666bd5931250881c4e7a7",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-ba6220d14eb6113ff0435b3d92684ca8feca7eff2900bc30b1d7ceb1489ae95f",
+          "output_artifact_sha256": "ba6220d14eb6113ff0435b3d92684ca8feca7eff2900bc30b1d7ceb1489ae95f",
+          "markdown_artifact_id": "artifact-fcaf6498e6f6d4e398abcdf33f46e6787912932df20450d3b7a704d9dd85cc2c",
+          "markdown_artifact_sha256": "fcaf6498e6f6d4e398abcdf33f46e6787912932df20450d3b7a704d9dd85cc2c",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "nature_biotechnology-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "nature_biotechnology-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "ba6220d14eb6113ff0435b3d92684ca8feca7eff2900bc30b1d7ceb1489ae95f"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-f2502e0eff2ffb132e846c8b58a04a1398904d68e55944bd057d19919a6d8c30",
+          "output_hash": "f2502e0eff2ffb132e846c8b58a04a1398904d68e55944bd057d19919a6d8c30",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/nature_biotechnology-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "nature_biotechnology-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/nature_biotechnology-e2e/reports/nature_biotechnology-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "nature_biotechnology"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "03060cd9dd7bfbe91a31a8f667a5921793af8a4e418f8737ec93fc63cf3affb0",
+          "report_markdown_hash": "9f5d8bd344d3e506d1056ca4cdeb2a4c0338d1c6b76bf56875b7ff66b998d908",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "nature_catalysis",
+      "run_dir": "$RUN_ROOT/nature_catalysis-e2e",
+      "database": "$RUN_ROOT/nature_catalysis-e2e/papers.sqlite3",
+      "database_sha256": "94e791c8787a22ebe4c1782e90930d6ac855b10409d097aeffb40fdb81b7a5e3",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "nature_catalysis-e2e-20260812-rerun-stage1",
+          "configured_run_id": "nature_catalysis-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-74798d6f668e5934bf74283bbc91712c",
+          "crawl_status": "complete",
+          "query_plan_id": "nature_catalysis-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "1d7196942d22b5fe32c3efc05fea3db6a7a8dd18eb02326565e9bf4206e078c7",
+          "query_plan_venues": [
+            "nature_catalysis"
+          ],
+          "paper_ids": [
+            "paper-87622364fbde58189667aa0a191424fe"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "nature_catalysis-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-87622364fbde58189667aa0a191424fe",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-87622364fbde58189667aa0a191424fe"
+          ],
+          "decision_paper_ids": [
+            "paper-87622364fbde58189667aa0a191424fe"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "nature_catalysis-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-87622364fbde58189667aa0a191424fe",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-d31f2ee4bb1a878c5a6d1ecf37895ad7",
+          "candidate_id": "location-f43520ba9ce649d6ec2e0c4dd52266df",
+          "artifact_id": "artifact-79938a9db44c65524f1c88c4beeaf7c3df707a1160af798fe1a16e013a776a5a",
+          "artifact_sha256": "79938a9db44c65524f1c88c4beeaf7c3df707a1160af798fe1a16e013a776a5a",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "nature_catalysis-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-87622364fbde58189667aa0a191424fe",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-a9ae7c519b869b74c80f52d72ce97f32d02cfac0984b059d80d53b0330b05167",
+          "input_artifact_sha256": "a9ae7c519b869b74c80f52d72ce97f32d02cfac0984b059d80d53b0330b05167",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-a2033a8fa493d747fedac986aabed92f8bbb7d57439a9593f2a27c63213c6cc1",
+          "output_artifact_sha256": "a2033a8fa493d747fedac986aabed92f8bbb7d57439a9593f2a27c63213c6cc1",
+          "markdown_artifact_id": "artifact-5cf9fbb586e3bc7664ba9104339377fb3d53b7e7716c194a4636f3bdebba6ba3",
+          "markdown_artifact_sha256": "5cf9fbb586e3bc7664ba9104339377fb3d53b7e7716c194a4636f3bdebba6ba3",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "nature_catalysis-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "nature_catalysis-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "a2033a8fa493d747fedac986aabed92f8bbb7d57439a9593f2a27c63213c6cc1"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-834c0e9cf59a4d8c0ee6bbce37510b6a41202e20cc13f452cc5be3096da08e22",
+          "output_hash": "834c0e9cf59a4d8c0ee6bbce37510b6a41202e20cc13f452cc5be3096da08e22",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/nature_catalysis-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "nature_catalysis-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/nature_catalysis-e2e/reports/nature_catalysis-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "nature_catalysis"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "0c0ceed376e2470e384f012c3abc8f12d600846cc6ec02bb22dc9a905d018a07",
+          "report_markdown_hash": "597de8537d40d83565251d11e87aeab5e52f94ef190f114dfc86a7b218b9a8c6",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "nature_chemistry",
+      "run_dir": "$RUN_ROOT/nature_chemistry-e2e",
+      "database": "$RUN_ROOT/nature_chemistry-e2e/papers.sqlite3",
+      "database_sha256": "ce02973dc4df382a0f18ec3cf0841757a243c520d1cfef9a9dbf15b8a1273460",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "nature_chemistry-e2e-20260812-rerun-stage1",
+          "configured_run_id": "nature_chemistry-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-bb5d6700c65c52d6a02141ebedf97f81",
+          "crawl_status": "complete",
+          "query_plan_id": "nature_chemistry-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "9fc7baed5c9a007e148b505410aca2fa886d3a9b80fe6e5d9dece7a25f26ecfb",
+          "query_plan_venues": [
+            "nature_chemistry"
+          ],
+          "paper_ids": [
+            "paper-cd8cd497a68a5939bc16c273c2ed9f25"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "nature_chemistry-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-cd8cd497a68a5939bc16c273c2ed9f25",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-cd8cd497a68a5939bc16c273c2ed9f25"
+          ],
+          "decision_paper_ids": [
+            "paper-cd8cd497a68a5939bc16c273c2ed9f25"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "nature_chemistry-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-cd8cd497a68a5939bc16c273c2ed9f25",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-5be6017009b68feb6d10eb82ad4b8083",
+          "candidate_id": "location-aae61d6228095b28766335895aee6391",
+          "artifact_id": "artifact-f378e746d29f00ef59a64b7ca8e24052dc84c1a27332e1ce98986d6666dadae6",
+          "artifact_sha256": "f378e746d29f00ef59a64b7ca8e24052dc84c1a27332e1ce98986d6666dadae6",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "nature_chemistry-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-cd8cd497a68a5939bc16c273c2ed9f25",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-f6fe0dbfb5c45c30920ff1bdd1e7137892041a9db8f194c6242b54959e460754",
+          "input_artifact_sha256": "f6fe0dbfb5c45c30920ff1bdd1e7137892041a9db8f194c6242b54959e460754",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-496467dc097f0bc650468b7d337f5213b1d73585b0ce559b66ba5a4793a94399",
+          "output_artifact_sha256": "496467dc097f0bc650468b7d337f5213b1d73585b0ce559b66ba5a4793a94399",
+          "markdown_artifact_id": "artifact-987c548d857955529e44f2f22c47061def1a93bb1eb965466d1800d96a721ab3",
+          "markdown_artifact_sha256": "987c548d857955529e44f2f22c47061def1a93bb1eb965466d1800d96a721ab3",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "nature_chemistry-e2e-20260812-rerun:stage4b-v2",
+          "pipeline_status": "complete",
+          "report_run_id": "nature_chemistry-e2e-20260812-rerun:report-v2",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "496467dc097f0bc650468b7d337f5213b1d73585b0ce559b66ba5a4793a94399"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-eec46a9c285792366451799b5220e52cd8e0f2e903d34c670b0de53a863daa3e",
+          "output_hash": "eec46a9c285792366451799b5220e52cd8e0f2e903d34c670b0de53a863daa3e",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/nature_chemistry-e2e-20260812-rerun:report-v2"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "nature_chemistry-e2e-20260812-rerun:report-v2",
+          "report_directory": "$RUN_ROOT/nature_chemistry-e2e/reports/nature_chemistry-e2e-20260812-rerun:report-v2",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "nature_chemistry"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "9906fd82b9d00b79fd5a384f96b268d177cfd9569d910d937febb06c316dcaa5",
+          "report_markdown_hash": "2c5d3ceabeff169f52b34c60e49f26e3a01091d4f3f7f2f9aed9f3643d782361",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "nature_communications",
+      "run_dir": "$RUN_ROOT/nature_communications-e2e",
+      "database": "$RUN_ROOT/nature_communications-e2e/papers.sqlite3",
+      "database_sha256": "3bb29c3541a10bd0fcd6adf4ec0422bbe0894f913db1d3e51dea307f953e7a6f",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "nature_communications-e2e-20260812-rerun-stage1",
+          "configured_run_id": "nature_communications-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-5a88d1570515525497293bf6f106042b",
+          "crawl_status": "complete",
+          "query_plan_id": "nature_communications-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "4cc8e5e85ef4b782d32582faf2691fb1e06d8ca1b554fd966c8dd7dc97c365b9",
+          "query_plan_venues": [
+            "nature_communications"
+          ],
+          "paper_ids": [
+            "paper-76dd703a86b35eb38c0053a67f6ff3a2"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "nature_communications-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-76dd703a86b35eb38c0053a67f6ff3a2",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-76dd703a86b35eb38c0053a67f6ff3a2"
+          ],
+          "decision_paper_ids": [
+            "paper-76dd703a86b35eb38c0053a67f6ff3a2"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "nature_communications-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-76dd703a86b35eb38c0053a67f6ff3a2",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-1ef3d97c0e5323ad56ffdab0221c17de",
+          "candidate_id": "location-ab87bc676ac7d0b02b1ca40790b87c11",
+          "artifact_id": "artifact-b88d3e3ec29c8bca32144be4c16277a9355c76cade2da4b9239ffcbed7339848",
+          "artifact_sha256": "b88d3e3ec29c8bca32144be4c16277a9355c76cade2da4b9239ffcbed7339848",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "nature_communications-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-76dd703a86b35eb38c0053a67f6ff3a2",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-99682e6b3751778456601fe42424d7bb5c5852d6ff339a0a77e15983f77a73ce",
+          "input_artifact_sha256": "99682e6b3751778456601fe42424d7bb5c5852d6ff339a0a77e15983f77a73ce",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-e7563d49964b82f5984d4a59e41a3b04226c4c5bd0ef9412369e9e02d809985d",
+          "output_artifact_sha256": "e7563d49964b82f5984d4a59e41a3b04226c4c5bd0ef9412369e9e02d809985d",
+          "markdown_artifact_id": "artifact-be84522f4ea3a45aec485cbb00545331450f198e09470bfd6527e1596406e738",
+          "markdown_artifact_sha256": "be84522f4ea3a45aec485cbb00545331450f198e09470bfd6527e1596406e738",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "nature_communications-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "nature_communications-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "e7563d49964b82f5984d4a59e41a3b04226c4c5bd0ef9412369e9e02d809985d"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-0d30e1c2e0db700b084b286949a5e4f52d9a687c3c1792b8254b14d190f0d01d",
+          "output_hash": "0d30e1c2e0db700b084b286949a5e4f52d9a687c3c1792b8254b14d190f0d01d",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/nature_communications-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "nature_communications-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/nature_communications-e2e/reports/nature_communications-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "nature_communications"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "06869aac181c11004c958e104d91925ca737473344c8fdcdbf6f23e9ba21c451",
+          "report_markdown_hash": "0ff4b45157bc51b28fb1ab151e06b7bcf1dfe2eedb4850c197da93ed360de46e",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "nature_computational_science",
+      "run_dir": "$RUN_ROOT/nature_computational_science-e2e",
+      "database": "$RUN_ROOT/nature_computational_science-e2e/papers.sqlite3",
+      "database_sha256": "e4af43dac117efeb0cc3a24edecacfcc5da336a90a93ab4b824b8996fed4e323",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "nature_computational_science-e2e-20260812-rerun-stage1",
+          "configured_run_id": "nature_computational_science-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-c953dbe9ddee52c59419e75de15225e6",
+          "crawl_status": "complete",
+          "query_plan_id": "nature_computational_science-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "3076e1ae0bcd1ad17557cf6698c26d3f9b56061c64f661adc114d0a443215fbb",
+          "query_plan_venues": [
+            "nature_computational_science"
+          ],
+          "paper_ids": [
+            "paper-50723bb7d6575635998f47f1f86af20d"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "nature_computational_science-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-50723bb7d6575635998f47f1f86af20d",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-50723bb7d6575635998f47f1f86af20d"
+          ],
+          "decision_paper_ids": [
+            "paper-50723bb7d6575635998f47f1f86af20d"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "nature_computational_science-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-50723bb7d6575635998f47f1f86af20d",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-1dd4ed62aebd6e63438c604f9244cd61",
+          "candidate_id": "location-9dc6ddd039bb292a36a169d2aac79591",
+          "artifact_id": "artifact-bdc2355e554a4567a39bc5219440fe0f006ba6a0b38a4500cd41b03e1707653f",
+          "artifact_sha256": "bdc2355e554a4567a39bc5219440fe0f006ba6a0b38a4500cd41b03e1707653f",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "nature_computational_science-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-50723bb7d6575635998f47f1f86af20d",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-acef9e055800e7ae75b5980e30196f5d063a5e48c6d45fd1ccff4b1e196b083d",
+          "input_artifact_sha256": "acef9e055800e7ae75b5980e30196f5d063a5e48c6d45fd1ccff4b1e196b083d",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-e0c3ce2163fe047798738b69091fcac891e2bbbb57e643719042fdda50ec6a2a",
+          "output_artifact_sha256": "e0c3ce2163fe047798738b69091fcac891e2bbbb57e643719042fdda50ec6a2a",
+          "markdown_artifact_id": "artifact-779a3b7bd5771a5a3b8a647b4674a76b679020fa4c6e79d6267e1d65514cdb5e",
+          "markdown_artifact_sha256": "779a3b7bd5771a5a3b8a647b4674a76b679020fa4c6e79d6267e1d65514cdb5e",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "nature_computational_science-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "nature_computational_science-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "e0c3ce2163fe047798738b69091fcac891e2bbbb57e643719042fdda50ec6a2a"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-7436a71312ee0face44a261bea62276ccb6d162a7571b7a74c94240c0a2b7f35",
+          "output_hash": "7436a71312ee0face44a261bea62276ccb6d162a7571b7a74c94240c0a2b7f35",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/nature_computational_science-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "nature_computational_science-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/nature_computational_science-e2e/reports/nature_computational_science-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "nature_computational_science"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "8b164ec1d450c79b2ee178de85833ef5c320b81585a0f432481e5edfecd60f46",
+          "report_markdown_hash": "6e7f8c10d0b8916e24bbeb3306ce11a03f9e0b4282bda9600788f7c72470b0ed",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "nature_machine_intelligence",
+      "run_dir": "$RUN_ROOT/nature_machine_intelligence-e2e",
+      "database": "$RUN_ROOT/nature_machine_intelligence-e2e/papers.sqlite3",
+      "database_sha256": "24da7e7a757ed8bbf27e36e51db65939968419b3035eb10722645ff9e732ee23",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "nature_machine_intelligence-e2e-20260812-rerun-stage1",
+          "configured_run_id": "nature_machine_intelligence-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-fe695f98f9d05b76887933d184e6f224",
+          "crawl_status": "complete",
+          "query_plan_id": "nature_machine_intelligence-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "c9306a771df55e6e1da0eb98072e6aad88ce8271dbea457dbcbc13c87abeae47",
+          "query_plan_venues": [
+            "nature_machine_intelligence"
+          ],
+          "paper_ids": [
+            "paper-21b7b3a618be5be6802e9fabd6d3f0ba"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "nature_machine_intelligence-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-21b7b3a618be5be6802e9fabd6d3f0ba",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-21b7b3a618be5be6802e9fabd6d3f0ba"
+          ],
+          "decision_paper_ids": [
+            "paper-21b7b3a618be5be6802e9fabd6d3f0ba"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "nature_machine_intelligence-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-21b7b3a618be5be6802e9fabd6d3f0ba",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-b105b5c9a4d087e96e6872b267b40082",
+          "candidate_id": "location-edd280e75ff9e5a64f1d2e1b1f58bee8",
+          "artifact_id": "artifact-0488243337218fddc62e018b251cef460679ad2250b75d712456c2728b6e05f6",
+          "artifact_sha256": "0488243337218fddc62e018b251cef460679ad2250b75d712456c2728b6e05f6",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "nature_machine_intelligence-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-21b7b3a618be5be6802e9fabd6d3f0ba",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-6fce4380fb9c266cd76dd380435468414e3ea6559be30ba0b1238794b1555d66",
+          "input_artifact_sha256": "6fce4380fb9c266cd76dd380435468414e3ea6559be30ba0b1238794b1555d66",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-da1acef2a410c71255fdbda397d8b72a54e69e9bd884b92b8c6b9273cda5c828",
+          "output_artifact_sha256": "da1acef2a410c71255fdbda397d8b72a54e69e9bd884b92b8c6b9273cda5c828",
+          "markdown_artifact_id": "artifact-d488e7492947d170db6c0fff8923084c1562829b5aa7563d4005b2bafe92c961",
+          "markdown_artifact_sha256": "d488e7492947d170db6c0fff8923084c1562829b5aa7563d4005b2bafe92c961",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "nature_machine_intelligence-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "nature_machine_intelligence-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "da1acef2a410c71255fdbda397d8b72a54e69e9bd884b92b8c6b9273cda5c828"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-ea99d7c0d95397ddc90e2a0a45889149bc6fb82b8d9b0fa2d3a69a0db7ca4ac9",
+          "output_hash": "ea99d7c0d95397ddc90e2a0a45889149bc6fb82b8d9b0fa2d3a69a0db7ca4ac9",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/nature_machine_intelligence-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "nature_machine_intelligence-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/nature_machine_intelligence-e2e/reports/nature_machine_intelligence-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "nature_machine_intelligence"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "110e17761327b9df564903144fe7378b4ceac540555b254d95093572a616e3f7",
+          "report_markdown_hash": "7ff5b3e5ec8daeb607d3f0744c643ee3444bbb69c7a1dfc353a4f0fd2cf83d2d",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "neurips",
+      "run_dir": "$RUN_ROOT/neurips-e2e",
+      "database": "$RUN_ROOT/neurips-e2e/papers.sqlite3",
+      "database_sha256": "17d78939c5f9568da6a906f7e0786d61c325e0a2cbfbdf1ba6ac5c67ed314bc5",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "neurips-e2e-20260812-rerun-stage1",
+          "configured_run_id": "neurips-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-6ff067e26ed45068aa106d22bd0bd922",
+          "crawl_status": "complete",
+          "query_plan_id": "neurips-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "e758a2e28d7c05d676ff1adc8cdb65fcc1228e397663a2ca73698184dfae30e4",
+          "query_plan_venues": [
+            "neurips"
+          ],
+          "paper_ids": [
+            "paper-52d145f8eb865baab6c6421fb2346562"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "neurips-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-52d145f8eb865baab6c6421fb2346562",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-52d145f8eb865baab6c6421fb2346562"
+          ],
+          "decision_paper_ids": [
+            "paper-52d145f8eb865baab6c6421fb2346562"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "neurips-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-52d145f8eb865baab6c6421fb2346562",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-fdacc0c3ba60a87886dc42ef7bee3969",
+          "candidate_id": "location-ab1ba76dda7d8f25c6f39dd629fd63b3",
+          "artifact_id": "artifact-cf6d51c43171e603d5af650dfd739efcd118519ecc36f1b8af1309639b7e18bf",
+          "artifact_sha256": "cf6d51c43171e603d5af650dfd739efcd118519ecc36f1b8af1309639b7e18bf",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "neurips-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-52d145f8eb865baab6c6421fb2346562",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-8ffbc4de05b7816cc42c12d409c672d26af8ad3e26a35d8fbb177968b4fe314f",
+          "input_artifact_sha256": "8ffbc4de05b7816cc42c12d409c672d26af8ad3e26a35d8fbb177968b4fe314f",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-8872d85ca973c06260a1a7ad85046458bd6bd5fb3c29c741500475447b677f06",
+          "output_artifact_sha256": "8872d85ca973c06260a1a7ad85046458bd6bd5fb3c29c741500475447b677f06",
+          "markdown_artifact_id": "artifact-5c59a0823b800eefdb27ca12d7c7709051da3566b4f155018bc448a20f7d5117",
+          "markdown_artifact_sha256": "5c59a0823b800eefdb27ca12d7c7709051da3566b4f155018bc448a20f7d5117",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "neurips-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "neurips-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "8872d85ca973c06260a1a7ad85046458bd6bd5fb3c29c741500475447b677f06"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-08ba6bcef44fff20d9d1958cddad97ab0f3bcff6c1eb016e942be1f875f4b7de",
+          "output_hash": "08ba6bcef44fff20d9d1958cddad97ab0f3bcff6c1eb016e942be1f875f4b7de",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/neurips-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "neurips-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/neurips-e2e/reports/neurips-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "neurips"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "6f210b6560ba79fb94a168068c39f84c0e7283235cee5d0c5e92fe09f377a94f",
+          "report_markdown_hash": "ceda037415ad9b8b246adf1c7b30e280808a5ed89e8821a0ad5efee0f20708b9",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "science",
+      "run_dir": "$RUN_ROOT/science-e2e",
+      "database": "$RUN_ROOT/science-e2e/papers.sqlite3",
+      "database_sha256": "99c71276ecbbda5344cd45dda8d862b6153914a134badea447731479701cc958",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "science-e2e-20260812-rerun-stage1",
+          "configured_run_id": "science-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-afab9331469858559176ce52c8b3522a",
+          "crawl_status": "complete",
+          "query_plan_id": "science-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "4119d210f0568995a490ff421f6f779c3077827c6031b9c17b556bc9b229bf6d",
+          "query_plan_venues": [
+            "science"
+          ],
+          "paper_ids": [
+            "paper-0a6cab3b9dee5c8086f19a011579b63c"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "science-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-0a6cab3b9dee5c8086f19a011579b63c",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-0a6cab3b9dee5c8086f19a011579b63c"
+          ],
+          "decision_paper_ids": [
+            "paper-0a6cab3b9dee5c8086f19a011579b63c"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "science-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-0a6cab3b9dee5c8086f19a011579b63c",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-cd445620c0dea55343928c832f586b2e",
+          "candidate_id": "location-c136aac32217cbb94550f3201bdb92a1",
+          "artifact_id": "artifact-a4661b74deaa3e6856feaa368069f6a6b9f4152a90410e26e9ad4f4d3c3ffab9",
+          "artifact_sha256": "a4661b74deaa3e6856feaa368069f6a6b9f4152a90410e26e9ad4f4d3c3ffab9",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "science-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-0a6cab3b9dee5c8086f19a011579b63c",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-b495ba0b95374851ec2822ee39aeab8b1ebd43f95a031835c052de08bfc11415",
+          "input_artifact_sha256": "b495ba0b95374851ec2822ee39aeab8b1ebd43f95a031835c052de08bfc11415",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-1839129e36491415836eb2a4c1548ab653d0592d6fa4f8a721aff4e757551f24",
+          "output_artifact_sha256": "1839129e36491415836eb2a4c1548ab653d0592d6fa4f8a721aff4e757551f24",
+          "markdown_artifact_id": "artifact-d557c2db774f24d79a0fd8c36a2c8bc7592e44ec96fc891ff56bfa6deb9e7fa2",
+          "markdown_artifact_sha256": "d557c2db774f24d79a0fd8c36a2c8bc7592e44ec96fc891ff56bfa6deb9e7fa2",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "science-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "science-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "1839129e36491415836eb2a4c1548ab653d0592d6fa4f8a721aff4e757551f24"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-d74357a483fa710a59673e4cbd5f48a07f9d3876d7fc7bf808b3596d943905c3",
+          "output_hash": "d74357a483fa710a59673e4cbd5f48a07f9d3876d7fc7bf808b3596d943905c3",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/science-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "science-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/science-e2e/reports/science-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "science"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "caa020aaf0e5db241c23dbbbc8ca2baefdeb438cb9d677b9c320af780a2a3aff",
+          "report_markdown_hash": "4165b76d86c015abc63ead4ef5a87215edf97d3ed84fcdf065b9d046164b9152",
+          "manifest_artifact_count": 14
+        }
+      }
+    },
+    {
+      "venue": "tcad",
+      "run_dir": "$RUN_ROOT/tcad-e2e",
+      "database": "$RUN_ROOT/tcad-e2e/papers.sqlite3",
+      "database_sha256": "06fc4bc23a2c3765d9bf9fd3a92193d598a4a60838043124b3668637432c91b8",
+      "binding_source": "run.json/native_pipeline",
+      "passed": true,
+      "checks": {
+        "stage1_complete": {
+          "passed": true,
+          "expected": "the explicitly bound one-record Stage 1 crawl has an approved QueryPlan for this venue and a frozen paper membership",
+          "run_id": "tcad-e2e-20260812-rerun-stage1",
+          "configured_run_id": "tcad-e2e-20260812-rerun-stage1",
+          "pipeline_status": "complete",
+          "crawl_run_id": "crawl-90b3c2bbe5a556beb01bdc14a2eea9cd",
+          "crawl_status": "complete",
+          "query_plan_id": "tcad-e2e-20260812-rerun-stage1",
+          "query_plan_hash": "23bb719e134ac5451cd588956b6438e8223809aff03cade7daae4a1683e48600",
+          "query_plan_venues": [
+            "tcad"
+          ],
+          "paper_ids": [
+            "paper-3b584f98fdaf5f20847c0785952321ee"
+          ],
+          "one_record_snapshot": true,
+          "error": null
+        },
+        "stage2_test_only_relevant_one": {
+          "passed": true,
+          "expected": "the bound Stage 2 run decides the complete Stage 1 membership and selects exactly one TEST_ONLY relevant paper",
+          "run_id": "tcad-e2e-20260812-rerun-stage2-test-only",
+          "pipeline_status": "complete",
+          "decision_count": 1,
+          "relevant_count": 1,
+          "relevant_paper_id": "paper-3b584f98fdaf5f20847c0785952321ee",
+          "relevant_model_ids": [
+            "TEST_ONLY"
+          ],
+          "test_only": true,
+          "stage1_paper_ids": [
+            "paper-3b584f98fdaf5f20847c0785952321ee"
+          ],
+          "decision_paper_ids": [
+            "paper-3b584f98fdaf5f20847c0785952321ee"
+          ],
+          "stage1_membership_closed": true
+        },
+        "stage3_pdf_checkpoint_complete": {
+          "passed": true,
+          "expected": "the bound Stage 3 run has one checkpoint and one exact candidate/attempt/available application/pdf artifact whose CAS bytes match its SHA-256",
+          "run_id": "tcad-e2e-20260812-rerun-stage3",
+          "pipeline_status": "complete",
+          "checkpoint_count": 1,
+          "downloaded_count": 1,
+          "downloaded_paper_id": "paper-3b584f98fdaf5f20847c0785952321ee",
+          "attempt_count": 1,
+          "exact_attempt_binding": true,
+          "download_attempt_id": "attempt-45bbb8aaf8b128c28deb42f9e58eef2f",
+          "candidate_id": "location-aa9ac78dea909ac0abac23003c133192",
+          "artifact_id": "artifact-2d7dc713cb57374874563678c86a82833212a27176a60f0ce02b1535fa4c728b",
+          "artifact_sha256": "2d7dc713cb57374874563678c86a82833212a27176a60f0ce02b1535fa4c728b",
+          "artifact_mime_type": "application/pdf",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4_luna_invocation_one": {
+          "passed": true,
+          "expected": "the bound Stage 4 run has one full_pdf Luna dispatch bound through the Stage 3 PDF lineage to intact JSON and Markdown output artifacts",
+          "run_id": "tcad-e2e-20260812-rerun:stage4",
+          "pipeline_status": "complete",
+          "dispatch_rows": 1,
+          "complete_dispatches": 1,
+          "dispatch_count": 1,
+          "complete_analysis_rows": 1,
+          "paper_id": "paper-3b584f98fdaf5f20847c0785952321ee",
+          "input_scopes": [
+            "full_pdf"
+          ],
+          "model_ids": [
+            "gpt-5.6-luna"
+          ],
+          "exact_dispatch_analysis_binding": true,
+          "input_artifact_id": "artifact-d2cc381243b7ab8fa45fa768e837bb16ff8bff591c964f62c92d3e812b0bf268",
+          "input_artifact_sha256": "d2cc381243b7ab8fa45fa768e837bb16ff8bff591c964f62c92d3e812b0bf268",
+          "stage3_lineage_match": true,
+          "output_artifact_id": "artifact-6a1106610cf5f6b162ce25b51891da09b45d236e3157e1e6aad5c0709eb02389",
+          "output_artifact_sha256": "6a1106610cf5f6b162ce25b51891da09b45d236e3157e1e6aad5c0709eb02389",
+          "markdown_artifact_id": "artifact-95313923a259b76f34a1c9ebfc1b9fd8868cd99a3d1a500b0594aea8dcbef50d",
+          "markdown_artifact_sha256": "95313923a259b76f34a1c9ebfc1b9fd8868cd99a3d1a500b0594aea8dcbef50d",
+          "artifact_error": null,
+          "matches_stage2_paper": true
+        },
+        "stage4b_sol_one_shot_only": {
+          "passed": true,
+          "expected": "latest Stage 4b run has one one-shot Sol invocation and zero reduce/audit/repair calls",
+          "run_id": "tcad-e2e-20260812-rerun:stage4b",
+          "pipeline_status": "complete",
+          "report_run_id": "tcad-e2e-20260812-rerun:report",
+          "report_status": "complete",
+          "one_shot_status": "complete",
+          "strategy": "one_shot",
+          "profile": "stage4b_oneshot_sol",
+          "model_id": "gpt-5.6-sol",
+          "implementation_version": "stage4b-one-shot-v3",
+          "implementation_qualification": "current_v3",
+          "config_hash": "787155dea01a2b0bbb7c7f618970b4dfb0a8790db4737ebad88a88e98d4accd2",
+          "one_shot_dispatch_count": 1,
+          "input_artifact_hashes": [
+            "6a1106610cf5f6b162ce25b51891da09b45d236e3157e1e6aad5c0709eb02389"
+          ],
+          "exact_stage4_inputs": true,
+          "sol_invocation_ledger_count": 1,
+          "sol_invocation_ledger_phase": "reduce",
+          "reduce_nodes": 0,
+          "reduce_dispatches": 0,
+          "audit_steps": 0,
+          "audit_dispatches": 0,
+          "audit_shard_steps": 0,
+          "audit_shard_dispatches": 0,
+          "repair_steps": 0,
+          "repair_dispatches": 0,
+          "output_artifact_id": "artifact-6585f8828344ce65b18631c82c449a1cce81929523a1ab620d2e767cad359c74",
+          "output_hash": "6585f8828344ce65b18631c82c449a1cce81929523a1ab620d2e767cad359c74",
+          "output_artifact_error": null,
+          "output_relative_path": "reports/tcad-e2e-20260812-rerun:report"
+        },
+        "verify_passed": {
+          "passed": true,
+          "expected": "the exact immutable report bundle passes its MANIFEST, saved verification, audit, report hash, and the complete deterministic verifier",
+          "report_run_id": "tcad-e2e-20260812-rerun:report",
+          "report_directory": "$RUN_ROOT/tcad-e2e/reports/tcad-e2e-20260812-rerun:report",
+          "verification_status": "passed",
+          "verification_checks": {
+            "citation_coverage": true,
+            "extraction_scope": true,
+            "no_fabricated_statistics": true,
+            "no_unsupported_claims": true,
+            "search_limitations": true,
+            "table_provenance": true
+          },
+          "coverage_complete": true,
+          "audit_pass": "deterministic",
+          "audit_binding_mode": "canonical_claim_id_order",
+          "audit_binding_database_row_bound": false,
+          "legacy_audit_artifact_hash": null,
+          "blocker_or_major_findings": 0,
+          "report_markdown_present": true,
+          "verifier_matches_saved": true,
+          "exact_stage4_corpus_binding": true,
+          "exact_stage1_query_plan_scope_binding": true,
+          "report_scope_venues": [
+            "tcad"
+          ],
+          "stage4b_config_binding": true,
+          "complete_verifier_status": null,
+          "manifest_hash": "4fee0beb7137dcb4dc055614997385d4b1419148aae5d7ccc1a3079769aac70f",
+          "report_markdown_hash": "5345c8c78994e3adf6ff8c62613013b8ea42308b3a7410aa7fe84a552293fe2f",
+          "manifest_artifact_count": 14
+        }
+      }
+    }
+  ],
+  "portable_paths": {
+    "$RUN_ROOT": "directory supplied to --run-root",
+    "$REPOSITORY_ROOT": "repository checkout root"
+  }
+}

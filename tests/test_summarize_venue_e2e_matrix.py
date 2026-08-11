@@ -26,6 +26,12 @@ from test_report_artifacts import _bundle
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "summarize_venue_e2e_matrix.py"
 IMPORT_MANIFEST = ROOT / "configs" / "e2e" / "venue-e2e-acceptance-imports.json"
+CURRENT_IMPORT_MANIFEST = (
+    ROOT
+    / "configs"
+    / "e2e"
+    / "venue-e2e-acceptance-imports-20260812-current.json"
+)
 
 
 def _module():
@@ -36,6 +42,12 @@ def _module():
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module
+
+
+def test_current_acceptance_manifest_has_no_historical_imports() -> None:
+    module = _module()
+
+    assert module._load_acceptance_imports(CURRENT_IMPORT_MANIFEST) == ()
 
 
 def _two_claim_audit_fixture() -> tuple[dict, list[dict], dict]:
