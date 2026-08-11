@@ -50,7 +50,7 @@ paper-agent search plan \
 - Stage 2 完全在本机 oMLX：`omlx_rerank` 使用已验收的 reranker，`omlx_chat` 使用锁定 revision 的 9B Qwen 裁决器。运行前应按 `configs/stage2/models/*.lock.json` 安装并验证发布工件、校准器和阈值工件；这些运行时 release 输入不在 schema 中，因此不能只凭示例配置视为已验收。
 - Stage 3 的可选授权下载使用 `stage3_authorized_luna`、`gpt-5.6-luna` 和 low reasoning。必须先安装并审计下载 skill，创建精确的 download/data-sharing grant，再把 `authorized_skill.enabled` 设为 true；浏览器授权默认为 attended。
 - Stage 4 分析固定为 `stage4_analysis_luna`、`gpt-5.6-luna` 和 medium reasoning。全文进入远程处理前必须有 artifact-scoped processing grant；否则只能使用另行允许的摘要。
-- Stage 4b 报告固定为 `stage4b_summary_sol`、`gpt-5.6-sol` 和 high reasoning。派生材料需要独立 lineage-scoped grant，且必须有冻结并批准的报告计划。
+- 新建的 Stage 4b 报告固定为 `execution_strategy=one_shot`、`stage4b_oneshot_sol`、`gpt-5.6-sol`、high reasoning 和 `max_retries=0`。全部 Luna 逐篇报告在唯一输入包中各出现一次，approved run 只调用一次 `one_shot_report`；normalize、verify、audit、publish 全部在本地完成。派生材料需要独立 lineage-scoped grant，且必须有冻结并批准的报告计划。旧 `stage4b_summary_sol` / reduce-tree run 仅保留只读兼容，不得迁移成同一 run 的第二次调用。
 
 服务凭据只通过示例中列出的环境变量名称提供，例如 `CROSSREF_MAILTO`、`SEMANTIC_SCHOLAR_API_KEY`、`OPENALEX_API_KEY`、`NCBI_API_KEY`、`NCBI_EMAIL` 和 `UNPAYWALL_EMAIL`。不要把值写入 YAML、报告、SQLite 导出或版本库。
 
@@ -86,6 +86,11 @@ attended/unattended mode；显式空 `paper_ids` 不再隐式读取全局最新 
 会把当前 Filter run 先解析为 exact IDs，并另存其 lineage；静态 `paper_ids: []` 必须修正为非空
 冻结选择。typed workflow 尚未冻结 authorized-skill handoff 路径，因此这类 grant 必须迁移到独立
 `paper-agent download` 调用，不能把旧 typed workflow 当作浏览器授权入口。
+
+Migration 26 增加 `report_one_shot_runs` 唯一 dispatch ledger。它不会把旧 reduce-tree 的 node、audit
+或 repair 状态原地转换为 one-shot；这些历史 run 只读保留。要采用新策略，必须以
+`execution_strategy=one_shot` 重新编译并批准 ReportPlan，并使用新的 report run ID。新 ledger 在
+模型启动前原子预约最多一次 dispatch；已预约、timeout 或 uncertain 的旧 run 不能借 `resume` 重发。
 
 ## 选择示例
 

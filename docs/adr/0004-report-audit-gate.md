@@ -1,6 +1,6 @@
 # ADR 0004：报告必须经确定性校验和独立 Sol 审计后发布
 
-状态：已接受（设计冻结）
+状态：已取代（由 ADR 0006 取代；以下保留历史决定）
 
 报告从已批准 `ReportPlan`、冻结 QueryPlan、search audit、corpus snapshot 和 Stage 4 map artifacts 构造。先按语义 section 与稳定 paper ID 分块，再 section → cross-section → final reduce；不可用“前 N 篇”或随机抽样替代覆盖。
 

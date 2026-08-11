@@ -63,23 +63,27 @@ Stage 3 只有在每篇论文均为 `downloaded`、`not_available` 或 `failed_t
 stateDiagram-v2
   [*] --> report_draft
   report_draft --> report_approved: explicit approval(hash)
-  report_approved --> build: plan/corpus/prompt/schema match
-  build --> deterministic_verify
-  deterministic_verify --> audit_A: verifier passes
+  report_approved --> preflight: plan/corpus/prompt/schema match
+  preflight --> manual_required: budget/context/grant fails, 0 calls
+  preflight --> dispatch_reserved: unique atomic reservation
+  dispatch_reserved --> one_shot_running: exactly one Sol call
+  one_shot_running --> local_normalize: structured output persisted
+  one_shot_running --> failed_terminal: timeout/uncertain/invalid output
+  local_normalize --> deterministic_verify
+  local_normalize --> incomplete: normalize fails
+  deterministic_verify --> local_audit: verifier passes
   deterministic_verify --> incomplete: verifier fails
-  audit_A --> publish: blocker=0 and major=0
-  audit_A --> repair_B: one bounded repair
-  repair_B --> deterministic_verify: new structured artifact hash
-  repair_B --> incomplete: repair invalid or budget used
+  local_audit --> publish: blocker=0 and major=0
+  local_audit --> incomplete: audit fails
   publish --> complete: atomic latest update
 ```
 
-Only the coordinator renders `REPORT.md` from `REPORT_DOCUMENT` AST and sidecar bindings. Repair is a typed patch to structured artifacts, never a direct Markdown edit. After repair, a new deterministic verification and an independent fresh Sol audit are mandatory; a second blocker/major leaves the immutable report run `incomplete` and does not update `latest`.
+Only the coordinator renders `REPORT.md` from `REPORT_DOCUMENT` AST and sidecar bindings. Normalization, verification and audit after the sole Sol output are deterministic local operations. A failed or uncertain dispatched run never calls Sol again, never performs model repair/reaudit, and does not update `latest`; another model attempt requires a new approved report run.
 
 ## Recovery and concurrency rules
 
 - Each work item has `pending/running/complete/failed_retryable/failed_terminal/manual_required`-equivalent persisted state plus attempt, lease expiry and fencing token.
 - A worker may resume only expired/retryable work from the same frozen snapshot. It cannot change a plan, grant, model revision, prompt/schema or artifact input mid-run.
-- Retrying is bounded and recorded. A paper failure never becomes `irrelevant`, `downloaded` or `analyzed` by default；只有协调层确认每篇论文都达到不可变终态后，Stage 3 run 才可标为 `complete`。
+- Retrying is bounded and recorded. Stage 4b one-shot is the exception: after its unique dispatch is reserved, retry count is fixed at zero and resume may only observe/reuse a proven persisted result. A paper failure never becomes `irrelevant`, `downloaded` or `analyzed` by default；只有协调层确认每篇论文都达到不可变终态后，Stage 3 run 才可标为 `complete`。
 - Same run/stage/paper/output kind plus the same content hash is idempotent. The same key with a different hash is a conflict/manual item, not last-write-wins.
 - Coordinator-only merge accepts current shard epoch; late epochs are rejected. Coverage checks identify exactly which papers/artifacts to reissue.

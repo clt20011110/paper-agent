@@ -53,8 +53,9 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
   private labels/submissions/key、消费 promotion marker 或创建 attestation/release output；assembly
   dry-run 必须执行与真实组装相同的 gate/trust/path 验证。
 - [ ] 告警契约回归覆盖 Stage 2 的 15%/30%、0.5%、28 GiB 边界、resume 等价和 report Codex
-  budget exhaustion；search audit 只保留 allowlist rate/quota/credit headers，凭据与 cookie fixture
-  不得出现在产物中。
+  budget exhaustion；Stage 4b 全量 prompt 超限必须 dispatch=0，正常路径必须 dispatch=1，且并发、
+  resume、timeout 或 uncertain outcome 不得产生第二次调用。search audit 只保留 allowlist
+  rate/quota/credit headers，凭据与 cookie fixture 不得出现在产物中。
 
 ## 人工生产门禁
 
@@ -98,7 +99,8 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
   完成 30 秒 + 5 秒 jitter 的 fixed pass、stage 和 clean audit，再以完全相同 run/grant/queue/output/
   root/ZIP/audit 参数重跑 download 导入。CAPTCHA、403、429、access denied、missing link、
   `stopQueue` 或 `manual_required` 只证明安全停止，不算成功 smoke；不得记录凭据、cookie 或全文。
-- [ ] 如发布报告工作流，保存 ReportPlan、deterministic verifier、独立 Sol audit 和 coverage
+- [ ] 如发布报告工作流，保存 ReportPlan、全部 Luna 输入及其 frozen hash、`dispatch_count=1`、
+  Sol invocation ledger=1、Sol reduce/audit/repair=0、本地 deterministic verifier/audit 和 coverage
   evidence；blocker 或 major 非零则不发布 report/latest。
 
 ## 发布与回滚

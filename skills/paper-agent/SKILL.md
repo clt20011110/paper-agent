@@ -95,10 +95,15 @@ Run `paper-agent report --plan-only` first and show:
 
 - frozen corpus and search-flow limitations;
 - paper input scopes (`full_pdf`, `abstract_only`, `metadata_only`, or missing);
-- semantic reduce-tree call/token estimate, including two audits and at most one repair;
+- proof that every selected paper's complete Luna report appears exactly once in the frozen input package;
+- the full-payload input measure and the fixed budget `max_sol_calls=1`, `max_retries=0`, `audit_calls=0`, `repair_calls=0`;
 - all incomplete sources and authorization-based evidence downgrades.
 
-Require `paper-agent report approve --plan ... --hash ... --approved-by ... --corpus-snapshot ... --search-audit ... --output-root ...` before Sol calls. Execute with `report --plan <REPORT_PLAN.json> --database <DB> --output-root <DIR>` plus either `--policy` or a matching v2 `--config` that resolves the summary policy. Pass artifact-scoped grants only as `--processing-grant ARTIFACT_SHA256=GRANT_ID`, where the digest is 64 lowercase hexadecimal characters (or use the equivalent frozen mapping file). Publish only when `paper-agent verify-report` and the final independent Sol audit both pass with zero blocker and major findings. If repair is needed, allow one typed repair pass followed by full re-verification and a fresh audit. Do not patch rendered Markdown directly. For an incremental request, use `report --diff-from <previous> --report-run-id <current> --output-root <DIR>` instead of comparing rendered Markdown by hand.
+Require `paper-agent report approve --plan ... --hash ... --approved-by ... --corpus-snapshot ... --search-audit ... --output-root ...` before the sole Sol call. Execute with `report --plan <REPORT_PLAN.json> --database <DB> --output-root <DIR>` plus either `--policy` or a matching v2 `--config` whose summary strategy/profile are `one_shot`/`stage4b_oneshot_sol`. Pass artifact-scoped grants only as `--processing-grant ARTIFACT_SHA256=GRANT_ID`, where the digest is 64 lowercase hexadecimal characters (or use the equivalent frozen mapping file).
+
+If the complete payload exceeds the approved/context budget, any Luna report or grant is missing, or preflight drifts, stop before dispatch and report zero Sol calls. Once the database reserves the unique dispatch, concurrent workers and `resume` may only observe or reuse a proven persisted result. Timeout, connection loss, or an uncertain outcome is terminal for that report run; never resend it. A new model attempt requires a new immutable ReportPlan/report run and approval.
+
+Publish only when local normalization, `paper-agent verify-report`, and the deterministic local audit all pass with zero blocker and major findings. Never call Sol for audit, repair, or retry, and do not patch rendered Markdown directly. Do not present the implementation's UTF-8 input-byte measure as provider-tokenizer or billing tokens unless provider metadata independently supplies that value. For an incremental request, use `report --diff-from <previous> --report-run-id <current> --output-root <DIR>` instead of comparing rendered Markdown by hand.
 
 ## Deliver results
 

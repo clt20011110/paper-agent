@@ -191,8 +191,9 @@ CI 在 lockfile bootstrap 之后使用固定 fixture、mock oMLX、mock Codex �
 真实运行前，分别执行 `paper-agent filter`、`download`、`analyze`、`report` 和
 `verify-report` 的 `--help`，只使用当前安装版本显示的参数。下载前创建并批准精确的
 grant；全文及其受限派生物进入 Luna/Sol 前必须另有匹配的 processing grant。报告必须先
-`--plan-only`、再批准 ReportPlan，且 deterministic verifier 与独立 Sol audit 都通过后
-才能发布。完整故障处理、备份和恢复见 [operations.md](operations.md)。
+`--plan-only`、再批准 one-shot ReportPlan；完整 Luna 输入和预算门禁通过后严格调用一次 Sol，
+随后只有本地 deterministic normalize、verifier 与 audit 全部通过才能发布。完整故障处理、
+备份和恢复见 [operations.md](operations.md)。
 
 ## 6. 可恢复 typed workflow（可选）
 

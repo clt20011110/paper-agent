@@ -8,7 +8,7 @@ Paper Agent 是一套本地优先、可恢复、可审计的文献检索与综�
 - Stage 2：在 Apple Silicon 上通过 oMLX 批量运行 reranker，并用 Qwen3.5-9B 处理灰区样本。生产运行必须绑定真实金标晋级门、路径级校准器和阈值；不允许静默使用测试 fake 或云端回退。
 - Stage 3：依次尝试官方公开 PDF、Europe PMC/PMC、Unpaywall、arXiv、用户授权的可见浏览器会话和人工队列。下载、保存、浏览器数据共享均受显式 policy/grant 控制。
 - Stage 4：用固定的 `gpt-5.6-luna` profile 分析获准的 normalized text、摘要或元数据，输出带定位的结构化 evidence units。dataset/metric/baseline/protocol 映射由版本化本地 registry 校验。
-- Stage 4b：用固定的 `gpt-5.6-sol` profile 按语义 section 做稳定分层 reduce，生成 Claims-Evidence Matrix、ReportDocument AST、确定性 Markdown、sidecar、审计和增量 diff。
+- Stage 4b：把全部 Luna 逐篇报告确定性排序并一次完整打包，用固定的 `gpt-5.6-sol` profile 严格调用一次 `one_shot_report`；随后在本地生成 Claims-Evidence Matrix、ReportDocument AST、确定性 Markdown、sidecar、审计和增量 diff，不再调用 Sol。
 
 系统不依赖 OpenRouter 或 OpenCode，也不会把 `network=false` 误认为远程模型载荷留在本地。全文及其受限派生物进入 Luna/Sol 前，必须通过精确 artifact/model 处理授权。
 

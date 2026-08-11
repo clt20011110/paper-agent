@@ -108,10 +108,11 @@ Report workflow。新 config 必须启用 summary，固定 approved ReportPlan p
 `manifest_path` 和 `report_workflow_run_id` 调用
 普通 `run` 或 `resume`。handoff 只接受完整成功的 Search → Filter → Download → Analyze workflow；
 Stage 4 未完成或失败时必须先恢复上游。ReportPlan 要求 membership 与实际 corpus 完全一致，因此
-不能在 crawler 运行前把 Report 塞进同一 manifest；解析器会拒绝这种清单。Stage 4b 若在
-`pipeline_runs=running` 时崩溃，workflow 会检查 reduce、
-audit 与 audit-shard 的子租约：仍有效时保持 blocked，无有效租约时允许相同冻结输入进入协调器的
-故障恢复逻辑。
+不能在 crawler 运行前把 Report 塞进同一 manifest；解析器会拒绝这种清单。Stage 4b 通过
+`report_one_shot_runs` 为 report run 原子预约唯一 dispatch。尚未预约时可在相同冻结输入上恢复
+preflight；预约后并发 worker 或 `resume` 只能观察状态或复用已证明持久化的结果。若 Codex 已启动后
+发生 timeout、连接中断或结果不确定，旧 run 进入终态且不得重发；再次调用必须新建并批准 ReportPlan
+与 report run。
 
 授权下载只在 CLI 已输出 `authorized_queue_path` 后交给 `download-authorized-papers`。生成该队列时
 需要有效 attended grant，以及 `--authorized-skill-queue`、`--authorized-skill-output`、至少一个
@@ -135,8 +136,10 @@ root、ZIP 和 audit 参数重跑原 download 命令；CLI 重验全部绑定后
 报告执行则使用已批准的 ReportPlan bundle：
 `report --plan` 还须有 database、output root 以及 `--policy` 或相同 v2 config 的 summary policy。
 `--processing-grant` 始终写作 `ARTIFACT_SHA256=GRANT_ID`。
-单个论文、可选来源或可重试模型请求失败可以保留并让其他工作继续，但 required source 失败、
-预算耗尽、coverage 缺失和 report audit blocker/major 必须保留 `incomplete`。
+全部 Luna 报告必须在唯一输入包中各出现一次；full-payload 预算、授权或 coverage 门禁失败时必须在
+dispatch 前以 0 次 Sol 调用保留 `incomplete`。门禁通过后只允许一次 `one_shot_report`，其后仅运行
+本地 deterministic normalize、verifier 和 audit；blocker/major、无效输出或不确定调用结果均不得
+触发 Sol retry/repair/reaudit，也不得更新 `latest`。
 
 ## 授权与安全事件
 
@@ -186,7 +189,7 @@ typed `error`，不能只匹配终端文本。
 | `stage2.adjudicator_share_exceeded` | 任一 Stage 2 子 run 的 adjudicator share `> 15%`；`> 30%` 为 `severe`。该容量告警本身不改变筛选决定，也不单独把 run 置为 `incomplete`。 | 检查 `stage2.max_run_adjudicator_share`、`stage2.run_details` 和路由原因；不得扩大自动拒绝区间。长期超过 30% 时重校 query/阈值或扩容，并创建新 release/plan。 |
 | `stage2.error_rate_exceeded` | filter 单 run 或 search campaign 的终态技术错误率 `>= 0.5%`；search 顶层按 `error_count / screened_count` 聚合。benchmark 的终态 case 错误率或 oMLX service-request 失败率任一 `>= 0.5%` 也触发。相关命令返回 `incomplete`。 | 检查 `error_count`、`error_rate`、`max_run_error_rate` 和 `run_details`，benchmark 另查两类 request failure rate。成功重试不计终态错误，但失败 service attempt 仍计入 service rate。修复服务、schema 或校准后创建新 run；同一 run 的 terminal decision 不会因 `resume` 重发。 |
 | `stage2.memory_watermark_exceeded` | `benchmark-stage2 measure` 的峰值 `> 28 GiB`、macOS memory-pressure critical，或热身后出现无界增长；返回 `incomplete`。恰好 28 GiB 不越线。 | 确认 RSS 覆盖 runner 和全部 oMLX PID；按 64 → 32 → 16 下调 batch，保存失败 record，并用新 benchmark run 重测。 |
-| `report.codex_budget_exhausted` | 继续预留 Sol call/input token 会越过批准的 ReportPlan，或恢复时发现已持久化 budget error；返回 `incomplete`，且不再 dispatch 付费调用。 | 对比 `codex_budget.calls_reserved`、`input_tokens_reserved` 与两个 approved limits，并读取 typed `error`。`resume` 不增加获批预算；扩预算必须批准新 ReportPlan 并创建新 report run，禁止修改 SQLite ledger。 |
+| `report.codex_budget_exhausted` | 全量 one-shot prompt 会越过批准的 ReportPlan 输入上限，或恢复时发现已持久化 budget error；preflight 返回 `incomplete` 且 dispatch=0。 | 对比 `codex_budget.calls_reserved`、`input_tokens_reserved` 与两个 approved limits，并读取 typed `error`。已预约或已 dispatch 的 run 不因 `resume` 或扩预算重发；扩预算必须批准新 ReportPlan 并创建新 report run，禁止修改 SQLite ledger。 |
 
 ### Provider rate/credit 审计
 

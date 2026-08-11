@@ -22,6 +22,7 @@ erDiagram
   PAPERS ||--o{ ANALYSIS_RUNS : analyzed
   ARTIFACTS ||--o{ ANALYSIS_RUNS : input
   REPORT_PLANS ||--o{ REPORT_RUNS : drives
+  REPORT_RUNS ||--o| REPORT_ONE_SHOT_RUNS : reserves
   WORKFLOW_RUNS ||--o| WORKFLOW_REPORT_HANDOFFS : freezes
   WORKFLOW_REPORT_HANDOFFS ||--o| WORKFLOW_REPORT_EXECUTIONS : launches
   REPORT_PLANS ||--o| WORKFLOW_REPORT_EXECUTIONS : binds
@@ -51,6 +52,7 @@ erDiagram
 | `download_candidates`, `download_attempts` | candidate 按 URL/版本独立保存；attempt 引用 candidate、FetchRequest、provider、grant 和分类结果。fetch 只能消费持久化且未过期的请求。 |
 | `stage3_paper_results` | migration 19 引入的逐论文聚合 checkpoint；`UNIQUE(run_id, paper_id)`，保存闭集状态、原因和更新时间。`downloaded/not_available/failed_terminal` 为同一冻结 run 的可恢复终态。 |
 | `analysis_runs`, `report_runs` | 绑定输入快照/artifact 或 lineage hash、模型 profile、prompt/schema hash、状态和产物路径；报告目录不可变。 |
+| `report_one_shot_runs` | migration 26 引入；`report_run_id` 为主键且一对一绑定 `report_runs`，原子保存唯一 dispatch 状态、`dispatch_count` 与预算调用数（均只能为 0 或 1）、冻结 profile/model/prompt/schema/input/output hash 和终态错误。legacy reduce/audit 表不参与 one-shot 调度。 |
 | `report_claims`, `claim_evidence`, `comparison_groups`, `claim_relations` | claim 使用稳定 UUIDv5；证据引用 paper/run/locator；comparison key 是跨 run 稳定的规范条件；lineage 只允许 `same/refined/split/merged/superseded/retired`。 |
 | `provider_registrations` | 绑定 distribution、精确 version、entry point、manifest、内容 digest、审计和信任状态。漂移不更新原记录，而是失效旧注册。 |
 | `authorization_grants` | grant 的 canonical content hash、detached approval、撤销事件、时间、action/purpose/scope、artifact/lineage/model/skill digest；YAML defaults 不进入运行时授权。 |
@@ -67,5 +69,7 @@ erDiagram
 规范化合并依序匹配 DOI、arXiv ID、同 provider external ID；标题/首作者/年份只产生候选。前三者可幂等合并 source，候选匹配与冲突进入 `manual_queue`。每次合并保留来源字段及 provenance，绝不以规范显示值覆盖原始 source。
 
 迁移是版本化 SQL 文件，按递增版本在单个短事务中执行：先读取 `schema_migrations`，执行未应用 SQL，再插入该版本记录。迁移失败时事务回滚、版本不记录。新增列采用 nullable/backfill/再收紧三步；破坏性形状变化通过新表、复制、校验、切换完成，不原地丢列。启动支持 `--dry-run`，展示当前版本、将执行的迁移和旧 JSON/YAML 的字段映射、警告与无法迁移项。
+
+Migration 26 新增 one-shot dispatch ledger，不把旧 reduce-tree 节点、audit 或 repair 记录改写成 one-shot。旧 run 保持只读恢复语义；切换策略必须编译并批准新的 ReportPlan，使用新的 report run ID，不能通过迁移或手工写表为旧 run 增加第二次调用。
 
 导入以事务和上述唯一键工作；同一 JSONL/CSV/旧 JSON 导入两次不制造重复。导出从 SQLite 读取，JSONL 保存完整对象，CSV 的嵌套字段显式 JSON 编码。
