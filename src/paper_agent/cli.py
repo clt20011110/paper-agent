@@ -2177,22 +2177,26 @@ def _grant_defaults(
             "download grant content must come only from grant_defaults; remove CLI overrides: "
             + ", ".join(supplied)
         )
-    defaults = config["download"]["authorized_skill"]["grant_defaults"]
-    audit = load_audit_record()
-    expected_digests = {
-        "source_zip_sha256": audit.original_zip_sha256,
-        "installed_content_sha256": audit.installed_content_sha256,
-        "dependency_lock_sha256": audit.dependency_lock_sha256,
-    }
-    drifted = sorted(
-        key for key, expected in expected_digests.items()
-        if defaults.get(key) != expected
-    )
-    if drifted:
-        raise ConfigError(
-            "download grant_defaults differ from the checked-in skill audit: "
-            + ", ".join(drifted)
+    download = config["download"]
+    defaults = download.get("grant_defaults")
+    if defaults is None:
+        defaults = download["authorized_skill"]["grant_defaults"]
+    if defaults["provider"] == "authorized_skill":
+        audit = load_audit_record()
+        expected_digests = {
+            "source_zip_sha256": audit.original_zip_sha256,
+            "installed_content_sha256": audit.installed_content_sha256,
+            "dependency_lock_sha256": audit.dependency_lock_sha256,
+        }
+        drifted = sorted(
+            key for key, expected in expected_digests.items()
+            if defaults.get(key) != expected
         )
+        if drifted:
+            raise ConfigError(
+                "download grant_defaults differ from the checked-in skill audit: "
+                + ", ".join(drifted)
+            )
     return defaults
 
 

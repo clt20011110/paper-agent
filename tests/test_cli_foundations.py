@@ -138,6 +138,45 @@ def test_download_grant_uses_only_defaults_and_create_dry_run_has_no_writes(
         ])
 
 
+def test_public_download_grant_uses_top_level_exact_scope_without_skill_audit(
+    tmp_path: Path, capsys
+) -> None:
+    config, database = _download_config(tmp_path)
+    document = yaml.safe_load(config.read_text(encoding="utf-8"))
+    document["download"]["authorized_skill"]["grant_defaults"][
+        "dependency_lock_sha256"
+    ] = "d" * 64
+    document["download"]["grant_defaults"] = {
+        "provider": "public_direct",
+        "allowed_domains": ["proceedings.neurips.cc"],
+        "paper_ids": ["paper-neurips-1"],
+        "collection_snapshot_hash": None,
+        "selection_snapshot_hash": None,
+        "max_papers": 1,
+        "actions": ["download", "store", "extract"],
+        "purpose": "personal_research",
+        "mode": "attended",
+        "allow_unattended": False,
+        "authorization_expires_at": FUTURE,
+    }
+    config.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    draft_path = tmp_path / "public-download-grant.json"
+
+    assert cli.main([
+        "grant", "create", "--kind", "download", "--output", str(draft_path),
+        "--config", str(config),
+    ]) == 0
+
+    assert _payload(capsys)["status"] == "draft"
+    draft = json.loads(draft_path.read_text(encoding="utf-8"))
+    assert draft["scope"]["provider"] == "public_direct"
+    assert draft["scope"]["domains"] == ["proceedings.neurips.cc"]
+    assert draft["scope"]["paper_ids"] == ["paper-neurips-1"]
+    assert draft["skill_digest"] is None
+    assert draft["dependency_digest"] is None
+    assert not database.exists()
+
+
 @pytest.mark.parametrize("provider", (None, "public_direct"))
 def test_download_grant_default_provider_is_required_and_fixed(
     tmp_path: Path, provider: str | None
