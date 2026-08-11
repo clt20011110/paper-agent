@@ -59,12 +59,18 @@ def load_stage2_release(path: Path, plan: dict):
     return _load_stage2_release(
         path,
         plan,
-        hidden_trust_path=path.parent / "test-hidden-evaluator-trust.json",
+        hidden_trust_path=path.parent.parent / f"{path.parent.name}-test-hidden-evaluator-trust.json",
     )
 
 
 @pytest.fixture(autouse=True)
 def _fast_release_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        stage2_search,
+        "_load_deployment_hidden_trust",
+        lambda _path, *, bundle_root: object(),
+    )
+
     def verified_gate(
         _release_path: Path,
         document: dict,

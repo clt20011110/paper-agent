@@ -37,6 +37,7 @@ from .stage2_evaluation import (
     phase3_release_gate,
 )
 from .stage2_hidden_attestation import (
+    HiddenEvaluatorTrust,
     HiddenPromotionBindings,
     load_hidden_evaluator_trust,
     verify_hidden_promotion_attestation,
@@ -44,7 +45,7 @@ from .stage2_hidden_attestation import (
 from .stage2_public_gates import verify_public_stage2_gates
 from .stage2_release_evidence import (
     Stage2ReleaseEvidenceIndex,
-    load_stage2_release_evidence_index,
+    load_stage2_release_evidence_index_bytes,
 )
 from .stage2_pipeline import (
     ADJUDICATOR_SHARE_ALARM,
@@ -263,11 +264,26 @@ def load_stage2_benchmark_candidate(path: Path) -> ReleasedStage2:
     return _load_stage2_bundle(path, None, hidden_trust_path=None)
 
 
+def _load_stage2_benchmark_candidate_bytes(
+    path: Path,
+    payload: bytes,
+) -> ReleasedStage2:
+    """Load one caller-captured benchmark candidate byte snapshot."""
+
+    return _load_stage2_bundle(
+        path,
+        None,
+        hidden_trust_path=None,
+        bundle_bytes=payload,
+    )
+
+
 def _load_stage2_bundle(
     path: Path,
     plan: Mapping[str, Any] | None,
     *,
     hidden_trust_path: Path | None,
+    bundle_bytes: bytes | None = None,
 ) -> ReleasedStage2:
     released = plan is not None
     expected_screening_scope_hash: str | None = None
@@ -281,7 +297,12 @@ def _load_stage2_bundle(
     if not path.is_file():
         label = "release" if released else "benchmark candidate"
         raise Stage2ReleaseError(f"Stage 2 {label} artifact is required: {path}")
-    release_bytes = _read_bytes(path, "Stage 2 bundle")
+    bundle_root = path.parent.resolve(strict=True)
+    release_bytes = (
+        bundle_bytes
+        if bundle_bytes is not None
+        else _read_bytes(path, "Stage 2 bundle")
+    )
     document = _json_object_bytes(release_bytes, "Stage 2 bundle")
     if "thresholds" in document:
         raise Stage2ReleaseError("legacy raw-score thresholds are forbidden in production releases")
@@ -293,12 +314,17 @@ def _load_stage2_bundle(
             f"Stage 2 {'release' if released else 'benchmark candidate'} must use "
             f"schema_version {expected_schema_version}"
         )
-    if released and hidden_trust_path is None:
-        raise Stage2ReleaseError(
-            "Stage 2 release requires a deployment-controlled hidden evaluator "
-            "trust manifest (hidden_trust_path or PAPER_AGENT_STAGE2_HIDDEN_TRUST)"
+    hidden_trust: HiddenEvaluatorTrust | None = None
+    if released:
+        if hidden_trust_path is None:
+            raise Stage2ReleaseError(
+                "Stage 2 release requires a deployment-controlled hidden evaluator "
+                "trust manifest (hidden_trust_path or PAPER_AGENT_STAGE2_HIDDEN_TRUST)"
+            )
+        hidden_trust = _load_deployment_hidden_trust(
+            hidden_trust_path,
+            bundle_root=bundle_root,
         )
-
     profile_name = _text(document, "profile")
     if plan is not None and profile_name != plan["filter"]["profile"]:
         raise Stage2ReleaseError("Stage 2 release profile does not match QueryPlan")
@@ -400,13 +426,13 @@ def _load_stage2_bundle(
         if profile.config_hash != plan["filter"]["config_hash"]:
             raise Stage2ReleaseError("Stage 2 release configuration does not match QueryPlan")
     if gate_document is not None:
-        assert hidden_trust_path is not None
+        assert hidden_trust is not None
         _release_gate(
             path,
             gate_document,
             profile_name,
             profile,
-            hidden_trust_path,
+            hidden_trust,
         )
 
     return ReleasedStage2(
@@ -423,13 +449,88 @@ def _release_gate(
     document: Mapping[str, Any],
     profile_name: str,
     profile: Stage2Profile,
-    hidden_trust_path: Path,
+    hidden_trust: HiddenEvaluatorTrust,
 ) -> ReleaseGateResult:
     _exact_fields(document, _RELEASE_GATE_FIELDS, "Stage 2 release gate")
     candidate_id = _text(document, "candidate_id")
     evaluation_manifest_hash = _sha256_text(document, "evaluation_manifest_hash")
     if candidate_id != profile_name:
         raise Stage2ReleaseError("Stage 2 release gate candidate does not match the profile")
+
+    evidence_path, _, evidence_bytes = _artifact(
+        release_path,
+        _object(document, "evidence"),
+    )
+    try:
+        index = load_stage2_release_evidence_index_bytes(evidence_path, evidence_bytes)
+        return verify_stage2_release_evidence_index(
+            index,
+            candidate_id=candidate_id,
+            evaluation_manifest_hash=evaluation_manifest_hash,
+            profile=profile,
+            hidden_trust=hidden_trust,
+        )
+    except Stage2ReleaseError:
+        raise
+    except (OSError, ValueError) as error:
+        raise Stage2ReleaseError(
+            f"Stage 2 release evidence verification failed: {error}"
+        ) from error
+
+
+def verify_stage2_release_evidence(
+    evidence_path: Path,
+    *,
+    candidate_id: str,
+    evaluation_manifest_hash: str,
+    profile: Stage2Profile,
+    hidden_trust_path: Path,
+) -> ReleaseGateResult:
+    """Verify a single evidence-index snapshot for one frozen Stage 2 profile.
+
+    This path-based compatibility entrypoint reads each top-level input once,
+    then delegates to the same object-based core used by runtime release loading.
+    """
+
+    try:
+        resolved_evidence_path = evidence_path.resolve(strict=True)
+        evidence_bytes = _read_bytes(
+            resolved_evidence_path,
+            "Stage 2 release evidence index",
+        )
+        index = load_stage2_release_evidence_index_bytes(
+            resolved_evidence_path,
+            evidence_bytes,
+        )
+        hidden_trust = _load_deployment_hidden_trust(
+            hidden_trust_path,
+            bundle_root=resolved_evidence_path.parent,
+        )
+    except Stage2ReleaseError:
+        raise
+    except (OSError, ValueError) as error:
+        raise Stage2ReleaseError(
+            f"Stage 2 release evidence verification failed: {error}"
+        ) from error
+    return verify_stage2_release_evidence_index(
+        index,
+        candidate_id=candidate_id,
+        evaluation_manifest_hash=evaluation_manifest_hash,
+        profile=profile,
+        hidden_trust=hidden_trust,
+    )
+
+
+def verify_stage2_release_evidence_index(
+    index: Stage2ReleaseEvidenceIndex,
+    *,
+    candidate_id: str,
+    evaluation_manifest_hash: str,
+    profile: Stage2Profile,
+    hidden_trust: HiddenEvaluatorTrust,
+) -> ReleaseGateResult:
+    """Verify an already captured evidence index and trust manifest."""
+
     calibrations = (profile.reranker_calibration, profile.adjudicator_calibration)
     assert all(binding is not None for binding in calibrations)
     if any(
@@ -437,14 +538,10 @@ def _release_gate(
         for binding in calibrations
         if binding is not None
     ):
-        raise Stage2ReleaseError("Stage 2 release gate and calibration gold manifest do not match")
-
-    evidence_path, _, _ = _artifact(
-        release_path,
-        _object(document, "evidence"),
-    )
+        raise Stage2ReleaseError(
+            "Stage 2 release gate and calibration gold manifest do not match"
+        )
     try:
-        index = load_stage2_release_evidence_index(evidence_path)
         _validate_evidence_bindings(
             index,
             candidate_id=candidate_id,
@@ -475,7 +572,7 @@ def _release_gate(
         attestation_document = index.hidden_attestation.read_json(index.bundle_root)
         verify_hidden_promotion_attestation(
             attestation_document,
-            load_hidden_evaluator_trust(hidden_trust_path),
+            hidden_trust,
             expected_bindings=hidden_bindings,
         )
         public_evidence = verify_public_stage2_gates(index)
@@ -513,6 +610,35 @@ def _release_gate(
     except (OSError, ValueError) as error:
         raise Stage2ReleaseError(
             f"Stage 2 release evidence verification failed: {error}"
+        ) from error
+
+
+def _load_deployment_hidden_trust(
+    path: Path,
+    *,
+    bundle_root: Path,
+) -> HiddenEvaluatorTrust:
+    lexical_path = path.absolute()
+    try:
+        parent_resolved_lexical_path = path.parent.resolve(strict=True) / path.name
+        resolved_path = path.resolve(strict=True)
+    except OSError as error:
+        raise Stage2ReleaseError(
+            f"Stage 2 hidden evaluator trust manifest cannot be resolved: {error}"
+        ) from error
+    if (
+        lexical_path.is_relative_to(bundle_root)
+        or parent_resolved_lexical_path.is_relative_to(bundle_root)
+        or resolved_path.is_relative_to(bundle_root)
+    ):
+        raise Stage2ReleaseError(
+            "Stage 2 hidden evaluator trust manifest must stay outside the release bundle"
+        )
+    try:
+        return load_hidden_evaluator_trust(resolved_path)
+    except (OSError, ValueError) as error:
+        raise Stage2ReleaseError(
+            f"Stage 2 hidden evaluator trust manifest is invalid: {error}"
         ) from error
 
 

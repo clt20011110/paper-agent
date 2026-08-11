@@ -95,7 +95,19 @@ class Stage2ReleaseEvidenceIndex:
 def load_stage2_release_evidence_index(path: Path) -> Stage2ReleaseEvidenceIndex:
     """Load one strict index and verify its file and public-manifest bindings."""
 
-    document = json.loads(path.read_text(encoding="utf-8"))
+    resolved = path.resolve(strict=True)
+    return load_stage2_release_evidence_index_bytes(resolved, resolved.read_bytes())
+
+
+def load_stage2_release_evidence_index_bytes(
+    path: Path,
+    payload: bytes,
+) -> Stage2ReleaseEvidenceIndex:
+    """Build and verify an index from one caller-captured byte snapshot."""
+
+    if not path.is_absolute():
+        raise Stage2EvidenceError("Stage 2 evidence snapshot path must be absolute")
+    document = json.loads(payload)
     validate(document, "stage2-release-evidence.schema.json")
     public = document["public_gates"]
     gates = {
@@ -117,7 +129,7 @@ def load_stage2_release_evidence_index(path: Path) -> Stage2ReleaseEvidenceIndex
         ),
     }
     index = Stage2ReleaseEvidenceIndex(
-        index_path=path.resolve(),
+        index_path=path,
         candidate_id=str(document["candidate_id"]),
         evaluation_manifest_hash=str(document["evaluation_manifest_hash"]),
         stage2_config_hash=str(document["stage2_config_hash"]),

@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import pytest
 
+import paper_agent.stage2_search as stage2_search
 from paper_agent.approval import approved_content_hash
 from paper_agent.canonical import content_hash
 from paper_agent.domain import FilterStatus
@@ -251,12 +252,16 @@ def v3_template(tmp_path_factory: pytest.TempPathFactory) -> V3Bundle:
 def v3_bundle(v3_template: V3Bundle, tmp_path: Path) -> V3Bundle:
     root = tmp_path / "bundle"
     shutil.copytree(v3_template.root, root)
+    trust_path = tmp_path / "deployment-hidden-evaluator-trust.json"
+    wrong_trust_path = tmp_path / "deployment-wrong-hidden-evaluator-trust.json"
+    shutil.copy2(v3_template.trust_path, trust_path)
+    shutil.copy2(v3_template.wrong_trust_path, wrong_trust_path)
     return replace(
         v3_template,
         root=root,
         release_path=root / v3_template.release_path.name,
-        trust_path=root / v3_template.trust_path.name,
-        wrong_trust_path=root / v3_template.wrong_trust_path.name,
+        trust_path=trust_path,
+        wrong_trust_path=wrong_trust_path,
         plan=deepcopy(v3_template.plan),
     )
 
@@ -310,6 +315,86 @@ def test_production_v3_rejects_claimed_gate_outcomes(v3_bundle: V3Bundle) -> Non
 def test_production_v3_requires_operator_controlled_trust(v3_bundle: V3Bundle) -> None:
     with pytest.raises(Stage2ReleaseError, match="deployment-controlled hidden evaluator trust"):
         load_stage2_release(v3_bundle.release_path, v3_bundle.plan, environment={})
+
+    bundled_trust = v3_bundle.root / "hidden-evaluator-trust.json"
+    with pytest.raises(Stage2ReleaseError, match="outside the release bundle"):
+        load_stage2_release(
+            v3_bundle.release_path,
+            v3_bundle.plan,
+            hidden_trust_path=bundled_trust,
+        )
+
+    bundled_symlink = v3_bundle.root / "deployment-trust-link.json"
+    bundled_symlink.symlink_to(v3_bundle.trust_path)
+    with pytest.raises(Stage2ReleaseError, match="outside the release bundle"):
+        load_stage2_release(
+            v3_bundle.release_path,
+            v3_bundle.plan,
+            hidden_trust_path=bundled_symlink,
+        )
+
+    bundle_alias = v3_bundle.root.parent / "bundle-alias"
+    bundle_alias.symlink_to(v3_bundle.root, target_is_directory=True)
+    with pytest.raises(Stage2ReleaseError, match="outside the release bundle"):
+        load_stage2_release(
+            v3_bundle.release_path,
+            v3_bundle.plan,
+            hidden_trust_path=bundle_alias / bundled_symlink.name,
+        )
+
+
+def test_v3_uses_one_loaded_trust_snapshot(
+    v3_bundle: V3Bundle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = stage2_search.load_hidden_evaluator_trust
+    calls = 0
+
+    def load_then_replace(path: Path):
+        nonlocal calls
+        calls += 1
+        trust = original(path)
+        shutil.copy2(v3_bundle.wrong_trust_path, path)
+        return trust
+
+    monkeypatch.setattr(stage2_search, "load_hidden_evaluator_trust", load_then_replace)
+
+    load_stage2_release(
+        v3_bundle.release_path,
+        v3_bundle.plan,
+        hidden_trust_path=v3_bundle.trust_path,
+    )
+
+    assert calls == 1
+
+
+def test_v3_uses_outer_hash_verified_evidence_index_snapshot(
+    v3_bundle: V3Bundle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = stage2_search.load_stage2_release_evidence_index_bytes
+    calls = 0
+
+    def load_then_replace(path: Path, payload: bytes):
+        nonlocal calls
+        calls += 1
+        index = original(path, payload)
+        path.write_text("{}\n", encoding="utf-8")
+        return index
+
+    monkeypatch.setattr(
+        stage2_search,
+        "load_stage2_release_evidence_index_bytes",
+        load_then_replace,
+    )
+
+    load_stage2_release(
+        v3_bundle.release_path,
+        v3_bundle.plan,
+        hidden_trust_path=v3_bundle.trust_path,
+    )
+
+    assert calls == 1
 
 
 def test_v3_release_verifies_raw_evidence_signature_then_screens(v3_bundle: V3Bundle) -> None:
