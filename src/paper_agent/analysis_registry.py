@@ -90,6 +90,18 @@ class AnalysisNormalizationRegistry:
         normalized["evidence_units"] = [
             self.normalize_evidence_unit(unit) for unit in output["evidence_units"]
         ]
+        cited_labels = {
+            (item["axis"], item["value"])
+            for item in normalized["label_evidence"]
+        }
+        normalized["labels"] = {
+            axis: [
+                value for value in values if (axis, value) in cited_labels
+            ]
+            if isinstance(values, list)
+            else values
+            for axis, values in normalized["labels"].items()
+        }
         if normalized["comparison_eligibility"] == "comparable" and (
             not normalized["evidence_units"]
             or any(unit["comparison_eligibility"] != "comparable" for unit in normalized["evidence_units"])

@@ -82,3 +82,31 @@ def test_candidate_id_cannot_claim_a_different_registered_source_alias() -> None
     assert normalized["dataset_id"] == "mnist"
     assert normalized["comparison_eligibility"] == "not_comparable"
     assert "registry_mapping:dataset_id" in normalized["missing_fields"]
+
+
+def test_analysis_normalization_keeps_only_evidence_backed_list_labels() -> None:
+    registry = AnalysisNormalizationRegistry.load()
+    output = {
+        "labels": {
+            "theme": ["supported", "unsupported"],
+            "publication_status": "peer_reviewed",
+        },
+        "label_evidence": [
+            {
+                "axis": "theme",
+                "value": "supported",
+                "source_text": "supported",
+                "locator": {"kind": "page", "value": "1"},
+            }
+        ],
+        "evidence_units": [],
+        "comparison_eligibility": "not_comparable",
+        "missing_fields": [],
+    }
+
+    normalized = registry.normalize_analysis(output)
+
+    assert normalized["labels"] == {
+        "theme": ["supported"],
+        "publication_status": "peer_reviewed",
+    }
