@@ -19,6 +19,8 @@ from statistics import median
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
+from .stage2_hidden_attestation import hidden_promotion_gate_policy_document
+
 
 def _hash(document: object) -> str:
     encoded = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
@@ -1197,7 +1199,8 @@ def _run_provenance(run: Sequence[Prediction]) -> RunProvenance:
 
 
 def determinism_gate(runs: Sequence[Sequence[Prediction]], expected_hidden_pair_ids: Sequence[str]) -> DeterminismResult:
-    if len(runs) != 3:
+    policy = hidden_promotion_gate_policy_document()["determinism"]
+    if len(runs) != policy["runs"]:
         raise ValueError("determinism gate requires exactly three complete runs")
     expected = set(expected_hidden_pair_ids)
     if not expected or len(expected) != len(expected_hidden_pair_ids):
@@ -1210,11 +1213,19 @@ def determinism_gate(runs: Sequence[Sequence[Prediction]], expected_hidden_pair_
         raise ValueError("determinism runs must use identical candidate/model/config/manifest provenance")
     identical = sum(maps[0][pair_id] == maps[1][pair_id] == maps[2][pair_id] for pair_id in expected)
     ratio = identical / len(expected)
-    gate = GateResult(ratio >= 0.99, () if ratio >= 0.99 else (f"determinism {ratio:.3%} < 99%",))
+    gate = GateResult(
+        ratio >= policy["agreement_min"],
+        () if ratio >= policy["agreement_min"] else (f"determinism {ratio:.3%} < 99%",),
+    )
     return DeterminismResult(gate, ratio, provenance[0])
 
 
 def promotion_gate(candidate: PromotionCandidateResult) -> GateResult:
+    policy = hidden_promotion_gate_policy_document()
+    per_split = policy["per_split"]
+    language_policy = policy["main_language"]
+    hard_policy = policy["hidden_hard"]
+    real_policy = policy["hidden_real"]
     evaluations = candidate.evaluations
     if set(evaluations) != {GoldSplit.HIDDEN_HARD, GoldSplit.HIDDEN_REAL}:
         raise ValueError("promotion requires separate hard and real hidden evaluations")
@@ -1255,32 +1266,45 @@ def promotion_gate(candidate: PromotionCandidateResult) -> GateResult:
         raise ValueError("promotion candidate omitted a frozen main-language slice")
     failures = list(candidate.determinism.failures)
     for name, evaluation in (("hard", hard), ("real", real)):
-        if evaluation.metrics.retention_recall < 0.95:
+        if evaluation.metrics.retention_recall < per_split["retention_recall_min"]:
             failures.append(f"{name} retention recall < 0.95")
-        if evaluation.metrics.automatic_coverage < 0.95:
+        if evaluation.metrics.automatic_coverage < per_split["automatic_coverage_min"]:
             failures.append(f"{name} automatic coverage < 0.95")
-        if evaluation.metrics.error_needs_review_rate > 0.005:
+        if evaluation.metrics.error_needs_review_rate > per_split["error_needs_review_rate_max"]:
             failures.append(f"{name} error needs_review rate > 0.5%")
         interval = evaluation.metrics.core_retention_interval
-        if evaluation.core_count >= 30 and interval and interval.point < 0.97:
+        if (
+            evaluation.core_count >= per_split["core_retention_min_count"]
+            and interval
+            and interval.point < per_split["core_retention_recall_min"]
+        ):
             failures.append(f"{name} core retention recall < 0.97")
         for language, metrics in evaluation.language_metrics.items():
-            if evaluation.language_positive_counts[language] >= 30 and metrics.retention_recall < 0.90:
+            if (
+                evaluation.language_positive_counts[language] >= language_policy["positive_min_count"]
+                and metrics.retention_recall < language_policy["retention_recall_min"]
+            ):
                 failures.append(f"{name}/{language} retention recall < 0.90")
     core_intervals = [item.metrics.core_retention_interval for item in (hard, real) if item.metrics.core_retention_interval]
     core_numerator = sum(item.numerator for item in core_intervals)
     core_denominator = sum(item.denominator for item in core_intervals)
-    if not core_denominator or core_numerator / core_denominator < 0.97:
+    if (
+        not core_denominator
+        or core_numerator / core_denominator < policy["combined_hidden"]["core_retention_recall_min"]
+    ):
         failures.append("combined hidden core retention recall < 0.97")
-    if real.metrics.automatic_precision < 0.80:
+    if real.metrics.automatic_precision < real_policy["operational_precision_min"]:
         failures.append("real operational precision < 0.80")
-    if hard.metrics.positive_f1 < 0.88:
+    if hard.metrics.positive_f1 < hard_policy["positive_f1_min"]:
         failures.append("hard positive F1 < 0.88")
-    if hard.topic_macro_positive_f1 < 0.82:
+    if hard.topic_macro_positive_f1 < hard_policy["topic_macro_positive_f1_min"]:
         failures.append("hard topic macro positive F1 < 0.82")
-    if real.metrics.brier_score > 0.15:
+    if real.metrics.brier_score > real_policy["brier_score_max"]:
         failures.append("real Brier score > 0.15")
-    if real.size >= 500 and real.metrics.ece_10 > 0.08:
+    if (
+        real.size >= real_policy["ece_10_min_count"]
+        and real.metrics.ece_10 > real_policy["ece_10_max"]
+    ):
         failures.append("real ECE > 0.08")
     return GateResult(not failures, tuple(failures))
 

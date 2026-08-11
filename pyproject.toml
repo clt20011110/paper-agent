@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
 dependencies = [
+    "cryptography>=43,<47",
     "jsonschema>=4.23,<5",
     "PyYAML>=6.0,<7",
     "pypdf>=6,<7",
