@@ -10,15 +10,19 @@ from paper_agent import cli
 from paper_agent.stage2_evaluation import load_gold_manifest
 from paper_agent.stage2_sampling import (
     CorpusPaper,
+    CurationDecision,
+    CurationDecisions,
     PrivateCorpusSnapshot,
-    PrivateSamplingAnnotation,
-    PrivateSamplingAnnotations,
     SamplingPolicy,
+    curated_annotations_from_decisions,
     load_hidden_real_selection,
     load_gold_sampling_provenance,
     load_private_corpus_snapshot,
     load_private_sampling_annotations,
+    make_curation_receipt,
+    make_curation_worklist,
     select_hidden_real,
+    write_curation_receipt,
     write_hidden_real_selection,
     write_private_corpus_snapshot,
     write_private_sampling_annotations,
@@ -26,11 +30,10 @@ from paper_agent.stage2_sampling import (
 
 
 @pytest.fixture(scope="module")
-def sampling_inputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path]:
+def sampling_inputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path, Path]:
     root = tmp_path_factory.mktemp("stage2-sampling-cli")
     probability = 150 / 1080
     papers: list[CorpusPaper] = []
-    rows: list[PrivateSamplingAnnotation] = []
     for topic_index in range(6):
         for index in range(180):
             paper_id = f"paper-{topic_index}-{index}"
@@ -50,36 +53,41 @@ def sampling_inputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Pat
                 abstract_incomplete=index % 8 == 0,
                 cross_language_match=index % 23 == 0,
             ))
-            if index < 150:
-                rows.append(PrivateSamplingAnnotation(
-                    f"topic-{topic_index}",
-                    paper_id,
-                    0 if hard_negative else 3 if hard_positive else 2,
-                    hard_negative,
-                    hard_positive,
-                ))
-
     policy = SamplingPolicy("stage2-sampling-cli-v1", 741)
     snapshot = PrivateCorpusSnapshot(1, policy.version, policy.seed, tuple(papers))
-    annotations = PrivateSamplingAnnotations(tuple(rows))
     snapshot_path = root / "private-snapshot.json"
     annotations_path = root / "curated-annotations.json"
     freeze_frame_path = root / "hidden-real-freeze-frame.json"
+    receipt_path = root / "curation-receipt.json"
     write_private_corpus_snapshot(snapshot_path, snapshot)
-    write_private_sampling_annotations(
-        annotations_path, annotations, snapshot=snapshot
+    hidden = select_hidden_real(snapshot, policy)
+    write_hidden_real_selection(freeze_frame_path, hidden)
+    worklist = make_curation_worklist(snapshot, hidden)
+    decisions = CurationDecisions(worklist.hash(), tuple(
+        CurationDecision(
+            row.topic,
+            row.paper_id,
+            0 if int(row.paper_id.rsplit("-", 1)[1]) % 4 == 0 else 3 if int(row.paper_id.rsplit("-", 1)[1]) % 9 == 1 else 2,
+            int(row.paper_id.rsplit("-", 1)[1]) % 4 == 0,
+            int(row.paper_id.rsplit("-", 1)[1]) % 4 != 0 and int(row.paper_id.rsplit("-", 1)[1]) % 9 == 1,
+            "human_provisional",
+        )
+        for row in worklist.rows
+    ))
+    annotations = curated_annotations_from_decisions(
+        decisions, worklist=worklist, snapshot=snapshot
     )
-    write_hidden_real_selection(
-        freeze_frame_path,
-        select_hidden_real(snapshot, policy),
-    )
-    return snapshot_path, annotations_path, freeze_frame_path
+    receipt = make_curation_receipt(snapshot, hidden, worklist, decisions, annotations)
+    write_private_sampling_annotations(annotations_path, annotations, snapshot=snapshot)
+    write_curation_receipt(receipt_path, receipt)
+    return snapshot_path, annotations_path, freeze_frame_path, receipt_path
 
 
 def _arguments(
     snapshot: Path,
     annotations: Path,
     freeze_frame: Path,
+    receipt: Path,
     manifest: Path,
     provenance: Path,
 ) -> list[str]:
@@ -92,6 +100,8 @@ def _arguments(
         str(freeze_frame),
         "--curated-annotations",
         str(annotations),
+        "--curation-receipt",
+        str(receipt),
         "--gold-manifest-output",
         str(manifest),
         "--provenance-output",
@@ -101,18 +111,19 @@ def _arguments(
 
 def test_stage2_sampling_cli_dry_run_then_builds_private_bound_public_manifest(
     tmp_path: Path,
-    sampling_inputs: tuple[Path, Path, Path],
+    sampling_inputs: tuple[Path, Path, Path, Path],
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    snapshot_path, annotations_path, freeze_frame_path = sampling_inputs
+    snapshot_path, annotations_path, freeze_frame_path, receipt_path = sampling_inputs
     manifest_path = tmp_path / "gold-manifest.json"
     provenance_path = tmp_path / "sampling-provenance.json"
     arguments = _arguments(
-        snapshot_path, annotations_path, freeze_frame_path, manifest_path, provenance_path
+        snapshot_path, annotations_path, freeze_frame_path, receipt_path, manifest_path, provenance_path
     )
     access_order: list[str] = []
     real_load_hidden = cli.load_hidden_real_selection
+    real_load_receipt = cli.load_curation_receipt
     real_load_annotations = cli.load_private_sampling_annotations
 
     def load_hidden(*args, **kwargs):
@@ -123,7 +134,12 @@ def test_stage2_sampling_cli_dry_run_then_builds_private_bound_public_manifest(
         access_order.append("curated_annotations_opened")
         return real_load_annotations(*args, **kwargs)
 
+    def load_receipt(*args, **kwargs):
+        access_order.append("curation_receipt_validated")
+        return real_load_receipt(*args, **kwargs)
+
     monkeypatch.setattr(cli, "load_hidden_real_selection", load_hidden)
+    monkeypatch.setattr(cli, "load_curation_receipt", load_receipt)
     monkeypatch.setattr(cli, "load_private_sampling_annotations", load_annotations)
 
     assert cli.main(["--dry-run", *arguments]) == 0
@@ -137,7 +153,11 @@ def test_stage2_sampling_cli_dry_run_then_builds_private_bound_public_manifest(
     }
     assert not manifest_path.exists()
     assert not provenance_path.exists()
-    assert access_order == ["hidden_real_frame_validated", "curated_annotations_opened"]
+    assert access_order == [
+        "hidden_real_frame_validated",
+        "curation_receipt_validated",
+        "curated_annotations_opened",
+    ]
 
     assert cli.main(arguments) == 0
     built = json.loads(capsys.readouterr().out)
@@ -147,8 +167,10 @@ def test_stage2_sampling_cli_dry_run_then_builds_private_bound_public_manifest(
     assert "Private abstract" not in json.dumps(built)
     assert access_order == [
         "hidden_real_frame_validated",
+        "curation_receipt_validated",
         "curated_annotations_opened",
         "hidden_real_frame_validated",
+        "curation_receipt_validated",
         "curated_annotations_opened",
     ]
 
@@ -180,22 +202,22 @@ def test_stage2_sampling_cli_dry_run_then_builds_private_bound_public_manifest(
 
 def test_stage2_sampling_cli_rejects_one_path_for_both_outputs(
     tmp_path: Path,
-    sampling_inputs: tuple[Path, Path, Path],
+    sampling_inputs: tuple[Path, Path, Path, Path],
 ) -> None:
-    snapshot_path, annotations_path, freeze_frame_path = sampling_inputs
+    snapshot_path, annotations_path, freeze_frame_path, receipt_path = sampling_inputs
     output = tmp_path / "same-output.json"
 
     with pytest.raises(cli.CliUsageError, match="different paths"):
-        cli.main(_arguments(snapshot_path, annotations_path, freeze_frame_path, output, output))
+        cli.main(_arguments(snapshot_path, annotations_path, freeze_frame_path, receipt_path, output, output))
 
 
 def test_stage2_sampling_freeze_frame_cli_writes_before_any_annotations_are_opened(
     tmp_path: Path,
-    sampling_inputs: tuple[Path, Path, Path],
+    sampling_inputs: tuple[Path, Path, Path, Path],
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    snapshot_path, _, _ = sampling_inputs
+    snapshot_path, _, _, _ = sampling_inputs
     output = tmp_path / "hidden-real-freeze-frame.json"
     monkeypatch.setattr(
         cli,
@@ -229,12 +251,93 @@ def test_stage2_sampling_freeze_frame_cli_writes_before_any_annotations_are_open
         cli.main(arguments)
 
 
+def test_stage2_curation_cli_exports_and_imports_private_bound_annotations(
+    tmp_path: Path,
+    sampling_inputs: tuple[Path, Path, Path, Path],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    snapshot_path, _, freeze_frame_path, _ = sampling_inputs
+    worklist_path = tmp_path / "curation-worklist.json"
+    worklist_arguments = [
+        "stage2-sampling", "curation-worklist",
+        "--private-snapshot", str(snapshot_path),
+        "--hidden-real-freeze-frame", str(freeze_frame_path),
+        "--output", str(worklist_path),
+    ]
+    assert cli.main(["--dry-run", *worklist_arguments]) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run["status"] == "validated"
+    assert not worklist_path.exists()
+
+    assert cli.main(worklist_arguments) == 0
+    exported = json.loads(capsys.readouterr().out)
+    snapshot = load_private_corpus_snapshot(snapshot_path)
+    policy = SamplingPolicy(snapshot.sampling_policy_version, snapshot.sampling_seed)
+    hidden = load_hidden_real_selection(freeze_frame_path, snapshot=snapshot, policy=policy)
+    worklist = make_curation_worklist(snapshot, hidden)
+    assert exported["worklist_hash"] == worklist.hash()
+    hidden_families = {
+        {paper.key: paper for paper in snapshot.papers}[key].paper_family
+        for key in hidden.pair_keys
+    }
+    assert all(row.key not in hidden.pair_keys for row in worklist.rows)
+    assert all(row.paper_family not in hidden_families for row in worklist.rows)
+    with pytest.raises(FileExistsError, match="already exists"):
+        cli.main(worklist_arguments)
+
+    decisions = CurationDecisions(worklist.hash(), tuple(
+        CurationDecision(
+            row.topic, row.paper_id, 0 if index % 4 == 0 else 3 if index % 9 == 1 else 2,
+            index % 4 == 0,
+            index % 4 != 0 and index % 9 == 1,
+            ("human_provisional", "model_provisional", "human_reviewed_model_suggestion")[index % 3],
+        )
+        for index, row in enumerate(worklist.rows)
+    ))
+    decisions_path = tmp_path / "curation-decisions.json"
+    decisions_path.write_text(json.dumps(decisions.document()), encoding="utf-8")
+    annotations_path = tmp_path / "curated-annotations.json"
+    receipt_path = tmp_path / "curation-receipt.json"
+    import_arguments = [
+        "stage2-sampling", "curation-import",
+        "--private-snapshot", str(snapshot_path),
+        "--hidden-real-freeze-frame", str(freeze_frame_path),
+        "--worklist", str(worklist_path),
+        "--decisions", str(decisions_path),
+        "--curated-annotations-output", str(annotations_path),
+        "--receipt-output", str(receipt_path),
+    ]
+    assert cli.main(["--dry-run", *import_arguments]) == 0
+    assert json.loads(capsys.readouterr().out)["written"] is False
+    assert not annotations_path.exists()
+    assert not receipt_path.exists()
+
+    incomplete = decisions.document()
+    incomplete["rows"].pop()
+    incomplete_path = tmp_path / "incomplete-curation-decisions.json"
+    incomplete_path.write_text(json.dumps(incomplete), encoding="utf-8")
+    invalid_arguments = [
+        *import_arguments[:9], str(incomplete_path),
+        *import_arguments[10:],
+    ]
+    with pytest.raises(ValueError, match="exactly cover"):
+        cli.main(["--dry-run", *invalid_arguments])
+
+    assert cli.main(import_arguments) == 0
+    imported = json.loads(capsys.readouterr().out)
+    assert imported["source_counts"] == decisions.source_counts()
+    assert load_private_sampling_annotations(annotations_path, snapshot=snapshot).hash() == imported["curated_annotations_hash"]
+    assert json.loads(receipt_path.read_text(encoding="utf-8"))["worklist_hash"] == worklist.hash()
+    with pytest.raises(FileExistsError, match="already exists"):
+        cli.main(import_arguments)
+
+
 def test_stage2_sampling_build_validates_freeze_frame_before_opening_annotations(
     tmp_path: Path,
-    sampling_inputs: tuple[Path, Path, Path],
+    sampling_inputs: tuple[Path, Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    snapshot_path, annotations_path, _ = sampling_inputs
+    snapshot_path, annotations_path, _, receipt_path = sampling_inputs
     snapshot = load_private_corpus_snapshot(snapshot_path)
     policy = SamplingPolicy(snapshot.sampling_policy_version, snapshot.sampling_seed)
     document = select_hidden_real(snapshot, policy).document()
@@ -252,6 +355,7 @@ def test_stage2_sampling_build_validates_freeze_frame_before_opening_annotations
             snapshot_path,
             annotations_path,
             freeze_frame,
+            receipt_path,
             tmp_path / "gold-manifest.json",
             tmp_path / "provenance.json",
         ))

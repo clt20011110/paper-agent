@@ -104,13 +104,22 @@ from .stage2_release_assembly import (
 from .stage2_sampling import (
     SamplingPolicy,
     build_gold_sampling,
+    curated_annotations_from_decisions,
+    load_curation_decisions,
+    load_curation_receipt,
+    load_curation_worklist,
     load_hidden_real_selection,
     load_private_corpus_snapshot,
     load_private_sampling_annotations,
+    make_curation_receipt,
+    make_curation_worklist,
     select_hidden_real,
+    write_curation_receipt,
+    write_curation_worklist,
     write_gold_sampling_manifest,
     write_gold_sampling_provenance,
     write_hidden_real_selection,
+    write_private_sampling_annotations,
 )
 from .stage2_commands import (
     evaluate_benchmark_artifacts,
@@ -306,6 +315,23 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
         "--private-snapshot", required=True, type=Path
     )
     stage2_sampling_freeze.add_argument("--output", required=True, type=Path)
+    stage2_sampling_worklist = stage2_sampling_commands.add_parser(
+        "curation-worklist",
+        help="export evaluator-private curation candidates outside HIDDEN_REAL families",
+    )
+    stage2_sampling_worklist.add_argument("--private-snapshot", required=True, type=Path)
+    stage2_sampling_worklist.add_argument("--hidden-real-freeze-frame", required=True, type=Path)
+    stage2_sampling_worklist.add_argument("--output", required=True, type=Path)
+    stage2_sampling_import = stage2_sampling_commands.add_parser(
+        "curation-import",
+        help="validate provisional curation decisions and write strict private annotations",
+    )
+    stage2_sampling_import.add_argument("--private-snapshot", required=True, type=Path)
+    stage2_sampling_import.add_argument("--hidden-real-freeze-frame", required=True, type=Path)
+    stage2_sampling_import.add_argument("--worklist", required=True, type=Path)
+    stage2_sampling_import.add_argument("--decisions", required=True, type=Path)
+    stage2_sampling_import.add_argument("--curated-annotations-output", required=True, type=Path)
+    stage2_sampling_import.add_argument("--receipt-output", required=True, type=Path)
     stage2_sampling_build = stage2_sampling_commands.add_parser(
         "build", help="sample 600 pairs from frozen private inputs"
     )
@@ -318,6 +344,7 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     stage2_sampling_build.add_argument(
         "--curated-annotations", required=True, type=Path
     )
+    stage2_sampling_build.add_argument("--curation-receipt", required=True, type=Path)
     stage2_sampling_build.add_argument(
         "--gold-manifest-output", required=True, type=Path
     )
@@ -653,6 +680,16 @@ def main(
         and args.stage2_sampling_command == "freeze-frame"
     ):
         return _finish(args, _stage2_sampling_freeze_frame(args))
+    if (
+        args.command == "stage2-sampling"
+        and args.stage2_sampling_command == "curation-worklist"
+    ):
+        return _finish(args, _stage2_curation_worklist(args))
+    if (
+        args.command == "stage2-sampling"
+        and args.stage2_sampling_command == "curation-import"
+    ):
+        return _finish(args, _stage2_curation_import(args))
     if args.command == "stage2-sampling" and args.stage2_sampling_command == "build":
         return _finish(args, _stage2_sampling_build(args))
     if (
@@ -759,9 +796,16 @@ def _stage2_sampling_build(args: argparse.Namespace) -> dict[str, Any]:
         snapshot=snapshot,
         policy=policy,
     )
+    receipt = load_curation_receipt(
+        args.curation_receipt,
+        snapshot=snapshot,
+        hidden_real_selection=hidden_real_selection,
+    )
     annotations = load_private_sampling_annotations(
         args.curated_annotations, snapshot=snapshot
     )
+    if receipt.curated_annotations_hash != annotations.hash():
+        raise ValueError("curation receipt does not bind the supplied curated annotations")
     result = build_gold_sampling(
         snapshot,
         annotations,
@@ -780,6 +824,7 @@ def _stage2_sampling_build(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "command": "stage2-sampling.build",
         "corpus_hash": snapshot.corpus_hash,
+        "curation_receipt_hash": receipt.hash(),
         "dry_run": args.dry_run,
         "gold_manifest_hash": result.manifest.hash(),
         "gold_manifest_output": str(args.gold_manifest_output),
@@ -812,6 +857,87 @@ def _stage2_sampling_freeze_frame(args: argparse.Namespace) -> dict[str, Any]:
         "sampling_probability": selection.sampling_probability,
         "snapshot_hash": snapshot.hash(),
         "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
+    }
+
+
+def _stage2_curation_worklist(args: argparse.Namespace) -> dict[str, Any]:
+    if os.path.lexists(args.output):
+        raise FileExistsError(f"Stage 2 curation worklist output already exists: {args.output}")
+    snapshot = load_private_corpus_snapshot(args.private_snapshot)
+    policy = SamplingPolicy(snapshot.sampling_policy_version, snapshot.sampling_seed)
+    hidden_real_selection = load_hidden_real_selection(
+        args.hidden_real_freeze_frame,
+        snapshot=snapshot,
+        policy=policy,
+    )
+    worklist = make_curation_worklist(snapshot, hidden_real_selection)
+    if not args.dry_run:
+        write_curation_worklist(args.output, worklist)
+    return {
+        "command": "stage2-sampling.curation-worklist",
+        "dry_run": args.dry_run,
+        "hidden_real_freeze_frame_hash": hidden_real_selection.hash(),
+        "output": str(args.output),
+        "row_count": len(worklist.rows),
+        "snapshot_hash": snapshot.hash(),
+        "status": "validated" if args.dry_run else "complete",
+        "worklist_hash": worklist.hash(),
+        "written": not args.dry_run,
+    }
+
+
+def _stage2_curation_import(args: argparse.Namespace) -> dict[str, Any]:
+    outputs = (args.curated_annotations_output, args.receipt_output)
+    if outputs[0].resolve() == outputs[1].resolve():
+        raise CliUsageError("Stage 2 curation import outputs must use different paths")
+    existing = [path for path in outputs if os.path.lexists(path)]
+    if existing:
+        raise FileExistsError(f"Stage 2 curation import output already exists: {existing[0]}")
+
+    snapshot = load_private_corpus_snapshot(args.private_snapshot)
+    policy = SamplingPolicy(snapshot.sampling_policy_version, snapshot.sampling_seed)
+    hidden_real_selection = load_hidden_real_selection(
+        args.hidden_real_freeze_frame,
+        snapshot=snapshot,
+        policy=policy,
+    )
+    worklist = load_curation_worklist(
+        args.worklist,
+        snapshot=snapshot,
+        hidden_real_selection=hidden_real_selection,
+    )
+    decisions = load_curation_decisions(args.decisions, worklist=worklist)
+    annotations = curated_annotations_from_decisions(
+        decisions,
+        worklist=worklist,
+        snapshot=snapshot,
+    )
+    receipt = make_curation_receipt(
+        snapshot,
+        hidden_real_selection,
+        worklist,
+        decisions,
+        annotations,
+    )
+    if not args.dry_run:
+        write_private_sampling_annotations(
+            args.curated_annotations_output,
+            annotations,
+            snapshot=snapshot,
+        )
+        write_curation_receipt(args.receipt_output, receipt)
+    return {
+        "command": "stage2-sampling.curation-import",
+        "curated_annotations_hash": annotations.hash(),
+        "curated_annotations_output": str(args.curated_annotations_output),
+        "dry_run": args.dry_run,
+        "receipt_hash": receipt.hash(),
+        "receipt_output": str(args.receipt_output),
+        "row_count": len(annotations.rows),
+        "source_counts": decisions.source_counts(),
+        "status": "validated" if args.dry_run else "complete",
+        "worklist_hash": worklist.hash(),
         "written": not args.dry_run,
     }
 

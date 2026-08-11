@@ -6,15 +6,32 @@ Production Stage 2 release schema v3 has two independently verified inputs: publ
 
 Build the 600-pair set before creating authoritative gold labels. The complete natural frame marked inside the private snapshot does not require exhaustive pre-labeling. Under a frozen seed, draw 150 HIDDEN_REAL rows from that frame **without reading curated labels** and record their true inclusion probability, 150/N; then build DEV and HIDDEN_HARD from the curated pool of remaining paper families. The curated labels and difficulty flags are provisional sampling strata only, not gold. After all 600 pairs are selected, two annotators independently label every pair and a third adjudicates disagreements:
 
+`curation-worklist` excludes each frozen HIDDEN_REAL pair and every row in its paper family. `curation-import` requires one private decision for every remaining worklist row and writes the existing strict curated-annotations artifact plus a hash-bound receipt. A decision source may be `human_provisional`, `model_provisional`, or `human_reviewed_model_suggestion`; none is a human gold label or may enter the later annotation ledger.
+
 ```sh
 paper-agent --dry-run stage2-sampling freeze-frame \
   --private-snapshot /secure/evaluator/private-snapshot.json \
   --output /secure/evaluator/hidden-real-freeze-frame.json
 
+paper-agent --dry-run stage2-sampling curation-worklist \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
+  --output /secure/evaluator/curation-worklist.json
+
+# curation-decisions.json remains private and uses provisional, never-gold labels.
+paper-agent --dry-run stage2-sampling curation-import \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
+  --worklist /secure/evaluator/curation-worklist.json \
+  --decisions /secure/evaluator/curation-decisions.json \
+  --curated-annotations-output /secure/evaluator/curated-annotations.json \
+  --receipt-output /secure/evaluator/curation-receipt.json
+
 paper-agent --dry-run stage2-sampling build \
   --private-snapshot /secure/evaluator/private-snapshot.json \
   --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
   --curated-annotations /secure/evaluator/curated-annotations.json \
+  --curation-receipt /secure/evaluator/curation-receipt.json \
   --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
   --provenance-output /secure/evaluator/provenance.json
 ```

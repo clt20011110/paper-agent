@@ -96,10 +96,25 @@ paper-agent --dry-run stage2-sampling freeze-frame \
   --private-snapshot /secure/evaluator/private-snapshot.json \
   --output /secure/evaluator/hidden-real-freeze-frame.json
 
+paper-agent --dry-run stage2-sampling curation-worklist \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
+  --output /secure/evaluator/curation-worklist.json
+
+# Fill curation-decisions.json privately; provisional labels are never gold.
+paper-agent --dry-run stage2-sampling curation-import \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
+  --worklist /secure/evaluator/curation-worklist.json \
+  --decisions /secure/evaluator/curation-decisions.json \
+  --curated-annotations-output /secure/evaluator/curated-annotations.json \
+  --receipt-output /secure/evaluator/curation-receipt.json
+
 paper-agent --dry-run stage2-sampling build \
   --private-snapshot /secure/evaluator/private-snapshot.json \
   --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
   --curated-annotations /secure/evaluator/curated-annotations.json \
+  --curation-receipt /secure/evaluator/curation-receipt.json \
   --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
   --provenance-output /secure/evaluator/provenance.json
 ```

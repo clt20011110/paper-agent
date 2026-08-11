@@ -59,7 +59,23 @@ def _inputs(*, probability: float = 150 / 1080):
             ))
     policy = SamplingPolicy("stage2-producer-v1", 741)
     snapshot = PrivateCorpusSnapshot(1, policy.version, policy.seed, tuple(papers))
-    return snapshot, PrivateSamplingAnnotations(tuple(annotations)), policy
+    selection_probability = policy.hidden_real_size / len(papers)
+    selection_snapshot = PrivateCorpusSnapshot(
+        1,
+        policy.version,
+        policy.seed,
+        tuple(
+            replace(paper, sampling_probability=selection_probability)
+            for paper in papers
+        ),
+    )
+    hidden = select_hidden_real(selection_snapshot, policy)
+    by_key = {paper.key: paper for paper in snapshot.papers}
+    hidden_families = {by_key[key].paper_family for key in hidden.pair_keys}
+    curated = PrivateSamplingAnnotations(tuple(
+        row for row in annotations if by_key[row.key].paper_family not in hidden_families
+    ))
+    return snapshot, curated, policy
 
 
 def test_producer_builds_reproducible_valid_gold_manifest_and_private_binding() -> None:
@@ -288,6 +304,21 @@ def test_producer_rejects_annotation_row_outside_snapshot() -> None:
 
     with pytest.raises(ValueError, match="outside the private corpus snapshot"):
         build_gold_sampling(snapshot, PrivateSamplingAnnotations((*annotations.rows, unknown)), policy)
+
+
+def test_producer_rejects_curated_rows_from_a_hidden_real_family() -> None:
+    snapshot, annotations, policy = _inputs()
+    hidden = select_hidden_real(snapshot, policy)
+    topic, paper_id = hidden.pair_keys[0]
+    contaminated = PrivateSamplingAnnotation(topic, paper_id, 0, True)
+
+    with pytest.raises(ValueError, match="HIDDEN_REAL paper family"):
+        build_gold_sampling(
+            snapshot,
+            PrivateSamplingAnnotations((*annotations.rows, contaminated)),
+            policy,
+            hidden_real_selection=hidden,
+        )
 
 
 def test_producer_fails_when_curated_pool_cannot_fill_labelled_strata() -> None:

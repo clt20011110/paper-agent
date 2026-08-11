@@ -462,11 +462,29 @@ paper-agent --dry-run stage2-sampling freeze-frame \
   --output /secure/evaluator/hidden-real-freeze-frame.json
 ```
 
+先从同一 snapshot 和 freeze frame 导出 curation worklist。它排除全部 HIDDEN_REAL pair 及其整个 paper-family；在 evaluator 内人工或本地模型辅助填写 `curation-decisions.json`。其中 `provisional_label`、hard flags 和 `source`（`human_provisional`、`model_provisional` 或 `human_reviewed_model_suggestion`）只服务于抽样，绝不是人工 gold：
+
+```sh
+paper-agent --dry-run stage2-sampling curation-worklist \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
+  --output /secure/evaluator/curation-worklist.json
+
+paper-agent --dry-run stage2-sampling curation-import \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
+  --worklist /secure/evaluator/curation-worklist.json \
+  --decisions /secure/evaluator/curation-decisions.json \
+  --curated-annotations-output /secure/evaluator/curated-annotations.json \
+  --receipt-output /secure/evaluator/curation-receipt.json
+```
+
 ```sh
 paper-agent --dry-run stage2-sampling build \
   --private-snapshot /secure/evaluator/private-snapshot.json \
   --hidden-real-freeze-frame /secure/evaluator/hidden-real-freeze-frame.json \
   --curated-annotations /secure/evaluator/curated-annotations.json \
+  --curation-receipt /secure/evaluator/curation-receipt.json \
   --gold-manifest-output /secure/evaluator-transfer/gold-manifest.json \
   --provenance-output /secure/evaluator/provenance.json
 ```

@@ -445,6 +445,368 @@ def load_hidden_real_selection(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class CurationWorklistRow:
+    """One evaluator-private candidate eligible for provisional curation."""
+
+    topic: str
+    paper_id: str
+    title: str
+    abstract: str | None
+    source: str
+    language: str
+    paper_family: str
+    abstract_incomplete: bool
+    cross_language_match: bool
+
+    def __post_init__(self) -> None:
+        _pair_key(self.topic, self.paper_id)
+        if not all((self.title, self.source, self.language, self.paper_family)):
+            raise ValueError("curation worklist row requires private paper fields")
+        if self.abstract is not None and not isinstance(self.abstract, str):
+            raise ValueError("curation worklist abstract must be a string or null")
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return _pair_key(self.topic, self.paper_id)
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "topic": self.topic,
+            "paper_id": self.paper_id,
+            "title": self.title,
+            "abstract": self.abstract,
+            "source": self.source,
+            "language": self.language,
+            "paper_family": self.paper_family,
+            "abstract_incomplete": self.abstract_incomplete,
+            "cross_language_match": self.cross_language_match,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CurationWorklist:
+    """Hash-bound private curation candidates after HIDDEN_REAL exclusion."""
+
+    snapshot_hash: str
+    hidden_real_freeze_frame_hash: str
+    rows: tuple[CurationWorklistRow, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "rows", tuple(self.rows))
+        if not self.snapshot_hash or not self.hidden_real_freeze_frame_hash or not self.rows:
+            raise ValueError("curation worklist requires bindings and rows")
+        if len({row.key for row in self.rows}) != len(self.rows):
+            raise ValueError("curation worklist rows must be unique")
+
+    @property
+    def by_key(self) -> Mapping[tuple[str, str], CurationWorklistRow]:
+        return MappingProxyType({row.key: row for row in self.rows})
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "snapshot_hash": self.snapshot_hash,
+            "hidden_real_freeze_frame_hash": self.hidden_real_freeze_frame_hash,
+            "rows": [row.document() for row in sorted(self.rows, key=lambda item: item.key)],
+        }
+
+    def hash(self) -> str:
+        return content_hash(self.document())
+
+
+def make_curation_worklist(
+    snapshot: PrivateCorpusSnapshot,
+    hidden_real_selection: HiddenRealSelection,
+) -> CurationWorklist:
+    """Exclude every HIDDEN_REAL pair and its entire paper family from curation."""
+
+    policy = SamplingPolicy(snapshot.sampling_policy_version, snapshot.sampling_seed)
+    if hidden_real_selection != select_hidden_real(snapshot, policy):
+        raise ValueError("hidden_real selection does not match the frozen snapshot and policy")
+    papers_by_key = {paper.key: paper for paper in snapshot.papers}
+    hidden_families = {
+        papers_by_key[key].paper_family for key in hidden_real_selection.pair_keys
+    }
+    rows = tuple(
+        CurationWorklistRow(
+            paper.topic,
+            paper.paper_id,
+            paper.title,
+            paper.abstract,
+            paper.source,
+            paper.language,
+            paper.paper_family,
+            paper.abstract_incomplete,
+            paper.cross_language_match,
+        )
+        for paper in sorted(snapshot.papers, key=lambda item: item.key)
+        if paper.key not in hidden_real_selection.pair_keys
+        and paper.paper_family not in hidden_families
+    )
+    return CurationWorklist(snapshot.hash(), hidden_real_selection.hash(), rows)
+
+
+def curation_worklist_from_document(
+    document: object,
+    *,
+    snapshot: PrivateCorpusSnapshot,
+    hidden_real_selection: HiddenRealSelection,
+) -> CurationWorklist:
+    _validate_document(document, "stage2-curation-worklist.schema.json")
+    assert isinstance(document, dict)
+    rows = tuple(CurationWorklistRow(**row) for row in document["rows"])
+    worklist = CurationWorklist(
+        document["snapshot_hash"],
+        document["hidden_real_freeze_frame_hash"],
+        rows,
+    )
+    expected = make_curation_worklist(snapshot, hidden_real_selection)
+    if worklist != expected:
+        raise ValueError("curation worklist does not match the frozen snapshot and hidden_real frame")
+    return worklist
+
+
+def write_curation_worklist(path: Path, worklist: CurationWorklist) -> None:
+    _write_json_atomically(path, worklist.document())
+
+
+def load_curation_worklist(
+    path: Path,
+    *,
+    snapshot: PrivateCorpusSnapshot,
+    hidden_real_selection: HiddenRealSelection,
+) -> CurationWorklist:
+    return curation_worklist_from_document(
+        _read_json_object(path, "curation worklist"),
+        snapshot=snapshot,
+        hidden_real_selection=hidden_real_selection,
+    )
+
+
+_CURATION_SOURCES = frozenset({
+    "human_provisional",
+    "model_provisional",
+    "human_reviewed_model_suggestion",
+})
+
+
+@dataclass(frozen=True, slots=True)
+class CurationDecision:
+    """One provisional curation decision, explicitly separate from gold."""
+
+    topic: str
+    paper_id: str
+    provisional_label: int
+    hard_negative: bool
+    hard_positive: bool
+    source: str
+
+    def __post_init__(self) -> None:
+        _pair_key(self.topic, self.paper_id)
+        if self.provisional_label not in range(4):
+            raise ValueError("curation provisional_label must be 0..3")
+        if self.hard_negative and self.provisional_label >= 2:
+            raise ValueError("curation hard negatives must have provisional label 0 or 1")
+        if self.hard_positive and self.provisional_label != 3:
+            raise ValueError("curation hard positives must have provisional label 3")
+        if self.hard_negative and self.hard_positive:
+            raise ValueError("a curation pair cannot be both hard negative and positive")
+        if self.source not in _CURATION_SOURCES:
+            raise ValueError("curation decision source is unsupported")
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return _pair_key(self.topic, self.paper_id)
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "topic": self.topic,
+            "paper_id": self.paper_id,
+            "provisional_label": self.provisional_label,
+            "hard_negative": self.hard_negative,
+            "hard_positive": self.hard_positive,
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CurationDecisions:
+    """Editable private decisions which must exactly cover one worklist."""
+
+    worklist_hash: str
+    rows: tuple[CurationDecision, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "rows", tuple(self.rows))
+        if not self.worklist_hash or not self.rows:
+            raise ValueError("curation decisions require a worklist binding and rows")
+        if len({row.key for row in self.rows}) != len(self.rows):
+            raise ValueError("curation decisions rows must be unique")
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "worklist_hash": self.worklist_hash,
+            "rows": [row.document() for row in sorted(self.rows, key=lambda item: item.key)],
+        }
+
+    def hash(self) -> str:
+        return content_hash(self.document())
+
+    def source_counts(self) -> dict[str, int]:
+        return {source: sum(row.source == source for row in self.rows) for source in sorted(_CURATION_SOURCES)}
+
+
+def curation_decisions_from_document(
+    document: object, *, worklist: CurationWorklist
+) -> CurationDecisions:
+    _validate_document(document, "stage2-curation-decisions.schema.json")
+    assert isinstance(document, dict)
+    decisions = CurationDecisions(
+        document["worklist_hash"],
+        tuple(CurationDecision(**row) for row in document["rows"]),
+    )
+    if decisions.worklist_hash != worklist.hash():
+        raise ValueError("curation decisions do not bind the supplied worklist")
+    if {row.key for row in decisions.rows} != set(worklist.by_key):
+        raise ValueError("curation decisions must exactly cover the supplied worklist")
+    return decisions
+
+
+def load_curation_decisions(path: Path, *, worklist: CurationWorklist) -> CurationDecisions:
+    return curation_decisions_from_document(
+        _read_json_object(path, "curation decisions"), worklist=worklist
+    )
+
+
+def curated_annotations_from_decisions(
+    decisions: CurationDecisions,
+    *,
+    worklist: CurationWorklist,
+    snapshot: PrivateCorpusSnapshot,
+) -> PrivateSamplingAnnotations:
+    if worklist.snapshot_hash != snapshot.hash():
+        raise ValueError("curation worklist does not bind the supplied snapshot")
+    if decisions.worklist_hash != worklist.hash():
+        raise ValueError("curation decisions do not bind the supplied worklist")
+    if {row.key for row in decisions.rows} != set(worklist.by_key):
+        raise ValueError("curation decisions must exactly cover the supplied worklist")
+    return PrivateSamplingAnnotations(tuple(
+        PrivateSamplingAnnotation(
+            row.topic,
+            row.paper_id,
+            row.provisional_label,
+            row.hard_negative,
+            row.hard_positive,
+        )
+        for row in decisions.rows
+    ))
+
+
+@dataclass(frozen=True, slots=True)
+class CurationReceipt:
+    """Private import receipt that binds curation to current strict annotations."""
+
+    snapshot_hash: str
+    hidden_real_freeze_frame_hash: str
+    worklist_hash: str
+    decisions_hash: str
+    curated_annotations_hash: str
+    source_counts: Mapping[str, int]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_counts", MappingProxyType(dict(self.source_counts)))
+        if not all((
+            self.snapshot_hash,
+            self.hidden_real_freeze_frame_hash,
+            self.worklist_hash,
+            self.decisions_hash,
+            self.curated_annotations_hash,
+        )):
+            raise ValueError("curation receipt requires complete hash bindings")
+        if set(self.source_counts) != _CURATION_SOURCES or any(
+            not isinstance(count, int) or count < 0 for count in self.source_counts.values()
+        ):
+            raise ValueError("curation receipt requires all non-negative source counts")
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "snapshot_hash": self.snapshot_hash,
+            "hidden_real_freeze_frame_hash": self.hidden_real_freeze_frame_hash,
+            "worklist_hash": self.worklist_hash,
+            "decisions_hash": self.decisions_hash,
+            "curated_annotations_hash": self.curated_annotations_hash,
+            "source_counts": dict(sorted(self.source_counts.items())),
+        }
+
+    def hash(self) -> str:
+        return content_hash(self.document())
+
+
+def make_curation_receipt(
+    snapshot: PrivateCorpusSnapshot,
+    hidden_real_selection: HiddenRealSelection,
+    worklist: CurationWorklist,
+    decisions: CurationDecisions,
+    annotations: PrivateSamplingAnnotations,
+) -> CurationReceipt:
+    if worklist != make_curation_worklist(snapshot, hidden_real_selection):
+        raise ValueError("curation worklist does not match the frozen snapshot and hidden_real frame")
+    if decisions.worklist_hash != worklist.hash():
+        raise ValueError("curation decisions do not bind the supplied worklist")
+    return CurationReceipt(
+        snapshot.hash(),
+        hidden_real_selection.hash(),
+        worklist.hash(),
+        decisions.hash(),
+        annotations.hash(),
+        decisions.source_counts(),
+    )
+
+
+def curation_receipt_from_document(
+    document: object,
+    *,
+    snapshot: PrivateCorpusSnapshot,
+    hidden_real_selection: HiddenRealSelection,
+) -> CurationReceipt:
+    _validate_document(document, "stage2-curation-receipt.schema.json")
+    assert isinstance(document, dict)
+    receipt = CurationReceipt(
+        document["snapshot_hash"],
+        document["hidden_real_freeze_frame_hash"],
+        document["worklist_hash"],
+        document["decisions_hash"],
+        document["curated_annotations_hash"],
+        document["source_counts"],
+    )
+    if (
+        receipt.snapshot_hash != snapshot.hash()
+        or receipt.hidden_real_freeze_frame_hash != hidden_real_selection.hash()
+    ):
+        raise ValueError("curation receipt does not bind the supplied snapshot and hidden_real frame")
+    return receipt
+
+
+def write_curation_receipt(path: Path, receipt: CurationReceipt) -> None:
+    _write_json_atomically(path, receipt.document())
+
+
+def load_curation_receipt(
+    path: Path,
+    *,
+    snapshot: PrivateCorpusSnapshot,
+    hidden_real_selection: HiddenRealSelection,
+) -> CurationReceipt:
+    return curation_receipt_from_document(
+        _read_json_object(path, "curation receipt"),
+        snapshot=snapshot,
+        hidden_real_selection=hidden_real_selection,
+    )
+
+
 class _StratifiedSampler:
     def __init__(self, snapshot: PrivateCorpusSnapshot, annotations: Mapping[tuple[str, str], PrivateSamplingAnnotation], seed: int) -> None:
         self.snapshot = snapshot
@@ -608,6 +970,12 @@ def build_gold_sampling(
     snapshot_keys = {paper.key for paper in snapshot.papers}
     if not set(by_key) <= snapshot_keys:
         raise ValueError("private sampling annotations contain rows outside the private corpus snapshot")
+    papers_by_key = {paper.key: paper for paper in snapshot.papers}
+    hidden_families = {
+        papers_by_key[key].paper_family for key in hidden_real_selection.pair_keys
+    }
+    if any(papers_by_key[key].paper_family in hidden_families for key in by_key):
+        raise ValueError("curated annotations cannot contain a HIDDEN_REAL paper family")
 
     sampler, topics, hidden_real_probability = _draw_hidden_real(
         snapshot, policy, by_key
