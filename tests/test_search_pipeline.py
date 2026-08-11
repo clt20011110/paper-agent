@@ -14,7 +14,13 @@ from paper_agent.query_plan import approve_query_plan, compile_query_plan
 from paper_agent.providers.api import CrawlWindow, EnrichmentResult, IdentityCandidate, SeedInput, VenueDescriptor, VerificationResult
 from paper_agent.providers.builtin import FixtureTransport, create_builtin
 from paper_agent.search_pipeline import SEARCH_IMPLEMENTATION_VERSION, SearchPipeline, VenueFallback, VenueRun
+from paper_agent.search_audit import search_audit
 from paper_agent.search_runs import RequestReservationTransactionError, SearchRunCoordinator
+from paper_agent.stage2_pipeline import (
+    ADJUDICATOR_SHARE_ALARM,
+    ERROR_RATE_ALARM,
+    Stage2Summary,
+)
 from paper_agent.storage import Database
 from paper_agent.verification import ProviderTrust, VenueContext
 
@@ -460,6 +466,132 @@ def test_complete_run_recovers_persisted_outcome_without_repeating_fanout(tmp_pa
         (outcome.provider, outcome.status, outcome.error)
         for outcome in first.fanout.outcomes
     ]
+
+
+def test_search_persists_and_replays_stage2_telemetry_without_share_quota(
+    tmp_path,
+) -> None:
+    plan = _plan([_provider("openalex")], required=["openalex"])
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class TelemetryScreener:
+        def screen(self, paper_ids):
+            return {paper_id: FilterStatus.RELEVANT for paper_id in paper_ids}
+
+        def reranker_score(self, paper_id):
+            return 1.0
+
+        def telemetry(self):
+            return {
+                "stage2_run_ids": ["stage2-search"],
+                "screened_count": 1,
+                "reranked_count": 1,
+                "adjudicator_count": 1,
+                "adjudicator_share": 1.0,
+                "adjudicator_capacity": "severe",
+                "error_count": 0,
+                "error_rate": 0.0,
+                "alarm_codes": [ADJUDICATOR_SHARE_ALARM],
+                "run_details": [],
+            }
+
+    client = SearchFixture((
+        _batch("openalex", query_hash, (_entry("openalex", "telemetry"),)),
+    ))
+    database_path = tmp_path / "telemetry.sqlite3"
+    with Database(database_path) as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={"openalex": client},
+            trusts={"openalex": _trust("openalex")},
+            screener=TelemetryScreener(),
+        )
+        first = pipeline.run(
+            run_id="run-telemetry", crawl_run_id="crawl-telemetry", observed_at=NOW
+        )
+        replay = pipeline.run(
+            run_id="run-telemetry", crawl_run_id="crawl-telemetry", observed_at=NOW
+        )
+        stats = json.loads(database.connection.execute(
+            "SELECT stats_json FROM crawl_runs WHERE crawl_run_id = 'crawl-telemetry'"
+        ).fetchone()[0])
+
+    audit = search_audit(database_path, "crawl-telemetry")
+    assert first.status == replay.status == "complete"
+    assert first.alarm_codes == replay.alarm_codes == (ADJUDICATOR_SHARE_ALARM,)
+    assert replay.stage2 == first.stage2
+    assert stats["stage2"] == first.stage2
+    assert stats["alarm_codes"] == [ADJUDICATOR_SHARE_ALARM]
+    assert audit["stats"]["stage2"] == first.stage2
+    assert audit["stats"]["alarm_codes"] == [ADJUDICATOR_SHARE_ALARM]
+
+
+def test_search_stage2_terminal_error_alarm_marks_pipeline_incomplete(tmp_path) -> None:
+    plan = _plan([_provider("openalex")], required=["openalex"])
+    query_hash = plan["providers"][0]["native_query_hashes"][0]
+
+    class TechnicalDecision:
+        reason_code = "reranker_backend_failure"
+
+    class ErrorScreener:
+        def __init__(self):
+            self.calls = 0
+            self.summary = Stage2Summary((), 0, 0, 0.0, ())
+
+        def screen(self, paper_ids):
+            self.calls += 1
+            decisions = tuple(TechnicalDecision() for _ in paper_ids)
+            self.summary = Stage2Summary(
+                decisions,
+                len(decisions) if self.calls == 1 else 0,
+                0,
+                0.0,
+                (),
+                len(decisions),
+                1.0 if decisions else 0.0,
+            )
+            return {paper_id: FilterStatus.NEEDS_REVIEW for paper_id in paper_ids}
+
+        def reranker_score(self, paper_id):
+            return 1.0
+
+        def telemetry(self):
+            return self.summary.telemetry("stage2-error")
+
+    with Database(tmp_path / "error.sqlite3") as database:
+        database.migrate()
+        pipeline = SearchPipeline(
+            database,
+            plan,
+            runtime_providers=plan["providers"],
+            clients={
+                "openalex": SearchFixture((
+                    _batch("openalex", query_hash, (_entry("openalex", "error"),)),
+                ))
+            },
+            trusts={"openalex": _trust("openalex")},
+            screener=ErrorScreener(),
+        )
+        first = pipeline.run(
+            run_id="run-error", crawl_run_id="crawl-error", observed_at=NOW
+        )
+        first_outcome = json.loads(database.connection.execute(
+            "SELECT stats_json FROM crawl_runs WHERE crawl_run_id = 'crawl-error'"
+        ).fetchone()[0])["pipeline_outcome_v1"]
+        resumed = pipeline.run(
+            run_id="run-error", crawl_run_id="crawl-error", observed_at=NOW
+        )
+        resumed_outcome = json.loads(database.connection.execute(
+            "SELECT stats_json FROM crawl_runs WHERE crawl_run_id = 'crawl-error'"
+        ).fetchone()[0])["pipeline_outcome_v1"]
+
+    assert first.status == resumed.status == "incomplete"
+    assert first.alarm_codes == resumed.alarm_codes == (ERROR_RATE_ALARM,)
+    assert first.stage2_metrics == resumed.stage2_metrics
+    assert first_outcome == resumed_outcome
 
 
 def test_complete_primary_skips_fallback_and_recovery_rejects_graph_drift(tmp_path) -> None:

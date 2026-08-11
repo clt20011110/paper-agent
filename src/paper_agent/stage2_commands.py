@@ -27,7 +27,7 @@ from .stage2_evaluation import (
     performance_summary,
     soak_gate,
 )
-from .stage2_pipeline import Stage2Paper
+from .stage2_pipeline import ERROR_RATE_ALARM, MEMORY_WATERMARK_ALARM, Stage2Paper
 from .stage2_search import (
     ReleasedStage2,
     load_stage2_benchmark_candidate,
@@ -58,6 +58,7 @@ def filter_database(
         selected = _paper_ids(database, paper_ids)
         if dry_run:
             return {
+                "alarm_codes": [],
                 "campaign_id": campaign_id,
                 "command": "filter",
                 "database_path": str(database_path),
@@ -65,13 +66,18 @@ def filter_database(
                 "paper_ids": list(selected),
                 "profile": release.profile_name,
                 "release_hash": release.release_hash,
+                "stage2": None,
                 "status": "validated",
             }
 
         screener = release.screener(database, campaign_id)
         statuses = screener.screen(selected)
         counts = Counter(status.value for status in statuses.values())
+        telemetry_method = getattr(screener, "telemetry", None)
+        stage2 = dict(telemetry_method()) if callable(telemetry_method) else {}
+        alarm_codes = list(stage2.get("alarm_codes", ()))
         return {
+            "alarm_codes": alarm_codes,
             "campaign_id": campaign_id,
             "command": "filter",
             "counts": {name: counts[name] for name in sorted(counts)},
@@ -81,8 +87,9 @@ def filter_database(
             "paper_count": len(selected),
             "profile": release.profile_name,
             "release_hash": release.release_hash,
+            "stage2": stage2,
             "stage2_run_ids": list(screener.run_ids),
-            "status": "complete",
+            "status": "incomplete" if ERROR_RATE_ALARM in alarm_codes else "complete",
         }
 
 
@@ -213,8 +220,14 @@ def measure_stage2_benchmark(
         record = runner.run(spec, papers, run_id=run_id)
 
     record.write(output_path)
+    return _measurement_result(record, output_path)
+
+
+def _measurement_result(record: Any, output_path: Path) -> dict[str, Any]:
     document = record.document()
+    alarm_codes = list(document["alarm_codes"])
     return {
+        "alarm_codes": alarm_codes,
         "artifact_hash": record.hash(),
         "artifact_path": str(output_path),
         "case_count": document["case_count"],
@@ -222,13 +235,27 @@ def measure_stage2_benchmark(
         "kind": document["kind"],
         "manifest_hash": document["manifest_hash"],
         "record_version": document["record_version"],
+        "adjudicator_capacity": document["adjudicator_capacity"],
+        "adjudicator_count": document["adjudicator_count"],
+        "adjudicator_share": document["adjudicator_share"],
+        "qwen_capacity_level": document["qwen_capacity_level"],
+        "qwen_count": document["qwen_count"],
+        "qwen_share": document["qwen_share"],
         "request_failure_rate": document["request_failure_rate"],
+        "peak_memory_gb": document["peak_memory_gb"],
+        "memory_pressure_critical": document["memory_pressure_critical"],
+        "unbounded_memory_growth": document["unbounded_memory_growth"],
         "rss_scope": document["rss_scope"],
         "run_id": document["run_id"],
         "scenario": document["scenario"],
         "service_request_count": document["service_request_count"],
+        "service_failed_request_count": document["service_failed_request_count"],
         "service_request_failure_rate": document["service_request_failure_rate"],
-        "status": "complete",
+        "status": (
+            "incomplete"
+            if ERROR_RATE_ALARM in alarm_codes or MEMORY_WATERMARK_ALARM in alarm_codes
+            else "complete"
+        ),
     }
 
 

@@ -72,6 +72,14 @@ def test_report_execution_cli_wires_frozen_inputs_and_processing_grants(
                 "run_options": options,
             })
             return SimpleNamespace(
+                alarm_codes=(),
+                codex_budget=SimpleNamespace(
+                    approved_call_limit=300,
+                    approved_input_token_limit=10_000_000,
+                    calls_reserved=4,
+                    input_tokens_reserved=12_345,
+                ),
+                error=None,
                 report_run_id=report_run_id,
                 status="validated",
                 dry_run=True,
@@ -98,6 +106,14 @@ def test_report_execution_cli_wires_frozen_inputs_and_processing_grants(
 
     result = _payload(capsys)
     assert result["status"] == "validated"
+    assert result["alarm_codes"] == []
+    assert result["codex_budget"] == {
+        "approved_call_limit": 300,
+        "approved_input_token_limit": 10_000_000,
+        "calls_reserved": 4,
+        "input_tokens_reserved": 12_345,
+    }
+    assert result["error"] is None
     assert captured["report_run_id"] == "report-1"
     assert captured["pipeline_run_id"] == "report-1:stage4b"
     assert captured["run_options"]["processing_grants"] == {"a" * 64: "grant-1"}
@@ -128,6 +144,9 @@ def test_disabled_report_cli_skips_before_opening_any_inputs(
     ]) == 0
 
     result = _payload(capsys)
+    assert result["alarm_codes"] == []
+    assert result["codex_budget"] is None
+    assert result["error"] is None
     assert result["status"] == "complete"
     assert result["skipped"] is True
     assert not (tmp_path / "missing.sqlite3").exists()

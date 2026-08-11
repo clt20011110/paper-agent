@@ -12,13 +12,20 @@ from paper_agent.repository import PaperRepository
 from paper_agent.stage2_backends import ThresholdArtifact
 from paper_agent.stage2_benchmark import MacOSMemoryObserver
 from paper_agent.stage2_commands import (
+    _measurement_result,
     benchmark_corpus_hash,
     evaluate_benchmark_artifacts,
     filter_database,
     measure_stage2_benchmark,
 )
 from paper_agent.stage2_evaluation import PerformanceCase, PerformanceRoutingManifest
-from paper_agent.stage2_pipeline import Stage2Paper, Stage2Profile
+from paper_agent.stage2_pipeline import (
+    ADJUDICATOR_SHARE_ALARM,
+    ERROR_RATE_ALARM,
+    MEMORY_WATERMARK_ALARM,
+    Stage2Paper,
+    Stage2Profile,
+)
 from paper_agent.storage import Database
 
 
@@ -33,6 +40,20 @@ class _FakeScreener:
                 else FilterStatus.NEEDS_REVIEW
             )
             for index, paper_id in enumerate(paper_ids)
+        }
+
+    def telemetry(self):
+        return {
+            "stage2_run_ids": list(self.run_ids),
+            "screened_count": 2,
+            "reranked_count": 2,
+            "adjudicator_count": 1,
+            "adjudicator_share": 0.5,
+            "adjudicator_capacity": "severe",
+            "error_count": 0,
+            "error_rate": 0.0,
+            "alarm_codes": [ADJUDICATOR_SHARE_ALARM],
+            "run_details": [],
         }
 
 
@@ -83,6 +104,8 @@ def test_filter_database_selects_canonical_papers_and_dry_run_is_read_only(
     )
     assert preview["paper_ids"] == sorted((first.paper_id, second.paper_id))
     assert preview["status"] == "validated"
+    assert preview["stage2"] is None
+    assert preview["alarm_codes"] == []
 
     result = filter_database(
         plan_path=plan_path,
@@ -95,6 +118,30 @@ def test_filter_database_selects_canonical_papers_and_dry_run_is_read_only(
     assert result["counts"] == {"needs_review": 1, "relevant": 1}
     assert result["paper_count"] == 2
     assert result["stage2_run_ids"] == ["stage2-test"]
+    assert result["stage2"]["adjudicator_share"] == 0.5
+    assert result["alarm_codes"] == [ADJUDICATOR_SHARE_ALARM]
+    assert result["status"] == "complete"
+
+    class ErrorRelease(_FakeRelease):
+        def screener(self, database, campaign_id):
+            screener = _FakeScreener()
+            screener.telemetry = lambda: {
+                **_FakeScreener.telemetry(screener),
+                "error_count": 1,
+                "error_rate": 0.5,
+                "alarm_codes": [ERROR_RATE_ALARM],
+            }
+            return screener
+
+    failed = filter_database(
+        plan_path=plan_path,
+        release_path=release_path,
+        database_path=database_path,
+        campaign_id="campaign-1",
+        release_loader=lambda path, plan: ErrorRelease(),
+    )
+    assert failed["status"] == "incomplete"
+    assert failed["alarm_codes"] == [ERROR_RATE_ALARM]
 
     empty_preview = filter_database(
         plan_path=plan_path,
@@ -415,3 +462,48 @@ def test_stage2_parser_surface() -> None:
     ])
     assert (filtered.command, benchmark.command) == ("filter", "benchmark-stage2")
     assert measured.benchmark_command == "measure"
+
+
+@pytest.mark.parametrize(
+    ("alarm_codes", "expected_status"),
+    (
+        ([ADJUDICATOR_SHARE_ALARM], "complete"),
+        ([ERROR_RATE_ALARM], "incomplete"),
+        ([MEMORY_WATERMARK_ALARM], "incomplete"),
+    ),
+)
+def test_measure_result_exposes_stage2_alarms_and_operational_status(
+    tmp_path, alarm_codes, expected_status
+) -> None:
+    document = {
+        "alarm_codes": alarm_codes,
+        "case_count": 200,
+        "kind": "performance",
+        "manifest_hash": "manifest",
+        "record_version": 2,
+        "adjudicator_capacity": "warning",
+        "adjudicator_count": 31,
+        "adjudicator_share": 0.155,
+        "qwen_capacity_level": "warning",
+        "qwen_count": 31,
+        "qwen_share": 0.155,
+        "request_failure_rate": 0.005,
+        "peak_memory_gb": 29,
+        "memory_pressure_critical": False,
+        "unbounded_memory_growth": False,
+        "rss_scope": "fixture",
+        "run_id": "measured-run",
+        "scenario": "normal",
+        "service_request_count": 200,
+        "service_failed_request_count": 1,
+        "service_request_failure_rate": 0.005,
+    }
+    record = SimpleNamespace(document=lambda: document, hash=lambda: "artifact-hash")
+
+    result = _measurement_result(record, tmp_path / "record.json")
+
+    assert result["alarm_codes"] == alarm_codes
+    assert result["adjudicator_count"] == 31
+    assert result["service_request_failure_rate"] == 0.005
+    assert result["peak_memory_gb"] == 29
+    assert result["status"] == expected_status

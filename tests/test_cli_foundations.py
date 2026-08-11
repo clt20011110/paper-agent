@@ -441,6 +441,54 @@ def test_finish_missing_and_unknown_statuses_fail_closed(capsys) -> None:
     assert payload["event_code"] == "future.failed"
 
 
+@pytest.mark.parametrize(
+    ("local_ids", "expected"),
+    (
+        ({"run_id": "run-1", "workflow_run_id": "workflow-1"}, "run-1"),
+        (
+            {"workflow_run_id": "workflow-1", "report_run_id": "report-1"},
+            "workflow-1",
+        ),
+        ({"report_run_id": "report-1", "campaign_id": "campaign-1"}, "report-1"),
+        ({"campaign_id": "campaign-1", "crawl_run_id": "crawl-1"}, "campaign-1"),
+        ({"crawl_run_id": "crawl-1"}, "crawl-1"),
+    ),
+)
+def test_finish_promotes_the_most_specific_payload_run_id(
+    local_ids, expected, capsys
+) -> None:
+    args = cli.build_parser().parse_args(["crawl", "--venue", "venue-1"])
+
+    assert cli._finish(args, {"command": "fixture", **local_ids}) == 0
+    payload = _payload(capsys)
+    assert payload["run_id"] == expected
+    for field, value in local_ids.items():
+        assert payload[field] == value
+
+
+def test_finish_payload_local_run_id_wins_over_global_run_id(capsys) -> None:
+    args = cli.build_parser().parse_args([
+        "--run-id", "global-1", "crawl", "--venue", "venue-1",
+    ])
+
+    assert cli._finish(
+        args,
+        {"command": "fixture", "workflow_run_id": "workflow-1"},
+    ) == 0
+    payload = _payload(capsys)
+    assert payload["run_id"] == "workflow-1"
+    assert payload["workflow_run_id"] == "workflow-1"
+
+
+def test_finish_global_run_id_is_the_final_fallback(capsys) -> None:
+    args = cli.build_parser().parse_args([
+        "--run-id", "global-1", "crawl", "--venue", "venue-1",
+    ])
+
+    assert cli._finish(args, {"command": "fixture"}) == 0
+    assert _payload(capsys)["run_id"] == "global-1"
+
+
 def test_doctor_cli_wires_local_model_probe_and_audited_skill_runtime(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -480,6 +528,50 @@ def test_console_entrypoint_emits_structured_failure_without_creating_paths(
     assert payload["status"] == "failed"
     assert not database.parent.exists()
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("option", "joined"),
+    (
+        ("--workflow-run-id", False),
+        ("--workflow-run-id", True),
+        ("--report-run-id", False),
+        ("--report-run-id", True),
+        ("--campaign-id", False),
+        ("--campaign-id", True),
+        ("--crawl-run-id", False),
+        ("--crawl-run-id", True),
+    ),
+)
+def test_console_entrypoint_promotes_command_local_run_id_on_failure(
+    option, joined, monkeypatch, capsys
+) -> None:
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("fixture failure")
+
+    monkeypatch.setattr(cli, "main", fail)
+    value = option.removeprefix("--") + "-1"
+    option_argv = [f"{option}={value}"] if joined else [option, value]
+
+    assert cli.entrypoint(["run", "--workflow", "missing.json", *option_argv]) == 1
+    payload = _payload(capsys)
+    assert payload["command"] == "run"
+    assert payload["run_id"] == value
+
+
+def test_console_entrypoint_failure_run_id_priority(monkeypatch, capsys) -> None:
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("fixture failure")
+
+    monkeypatch.setattr(cli, "main", fail)
+    assert cli.entrypoint([
+        "run", "--workflow", "missing.json",
+        "--crawl-run-id=crawl-1",
+        "--campaign-id", "campaign-1",
+        "--report-run-id=report-1",
+        "--workflow-run-id", "workflow-1",
+    ]) == 1
+    assert _payload(capsys)["run_id"] == "workflow-1"
 
 
 def test_console_entrypoint_structures_argument_errors(capsys) -> None:

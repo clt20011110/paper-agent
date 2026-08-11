@@ -51,6 +51,39 @@ ADJUDICATION_USER_TEMPLATE = (
 )
 _FAILURES = (Stage2BackendError, StructuredOutputError, TimeoutError, OSError, ValueError)
 _RETRYABLE_ADJUDICATOR_FAILURES = (Stage2BackendError, TimeoutError, OSError)
+ADJUDICATOR_SHARE_ALARM = "stage2.adjudicator_share_exceeded"
+ERROR_RATE_ALARM = "stage2.error_rate_exceeded"
+MEMORY_WATERMARK_ALARM = "stage2.memory_watermark_exceeded"
+TERMINAL_TECHNICAL_REASONS = frozenset({
+    "reranker_backend_failure",
+    "reranker_response_failure",
+    "reranker_calibration_failure",
+    "adjudicator_schema_failure",
+    "adjudicator_backend_failure",
+    "adjudicator_calibration_failure",
+})
+
+
+def adjudicator_capacity(adjudicator_share: float) -> str:
+    if adjudicator_share > 0.30:
+        return "severe"
+    if adjudicator_share > 0.15:
+        return "warning"
+    return "normal"
+
+
+def qwen_capacity_level(qwen_share: float) -> str:
+    """Backward-compatible alias for the canonical adjudicator capacity."""
+
+    return adjudicator_capacity(qwen_share)
+
+
+def adjudicator_share_alarms(adjudicator_share: float) -> tuple[str, ...]:
+    return (
+        (ADJUDICATOR_SHARE_ALARM,)
+        if adjudicator_share > 0.15
+        else ()
+    )
 
 
 def _utc_now() -> datetime:
@@ -316,6 +349,41 @@ class Stage2Summary:
     qwen_count: int
     qwen_share: float
     qwen_alarms: tuple[str, ...]
+    error_count: int = 0
+    error_rate: float = 0.0
+
+    @property
+    def capacity_level(self) -> str:
+        return qwen_capacity_level(self.qwen_share)
+
+    @property
+    def alarm_codes(self) -> tuple[str, ...]:
+        alarms = list(self.qwen_alarms)
+        if self.error_rate >= 0.005:
+            alarms.append(ERROR_RATE_ALARM)
+        return tuple(alarms)
+
+    def telemetry(self, run_id: str) -> dict[str, object]:
+        reranked_count = sum(
+            not decision.reason_code.startswith("document_type_")
+            for decision in self.decisions
+        )
+        return {
+            "stage2_run_ids": [run_id],
+            "run_id": run_id,
+            "screened_count": len(self.decisions),
+            "reranked_count": reranked_count,
+            "adjudicator_count": self.qwen_count,
+            "adjudicator_share": self.qwen_share,
+            "adjudicator_capacity": adjudicator_capacity(self.qwen_share),
+            "paper_count": len(self.decisions),
+            "qwen_count": self.qwen_count,
+            "qwen_share": self.qwen_share,
+            "error_count": self.error_count,
+            "error_rate": self.error_rate,
+            "capacity_level": self.capacity_level,
+            "alarm_codes": list(self.alarm_codes),
+        }
 
 
 @dataclass(slots=True)
@@ -456,11 +524,20 @@ class Stage2Pipeline:
             )
         qwen_count = sum(item.adjudicated for item in ordered)
         qwen_share = qwen_count / len(candidates) if candidates else 0.0
-        alarms = tuple(
-            label for limit, label in ((0.15, "qwen_share_over_15_percent"), (0.30, "qwen_share_over_30_percent"))
-            if qwen_share > limit
+        qwen_alarms = adjudicator_share_alarms(qwen_share)
+        error_count = sum(
+            item.reason_code in TERMINAL_TECHNICAL_REASONS for item in ordered
         )
-        return Stage2Summary(ordered, reranked_count, qwen_count, qwen_share, alarms)
+        error_rate = error_count / len(candidates) if candidates else 0.0
+        return Stage2Summary(
+            ordered,
+            reranked_count,
+            qwen_count,
+            qwen_share,
+            qwen_alarms,
+            error_count,
+            error_rate,
+        )
 
     def _screen_batch(
         self, candidates: Sequence[Stage2Paper]

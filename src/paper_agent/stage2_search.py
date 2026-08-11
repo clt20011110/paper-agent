@@ -34,11 +34,16 @@ from .stage2_evaluation import (
     ThresholdArtifact as ProbabilityThresholdArtifact,
 )
 from .stage2_pipeline import (
+    ADJUDICATOR_SHARE_ALARM,
+    ERROR_RATE_ALARM,
     PathCalibration,
     Stage2Decision,
     Stage2Paper,
     Stage2Pipeline,
     Stage2Profile,
+    Stage2Summary,
+    adjudicator_capacity,
+    qwen_capacity_level,
 )
 from .storage import Database
 
@@ -128,6 +133,7 @@ class Stage2SearchScreener:
     repository: PaperRepository = field(init=False)
     decisions: dict[str, Stage2Decision] = field(default_factory=dict, init=False)
     run_ids: list[str] = field(default_factory=list, init=False)
+    summaries: dict[str, Stage2Summary] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         self.repository = PaperRepository(self.database)
@@ -138,8 +144,58 @@ class Stage2SearchScreener:
         run_id = f"stage2-{uuid5(NAMESPACE_URL, f'{self.campaign_id}:{len(self.run_ids)}').hex}"
         summary = self.pipeline.run(run_id, papers)
         self.run_ids.append(run_id)
+        self.summaries[run_id] = summary
         self.decisions.update((decision.paper_id, decision) for decision in summary.decisions)
         return {decision.paper_id: decision.status for decision in summary.decisions}
+
+    def telemetry(self) -> dict[str, object]:
+        run_details = [
+            self.summaries[run_id].telemetry(run_id) for run_id in self.run_ids
+        ]
+        paper_count = sum(int(run["paper_count"]) for run in run_details)
+        reranked_count = sum(int(run["reranked_count"]) for run in run_details)
+        qwen_count = sum(int(run["qwen_count"]) for run in run_details)
+        error_count = sum(int(run["error_count"]) for run in run_details)
+        error_rate = error_count / paper_count if paper_count else 0.0
+        max_run_qwen_share = max(
+            (float(run["qwen_share"]) for run in run_details),
+            default=0.0,
+        )
+        max_run_error_rate = max(
+            (float(run["error_rate"]) for run in run_details),
+            default=0.0,
+        )
+        alarm_codes = tuple(
+            alarm
+            for alarm in (
+                ADJUDICATOR_SHARE_ALARM,
+                ERROR_RATE_ALARM,
+            )
+            if (
+                alarm == ADJUDICATOR_SHARE_ALARM
+                and any(alarm in run["alarm_codes"] for run in run_details)
+            )
+            or (alarm == ERROR_RATE_ALARM and error_rate >= 0.005)
+        )
+        return {
+            "stage2_run_ids": list(self.run_ids),
+            "screened_count": paper_count,
+            "reranked_count": reranked_count,
+            "adjudicator_count": qwen_count,
+            "adjudicator_share": qwen_count / paper_count if paper_count else 0.0,
+            "adjudicator_capacity": adjudicator_capacity(max_run_qwen_share),
+            "paper_count": paper_count,
+            "qwen_count": qwen_count,
+            "qwen_share": qwen_count / paper_count if paper_count else 0.0,
+            "error_count": error_count,
+            "error_rate": error_rate,
+            "max_run_error_rate": max_run_error_rate,
+            "max_run_qwen_share": max_run_qwen_share,
+            "max_run_adjudicator_share": max_run_qwen_share,
+            "capacity_level": qwen_capacity_level(max_run_qwen_share),
+            "run_details": run_details,
+            "alarm_codes": list(alarm_codes),
+        }
 
     def reranker_score(self, paper_id: str) -> float:
         decision = self.decisions[paper_id]

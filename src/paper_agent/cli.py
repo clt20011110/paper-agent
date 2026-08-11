@@ -588,8 +588,11 @@ def _report(args: argparse.Namespace) -> dict[str, Any]:
     )
     if generation_requested and not runtime.enabled:
         return {
+            "alarm_codes": [],
             "command": "report",
+            "codex_budget": None,
             "dry_run": args.dry_run,
+            "error": None,
             "skipped": True,
             "status": "complete",
         }
@@ -829,8 +832,11 @@ def _report_execute(
     runtime = runtime or _report_runtime_config(config, args.config)
     if not runtime.enabled:
         return {
+            "alarm_codes": [],
             "command": "report",
+            "codex_budget": None,
             "dry_run": args.dry_run,
+            "error": None,
             "skipped": True,
             "status": "complete",
         }
@@ -878,9 +884,22 @@ def _report_execute(
             previous=previous,
             dry_run=args.dry_run,
         )
+    budget = result.codex_budget
     return {
+        "alarm_codes": list(result.alarm_codes),
         "command": "report",
+        "codex_budget": (
+            {
+                "approved_call_limit": budget.approved_call_limit,
+                "approved_input_token_limit": budget.approved_input_token_limit,
+                "calls_reserved": budget.calls_reserved,
+                "input_tokens_reserved": budget.input_tokens_reserved,
+            }
+            if budget is not None
+            else None
+        ),
         "dry_run": result.dry_run,
+        "error": dict(result.error) if result.error is not None else None,
         "pipeline_run_id": pipeline_run_id,
         "published_path": (
             str(result.audit.published_path)
@@ -1315,7 +1334,7 @@ def entrypoint(argv: Sequence[str] | None = None) -> int:
             "error": str(error),
             "error_type": type(error).__name__,
             "event_code": f"{command}.failed",
-            "run_id": _runtime_option(normalized, "--run-id"),
+            "run_id": _local_run_id_from_argv(normalized),
             "stage": _command_stage(command),
             "status": "failed",
         })
@@ -1816,6 +1835,7 @@ def _search_run(
         plugin_allowlist=plugin_allowlist,
     )
     return {
+        "alarm_codes": list(getattr(result, "alarm_codes", ())),
         "command": "search.run",
         "crawl_run_id": crawl_run_id,
         "database_path": str(database),
@@ -1828,6 +1848,7 @@ def _search_run(
         "paper_count": len(result.paper_ids),
         "arxiv_candidate_count": len(result.arxiv_candidate_ids),
         "run_id": resolved_run_id,
+        "stage2": dict(getattr(result, "stage2_metrics", {})),
         "status": result.status,
     }
 
@@ -2231,6 +2252,20 @@ def _runtime_option(argv: Sequence[str], option: str) -> str | None:
     return result
 
 
+def _local_run_id_from_argv(argv: Sequence[str]) -> str | None:
+    for option in (
+        "--run-id",
+        "--workflow-run-id",
+        "--report-run-id",
+        "--campaign-id",
+        "--crawl-run-id",
+    ):
+        value = _runtime_option(argv, option)
+        if value is not None:
+            return value
+    return None
+
+
 def _command_from_argv(argv: Sequence[str]) -> str:
     index = 0
     while index < len(argv):
@@ -2288,8 +2323,19 @@ def _finish(
     document["event_code"] = f"{command}.{event}"
     document.setdefault("stage", _command_stage(command))
     document["status"] = status
-    if args.run_id is not None:
-        document.setdefault("run_id", args.run_id)
+    for field in (
+        "run_id",
+        "workflow_run_id",
+        "report_run_id",
+        "campaign_id",
+        "crawl_run_id",
+    ):
+        if document.get(field) is not None:
+            document["run_id"] = document[field]
+            break
+    else:
+        if args.run_id is not None:
+            document["run_id"] = args.run_id
     _emit(document)
     return int(not success)
 

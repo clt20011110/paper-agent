@@ -47,7 +47,15 @@ from .stage2_evaluation import (
     SoakManifest,
     SoakRunRecord,
 )
-from .stage2_pipeline import Stage2Paper, Stage2Pipeline, Stage2Profile
+from .stage2_pipeline import (
+    ERROR_RATE_ALARM,
+    MEMORY_WATERMARK_ALARM,
+    TERMINAL_TECHNICAL_REASONS,
+    Stage2Paper,
+    Stage2Pipeline,
+    Stage2Profile,
+    adjudicator_capacity,
+)
 from .storage import Database
 
 
@@ -57,6 +65,26 @@ RssSampler = Callable[[], int]
 PressureSampler = Callable[[], bool]
 CommandRunner = Callable[[Sequence[str]], str]
 _COMPONENTS = ("rules", "reranker", "qwen", "schema_validation", "sqlite_commit")
+
+
+def benchmark_alarm_codes(
+    adjudicator_alarms: Sequence[str],
+    *,
+    request_failure_rate: float,
+    service_request_failure_rate: float | None,
+    peak_memory_gb: float,
+    memory_pressure_critical: bool,
+    unbounded_memory_growth: bool,
+) -> tuple[str, ...]:
+    alarms = list(adjudicator_alarms)
+    if request_failure_rate >= 0.005 or (
+        service_request_failure_rate is not None
+        and service_request_failure_rate >= 0.005
+    ):
+        alarms.append(ERROR_RATE_ALARM)
+    if peak_memory_gb > 28 or memory_pressure_critical or unbounded_memory_growth:
+        alarms.append(MEMORY_WATERMARK_ALARM)
+    return tuple(alarms)
 
 
 def _process_rss_bytes() -> int:
@@ -739,6 +767,23 @@ class Stage2BenchmarkRunner:
         samples = tuple(rss.samples)
         pressure_samples = tuple(rss.pressure_samples)
         peak_rss = max(samples)
+        peak_memory_gb = peak_rss / (1024 ** 3)
+        memory_pressure_critical = any(pressure_samples)
+        unbounded_memory_growth = _unbounded_growth(samples)
+        service_request_failure_rate = (
+            sum(item.failed for item in service_requests) / len(service_requests)
+            if service_requests
+            else None
+        )
+        request_failure_rate = len(terminal_failures) / len(spec.cases)
+        alarm_codes = benchmark_alarm_codes(
+            summary.qwen_alarms,
+            request_failure_rate=request_failure_rate,
+            service_request_failure_rate=service_request_failure_rate,
+            peak_memory_gb=peak_memory_gb,
+            memory_pressure_critical=memory_pressure_critical,
+            unbounded_memory_growth=unbounded_memory_growth,
+        )
         input_tokens = sum(item.input_tokens for item in spec.cases)
         input_hash = _workload_hash(spec.cases, ordered_papers)
         initial_rerank_requests = sum(
@@ -791,7 +836,7 @@ class Stage2BenchmarkRunner:
             "papers_per_second": len(spec.cases) / duration,
             "input_tokens_per_second": input_tokens / duration,
             "pair_tokens_per_second": input_tokens / duration,
-            "peak_memory_gb": peak_rss / (1024 ** 3),
+            "peak_memory_gb": peak_memory_gb,
             "rss_start_bytes": rss_start,
             "rss_end_bytes": rss_end,
             "peak_rss_bytes": peak_rss,
@@ -803,7 +848,7 @@ class Stage2BenchmarkRunner:
             # separate because Qwen routing and retries legitimately add work.
             "request_count": len(spec.cases),
             "request_count_unit": "manifest_case",
-            "request_failure_rate": len(terminal_failures) / len(spec.cases),
+            "request_failure_rate": request_failure_rate,
             "pair_attempt_count": first_run_pair_attempt_count,
             "model_call_count": first_run_call_count,
             "service_request_count": len(service_requests) if service_requests else None,
@@ -811,9 +856,7 @@ class Stage2BenchmarkRunner:
                 sum(item.document_count for item in service_requests) if service_requests else None
             ),
             "service_failed_request_count": sum(item.failed for item in service_requests) if service_requests else None,
-            "service_request_failure_rate": (
-                sum(item.failed for item in service_requests) / len(service_requests) if service_requests else None
-            ),
+            "service_request_failure_rate": service_request_failure_rate,
             "reranker_batch_call_count": first_reranker_call_count,
             "reranker_fallback_count": fallback_count if service_requests else None,
             "reranker_fallback_measurement_available": bool(service_requests),
@@ -828,6 +871,11 @@ class Stage2BenchmarkRunner:
             "qwen_count": summary.qwen_count,
             "qwen_share": summary.qwen_share,
             "qwen_share_alarms": list(summary.qwen_alarms),
+            "qwen_capacity_level": summary.capacity_level,
+            "adjudicator_count": summary.qwen_count,
+            "adjudicator_share": summary.qwen_share,
+            "adjudicator_capacity": adjudicator_capacity(summary.qwen_share),
+            "alarm_codes": list(alarm_codes),
             "frozen_qwen_routing_matches": set(qwen_ids) == set(spec.forced_qwen_pair_ids) if spec.kind == "performance" else None,
             "routing_mode": "performance_only_manifest" if spec.kind == "performance" else "quality_thresholds",
             "batch_concurrency": {
@@ -853,10 +901,10 @@ class Stage2BenchmarkRunner:
             "resumed_pair_count": resumed_count,
             "oom": False,
             "process_crash": False,
-            "memory_pressure_critical": any(pressure_samples),
+            "memory_pressure_critical": memory_pressure_critical,
             "memory_pressure_sampled": self.memory_pressure_sampler is not None,
             "memory_growth_detector": _memory_growth_document(samples),
-            "unbounded_memory_growth": _unbounded_growth(samples),
+            "unbounded_memory_growth": unbounded_memory_growth,
         }
         return BenchmarkExecutionRecord(payload)
 
@@ -1012,7 +1060,7 @@ def _workload_hash(cases: Sequence[PerformanceCase], papers: Sequence[Stage2Pape
 
 
 def _is_terminal_request_failure(reason_code: str) -> bool:
-    return any(marker in reason_code for marker in ("backend_failure", "response_failure", "schema_failure"))
+    return reason_code in TERMINAL_TECHNICAL_REASONS
 
 
 def _unbounded_growth(samples: Sequence[int]) -> bool:

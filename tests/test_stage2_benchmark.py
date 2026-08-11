@@ -13,9 +13,16 @@ from paper_agent.stage2_benchmark import (
     BenchmarkRunSpec,
     MacOSMemoryObserver,
     Stage2BenchmarkRunner,
+    benchmark_alarm_codes,
 )
 from paper_agent.stage2_evaluation import BenchmarkEnvironment, PerformanceCase
-from paper_agent.stage2_pipeline import Stage2Paper, Stage2Profile
+from paper_agent.stage2_pipeline import (
+    ADJUDICATOR_SHARE_ALARM,
+    ERROR_RATE_ALARM,
+    MEMORY_WATERMARK_ALARM,
+    Stage2Paper,
+    Stage2Profile,
+)
 from paper_agent.storage import Database
 
 
@@ -118,7 +125,12 @@ def _environment() -> BenchmarkEnvironment:
     )
 
 
-def _runner(tmp_path: Path, transport: FakeOmlxTransport) -> tuple[Database, Stage2BenchmarkRunner]:
+def _runner(
+    tmp_path: Path,
+    transport: FakeOmlxTransport,
+    *,
+    rss_bytes: int = 2 * 1024 ** 3,
+) -> tuple[Database, Stage2BenchmarkRunner]:
     database = Database(tmp_path / "benchmark.sqlite3")
     database.migrate()
     profile = _profile()
@@ -131,7 +143,7 @@ def _runner(tmp_path: Path, transport: FakeOmlxTransport) -> tuple[Database, Sta
         environment=_environment(),
         release_hash="release-fixture-hash",
         clock=StepClock(),
-        rss_sampler=lambda: 2 * 1024 ** 3,
+        rss_sampler=lambda: rss_bytes,
         rss_scope="fixture_constant_rss",
     )
     return database, runner
@@ -163,6 +175,9 @@ def test_performance_runner_executes_omlx_pipeline_and_writes_canonical_measurem
     assert document["batch_concurrency"]["document_batch_size"] == 16
     assert document["qwen_pair_ids"] == ["p-gray", "p-missing"]
     assert document["qwen_share"] == 0.5
+    assert document["adjudicator_capacity"] == "severe"
+    assert document["qwen_capacity_level"] == "severe"
+    assert document["alarm_codes"] == [ADJUDICATOR_SHARE_ALARM]
     assert document["frozen_qwen_routing_matches"] is True
     assert document["request_count"] == 4
     assert document["request_count_unit"] == "manifest_case"
@@ -325,12 +340,84 @@ def test_omlx_transport_probe_measures_reranker_batch_downgrades(tmp_path) -> No
     assert record["service_request_failure_rate"] == pytest.approx(
         1 / record["service_request_count"]
     )
+    assert ERROR_RATE_ALARM in record["alarm_codes"]
     assert record["request_count"] == 4
     assert record["failed_request_count"] == 0
     assert record["request_failure_rate"] == 0
     assert record["service_pair_attempt_count"] > record["pair_attempt_count"]
     assert record["latency_by_path"]["reranker"]["sample_count"] == 5
     database.close()
+
+
+def test_runner_alarms_on_terminal_schema_failure_even_when_http_requests_succeed(
+    tmp_path,
+) -> None:
+    transport = FakeOmlxTransport(malformed_chat_ids=frozenset({"p-gray"}))
+    database, runner = _runner(tmp_path, transport)
+    spec = BenchmarkRunSpec.fixture(
+        kind="performance",
+        scenario="normal",
+        cases=_cases(),
+        stage2_config_hash=runner.profile.base_runtime_config_hash,
+        forced_qwen_pair_ids=("p-gray", "p-missing"),
+    )
+
+    record = runner.run(spec, _papers(), run_id="terminal-error-fixture").document()
+
+    assert record["request_failure_rate"] == 0.25
+    assert record["service_request_failure_rate"] == 0
+    assert ERROR_RATE_ALARM in record["alarm_codes"]
+    database.close()
+
+
+@pytest.mark.parametrize(("rss_gb", "expected"), ((28, False), (29, True)))
+def test_runner_uses_a_strict_28_gb_memory_watermark(
+    tmp_path, rss_gb, expected
+) -> None:
+    transport = FakeOmlxTransport()
+    database, runner = _runner(tmp_path, transport, rss_bytes=rss_gb * 1024 ** 3)
+    spec = BenchmarkRunSpec.fixture(
+        kind="performance",
+        scenario="normal",
+        cases=_cases(),
+        stage2_config_hash=runner.profile.base_runtime_config_hash,
+        forced_qwen_pair_ids=("p-gray", "p-missing"),
+    )
+
+    record = runner.run(spec, _papers(), run_id="memory-alarm-fixture").document()
+
+    assert record["peak_memory_gb"] == rss_gb
+    assert (MEMORY_WATERMARK_ALARM in record["alarm_codes"]) is expected
+    database.close()
+
+
+def test_benchmark_error_alarm_includes_exact_half_percent_from_either_rate() -> None:
+    common = {
+        "adjudicator_alarms": (),
+        "peak_memory_gb": 28,
+        "memory_pressure_critical": False,
+        "unbounded_memory_growth": False,
+    }
+
+    below = benchmark_alarm_codes(
+        **common,
+        request_failure_rate=0.0049,
+        service_request_failure_rate=0.0049,
+    )
+    terminal_boundary = benchmark_alarm_codes(
+        **common,
+        request_failure_rate=0.005,
+        service_request_failure_rate=0.0,
+    )
+    service_boundary = benchmark_alarm_codes(
+        **common,
+        request_failure_rate=0.0,
+        service_request_failure_rate=0.005,
+    )
+
+    assert ERROR_RATE_ALARM not in below
+    assert ERROR_RATE_ALARM in terminal_boundary
+    assert ERROR_RATE_ALARM in service_boundary
 
 
 def test_runner_rejects_input_drift_before_warmup(tmp_path) -> None:

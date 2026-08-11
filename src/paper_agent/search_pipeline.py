@@ -56,6 +56,7 @@ from .repository import PaperRepository
 from .providers.api import CrawlWindow, IdentityCandidate, SeedInput, VenueDescriptor
 from .search_runs import IncrementalScope, SearchRunCoordinator, SourceMetrics
 from .scope_filter import SCOPE_FILTER_VERSION, evaluate_scope, screening_scope_hash
+from .stage2_pipeline import ERROR_RATE_ALARM
 from .storage import Database
 from .verification import MetadataCoordinator, ProviderTrust, VenueContext
 
@@ -69,9 +70,15 @@ class PipelineResult:
     fanout: FanoutResult
     citation_round_ids: tuple[str, ...]
     eligible_paper_ids: tuple[str, ...] = ()
+    stage2_metrics: Mapping[str, Any] = field(default_factory=dict)
+    alarm_codes: tuple[str, ...] = ()
+
+    @property
+    def stage2(self) -> Mapping[str, Any]:
+        return self.stage2_metrics
 
 
-SEARCH_IMPLEMENTATION_VERSION = "phase2-search-v5"
+SEARCH_IMPLEMENTATION_VERSION = "phase2-search-v6"
 _OUTCOME_KEY = "pipeline_outcome_v1"
 _CAMPAIGN_USAGE_KEY = "campaign_usage_v1"
 
@@ -556,6 +563,8 @@ class SearchPipeline:
         eligible_paper_ids = scope_screener.eligible_ids(
             tuple(scope_screener.scope_statuses)
         )
+        stage2 = self._stage2_telemetry()
+        alarm_codes = tuple(str(code) for code in stage2.get("alarm_codes", ()))
         status = self.runs.finish_crawl(crawl_run_id, plan=self.plan, fanout=fanout, finished_at=observed_at)
         self._finish_campaign_budget(crawl_run_id, campaign)
         if (
@@ -597,6 +606,12 @@ class SearchPipeline:
                 "UPDATE crawl_runs SET status = ?, stats_json = ? WHERE crawl_run_id = ?",
                 (status, json.dumps(stats, sort_keys=True, separators=(",", ":")), crawl_run_id),
             )
+        if ERROR_RATE_ALARM in alarm_codes:
+            status = "incomplete"
+            self.database.connection.execute(
+                "UPDATE crawl_runs SET status = 'incomplete' WHERE crawl_run_id = ?",
+                (crawl_run_id,),
+            )
         result = PipelineResult(
             crawl_run_id,
             status,
@@ -605,11 +620,15 @@ class SearchPipeline:
             fanout,
             tuple(round_ids),
             eligible_paper_ids,
+            stage2,
+            alarm_codes,
         )
         row = self.database.connection.execute(
             "SELECT stats_json FROM crawl_runs WHERE crawl_run_id = ?", (crawl_run_id,)
         ).fetchone()
         stats = json.loads(row["stats_json"])
+        stats["stage2"] = stage2
+        stats["alarm_codes"] = list(alarm_codes)
         stats[_OUTCOME_KEY] = self._outcome_document(result)
         self.database.connection.execute(
             "UPDATE crawl_runs SET stats_json = ? WHERE crawl_run_id = ?",
@@ -709,6 +728,8 @@ class SearchPipeline:
             ),
             tuple(str(item) for item in outcome["citation_round_ids"]),
             tuple(str(item) for item in outcome["eligible_paper_ids"]),
+            dict(outcome.get("stage2", {})),
+            tuple(str(item) for item in outcome.get("alarm_codes", ())),
         )
 
     @staticmethod
@@ -719,6 +740,8 @@ class SearchPipeline:
             "arxiv_candidate_ids": list(result.arxiv_candidate_ids),
             "eligible_paper_ids": list(result.eligible_paper_ids),
             "citation_round_ids": list(result.citation_round_ids),
+            "stage2": dict(result.stage2_metrics),
+            "alarm_codes": list(result.alarm_codes),
             "fanout": {
                 "outcomes": [
                     {
@@ -734,6 +757,10 @@ class SearchPipeline:
                 "candidates_returned": result.fanout.candidates_returned,
             },
         }
+
+    def _stage2_telemetry(self) -> dict[str, object]:
+        telemetry = getattr(self.screener, "telemetry", None)
+        return dict(telemetry()) if callable(telemetry) else {}
 
     def _provider(self, name: str) -> Mapping[str, Any]:
         return next(item for item in self.plan["providers"] if item["provider"] == name)

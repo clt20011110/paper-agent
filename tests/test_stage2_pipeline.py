@@ -21,7 +21,17 @@ from paper_agent.stage2_backends import (
     StructuredOutputError,
     ThresholdArtifact,
 )
-from paper_agent.stage2_pipeline import Stage2Paper, Stage2Pipeline, Stage2Profile
+from paper_agent.stage2_pipeline import (
+    ADJUDICATOR_SHARE_ALARM,
+    ERROR_RATE_ALARM,
+    Stage2Paper,
+    Stage2Pipeline,
+    Stage2Profile,
+    Stage2Summary,
+    adjudicator_capacity,
+    adjudicator_share_alarms,
+    qwen_capacity_level,
+)
 from paper_agent.storage import Database
 
 
@@ -193,7 +203,9 @@ def test_stage2_batches_reranking_adjudicates_anomalies_and_persists_immutable_p
     assert [item.paper_id for item in adjudicator.requests] == ["gray", "missing"]
     assert summary.qwen_count == 2
     assert summary.qwen_share == 0.4
-    assert summary.qwen_alarms == ("qwen_share_over_15_percent", "qwen_share_over_30_percent")
+    assert summary.qwen_alarms == (ADJUDICATOR_SHARE_ALARM,)
+    assert summary.capacity_level == "severe"
+    assert summary.telemetry("stage2-run")["adjudicator_capacity"] == "severe"
 
     rows = database.connection.execute(
         "SELECT paper_id, input_hash, reason, model_id, model_revision FROM filter_decisions WHERE run_id = ? ORDER BY paper_id",
@@ -223,7 +235,7 @@ def test_stage2_resume_skips_exact_inputs_and_changed_input_requires_a_new_run(t
         "missing": AdjudicationDecision("missing", "relevant", 0.8, ("title_only",), "kept", ("title",)),
     })
     pipeline = Stage2Pipeline(database, reranker, adjudicator, _profile())
-    pipeline.run("resume-run", _papers())
+    first = pipeline.run("resume-run", _papers())
     rerank_calls = len(reranker.requests)
     adjudication_calls = len(adjudicator.requests)
 
@@ -234,6 +246,7 @@ def test_stage2_resume_skips_exact_inputs_and_changed_input_requires_a_new_run(t
     assert all(item.resumed for item in resumed.decisions)
     assert resumed.reranked_count == 0
     assert resumed.qwen_count == 2
+    assert resumed.telemetry("resume-run") == first.telemetry("resume-run")
 
     changed = tuple(
         Stage2Paper("high", "Changed high score", "ordinary abstract") if item.paper_id == "high" else item
@@ -265,6 +278,9 @@ def test_stage2_backend_and_schema_failures_never_auto_exclude(tmp_path) -> None
     for paper_id in ("gray", "high", "low", "missing"):
         assert decisions[paper_id].status is FilterStatus.NEEDS_REVIEW
         assert decisions[paper_id].reason_code == "reranker_backend_failure"
+    assert summary.error_count == 4
+    assert summary.error_rate == 0.8
+    assert ERROR_RATE_ALARM in summary.alarm_codes
     assert not adjudicator.requests
     database.close()
 
@@ -332,6 +348,8 @@ def test_stage2_retries_one_structured_output_failure_and_persists_telemetry(tmp
     assert gray.adjudicator_attempt_count == 2
     assert gray.adjudicator_retry_reason == "adjudicator_schema_failure"
     assert gray.adjudicator_retry_outcome == "succeeded"
+    assert summary.error_count == 0
+    assert ERROR_RATE_ALARM not in summary.alarm_codes
     assert sum(request.paper_id == "gray" for request in adjudicator.requests) == 2
     row = database.connection.execute(
         """SELECT status, adjudicator_attempt_count, adjudicator_retry_reason,
@@ -342,6 +360,31 @@ def test_stage2_retries_one_structured_output_failure_and_persists_telemetry(tmp
     assert tuple(row[:4]) == ("relevant", 2, "adjudicator_schema_failure", "succeeded")
     assert json.loads(row["reason"])["adjudicator_retry_outcome"] == "succeeded"
     database.close()
+
+
+@pytest.mark.parametrize(
+    ("share", "alarms", "capacity", "severity"),
+    (
+        (0.15, (), "normal", "normal"),
+        (0.150001, (ADJUDICATOR_SHARE_ALARM,), "warning", "warning"),
+        (0.30, (ADJUDICATOR_SHARE_ALARM,), "warning", "warning"),
+        (0.300001, (ADJUDICATOR_SHARE_ALARM,), "severe", "severe"),
+    ),
+)
+def test_stage2_adjudicator_capacity_thresholds_are_strict(
+    share, alarms, capacity, severity
+) -> None:
+    assert adjudicator_share_alarms(share) == alarms
+    assert qwen_capacity_level(share) == capacity
+    assert adjudicator_capacity(share) == severity
+
+
+def test_stage2_error_alarm_includes_the_exact_half_percent_boundary() -> None:
+    below = Stage2Summary((None,) * 201, 0, 0, 0.0, (), 1, 1 / 201)
+    boundary = Stage2Summary((None,) * 200, 0, 0, 0.0, (), 1, 0.005)
+
+    assert ERROR_RATE_ALARM not in below.alarm_codes
+    assert ERROR_RATE_ALARM in boundary.alarm_codes
 
 
 def test_stage2_persists_terminal_retry_failure_and_resume_does_not_recall_qwen(tmp_path) -> None:

@@ -24,9 +24,16 @@ from paper_agent.stage2_evaluation import (
     ThresholdArtifact,
     write_path_calibrator,
 )
-from paper_agent.stage2_pipeline import PathCalibration, Stage2Profile
+from paper_agent.stage2_pipeline import (
+    ADJUDICATOR_SHARE_ALARM,
+    ERROR_RATE_ALARM,
+    PathCalibration,
+    Stage2Profile,
+    Stage2Summary,
+)
 from paper_agent.stage2_search import (
     Stage2ReleaseError,
+    Stage2SearchScreener,
     load_stage2_benchmark_candidate,
     load_stage2_release,
 )
@@ -653,3 +660,78 @@ def test_release_rejects_disguised_or_noncanonical_omlx_versions(tmp_path, disgu
 
     with pytest.raises(Stage2ReleaseError, match="strict MAJOR.MINOR.PATCH"):
         load_stage2_release(release_path, plan)
+
+
+def test_stage2_search_telemetry_aggregates_counts_and_keeps_run_peaks(tmp_path) -> None:
+    class RerankedDecision:
+        reason_code = "reranker_threshold"
+
+    class DeterministicDecision:
+        reason_code = "document_type_included:article"
+
+    def decisions(reranked: int):
+        return tuple(RerankedDecision() for _ in range(reranked)) + tuple(
+            DeterministicDecision() for _ in range(100 - reranked)
+        )
+
+    with Database(tmp_path / "telemetry.sqlite3") as database:
+        database.migrate()
+        screener = Stage2SearchScreener(database, object(), "campaign")
+        screener.run_ids.extend(("stage2-a", "stage2-b"))
+        screener.summaries.update({
+            "stage2-a": Stage2Summary(
+                decisions(80),
+                80, 15, 0.15, (), 0, 0.0,
+            ),
+            "stage2-b": Stage2Summary(
+                decisions(90),
+                90, 31, 0.31,
+                (ADJUDICATOR_SHARE_ALARM,), 1, 0.01,
+            ),
+        })
+
+        telemetry = screener.telemetry()
+
+    assert telemetry["stage2_run_ids"] == ["stage2-a", "stage2-b"]
+    assert telemetry["screened_count"] == 200
+    assert telemetry["reranked_count"] == 170
+    assert telemetry["adjudicator_count"] == 46
+    assert telemetry["adjudicator_share"] == 0.23
+    assert telemetry["max_run_adjudicator_share"] == 0.31
+    assert telemetry["adjudicator_capacity"] == "severe"
+    assert telemetry["error_count"] == 1
+    assert telemetry["error_rate"] == 0.005
+    assert telemetry["alarm_codes"] == [
+        ADJUDICATOR_SHARE_ALARM,
+        ERROR_RATE_ALARM,
+    ]
+
+
+def test_stage2_search_error_alarm_uses_campaign_aggregate_rate(tmp_path) -> None:
+    class TechnicalDecision:
+        reason_code = "reranker_backend_failure"
+
+    class SuccessfulDecision:
+        reason_code = "reranker_threshold"
+
+    with Database(tmp_path / "aggregate-errors.sqlite3") as database:
+        database.migrate()
+        screener = Stage2SearchScreener(database, object(), "campaign")
+        screener.run_ids.extend(("stage2-small", "stage2-large"))
+        screener.summaries.update({
+            "stage2-small": Stage2Summary(
+                (TechnicalDecision(),), 1, 0, 0.0, (), 1, 1.0,
+            ),
+            "stage2-large": Stage2Summary(
+                tuple(SuccessfulDecision() for _ in range(1000)),
+                1000, 0, 0.0, (), 0, 0.0,
+            ),
+        })
+
+        telemetry = screener.telemetry()
+
+    assert telemetry["error_count"] == 1
+    assert telemetry["error_rate"] == pytest.approx(1 / 1001)
+    assert telemetry["max_run_error_rate"] == 1.0
+    assert ERROR_RATE_ALARM not in telemetry["alarm_codes"]
+    assert ERROR_RATE_ALARM in telemetry["run_details"][0]["alarm_codes"]
