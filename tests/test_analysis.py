@@ -7,6 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 from threading import Barrier, Lock
 from time import sleep
+from types import MappingProxyType
 
 import pytest
 import yaml
@@ -79,6 +80,7 @@ class FakeInvoker:
     evidence_unit: dict | None = None
     actual_model: str | None = "gpt-5.6-luna"
     actual_profile: str | None = "stage4_analysis_luna"
+    read_only_output: bool = False
 
     def invoke(self, request):
         assert self.calls is not None
@@ -110,7 +112,10 @@ class FakeInvoker:
             self.actual_model, self.actual_profile,
             output_hash=content_hash(output),
         )
-        return CodexExecResult(output, metadata)
+        return CodexExecResult(
+            MappingProxyType(output) if self.read_only_output else output,
+            metadata,
+        )
 
 
 def _coordinator(tmp_path: Path, factory):
@@ -183,6 +188,35 @@ def test_authorized_output_is_bound_persisted_and_resume_skips_model(tmp_path: P
         ).fetchone()[0]
         assert "# 论文分析：one" in coordinator.artifact_store.read_bytes(markdown_sha).decode("utf-8")
         assert database.connection.execute("SELECT status FROM pipeline_runs").fetchone()[0] == "complete"
+    finally:
+        database.close()
+
+
+def test_read_only_codex_output_validates_as_a_json_object(tmp_path: Path) -> None:
+    calls: list[object] = []
+    holder: dict[str, PaperAnalysisCoordinator] = {}
+    database, coordinator = _coordinator(
+        tmp_path,
+        lambda: FakeInvoker(
+            holder["coordinator"], calls=calls, read_only_output=True
+        ),
+    )
+    holder["coordinator"] = coordinator
+    try:
+        result = coordinator.run(
+            "run-read-only-output",
+            [
+                AnalysisInput(
+                    "one",
+                    "CC-BY-4.0",
+                    "open_license",
+                    normalized_text="a normalized paper",
+                )
+            ],
+        )
+
+        assert result.for_paper("one").status == "complete"
+        assert len(calls) == 1
     finally:
         database.close()
 

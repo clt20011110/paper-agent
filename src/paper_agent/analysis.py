@@ -721,7 +721,7 @@ class PaperAnalysisCoordinator:
                 "Luna invocation metadata does not match the frozen analysis profile"
             )
         try:
-            validate(output, ANALYSIS_SCHEMA)
+            validate(dict(output), ANALYSIS_SCHEMA)
         except SchemaValidationError as error:
             raise AnalysisValidationError(str(error)) from error
         bindings = {
