@@ -428,3 +428,136 @@ def test_stage2_finalize_annotations_cli_validates_before_private_write(
     output.write_text("reserved", encoding="utf-8")
     with pytest.raises(FileExistsError, match="already exists"):
         cli.main(arguments)
+
+
+def test_stage2_human_annotation_cli_builds_blind_worklists_and_verified_ledger(
+    tmp_path: Path,
+    sampling_inputs: tuple[Path, Path, Path, Path],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    snapshot_path, annotations_path, freeze_frame_path, receipt_path = sampling_inputs
+    manifest_path = tmp_path / "gold-manifest.json"
+    provenance_path = tmp_path / "provenance.json"
+    assert cli.main(_arguments(
+        snapshot_path,
+        annotations_path,
+        freeze_frame_path,
+        receipt_path,
+        manifest_path,
+        provenance_path,
+    )) == 0
+    capsys.readouterr()
+
+    annotation_a = tmp_path / "annotation-a.json"
+    annotation_b = tmp_path / "annotation-b.json"
+    common = [
+        "stage2-sampling", "annotation-worklist",
+        "--gold-manifest", str(manifest_path),
+        "--private-snapshot", str(snapshot_path),
+    ]
+    a_arguments = [*common, "--participant-id", "annotator-a", "--output", str(annotation_a)]
+    b_arguments = [*common, "--participant-id", "annotator-b", "--output", str(annotation_b)]
+
+    assert cli.main(["--dry-run", *a_arguments]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["row_count"] == 600
+    assert preview["written"] is False
+    assert not annotation_a.exists()
+    assert cli.main(a_arguments) == 0
+    capsys.readouterr()
+    assert cli.main(b_arguments) == 0
+    capsys.readouterr()
+
+    manifest = load_gold_manifest(manifest_path)
+    snapshot = load_private_corpus_snapshot(snapshot_path)
+    provisional = load_private_sampling_annotations(annotations_path, snapshot=snapshot).by_key
+    pairs = {pair.pair_id: pair for pair in manifest.pairs}
+    final_labels = {
+        pair_id: provisional[(pair.topic, pair.paper_id)].label
+        if (pair.topic, pair.paper_id) in provisional else 2
+        for pair_id, pair in pairs.items()
+    }
+    disagreement = next(pair_id for pair_id, label in final_labels.items() if label == 2)
+    for path, change_disagreement in ((annotation_a, False), (annotation_b, True)):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        assert document["role"] == "annotator"
+        assert len(document["rows"]) == 600
+        assert all(
+            not {
+                "paper_id", "source", "split", "paper_family", "sampling_probability",
+                "abstract_incomplete", "cross_language_match", "provisional_label",
+                "hard_negative", "hard_positive",
+            } & set(row)
+            for row in document["rows"]
+        )
+        for row in document["rows"]:
+            row["label"] = final_labels[row["pair_id"]]
+            if change_disagreement and row["pair_id"] == disagreement:
+                row["label"] = 1
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    adjudication_path = tmp_path / "adjudication.json"
+    adjudication_arguments = [
+        "stage2-sampling", "adjudication-worklist",
+        "--gold-manifest", str(manifest_path),
+        "--private-snapshot", str(snapshot_path),
+        "--annotation-a", str(annotation_a),
+        "--annotation-b", str(annotation_b),
+        "--participant-id", "adjudicator-c",
+        "--output", str(adjudication_path),
+    ]
+    assert cli.main(adjudication_arguments) == 0
+    adjudication_result = json.loads(capsys.readouterr().out)
+    assert adjudication_result["disagreement_count"] == 1
+    assert adjudication_result["pre_adjudication_quadratic_weighted_kappa"] >= 0.75
+    adjudication = json.loads(adjudication_path.read_text(encoding="utf-8"))
+    assert [row["pair_id"] for row in adjudication["rows"]] == [disagreement]
+    assert not any("annotator" in key for key in adjudication["rows"][0])
+    adjudication["rows"][0]["label"] = final_labels[disagreement]
+    adjudication_path.write_text(json.dumps(adjudication), encoding="utf-8")
+
+    ledger_path = tmp_path / "annotation-ledger.json"
+    assemble_arguments = [
+        "stage2-sampling", "assemble-annotation-ledger",
+        "--gold-manifest", str(manifest_path),
+        "--private-snapshot", str(snapshot_path),
+        "--curated-annotations", str(annotations_path),
+        "--sampling-provenance", str(provenance_path),
+        "--annotation-a", str(annotation_a),
+        "--annotation-b", str(annotation_b),
+        "--adjudication", str(adjudication_path),
+        "--output", str(ledger_path),
+    ]
+    bad_provenance = tmp_path / "bad-provenance.json"
+    bad_provenance_document = json.loads(provenance_path.read_text(encoding="utf-8"))
+    bad_provenance_document["sampling_annotations_hash"] = "0" * 64
+    bad_provenance.write_text(json.dumps(bad_provenance_document), encoding="utf-8")
+    bad_arguments = list(assemble_arguments)
+    bad_arguments[bad_arguments.index(str(provenance_path))] = str(bad_provenance)
+    with pytest.raises(ValueError, match="does not bind the supplied sampling annotations"):
+        cli.main(["--dry-run", *bad_arguments])
+    assert cli.main(["--dry-run", *assemble_arguments]) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run["status"] == "validated"
+    assert dry_run["label_count"] == 600
+    assert not ledger_path.exists()
+    assert cli.main(assemble_arguments) == 0
+    assembled = json.loads(capsys.readouterr().out)
+    assert assembled["status"] == "complete"
+    assert assembled["hard_negative_count"] >= 90
+    assert assembled["hard_positive_count"] >= 2
+    assert not {"annotator_ids", "adjudicator_id", "annotations", "adjudications"} & set(assembled)
+    assert ledger_path.is_file()
+
+    private_labels = tmp_path / "private-gold-labels.json"
+    assert cli.main([
+        "stage2-sampling", "finalize-annotations",
+        "--gold-manifest", str(manifest_path),
+        "--annotation-ledger", str(ledger_path),
+        "--private-labels-output", str(private_labels),
+    ]) == 0
+    finalized = json.loads(capsys.readouterr().out)
+    assert finalized["label_count"] == 600
+    assert private_labels.is_file()
+    with pytest.raises(FileExistsError, match="already exists"):
+        cli.main(assemble_arguments)

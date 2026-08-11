@@ -498,7 +498,54 @@ worklist，并用锁定的本地 Qwen3.5-9B 以 101 个一次性结构化批请�
 
 `gold-manifest` 是不含标签的 600-pair 公共清单，可进入 release；private snapshot、HIDDEN_REAL freeze frame、curated annotations、抽样 provenance 和原始标注 ledger 均由 evaluator 托管（当前设计下 provenance 也不公开）。`--private-labels` 必须精确覆盖该 600-pair manifest，绝不是完整 snapshot 的全量标签。
 
-原始 ledger 完成后必须通过受控转换生成 promotion 私有标签，不得手工拼装：
+不得手工拼装原始 ledger。先为两位标注者分别生成盲表；盲表只包含 topic、title、abstract、language
+和稳定 pair_id，不暴露 split、paper-family、抽样概率、临时标签或 hard flags。每位标注者独立把自己的
+`label: null` 填成 0..3：
+
+```sh
+paper-agent stage2-sampling annotation-worklist \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --participant-id annotator-a \
+  --output /secure/evaluator/annotation-a.json
+
+paper-agent stage2-sampling annotation-worklist \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --participant-id annotator-b \
+  --output /secure/evaluator/annotation-b.json
+```
+
+两份盲表填完后生成只含分歧项且不显示两人原标签的第三人盲表；该盲表绑定两份已完成输入，仲裁后
+替换任一标注文件会失败。QWK 低于 0.75 时该命令直接失败，不能以仲裁掩盖一致性不足：
+
+```sh
+paper-agent stage2-sampling adjudication-worklist \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --annotation-a /secure/evaluator/annotation-a.json \
+  --annotation-b /secure/evaluator/annotation-b.json \
+  --participant-id adjudicator-c \
+  --output /secure/evaluator/adjudication.json
+```
+
+第三人填完所有分歧后，由受控命令组装并验证 ledger。sampling provenance 必须绑定生成 manifest 时
+使用的 curated hard flags；只有与最终人工 label 兼容的候选才进入 private difficulty strata，最终配额仍由
+`GoldManifest.validate` fail-closed：
+
+```sh
+paper-agent --dry-run stage2-sampling assemble-annotation-ledger \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --curated-annotations /secure/evaluator/curated-annotations.json \
+  --sampling-provenance /secure/evaluator/provenance.json \
+  --annotation-a /secure/evaluator/annotation-a.json \
+  --annotation-b /secure/evaluator/annotation-b.json \
+  --adjudication /secure/evaluator/adjudication.json \
+  --output /secure/evaluator/annotation-ledger.json
+```
+
+dry-run 通过后移除 `--dry-run` 创建 no-replace ledger，再通过受控转换生成 promotion 私有标签：
 
 ```sh
 paper-agent --dry-run stage2-sampling finalize-annotations \

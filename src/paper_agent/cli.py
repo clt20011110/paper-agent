@@ -80,7 +80,14 @@ from .repository import PaperRepository
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import Stage2ReleaseError, load_stage2_release
 from .stage2_annotation_artifacts import (
+    STAGE2_ANNOTATION_RUBRIC_HASH,
+    assemble_annotation_ledger,
     load_annotation_ledger,
+    load_human_annotation_worklist,
+    make_adjudication_worklist,
+    make_human_annotation_worklist,
+    write_annotation_ledger,
+    write_human_annotation_worklist,
     write_private_gold_labels,
 )
 from .stage2_evaluation import load_gold_manifest
@@ -109,6 +116,7 @@ from .stage2_sampling import (
     load_curation_receipt,
     load_curation_worklist,
     load_hidden_real_selection,
+    load_gold_sampling_provenance,
     load_private_corpus_snapshot,
     load_private_sampling_annotations,
     make_curation_receipt,
@@ -351,6 +359,36 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     stage2_sampling_build.add_argument(
         "--provenance-output", required=True, type=Path
     )
+    stage2_annotation_worklist = stage2_sampling_commands.add_parser(
+        "annotation-worklist",
+        help="export one blind 600-pair worklist for an independent annotator",
+    )
+    stage2_annotation_worklist.add_argument("--gold-manifest", required=True, type=Path)
+    stage2_annotation_worklist.add_argument("--private-snapshot", required=True, type=Path)
+    stage2_annotation_worklist.add_argument("--participant-id", required=True)
+    stage2_annotation_worklist.add_argument("--output", required=True, type=Path)
+    stage2_adjudication_worklist = stage2_sampling_commands.add_parser(
+        "adjudication-worklist",
+        help="export a blind worklist containing only completed-annotation disagreements",
+    )
+    stage2_adjudication_worklist.add_argument("--gold-manifest", required=True, type=Path)
+    stage2_adjudication_worklist.add_argument("--private-snapshot", required=True, type=Path)
+    stage2_adjudication_worklist.add_argument("--annotation-a", required=True, type=Path)
+    stage2_adjudication_worklist.add_argument("--annotation-b", required=True, type=Path)
+    stage2_adjudication_worklist.add_argument("--participant-id", required=True)
+    stage2_adjudication_worklist.add_argument("--output", required=True, type=Path)
+    stage2_assemble_annotations = stage2_sampling_commands.add_parser(
+        "assemble-annotation-ledger",
+        help="assemble human annotation handoffs into the private verified ledger",
+    )
+    stage2_assemble_annotations.add_argument("--gold-manifest", required=True, type=Path)
+    stage2_assemble_annotations.add_argument("--private-snapshot", required=True, type=Path)
+    stage2_assemble_annotations.add_argument("--curated-annotations", required=True, type=Path)
+    stage2_assemble_annotations.add_argument("--sampling-provenance", required=True, type=Path)
+    stage2_assemble_annotations.add_argument("--annotation-a", required=True, type=Path)
+    stage2_assemble_annotations.add_argument("--annotation-b", required=True, type=Path)
+    stage2_assemble_annotations.add_argument("--adjudication", required=True, type=Path)
+    stage2_assemble_annotations.add_argument("--output", required=True, type=Path)
     stage2_sampling_finalize = stage2_sampling_commands.add_parser(
         "finalize-annotations",
         help="validate a double-annotation ledger and create private promotion labels",
@@ -694,6 +732,21 @@ def main(
         return _finish(args, _stage2_sampling_build(args))
     if (
         args.command == "stage2-sampling"
+        and args.stage2_sampling_command == "annotation-worklist"
+    ):
+        return _finish(args, _stage2_annotation_worklist(args))
+    if (
+        args.command == "stage2-sampling"
+        and args.stage2_sampling_command == "adjudication-worklist"
+    ):
+        return _finish(args, _stage2_adjudication_worklist(args))
+    if (
+        args.command == "stage2-sampling"
+        and args.stage2_sampling_command == "assemble-annotation-ledger"
+    ):
+        return _finish(args, _stage2_assemble_annotation_ledger(args))
+    if (
+        args.command == "stage2-sampling"
         and args.stage2_sampling_command == "finalize-annotations"
     ):
         return _finish(args, _stage2_annotations_finalize(args))
@@ -940,6 +993,131 @@ def _stage2_curation_import(args: argparse.Namespace) -> dict[str, Any]:
         "worklist_hash": worklist.hash(),
         "written": not args.dry_run,
     }
+
+
+def _stage2_annotation_worklist(args: argparse.Namespace) -> dict[str, Any]:
+    if os.path.lexists(args.output):
+        raise FileExistsError(f"Stage 2 annotation worklist output already exists: {args.output}")
+    manifest = load_gold_manifest(args.gold_manifest)
+    snapshot = load_private_corpus_snapshot(args.private_snapshot)
+    worklist = make_human_annotation_worklist(
+        manifest,
+        snapshot,
+        participant_id=args.participant_id,
+    )
+    if not args.dry_run:
+        write_human_annotation_worklist(args.output, worklist)
+    return {
+        "command": "stage2-sampling.annotation-worklist",
+        "dry_run": args.dry_run,
+        "gold_manifest_hash": worklist["gold_manifest_hash"],
+        "output": str(args.output),
+        "row_count": len(worklist["rows"]),
+        "rubric_hash": STAGE2_ANNOTATION_RUBRIC_HASH,
+        "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
+    }
+
+
+def _stage2_adjudication_worklist(args: argparse.Namespace) -> dict[str, Any]:
+    if os.path.lexists(args.output):
+        raise FileExistsError(f"Stage 2 adjudication worklist output already exists: {args.output}")
+    manifest = load_gold_manifest(args.gold_manifest)
+    snapshot = load_private_corpus_snapshot(args.private_snapshot)
+    first, second = _load_completed_annotators(args, manifest, snapshot)
+    worklist, kappa = make_adjudication_worklist(
+        manifest,
+        snapshot,
+        first,
+        second,
+        participant_id=args.participant_id,
+    )
+    if not args.dry_run:
+        write_human_annotation_worklist(args.output, worklist)
+    return {
+        "command": "stage2-sampling.adjudication-worklist",
+        "disagreement_count": len(worklist["rows"]),
+        "dry_run": args.dry_run,
+        "gold_manifest_hash": worklist["gold_manifest_hash"],
+        "output": str(args.output),
+        "pre_adjudication_quadratic_weighted_kappa": kappa,
+        "rubric_hash": STAGE2_ANNOTATION_RUBRIC_HASH,
+        "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
+    }
+
+
+def _stage2_assemble_annotation_ledger(args: argparse.Namespace) -> dict[str, Any]:
+    if os.path.lexists(args.output):
+        raise FileExistsError(f"Stage 2 annotation ledger output already exists: {args.output}")
+    manifest = load_gold_manifest(args.gold_manifest)
+    snapshot = load_private_corpus_snapshot(args.private_snapshot)
+    first, second = _load_completed_annotators(args, manifest, snapshot)
+    adjudication = load_human_annotation_worklist(
+        args.adjudication,
+        manifest=manifest,
+        snapshot=snapshot,
+        role="adjudicator",
+        require_complete=True,
+    )
+    curated_annotations = load_private_sampling_annotations(
+        args.curated_annotations,
+        snapshot=snapshot,
+    )
+    sampling_provenance = load_gold_sampling_provenance(
+        args.sampling_provenance,
+        snapshot=snapshot,
+        annotations=curated_annotations,
+        manifest=manifest,
+    )
+    document, ledger = assemble_annotation_ledger(
+        manifest,
+        first,
+        second,
+        adjudication,
+        curated_annotations,
+        sampling_provenance_hash=sampling_provenance.hash(),
+    )
+    if not args.dry_run:
+        write_annotation_ledger(args.output, document)
+    return {
+        "annotation_artifact_hash": ledger.summary.annotation_artifact_hash,
+        "command": "stage2-sampling.assemble-annotation-ledger",
+        "disagreement_count": len(ledger.summary.disagreement_pair_ids),
+        "dry_run": args.dry_run,
+        "gold_manifest_hash": document["gold_manifest_hash"],
+        "hard_negative_count": len(ledger.gold_labels.hard_negative_pair_ids),
+        "hard_positive_count": len(ledger.gold_labels.hard_positive_pair_ids),
+        "label_count": len(ledger.gold_labels.labels),
+        "output": str(args.output),
+        "pre_adjudication_quadratic_weighted_kappa": ledger.summary.quadratic_weighted_kappa,
+        "rubric_hash": STAGE2_ANNOTATION_RUBRIC_HASH,
+        "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
+    }
+
+
+def _load_completed_annotators(
+    args: argparse.Namespace,
+    manifest: Any,
+    snapshot: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return (
+        load_human_annotation_worklist(
+            args.annotation_a,
+            manifest=manifest,
+            snapshot=snapshot,
+            role="annotator",
+            require_complete=True,
+        ),
+        load_human_annotation_worklist(
+            args.annotation_b,
+            manifest=manifest,
+            snapshot=snapshot,
+            role="annotator",
+            require_complete=True,
+        ),
+    )
 
 
 def _stage2_annotations_finalize(args: argparse.Namespace) -> dict[str, Any]:

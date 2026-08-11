@@ -130,7 +130,10 @@ snapshot 全量标签。
 [stage2-real-curation-frame-20260812.json](docs/smoke/stage2-real-curation-frame-20260812.json)。其中本地
 9B 输出仅是抽样临时标签，人工双标与第三人仲裁仍未完成，不能作为 production release。
 
-两位标注者和第三人完成 ledger 后，先验证再生成 promotion 私有输入：
+不要手工拼装 ledger。使用 `annotation-worklist` 生成两份独立盲表，使用
+`adjudication-worklist` 生成只含分歧的第三人盲表，再由 `assemble-annotation-ledger` 做完整门禁并写入
+no-replace ledger；命令和 custody 要求见
+[Stage 2 hidden evaluator runbook](docs/security/stage2-hidden-evaluator-custody.md)。随后生成 promotion 私有输入：
 
 ```sh
 paper-agent --dry-run stage2-sampling finalize-annotations \

@@ -10,6 +10,8 @@
     "gold_manifest_hash",
     "rubric_version",
     "rubric_hash",
+    "sampling_provenance_hash",
+    "annotation_input_hash",
     "annotator_ids",
     "adjudicator_id",
     "annotations",
@@ -22,6 +24,8 @@
     "gold_manifest_hash": {"$ref": "#/$defs/sha256"},
     "rubric_version": {"const": 1},
     "rubric_hash": {"$ref": "#/$defs/sha256"},
+    "sampling_provenance_hash": {"$ref": "#/$defs/sha256"},
+    "annotation_input_hash": {"$ref": "#/$defs/sha256"},
     "annotator_ids": {
       "type": "array",
       "minItems": 2,

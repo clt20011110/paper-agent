@@ -40,7 +40,56 @@ Only HIDDEN_REAL has an interpretable `sampling_probability=150/N`. DEV and HIDD
 
 The label-free 600-pair gold manifest may enter the release bundle. The snapshot, curated annotations, sampling provenance (private in the current design), and raw annotation ledger remain in evaluator custody. `--private-labels` is exactly the labels for those 600 manifest pairs, never a full-snapshot label export.
 
-After the human ledger is complete, derive the private promotion input inside the same custody boundary:
+Do not assemble the raw ledger by hand. Generate one blind worklist for each annotator; each person independently
+fills the `label` fields. The files omit split membership, sampling strata, provisional labels, and hard flags:
+
+```sh
+paper-agent stage2-sampling annotation-worklist \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --participant-id annotator-a \
+  --output /secure/evaluator/annotation-a.json
+
+paper-agent stage2-sampling annotation-worklist \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --participant-id annotator-b \
+  --output /secure/evaluator/annotation-b.json
+```
+
+After both are complete, create the third-person worklist. It contains only disagreements and does not show either
+annotator's label. It binds the exact two completed inputs, so replacing either annotation after handoff is rejected.
+The command refuses to proceed when pre-adjudication QWK is below 0.75:
+
+```sh
+paper-agent stage2-sampling adjudication-worklist \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --annotation-a /secure/evaluator/annotation-a.json \
+  --annotation-b /secure/evaluator/annotation-b.json \
+  --participant-id adjudicator-c \
+  --output /secure/evaluator/adjudication.json
+```
+
+Once the adjudicator fills every disagreement, assemble the ledger under evaluator custody:
+
+```sh
+paper-agent --dry-run stage2-sampling assemble-annotation-ledger \
+  --gold-manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --curated-annotations /secure/evaluator/curated-annotations.json \
+  --sampling-provenance /secure/evaluator/provenance.json \
+  --annotation-a /secure/evaluator/annotation-a.json \
+  --annotation-b /secure/evaluator/annotation-b.json \
+  --adjudication /secure/evaluator/adjudication.json \
+  --output /secure/evaluator/annotation-ledger.json
+```
+
+The sampling provenance binds the curated hard-flag candidates used to build the public manifest. Assembly retains a
+candidate only when it is compatible with the final human label, then applies the existing final gold quotas
+fail-closed. Participant IDs are custody labels, not identity authentication; the evaluator remains responsible for
+ensuring that they name two independent humans and a distinct third person. Remove `--dry-run` only after validation
+passes. Finally, derive the private promotion input inside the same custody boundary:
 
 ```sh
 paper-agent --dry-run stage2-sampling finalize-annotations \
