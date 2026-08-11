@@ -32,7 +32,7 @@ from paper_agent.report_plan import (
 )
 from paper_agent.reporting import stable_claim_id
 
-from test_report_reduce import _claim, _draft, _fixture, _sol_grant
+from test_report_reduce import _claim, _draft, _fixture, _sol_grant, _unit
 
 
 def _one_shot_bundle(
@@ -439,7 +439,8 @@ def test_one_shot_report_uses_one_sol_call_and_resumes_without_another(tmp_path)
             processing_grants=grants,
         )
 
-        assert first.status == second.status == "complete"
+        assert first.status == "complete", first.error
+        assert second.status == "complete", second.error
         assert len(fake.calls) == 1
         assert fake.calls[0].call_kind == "one_shot_report"
         prompt = json.loads(fake.calls[0].prompt)
@@ -671,7 +672,8 @@ def test_cross_section_claim_is_derived_per_section_and_resume_does_not_redispat
             processing_grants=grants,
         )
 
-        assert first.status == second.status == "complete"
+        assert first.status == "complete", first.error
+        assert second.status == "complete", second.error
         assert len(fake.calls) == 1
         report = tmp_path / "release" / "reports" / report_run_id
         claims = [
@@ -726,6 +728,76 @@ def test_cross_section_claim_is_derived_per_section_and_resume_does_not_redispat
         ).fetchone()[0] == 1
     finally:
         fixture.database.close()
+
+
+def test_ungrouped_comparison_gets_a_local_secondary_block_disclosure() -> None:
+    unit = _unit()
+    unit.update({
+        "dataset_version": None,
+        "comparison_eligibility": "not_comparable",
+        "missing_fields": ["dataset_version"],
+    })
+    reference = {
+        "kind": "paper_evidence",
+        "evidence_level": "full_text_direct",
+        "paper_id": "p1",
+        "analysis_run_id": "analysis-p1",
+        "evidence_unit": unit,
+        "locator": "page 4",
+        "search_plan_id": None,
+        "source_run_id": None,
+        "query_id": None,
+        "statistic": None,
+        "calculation": None,
+    }
+    output = {
+        "claims": [{
+            "claim_ref": "comparison",
+            "subject_id": "method",
+            "predicate_id": "differs",
+            "object_or_scope_id": "protocol",
+            "qualifier_context": "frozen evidence",
+            "research_question_id": "rq1",
+            "report_section": "resource_comparison",
+            "claim_text": "两个结果不可直接比较。",
+            "claim_type": "comparison",
+            "supporting_evidence": [reference],
+            "contradicting_evidence": [],
+            "evidence_level": "full_text_direct",
+            "confidence": "medium",
+            "known_limitations": ["数据集版本缺失。"],
+            "status": "supported",
+        }],
+        "blocks": [
+            {
+                "block_id": "home",
+                "block_kind": "prose",
+                "section_id": "resource_comparison",
+                "text": "两个结果不可直接比较。[@p1]",
+                "claim_refs": ["comparison"],
+                "citation_paper_ids": ["p1"],
+            },
+            {
+                "block_id": "secondary",
+                "block_kind": "prose",
+                "section_id": "field_taxonomy",
+                "text": "该证据用于方法分类。[@p1]",
+                "claim_refs": ["comparison"],
+                "citation_paper_ids": ["p1"],
+            },
+        ],
+    }
+
+    coordinator = object.__new__(report_direct.DirectReportCoordinator)
+    claims, document, _, _ = coordinator._normalize_output("report-1", output)
+
+    assert {claim["report_section"] for claim in claims} == {
+        "field_taxonomy",
+        "resource_comparison",
+    }
+    home, secondary = document["blocks"]
+    assert home["text"].count("不可直接比较") == 1
+    assert secondary["text"].endswith("所绑定的比较证据不可直接比较。")
 
 
 def test_exclusive_procedural_reference_note_becomes_exact_local_block(

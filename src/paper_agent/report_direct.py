@@ -26,6 +26,7 @@ from .codex_exec import (
 )
 from .processing import ProcessingDecision, ProcessingGate, SUMMARY_MODEL
 from .report_artifacts import (
+    INCOMPARABLE_DISCLOSURE,
     LOCAL_REFERENCES_NOTE,
     RENDERER_VERSION,
     ReportArtifactError,
@@ -892,6 +893,12 @@ class DirectReportCoordinator:
             drafts[claim_ref] = draft
             if _is_procedural_reference_note(draft):
                 procedural_refs.add(claim_ref)
+        ungrouped_comparison_refs = {
+            claim_ref
+            for claim_ref, draft in drafts.items()
+            if draft["claim_type"] == "comparison"
+            and _draft_comparison_group_id(draft) is None
+        }
 
         resolved_blocks: list[
             tuple[Mapping[str, Any], tuple[str, ...], bool]
@@ -945,22 +952,11 @@ class DirectReportCoordinator:
                 raise DirectReportError(
                     f"one-shot claim_ref is absent from every block: {claim_ref}"
                 )
-            paper_units = [
-                reference["evidence_unit"]
-                for field in ("supporting_evidence", "contradicting_evidence")
-                for reference in draft[field]
-                if reference["kind"] == "paper_evidence"
-            ]
-            group_id = None
-            if draft["claim_type"] == "comparison":
-                assessments = tuple(comparison_assessment(unit) for unit in paper_units)
-                comparable = tuple(
-                    item.comparison_group_id
-                    for item in assessments
-                    if item.eligibility == "comparable"
-                )
-                if len(comparable) >= 2 and len(set(comparable)) == 1:
-                    group_id = comparable[0]
+            group_id = (
+                _draft_comparison_group_id(draft)
+                if draft["claim_type"] == "comparison"
+                else None
+            )
             for section_id in sections:
                 qualifier = {
                     "qualifier_context": draft["qualifier_context"],
@@ -1005,11 +1001,20 @@ class DirectReportCoordinator:
                     for claim_ref in resolved_refs
                 ]
             )
+            text = str(block["text"])
+            if (
+                any(
+                    claim_ref in ungrouped_comparison_refs
+                    for claim_ref in resolved_refs
+                )
+                and INCOMPARABLE_DISCLOSURE.search(text) is None
+            ):
+                text = text.rstrip() + " 所绑定的比较证据不可直接比较。"
             blocks.append({
                 "block_id": block["block_id"],
                 "block_kind": "caption" if procedural else block["block_kind"],
                 "section_id": section_id,
-                "text": LOCAL_REFERENCES_NOTE if procedural else block["text"],
+                "text": LOCAL_REFERENCES_NOTE if procedural else text,
                 "claim_ids": claim_ids,
                 "citation_paper_ids": [] if procedural else block["citation_paper_ids"],
             })
@@ -1783,6 +1788,23 @@ def _is_procedural_reference_note(claim: Mapping[str, Any]) -> bool:
         and names_references
         and names_local_generation
     )
+
+
+def _draft_comparison_group_id(draft: Mapping[str, Any]) -> str | None:
+    assessments = tuple(
+        comparison_assessment(reference["evidence_unit"])
+        for field in ("supporting_evidence", "contradicting_evidence")
+        for reference in draft[field]
+        if reference["kind"] == "paper_evidence"
+    )
+    comparable = tuple(
+        item.comparison_group_id
+        for item in assessments
+        if item.eligibility == "comparable"
+    )
+    if len(comparable) >= 2 and len(set(comparable)) == 1:
+        return comparable[0]
+    return None
 
 
 def _timestamp(value: datetime) -> str:
