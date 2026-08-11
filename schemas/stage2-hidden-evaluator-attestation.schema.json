@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-hidden-evaluator-attestation.schema.json",
+  "title": "Stage 2 hidden promotion Ed25519 attestation",
+  "description": "A signed public-safe statement from the evaluator that holds hidden labels. Labels, annotations, raw predictions, pair IDs, scores, and private marker state are intentionally absent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "payload", "payload_sha256", "signature_b64"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "payload": {"$ref": "#/$defs/payload"},
+    "payload_sha256": {"$ref": "#/$defs/sha256"},
+    "signature_b64": {
+      "type": "string",
+      "description": "Standard padded base64 encoding of the 64-byte Ed25519 signature over the domain-separated canonical payload.",
+      "pattern": "^[A-Za-z0-9+/]{86}==$"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "pathHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reranker", "qwen"],
+      "properties": {
+        "reranker": {"$ref": "#/$defs/sha256"},
+        "qwen": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "attestation_type",
+        "evaluator_key_id",
+        "evaluator_id",
+        "trust_manifest_hash",
+        "issued_at",
+        "candidate_id",
+        "evaluation_manifest_hash",
+        "evaluation_run_id",
+        "stage2_config_hash",
+        "model_lock_hashes",
+        "calibrator_hashes",
+        "threshold_hashes",
+        "hidden_pair_universe_hashes",
+        "hidden_split_pair_counts",
+        "prediction_submission_hash",
+        "promotion_marker_hash",
+        "consumed_hidden_splits",
+        "gate_policy_hash",
+        "result_summary"
+      ],
+      "properties": {
+        "schema_version": {"const": "1"},
+        "attestation_type": {"const": "stage2-hidden-promotion"},
+        "evaluator_key_id": {"$ref": "#/$defs/identifier"},
+        "evaluator_id": {"$ref": "#/$defs/identifier"},
+        "trust_manifest_hash": {"$ref": "#/$defs/sha256"},
+        "issued_at": {"type": "string", "format": "date-time"},
+        "candidate_id": {"type": "string", "minLength": 1},
+        "evaluation_manifest_hash": {"$ref": "#/$defs/sha256"},
+        "evaluation_run_id": {"$ref": "#/$defs/identifier"},
+        "stage2_config_hash": {"$ref": "#/$defs/sha256"},
+        "model_lock_hashes": {"$ref": "#/$defs/pathHashes"},
+        "calibrator_hashes": {"$ref": "#/$defs/pathHashes"},
+        "threshold_hashes": {"$ref": "#/$defs/pathHashes"},
+        "hidden_pair_universe_hashes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hidden_hard", "hidden_real"],
+          "properties": {
+            "hidden_hard": {"$ref": "#/$defs/sha256"},
+            "hidden_real": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "hidden_split_pair_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hidden_hard", "hidden_real"],
+          "properties": {
+            "hidden_hard": {"const": 150},
+            "hidden_real": {"const": 150}
+          }
+        },
+        "prediction_submission_hash": {"$ref": "#/$defs/sha256"},
+        "promotion_marker_hash": {"$ref": "#/$defs/sha256"},
+        "consumed_hidden_splits": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "hidden_hard"},
+            {"const": "hidden_real"}
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "gate_policy_hash": {"$ref": "#/$defs/sha256"},
+        "result_summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["passed", "failures", "gate_versions"],
+          "properties": {
+            "passed": {"type": "boolean"},
+            "failures": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1}
+            },
+            "gate_versions": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["promotion", "determinism"],
+              "properties": {
+                "promotion": {"const": "1"},
+                "determinism": {"const": "1"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    }
+  }
+}

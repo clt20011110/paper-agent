@@ -33,6 +33,12 @@ def make_pair_id(topic: str, paper_id: str) -> str:
     return f"pair-{_hash([topic, paper_id])}"
 
 
+def pair_universe_hash(pair_ids: Sequence[str]) -> str:
+    """Hash a pair universe with the ordering rule used by Stage 2 evaluation."""
+
+    return _hash(sorted(pair_ids))
+
+
 class GoldSplit(StrEnum):
     DEV = "dev"
     HIDDEN_HARD = "hidden_hard"
@@ -228,7 +234,12 @@ def write_gold_manifest(path: Path, manifest: GoldManifest) -> None:
 
 
 def load_gold_manifest(path: Path) -> GoldManifest:
-    document = json.loads(path.read_text(encoding="utf-8"))
+    return gold_manifest_from_document(json.loads(path.read_text(encoding="utf-8")))
+
+
+def gold_manifest_from_document(document: object) -> GoldManifest:
+    """Parse the exact public gold-manifest format without exposing labels."""
+
     if (
         not isinstance(document, dict)
         or set(document) != {"version", "corpus_hash", "main_languages", "pairs"}
@@ -1088,7 +1099,9 @@ class PromotionEvaluator:
                 for split in (GoldSplit.HIDDEN_HARD, GoldSplit.HIDDEN_REAL)
             }
             universe_hashes = {
-                split: _hash(sorted(pair.pair_id for pair in hidden_pairs if pair.split is split))
+                split: pair_universe_hash(
+                    [pair.pair_id for pair in hidden_pairs if pair.split is split]
+                )
                 for split in (GoldSplit.HIDDEN_HARD, GoldSplit.HIDDEN_REAL)
             }
             candidate_results[candidate_id] = PromotionCandidateResult(

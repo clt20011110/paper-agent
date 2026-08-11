@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-release-evidence.schema.json",
+  "title": "Stage 2 publicly verifiable release evidence index",
+  "description": "An immutable index of public inputs to the Stage 2 gates. Gate outcomes are deliberately excluded: a verifier must recompute them from the referenced raw evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_type",
+    "candidate_id",
+    "evaluation_manifest_hash",
+    "stage2_config_hash",
+    "model_lock_hashes",
+    "calibrator_hashes",
+    "threshold_hashes",
+    "gold_manifest",
+    "hidden_attestation",
+    "public_gates"
+  ],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "evidence_type": {"const": "stage2_release_evidence"},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "evaluation_manifest_hash": {"$ref": "#/$defs/sha256"},
+    "stage2_config_hash": {"$ref": "#/$defs/sha256"},
+    "model_lock_hashes": {"$ref": "#/$defs/pathHashes"},
+    "calibrator_hashes": {"$ref": "#/$defs/pathHashes"},
+    "threshold_hashes": {"$ref": "#/$defs/pathHashes"},
+    "gold_manifest": {"$ref": "#/$defs/artifactRef"},
+    "hidden_attestation": {"$ref": "#/$defs/artifactRef"},
+    "public_gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["structured_replay", "rationale", "parity", "benchmark", "soak"],
+      "properties": {
+        "structured_replay": {"$ref": "#/$defs/manifestAndRecords"},
+        "rationale": {"$ref": "#/$defs/manifestAndRecords"},
+        "parity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["manifest", "scores"],
+          "properties": {
+            "manifest": {"$ref": "#/$defs/artifactRef"},
+            "scores": {"$ref": "#/$defs/artifactRef"}
+          }
+        },
+        "benchmark": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["manifest", "records"],
+          "properties": {
+            "manifest": {"$ref": "#/$defs/artifactRef"},
+            "records": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "items": {"$ref": "#/$defs/artifactRef"}
+            }
+          }
+        },
+        "soak": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["manifest", "record"],
+          "properties": {
+            "manifest": {"$ref": "#/$defs/artifactRef"},
+            "record": {"$ref": "#/$defs/artifactRef"}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "pathHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reranker", "qwen"],
+      "properties": {
+        "reranker": {"$ref": "#/$defs/sha256"},
+        "qwen": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "manifestAndRecords": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest", "records"],
+      "properties": {
+        "manifest": {"$ref": "#/$defs/artifactRef"},
+        "records": {"$ref": "#/$defs/artifactRef"}
+      }
+    }
+  }
+}
