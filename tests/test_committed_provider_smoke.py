@@ -110,3 +110,50 @@ def test_committed_crossref_full_pipeline_smoke_evidence() -> None:
     ]
     assert len(transport_audit["requests"]) == 3
     assert all(item["status"] == "success" for item in transport_audit["requests"])
+
+
+def test_committed_public_oa_default_transport_failure_evidence() -> None:
+    evidence = _json(
+        Path(__file__).parents[1]
+        / "docs"
+        / "smoke"
+        / "public-oa-default-20260811-failed.json"
+    )
+
+    assert evidence["source_commit"] == "570a28a7e3e357ad9bf8d0484e0bcb6e3d667e89"
+    assert evidence["success"] is False
+    assert evidence["production_path"] == {
+        "metadata_transport": "ControlledHTTPTransport",
+        "pdf_fetcher": "urllib_fetch",
+        "resolver_registry": "default",
+    }
+    assert evidence["candidate"] == {
+        "access_basis": "open_license",
+        "candidate_id": "location-76145a707867addc3a7c94ea230b64e6",
+        "host": "europepmc.org",
+        "license": "cc by",
+        "pmcid": "PMC7683441",
+        "policy_decision": "allow",
+        "policy_reason_code": "compatible_open_license",
+        "resolver": "europe_pmc",
+    }
+    assert evidence["fetch_request"]["status"] == "consumed"
+    assert evidence["attempt"] == {
+        "failure_category": "network_error",
+        "http_status": None,
+        "status": "failed_retryable",
+    }
+    assert evidence["run"] == {
+        "paper_reason_code": "manual_queue_required",
+        "paper_status": "manual_required",
+        "run_id": "public-oa-smoke-20260811T040226Z",
+        "stage3_status": "manual_required",
+    }
+    assert evidence["artifact"] is None
+    assert [item["provider"] for item in evidence["metadata_requests"]] == [
+        "europe_pmc",
+        "unpaywall",
+    ]
+    for request in evidence["metadata_requests"]:
+        assert urlsplit(request["url"]).query == ""
+        assert "@" not in request["url"]

@@ -1,0 +1,61 @@
+{
+  "artifact": null,
+  "attempt": {
+    "failure_category": "network_error",
+    "http_status": null,
+    "status": "failed_retryable"
+  },
+  "candidate": {
+    "access_basis": "open_license",
+    "candidate_id": "location-76145a707867addc3a7c94ea230b64e6",
+    "host": "europepmc.org",
+    "license": "cc by",
+    "pmcid": "PMC7683441",
+    "policy_decision": "allow",
+    "policy_reason_code": "compatible_open_license",
+    "resolver": "europe_pmc"
+  },
+  "fetch_request": {
+    "request_id": "fetch-f47c5f3b503f2b23ab8f03ced773c233",
+    "status": "consumed"
+  },
+  "fixed_paper": {
+    "doi": "10.3758/s13421-020-01060-2",
+    "pmcid": "PMC7683441"
+  },
+  "metadata_requests": [
+    {
+      "content_type": "application/json;charset=UTF-8",
+      "operation": "search",
+      "provider": "europe_pmc",
+      "rate_limit": {},
+      "response_size_bytes": 5533,
+      "status": "success",
+      "url": "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+    },
+    {
+      "content_type": "application/json",
+      "operation": "resolve",
+      "provider": "unpaywall",
+      "rate_limit": {},
+      "response_size_bytes": 4043,
+      "status": "success",
+      "url": "https://api.unpaywall.org/v2/10.3758%2Fs13421-020-01060-2"
+    }
+  ],
+  "production_path": {
+    "metadata_transport": "ControlledHTTPTransport",
+    "pdf_fetcher": "urllib_fetch",
+    "resolver_registry": "default"
+  },
+  "purpose": "manual public OA PDF release smoke",
+  "run": {
+    "paper_reason_code": "manual_queue_required",
+    "paper_status": "manual_required",
+    "run_id": "public-oa-smoke-20260811T040226Z",
+    "stage3_status": "manual_required"
+  },
+  "source_commit": "570a28a7e3e357ad9bf8d0484e0bcb6e3d667e89",
+  "success": false,
+  "timestamp": "2026-08-11T04:02:26+00:00"
+}
