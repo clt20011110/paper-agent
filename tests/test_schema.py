@@ -13,7 +13,7 @@ SCHEMAS = Path(__file__).parents[1] / "schemas"
 
 def test_every_schema_is_valid_draft_2020_12() -> None:
     paths = sorted(SCHEMAS.glob("*.schema.json"))
-    assert len(paths) == 33
+    assert len(paths) == 35
     for path in paths:
         Draft202012Validator.check_schema(json.loads(path.read_text(encoding="utf-8")))
 

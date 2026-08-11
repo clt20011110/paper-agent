@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-private-gold-labels.schema.json",
+  "title": "Stage 2 private gold labels",
+  "description": "Private evaluator input. This format contains labels and difficulty strata and must not be included in a release bundle, package fixture, or template.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "gold_manifest_hash",
+    "annotation_artifact_hash",
+    "labels",
+    "hard_negative_pair_ids",
+    "hard_positive_pair_ids"
+  ],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "gold_manifest_hash": {"$ref": "#/$defs/sha256"},
+    "annotation_artifact_hash": {"$ref": "#/$defs/sha256"},
+    "labels": {
+      "type": "array",
+      "minItems": 600,
+      "maxItems": 600,
+      "items": {"$ref": "#/$defs/label"}
+    },
+    "hard_negative_pair_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 600,
+      "items": {"$ref": "#/$defs/pairId"}
+    },
+    "hard_positive_pair_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 600,
+      "items": {"$ref": "#/$defs/pairId"}
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "pairId": {
+      "type": "string",
+      "pattern": "^pair-[a-f0-9]{64}$"
+    },
+    "label": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pair_id", "label"],
+      "properties": {
+        "pair_id": {"$ref": "#/$defs/pairId"},
+        "label": {"type": "integer", "minimum": 0, "maximum": 3}
+      }
+    }
+  }
+}
