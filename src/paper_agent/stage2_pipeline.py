@@ -335,6 +335,7 @@ class Stage2Decision:
     adjudicator_score: float | None = None
     adjudicator_probability: float | None = None
     rationale: str | None = None
+    evidence_fields: tuple[str, ...] = ()
     adjudicated: bool = False
     adjudicator_attempt_count: int = 0
     adjudicator_retry_reason: str | None = None
@@ -793,6 +794,7 @@ class Stage2Pipeline:
             adjudicator_score=response.score,
             adjudicator_probability=adjudicator_probability,
             rationale=rationale,
+            evidence_fields=response.evidence_fields,
             adjudicated=True,
             adjudicator_attempt_count=attempt_count,
             adjudicator_retry_reason=retry_reason,
@@ -900,6 +902,7 @@ class Stage2Pipeline:
                 adjudicator_score=detail.get("adjudicator_score"),
                 adjudicator_probability=detail.get("adjudicator_probability"),
                 rationale=detail.get("rationale"),
+                evidence_fields=tuple(detail.get("evidence_fields", ())),
                 adjudicated=bool(detail.get("adjudicated")),
                 adjudicator_attempt_count=int(row["adjudicator_attempt_count"]),
                 adjudicator_retry_reason=row["adjudicator_retry_reason"],
@@ -943,6 +946,7 @@ class Stage2Pipeline:
                     "reranker_probability": decision.reranker_probability,
                     "adjudicator_score": decision.adjudicator_score,
                     "adjudicator_probability": decision.adjudicator_probability,
+                    "evidence_fields": list(decision.evidence_fields),
                     "model": model_id,
                     "revision": model_revision,
                     "adjudicated": decision.adjudicated,

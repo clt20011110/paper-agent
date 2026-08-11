@@ -214,6 +214,7 @@ def test_stage2_batches_reranking_adjudicates_anomalies_and_persists_immutable_p
     assert len(rows) == 5
     gray = next(row for row in rows if row["paper_id"] == "gray")
     assert "This addresses the topic." in gray["reason"]
+    assert json.loads(gray["reason"])["evidence_fields"] == ["abstract"]
     low = next(row for row in rows if row["paper_id"] == "low")
     assert "rationale" not in low["reason"]
     assert gray["model_id"] == "qwen-model"
@@ -244,6 +245,7 @@ def test_stage2_resume_skips_exact_inputs_and_changed_input_requires_a_new_run(t
     assert len(reranker.requests) == rerank_calls
     assert len(adjudicator.requests) == adjudication_calls
     assert all(item.resumed for item in resumed.decisions)
+    assert next(item for item in resumed.decisions if item.paper_id == "gray").evidence_fields == ("abstract",)
     assert resumed.reranked_count == 0
     assert resumed.qwen_count == 2
     assert resumed.telemetry("resume-run") == first.telemetry("resume-run")

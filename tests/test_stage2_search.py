@@ -545,6 +545,7 @@ def test_qwen_uses_its_calibrator_and_conflicts_fail_open(tmp_path) -> None:
         assert "qwen_calibration_conflict" in persisted["conflict"]["reason_code"]
         assert persisted["conflict"]["adjudicator_score"] == 0.9
         assert persisted["conflict"]["adjudicator_probability"] > 0.8
+        assert persisted["conflict"]["evidence_fields"] == ["abstract"]
         assert persisted["conflict"]["qwen_calibrator_hash"] == (
             released.profile.adjudicator_calibration.calibrator.hash()
         )
