@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -175,3 +176,72 @@ def test_stage2_sampling_cli_rejects_one_path_for_both_outputs(
 
     with pytest.raises(cli.CliUsageError, match="different paths"):
         cli.main(_arguments(snapshot_path, annotations_path, output, output))
+
+
+def test_stage2_finalize_annotations_cli_validates_before_private_write(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_hash = "a" * 64
+    annotation_hash = "b" * 64
+    label_store_hash = "c" * 64
+    manifest = SimpleNamespace(
+        hash=lambda: manifest_hash,
+        validate_sampling_structure=lambda: None,
+    )
+    gold_labels = SimpleNamespace(
+        labels={f"pair-{index}": index % 4 for index in range(600)},
+        hash=lambda: label_store_hash,
+    )
+    ledger = SimpleNamespace(
+        gold_labels=gold_labels,
+        summary=SimpleNamespace(
+            annotation_artifact_hash=annotation_hash,
+            quadratic_weighted_kappa=0.81,
+        ),
+    )
+    writes: list[tuple[Path, object, object]] = []
+    monkeypatch.setattr(cli, "load_gold_manifest", lambda _path: manifest)
+    monkeypatch.setattr(
+        cli,
+        "load_annotation_ledger",
+        lambda _path, *, manifest: ledger,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_private_gold_labels",
+        lambda path, value, *, manifest: writes.append((path, value, manifest)),
+    )
+    output = tmp_path / "private-labels.json"
+    arguments = [
+        "stage2-sampling",
+        "finalize-annotations",
+        "--gold-manifest",
+        str(tmp_path / "gold-manifest.json"),
+        "--annotation-ledger",
+        str(tmp_path / "annotation-ledger.json"),
+        "--private-labels-output",
+        str(output),
+    ]
+
+    assert cli.main(["--dry-run", *arguments]) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run["status"] == "validated"
+    assert dry_run["label_count"] == 600
+    assert dry_run["pre_adjudication_quadratic_weighted_kappa"] == 0.81
+    assert writes == []
+
+    assert cli.main(arguments) == 0
+    completed = json.loads(capsys.readouterr().out)
+    assert completed["status"] == "complete"
+    assert completed["annotation_artifact_hash"] == annotation_hash
+    assert completed["gold_label_store_hash"] == label_store_hash
+    assert writes == [(output, ledger, manifest)]
+    assert "annotator_ids" not in completed
+    assert "annotations" not in completed
+    assert "adjudications" not in completed
+
+    output.write_text("reserved", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="already exists"):
+        cli.main(arguments)

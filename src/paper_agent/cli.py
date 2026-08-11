@@ -79,6 +79,11 @@ from .report_plan import ReportPlanBundle
 from .repository import PaperRepository
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import Stage2ReleaseError, load_stage2_release
+from .stage2_annotation_artifacts import (
+    load_annotation_ledger,
+    write_private_gold_labels,
+)
+from .stage2_evaluation import load_gold_manifest
 from .stage2_evaluator import (
     issue_hidden_promotion_from_payload,
     load_hidden_evaluator_private_key,
@@ -306,6 +311,19 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     )
     stage2_sampling_build.add_argument(
         "--provenance-output", required=True, type=Path
+    )
+    stage2_sampling_finalize = stage2_sampling_commands.add_parser(
+        "finalize-annotations",
+        help="validate a double-annotation ledger and create private promotion labels",
+    )
+    stage2_sampling_finalize.add_argument(
+        "--gold-manifest", required=True, type=Path
+    )
+    stage2_sampling_finalize.add_argument(
+        "--annotation-ledger", required=True, type=Path
+    )
+    stage2_sampling_finalize.add_argument(
+        "--private-labels-output", required=True, type=Path
     )
 
     benchmark = subcommands.add_parser(
@@ -620,6 +638,11 @@ def main(
         return _finish(args, _filter(args))
     if args.command == "stage2-sampling" and args.stage2_sampling_command == "build":
         return _finish(args, _stage2_sampling_build(args))
+    if (
+        args.command == "stage2-sampling"
+        and args.stage2_sampling_command == "finalize-annotations"
+    ):
+        return _finish(args, _stage2_annotations_finalize(args))
     if args.command == "benchmark-stage2":
         if args.benchmark_command == "measure":
             result = measure_stage2_benchmark(
@@ -749,6 +772,37 @@ def _stage2_sampling_build(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _stage2_annotations_finalize(args: argparse.Namespace) -> dict[str, Any]:
+    if os.path.lexists(args.private_labels_output):
+        raise FileExistsError(
+            f"Stage 2 private labels output already exists: {args.private_labels_output}"
+        )
+
+    manifest = load_gold_manifest(args.gold_manifest)
+    manifest.validate_sampling_structure()
+    ledger = load_annotation_ledger(args.annotation_ledger, manifest=manifest)
+    if not args.dry_run:
+        write_private_gold_labels(
+            args.private_labels_output,
+            ledger,
+            manifest=manifest,
+        )
+    return {
+        "annotation_artifact_hash": ledger.summary.annotation_artifact_hash,
+        "command": "stage2-sampling.finalize-annotations",
+        "dry_run": args.dry_run,
+        "gold_label_store_hash": ledger.gold_labels.hash(),
+        "gold_manifest_hash": manifest.hash(),
+        "label_count": len(ledger.gold_labels.labels),
+        "pre_adjudication_quadratic_weighted_kappa": (
+            ledger.summary.quadratic_weighted_kappa
+        ),
+        "private_labels_output": str(args.private_labels_output),
+        "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
+    }
+
+
 def _stage2_release_assemble(args: argparse.Namespace) -> dict[str, Any]:
     """Verify and optionally write one public-safe Stage 2 release."""
 
@@ -853,9 +907,9 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
         # A gold manifest and v2 bundles are public inputs.  Do this before
         # touching labels or submissions so malformed mappings cannot consume
         # the hidden holdout.
-        from .stage2_evaluation import load_gold_manifest
+        from .stage2_evaluation import load_gold_manifest as load_promotion_manifest
 
-        manifest = load_gold_manifest(args.manifest)
+        manifest = load_promotion_manifest(args.manifest)
         manifest.validate_sampling_structure()
         validate_promotion_candidate_bundles(
             candidate_paths, expected_manifest_hash=manifest.hash()

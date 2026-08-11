@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -11,8 +12,11 @@ from paper_agent.stage2_annotation_artifacts import (
     AnnotationLedgerArtifactError,
     annotation_ledger_from_document,
     load_annotation_ledger,
+    private_gold_labels_document,
+    write_private_gold_labels,
 )
-from paper_agent.stage2_evaluation import GoldManifest, GoldPair, GoldSplit
+from paper_agent.stage2_evaluation import GoldLabelStore, GoldManifest, GoldPair, GoldSplit
+from paper_agent.stage2_promotion_artifacts import load_private_gold_labels
 
 
 def _manifest() -> GoldManifest:
@@ -107,3 +111,38 @@ def test_annotation_ledger_requires_a_distinct_third_adjudicator_for_disagreemen
     })
     with pytest.raises(AnnotationLedgerArtifactError, match="only disagreements"):
         annotation_ledger_from_document(document, manifest=manifest)
+
+
+def test_verified_annotation_ledger_writes_private_gold_labels_without_raw_annotations(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    ledger = annotation_ledger_from_document(_ledger(manifest), manifest=manifest)
+
+    document = private_gold_labels_document(ledger, manifest=manifest)
+    assert document["labels"] == sorted(document["labels"], key=lambda row: row["pair_id"])
+    assert document["annotation_artifact_hash"] == ledger.gold_labels.annotation_artifact_hash
+    assert document["hard_negative_pair_ids"] == sorted(ledger.gold_labels.hard_negative_pair_ids)
+    assert document["hard_positive_pair_ids"] == sorted(ledger.gold_labels.hard_positive_pair_ids)
+    assert not {
+        "annotator_ids", "adjudicator_id", "annotations", "adjudications", "rubric_version", "rubric_hash",
+    } & set(document)
+
+    path = tmp_path / "private-gold-labels.json"
+    write_private_gold_labels(path, ledger, manifest=manifest)
+    assert load_private_gold_labels(path, manifest=manifest) == ledger.gold_labels
+
+    with pytest.raises(FileExistsError):
+        write_private_gold_labels(path, ledger, manifest=manifest)
+
+    mismatched = replace(
+        ledger,
+        gold_labels=GoldLabelStore(
+            ledger.gold_labels.labels,
+            "0" * 64,
+            ledger.gold_labels.hard_negative_pair_ids,
+            ledger.gold_labels.hard_positive_pair_ids,
+        ),
+    )
+    with pytest.raises(AnnotationLedgerArtifactError, match="do not match"):
+        private_gold_labels_document(mismatched, manifest=manifest)

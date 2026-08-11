@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
+from tempfile import mkstemp
 from typing import Any, Mapping
 
 from .schema import SchemaValidationError, validate
@@ -72,8 +74,66 @@ def load_annotation_ledger(path: Path, *, manifest: GoldManifest) -> AnnotationL
     return annotation_ledger_from_document(document, manifest=manifest)
 
 
+def private_gold_labels_document(
+    ledger: AnnotationLedger, *, manifest: GoldManifest
+) -> dict[str, Any]:
+    """Derive the sealed promotion-label artifact from a verified ledger."""
+
+    if (
+        ledger.summary.annotation_artifact_hash
+        != ledger.gold_labels.annotation_artifact_hash
+        or ledger.summary.labels != ledger.gold_labels.labels
+    ):
+        raise AnnotationLedgerArtifactError(
+            "annotation ledger summary and gold labels do not match"
+        )
+    manifest.validate(ledger.gold_labels)
+    document = {
+        "schema_version": "1",
+        "gold_manifest_hash": manifest.hash(),
+        "annotation_artifact_hash": ledger.gold_labels.annotation_artifact_hash,
+        "labels": [
+            {"pair_id": pair_id, "label": ledger.gold_labels.labels[pair_id]}
+            for pair_id in sorted(ledger.gold_labels.labels)
+        ],
+        "hard_negative_pair_ids": sorted(ledger.gold_labels.hard_negative_pair_ids),
+        "hard_positive_pair_ids": sorted(ledger.gold_labels.hard_positive_pair_ids),
+    }
+    _validate_private_gold_labels(document)
+    return document
+
+
+def write_private_gold_labels(
+    path: Path, ledger: AnnotationLedger, *, manifest: GoldManifest
+) -> None:
+    """Atomically create one private gold-label artifact without replacement."""
+
+    document = private_gold_labels_document(ledger, manifest=manifest)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(
+                json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
+                + b"\n"
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def _validate(document: Mapping[str, Any]) -> None:
     try:
         validate(document, "stage2-annotation-ledger.schema.json")
+    except SchemaValidationError as error:
+        raise AnnotationLedgerArtifactError(str(error)) from error
+
+
+def _validate_private_gold_labels(document: Mapping[str, Any]) -> None:
+    try:
+        validate(document, "stage2-private-gold-labels.schema.json")
     except SchemaValidationError as error:
         raise AnnotationLedgerArtifactError(str(error)) from error
