@@ -43,15 +43,28 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
   其中 Stage 2 model locks、全部示例 config、`skills/paper-agent/SKILL.md` 和 agent metadata 必须存在。
   隔离环境的普通 `paper-agent doctor` 必须返回成功，且 `stage2_model_locks=pass`；不允许仅接受
   非零退出码后跳过该检查。实际把 config 和 skill 从该路径复制到临时目标，确认无需源码 checkout。
+- [ ] 告警契约回归覆盖 Stage 2 的 15%/30%、0.5%、28 GiB 边界、resume 等价和 report Codex
+  budget exhaustion；search audit 只保留 allowlist rate/quota/credit headers，凭据与 cookie fixture
+  不得出现在产物中。
 
 ## 人工生产门禁
 
+以下项目必须针对当前 source commit 留存真实运行证据；mock、fixture、snapshot replay、`--dry-run`、
+`doctor` 和旧 commit 的 smoke evidence 均不能代替。
+
 - [ ] 在新环境按 getting-started 文档安装，复制同版本模板，并以 `doctor --production-ready`
   验证预期门禁。
-- [ ] 完成一次受控、小预算的真实 smoke：已批准 QueryPlan、最少 provider/论文、准确 Stage 2
-  release、审计输出和明确 operator/contact。它不能进入普通 PR CI。
-- [ ] 如 smoke 使用授权下载或远程模型，逐项确认独立 grant、scope、expiry、artifact/lineage hash，
-  并确认没有凭据、cookie 或全文写入日志。
+- [ ] 以冻结真实样本完成 Stage 2 release gate：600 个 topic-paper pair（300 DEV、150 hidden
+  hard-case、150 hidden real-distribution）、至少 1,000 次 adjudicator structured replay、normal/stress
+  各三次 1,000-case 性能回放和 10,000-case soak；同时保存 label-custody evaluator、rationale/parity
+  gate、manifest、release/model hash、环境和 benchmark records。fixture 规模记录不能替代。
+- [ ] 完成受控、小预算的真实 provider smoke：使用已批准 QueryPlan、至少一个实际启用的 required
+  provider 和明确 operator/contact；保存当前 source commit、provider manifest/response hash、search
+  audit、request attempts，以及 rate/credit 值或明确的 `unavailable`。它不能进入普通 PR CI。
+- [ ] 完成真实 PDF smoke：至少一篇 public OA 论文走完 candidate → probe → fetch → PDF validation；
+  若发布 authorized browser 能力，另以用户可见的已登录会话和 exact grant 完成一篇允许域名与
+  selection scope 内的成功下载，并保存 grant/skill/selection/artifact hash。CAPTCHA、403 或
+  `manual_required` 只证明安全停止，不算成功 smoke；不得记录凭据、cookie 或全文。
 - [ ] 如发布报告工作流，保存 ReportPlan、deterministic verifier、独立 Sol audit 和 coverage
   evidence；blocker 或 major 非零则不发布 report/latest。
 

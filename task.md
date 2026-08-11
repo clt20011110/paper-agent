@@ -1232,37 +1232,44 @@ Codex skill：
 
 ## 14. 最终验收清单
 
-- [ ] 所有命名会议和期刊均由 descriptor/provider 架构支持。
-- [ ] 新增同平台 venue 不需要修改核心调度代码。
-- [ ] 第三方 entry point 在 import 前绑定 distribution/version/digest 校验并默认隔离执行；skill/provider 内容漂移会禁用旧信任与授权。
-- [ ] 用户种子、官方 venue、Crossref/DBLP、Semantic Scholar/OpenAlex、PubMed/Europe PMC、arXiv 和 OA resolver 按 role 解耦；可选发现源默认关闭且不充当权威书目来源。
-- [ ] compiled QueryPlan 与 ReportPlan 有显式 approval record/hash；运行时配置/provider/corpus/prompt 漂移会拒绝执行并要求新 plan。
-- [ ] 实际 query/filters/cursors、source errors、query hash、provider 版本与逐来源结果均可重放和审计；每个 required role 均由 manifest 中可用 provider 满足。
-- [ ] backward/forward citation snowballing 有方向测试、深度/预算/饱和门，并且新增候选不绕过 Stage 2。
-- [ ] 正式版/preprint 关系、字段 provenance、verification_status 和逐来源 citation count 可追溯；冲突不被静默覆盖。
-- [ ] provider independence/upstream family 可审计；共享上游不算两票，聚合源只能产生 venue_candidate，正式 venue membership 必须有官方收录证据，primary 缺失时 run 为 incomplete。
-- [ ] SQLite 是唯一事实源，JSONL/CSV 导入导出和旧配置迁移可用。
-- [ ] 多机分片不共享写 SQLite，snapshot、fencing、artifact bundle 和幂等合并测试通过。
-- [ ] 增量抓取、去重、合并和断点续跑幂等。
-- [ ] arXiv 独立候选集默认不进入最终报告。
-- [ ] Stage 2 通过隐藏金标质量门和批量吞吐门。
-- [ ] 正则未命中不会导致论文被静默丢弃。
-- [ ] 模型、revision、量化、prompt/schema 和阈值均可追溯。
-- [ ] PDF 下载遵循 per-URL candidate→probe→fetch 链；purpose×access_basis×license×version×terms 通过 policy matrix，能发现 URL/非空字段不被视为自动授权，失败进入人工队列。
-- [ ] 授权浏览器下载默认关闭，只有显式域名/scope/时限和 unattended 授权才能启用。
-- [ ] 不可变 grant/approval hash 是下载与数据共享的唯一授权事实源；YAML grant_defaults 不能覆盖 scope，撤销/过期/digest 漂移即时生效。
-- [ ] Stage 4 固定使用 gpt-5.6-luna，区分 full_pdf/abstract_only，并为数值比较输出规范化 dataset/split/metric/protocol/baseline 字段或 not_comparable。
-- [ ] PDF/正文进入远程 Luna、受限派生 analysis/evidence 进入 Sol 前，分别通过 remote_model_processing policy 或 artifact/lineage-hash-scoped grant；无授权内容进入对应远程调用次数为 0。
-- [ ] Stage 4b 固定使用 gpt-5.6-sol；ReportPlan、search audit、Claims-Evidence Matrix、comparison groups 和 paper/claim coverage 完整。
-- [ ] ReportDocument AST 的每个实质性 block 可机检绑定 claim/citation；stable claim/comparison IDs 与 split/merge/retire lineage 支持可信增量 diff。
-- [ ] 中文报告按语义主题综合而非论文顺序堆叠；冲突、不可比、abstract_only、preprint 和未完成来源均显式披露。
-- [ ] 各 Stage 4b call_kind 的 prompt/schema 独立冻结；repair 后新 hash 重新通过 deterministic verifier 和全新 Sol reaudit 才可标 complete。
-- [ ] 报告 run 不可变，latest 原子更新，增量 diff 可定位受影响 claim/section。
-- [ ] Stage 3/4/4b 的 CodexExecProfile、reasoning、sandbox、网络及 call-specific prompt/output schema 均被冻结并核对实际调用。
-- [ ] OpenRouter/OpenCode 运行时依赖和配置已移除或迁移。
-- [ ] 无自动云回退、模型升级、无限重试或静默截断。
-- [ ] CI 完全离线且不需要真实模型、Codex 配额或订阅登录。
-- [ ] Codex skill 与 CLI 共用同一核心实现。
+- [x] 所有命名会议和期刊均由 descriptor/provider 架构支持。
+- [x] 新增同平台 venue 不需要修改核心调度代码。
+- [x] 第三方 entry point 在 import 前绑定 distribution/version/digest 校验并默认隔离执行；skill/provider 内容漂移会禁用旧信任与授权。
+- [x] 用户种子、官方 venue、Crossref/DBLP、Semantic Scholar/OpenAlex、PubMed/Europe PMC、arXiv 和 OA resolver 按 role 解耦；可选发现源默认关闭且不充当权威书目来源。
+- [x] compiled QueryPlan 与 ReportPlan 有显式 approval record/hash；运行时配置/provider/corpus/prompt 漂移会拒绝执行并要求新 plan。
+- [x] 实际 query/filters/cursors、source errors、query hash、provider 版本与逐来源结果均可重放和审计；每个 required role 均由 manifest 中可用 provider 满足。
+- [x] backward/forward citation snowballing 有方向测试、深度/预算/饱和门，并且新增候选不绕过 Stage 2。
+- [x] 正式版/preprint 关系、字段 provenance、verification_status 和逐来源 citation count 可追溯；冲突不被静默覆盖。
+- [x] provider independence/upstream family 可审计；共享上游不算两票，聚合源只能产生 venue_candidate，正式 venue membership 必须有官方收录证据，primary 缺失时 run 为 incomplete。
+- [x] SQLite 是唯一事实源，JSONL/CSV 导入导出和旧配置迁移可用。
+- [x] 多机分片不共享写 SQLite，snapshot、fencing、artifact bundle 和幂等合并测试通过。
+- [x] 增量抓取、去重、合并和断点续跑幂等。
+- [x] arXiv 独立候选集默认不进入最终报告。
+- [ ] Stage 2 已以冻结真实样本完成 §5.4–5.5 全部 release gate：600-pair 金标、至少 1,000 次 structured replay、normal/stress 各三次 1,000-case 性能回放及 10,000-case soak，并保存模型/release、manifest、隐藏 evaluator、环境和 benchmark record hash；fixture/mock 不得勾选本项。
+- [x] 正则未命中不会导致论文被静默丢弃。
+- [x] 模型、revision、量化、prompt/schema 和阈值均可追溯。
+- [x] PDF 下载遵循 per-URL candidate→probe→fetch 链；purpose×access_basis×license×version×terms 通过 policy matrix，能发现 URL/非空字段不被视为自动授权，失败进入人工队列。
+- [x] 授权浏览器下载默认关闭，只有显式域名/scope/时限和 unattended 授权才能启用。
+- [x] 不可变 grant/approval hash 是下载与数据共享的唯一授权事实源；YAML grant_defaults 不能覆盖 scope，撤销/过期/digest 漂移即时生效。
+- [x] Stage 4 固定使用 gpt-5.6-luna，区分 full_pdf/abstract_only，并为数值比较输出规范化 dataset/split/metric/protocol/baseline 字段或 not_comparable。
+- [x] PDF/正文进入远程 Luna、受限派生 analysis/evidence 进入 Sol 前，分别通过 remote_model_processing policy 或 artifact/lineage-hash-scoped grant；无授权内容进入对应远程调用次数为 0。
+- [x] Stage 4b 固定使用 gpt-5.6-sol；ReportPlan、search audit、Claims-Evidence Matrix、comparison groups 和 paper/claim coverage 完整。
+- [x] ReportDocument AST 的每个实质性 block 可机检绑定 claim/citation；stable claim/comparison IDs 与 split/merge/retire lineage 支持可信增量 diff。
+- [x] 中文报告按语义主题综合而非论文顺序堆叠；冲突、不可比、abstract_only、preprint 和未完成来源均显式披露。
+- [x] 各 Stage 4b call_kind 的 prompt/schema 独立冻结；repair 后新 hash 重新通过 deterministic verifier 和全新 Sol reaudit 才可标 complete。
+- [x] 报告 run 不可变，latest 原子更新，增量 diff 可定位受影响 claim/section。
+- [x] Stage 3/4/4b 的 CodexExecProfile、reasoning、sandbox、网络及 call-specific prompt/output schema 均被冻结并核对实际调用。
+- [x] OpenRouter/OpenCode 运行时依赖和配置已移除或迁移。
+- [x] 无自动云回退、模型升级、无限重试或静默截断。
+- [x] CI 完全离线且不需要真实模型、Codex 配额或订阅登录。
+- [x] Codex skill 与 CLI 共用同一核心实现。
+
+### 14.1 真实联网与授权外部门禁
+
+以下项目按当前 source commit 验收；离线 fixture、历史 snapshot、`--dry-run` 和 `doctor` 不得替代。
+
+- [ ] 受控小预算真实 provider smoke 已通过并保存 QueryPlan、provider manifest、response、search-audit 和 rate/credit evidence；provider 未返回额度 header 时明确记录 `unavailable`。
+- [ ] 真实 PDF smoke 已通过：public OA 链成功；若发布 authorized browser 能力，另有 exact grant 与用户可见授权会话的成功下载证据。Cloudflare、CAPTCHA 或登录未就绪时保持未勾选并报告 external gate。
 
 ## 15. 实施停止条件
 

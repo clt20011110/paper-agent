@@ -121,3 +121,29 @@ coverage ledger、diff 与对应配置/release，直至组织的审计保留期�
 视为硬门。对请求数、错误率、Stage 2 adjudicator 比例、下载失败、Codex 调用/令牌预算和未完成
 coverage 设置告警。升级依赖、provider manifest、模型、prompt、schema、policy 或 skill 后，运行
 离线测试和 `doctor`；任何 hash 漂移都需要新的计划/release/grant，而不是原地覆盖历史 run。
+
+### 稳定告警码
+
+命令单行 JSON 中的 `alarm_codes` 是稳定机器码；解释告警时同时读取 `status`、对应指标和
+typed `error`，不能只匹配终端文本。
+
+| 告警码 | 触发与状态 | 操作员动作 |
+| --- | --- | --- |
+| `stage2.adjudicator_share_exceeded` | 任一 Stage 2 子 run 的 adjudicator share `> 15%`；`> 30%` 为 `severe`。该容量告警本身不改变筛选决定，也不单独把 run 置为 `incomplete`。 | 检查 `stage2.max_run_adjudicator_share`、`stage2.run_details` 和路由原因；不得扩大自动拒绝区间。长期超过 30% 时重校 query/阈值或扩容，并创建新 release/plan。 |
+| `stage2.error_rate_exceeded` | filter 单 run 或 search campaign 的终态技术错误率 `>= 0.5%`；search 顶层按 `error_count / screened_count` 聚合。benchmark 的终态 case 错误率或 oMLX service-request 失败率任一 `>= 0.5%` 也触发。相关命令返回 `incomplete`。 | 检查 `error_count`、`error_rate`、`max_run_error_rate` 和 `run_details`，benchmark 另查两类 request failure rate。成功重试不计终态错误，但失败 service attempt 仍计入 service rate。修复服务、schema 或校准后创建新 run；同一 run 的 terminal decision 不会因 `resume` 重发。 |
+| `stage2.memory_watermark_exceeded` | `benchmark-stage2 measure` 的峰值 `> 28 GiB`、macOS memory-pressure critical，或热身后出现无界增长；返回 `incomplete`。恰好 28 GiB 不越线。 | 确认 RSS 覆盖 runner 和全部 oMLX PID；按 64 → 32 → 16 下调 batch，保存失败 record，并用新 benchmark run 重测。 |
+| `report.codex_budget_exhausted` | 继续预留 Sol call/input token 会越过批准的 ReportPlan，或恢复时发现已持久化 budget error；返回 `incomplete`，且不再 dispatch 付费调用。 | 对比 `codex_budget.calls_reserved`、`input_tokens_reserved` 与两个 approved limits，并读取 typed `error`。`resume` 不增加获批预算；扩预算必须批准新 ReportPlan 并创建新 report run，禁止修改 SQLite ledger。 |
+
+### Provider rate/credit 审计
+
+`paper-agent search audit --database <DB> --crawl-run-id <ID>` 的
+`provider_request_attempts[]` 记录实际 request reservation、charge、status 和 error；
+`totals.requests_made`、`candidates_returned` 与 `candidates_accepted` 是 campaign 汇总。
+`provider_rate_limits[]` 只展开实际持久化的 allowlist response headers，包含
+`provider`、`query_id`、`request_index`、`query_hash` 和小写 `rate_limit` 字段。
+
+`totals.provider_rate_limit_observations = 0` 只表示 provider、cache/snapshot 或 replay 没有提供
+可持久化的额度 header，不表示额度无限。遇到 429/5xx 时同时检查 request attempt 的 error；观察到
+remaining/credit 接近耗尽或 `Retry-After` 时，停止扩大 fan-out，按冻结的退避和限流配置恢复，或改用
+用户预先批准的 snapshot。不得通过提高并发绕过全局 provider 限流。审计只允许 rate/quota/credit
+header；`Authorization`、`Cookie`、`Set-Cookie` 等凭据和会话信息不得进入产物。
