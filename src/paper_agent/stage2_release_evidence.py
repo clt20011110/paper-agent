@@ -74,6 +74,28 @@ class GateEvidenceRefs:
 
 
 @dataclass(frozen=True, slots=True)
+class RationaleEvidenceRefs:
+    manifest: ArtifactRef
+    records: tuple[ArtifactRef, ...]
+    papers: ArtifactRef
+    worklist: ArtifactRef
+    source_ledger: ArtifactRef
+    query_metadata: ArtifactRef
+    derived_examples: ArtifactRef
+
+    def all_refs(self) -> tuple[ArtifactRef, ...]:
+        return (
+            self.manifest,
+            *self.records,
+            self.papers,
+            self.worklist,
+            self.source_ledger,
+            self.query_metadata,
+            self.derived_examples,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ParityEvidenceRefs:
     manifest: ArtifactRef
     workload: ArtifactRef
@@ -107,6 +129,7 @@ class Stage2ReleaseEvidenceIndex:
 
     index_path: Path
     candidate_id: str
+    candidate_bundle_sha256: str
     evaluation_manifest_hash: str
     stage2_config_hash: str
     model_lock_hashes: Mapping[str, str]
@@ -114,7 +137,9 @@ class Stage2ReleaseEvidenceIndex:
     threshold_hashes: Mapping[str, str]
     gold_manifest: ArtifactRef
     hidden_attestation: ArtifactRef | None
-    public_gates: Mapping[str, GateEvidenceRefs | ParityEvidenceRefs]
+    public_gates: Mapping[
+        str, GateEvidenceRefs | RationaleEvidenceRefs | ParityEvidenceRefs
+    ]
 
     @property
     def bundle_root(self) -> Path:
@@ -145,10 +170,14 @@ def load_stage2_release_evidence_index_bytes(
             (ArtifactRef.from_document(public["structured_replay"]["records"]),),
             ArtifactRef.from_document(public["structured_replay"]["papers"]),
         ),
-        "rationale": GateEvidenceRefs(
+        "rationale": RationaleEvidenceRefs(
             ArtifactRef.from_document(public["rationale"]["manifest"]),
             (ArtifactRef.from_document(public["rationale"]["records"]),),
-            worklist=ArtifactRef.from_document(public["rationale"]["worklist"]),
+            ArtifactRef.from_document(public["rationale"]["papers"]),
+            ArtifactRef.from_document(public["rationale"]["worklist"]),
+            ArtifactRef.from_document(public["rationale"]["source_ledger"]),
+            ArtifactRef.from_document(public["rationale"]["query_metadata"]),
+            ArtifactRef.from_document(public["rationale"]["derived_examples"]),
         ),
         "parity": ParityEvidenceRefs(**{
             name: ArtifactRef.from_document(public["parity"][name])
@@ -182,6 +211,7 @@ def load_stage2_release_evidence_index_bytes(
     index = Stage2ReleaseEvidenceIndex(
         index_path=path,
         candidate_id=str(document["candidate_id"]),
+        candidate_bundle_sha256=str(document["candidate_bundle_sha256"]),
         evaluation_manifest_hash=str(document["evaluation_manifest_hash"]),
         stage2_config_hash=str(document["stage2_config_hash"]),
         model_lock_hashes=_hash_binding(document["model_lock_hashes"]),
@@ -223,6 +253,8 @@ def _verify_all_refs(index: Stage2ReleaseEvidenceIndex) -> None:
         refs.append(index.hidden_attestation)
     for gate in index.public_gates.values():
         if isinstance(gate, ParityEvidenceRefs):
+            refs.extend(gate.all_refs())
+        elif isinstance(gate, RationaleEvidenceRefs):
             refs.extend(gate.all_refs())
         else:
             refs.append(gate.manifest)

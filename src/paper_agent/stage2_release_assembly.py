@@ -13,8 +13,11 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from .canonical import content_hash
+from .stage2_fallback import stage2_effective_config_hash
+from .stage2_fallback_release import qualify_stage2_reranker_fallback
 from .stage2_release_evidence import (
     ParityEvidenceRefs,
+    RationaleEvidenceRefs,
     Stage2ReleaseEvidenceIndex,
     load_stage2_release_evidence_index_bytes,
 )
@@ -22,6 +25,7 @@ from .stage2_search import (
     Stage2ReleaseError,
     _load_deployment_hidden_trust,
     _load_deployment_parity_oracle_trust,
+    _hidden_promotion_batch_binding,
     _load_released_reranker_fallback,
     _load_stage2_benchmark_candidate_bytes,
     verify_stage2_release_evidence_index,
@@ -46,14 +50,17 @@ class AssembledStage2Release:
     evidence_sha256: str
     throughput_runs: tuple[float, float, float]
     gate_hashes: Mapping[str, str]
+    fallback: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "gate_hashes", MappingProxyType(dict(self.gate_hashes)))
+        if self.fallback is not None:
+            object.__setattr__(self, "fallback", MappingProxyType(dict(self.fallback)))
 
     def summary(self) -> dict[str, Any]:
         """Return only public provenance suitable for an operator log."""
 
-        return {
+        summary = {
             "candidate_id": self.candidate_id,
             "evaluation_manifest_hash": self.evaluation_manifest_hash,
             "expected_query_plan": {
@@ -71,6 +78,9 @@ class AssembledStage2Release:
             "throughput_runs": list(self.throughput_runs),
             "gate_hashes": dict(self.gate_hashes),
         }
+        if self.fallback is not None:
+            summary["reranker_fallback"] = dict(self.fallback)
+        return summary
 
 
 def assemble_stage2_release(
@@ -80,6 +90,10 @@ def assemble_stage2_release(
     output_path: Path,
     *,
     parity_oracle_trust_path: Path,
+    fallback_candidate_path: Path | None = None,
+    fallback_evidence_path: Path | None = None,
+    fallback_omlx_base_url: str | None = None,
+    fallback_api_key_env: str | None = None,
 ) -> AssembledStage2Release:
     """Assemble a v3 release only after every public and hidden gate passes.
 
@@ -95,6 +109,10 @@ def assemble_stage2_release(
         hidden_trust_path,
         output_path,
         parity_oracle_trust_path=parity_oracle_trust_path,
+        fallback_candidate_path=fallback_candidate_path,
+        fallback_evidence_path=fallback_evidence_path,
+        fallback_omlx_base_url=fallback_omlx_base_url,
+        fallback_api_key_env=fallback_api_key_env,
         write_output=True,
     )
 
@@ -106,6 +124,10 @@ def validate_stage2_release_assembly(
     output_path: Path,
     *,
     parity_oracle_trust_path: Path,
+    fallback_candidate_path: Path | None = None,
+    fallback_evidence_path: Path | None = None,
+    fallback_omlx_base_url: str | None = None,
+    fallback_api_key_env: str | None = None,
 ) -> AssembledStage2Release:
     """Validate a prospective v3 release without creating any output.
 
@@ -121,6 +143,10 @@ def validate_stage2_release_assembly(
         hidden_trust_path,
         output_path,
         parity_oracle_trust_path=parity_oracle_trust_path,
+        fallback_candidate_path=fallback_candidate_path,
+        fallback_evidence_path=fallback_evidence_path,
+        fallback_omlx_base_url=fallback_omlx_base_url,
+        fallback_api_key_env=fallback_api_key_env,
         write_output=False,
     )
 
@@ -132,8 +158,23 @@ def _verify_stage2_release_assembly(
     output_path: Path,
     *,
     parity_oracle_trust_path: Path,
+    fallback_candidate_path: Path | None,
+    fallback_evidence_path: Path | None,
+    fallback_omlx_base_url: str | None,
+    fallback_api_key_env: str | None,
     write_output: bool,
 ) -> AssembledStage2Release:
+    if (fallback_candidate_path is None) != (fallback_evidence_path is None):
+        raise Stage2ReleaseAssemblyError(
+            "Stage 2 fallback candidate and evidence must be supplied together"
+        )
+    if (
+        fallback_candidate_path is None
+        and (fallback_omlx_base_url is not None or fallback_api_key_env is not None)
+    ):
+        raise Stage2ReleaseAssemblyError(
+            "Stage 2 fallback runtime overrides require fallback artifacts"
+        )
     try:
         candidate_path = candidate_path.resolve(strict=True)
         evidence_path = evidence_path.resolve(strict=True)
@@ -165,6 +206,11 @@ def _verify_stage2_release_assembly(
                 candidate_path,
                 candidate_bytes,
             )
+            if candidate.reranker_fallback is not None:
+                raise Stage2ReleaseAssemblyError(
+                    "Stage 2 assembly requires an unchanged base candidate; "
+                    "fallback is injected only during final assembly"
+                )
             index = load_stage2_release_evidence_index_bytes(
                 evidence_path,
                 evidence_bytes,
@@ -173,6 +219,7 @@ def _verify_stage2_release_assembly(
             gate = verify_stage2_release_evidence_index(
                 index,
                 candidate_id=candidate.profile_name,
+                candidate_bundle_sha256=candidate.release_hash,
                 evaluation_manifest_hash=index.evaluation_manifest_hash,
                 profile=candidate.profile,
                 hidden_trust=hidden_trust,
@@ -184,17 +231,34 @@ def _verify_stage2_release_assembly(
             ) from error
 
         evidence_sha256 = sha256(evidence_bytes).hexdigest()
-        _load_released_reranker_fallback(
-            candidate_path,
-            candidate_document.get("reranker_fallback"),
-            primary_profile=candidate.profile,
-            primary_evaluation_manifest_hash=index.evaluation_manifest_hash,
-            primary_release_evidence_hash=evidence_sha256,
-            hidden_trust=hidden_trust,
-            parity_oracle_trust=oracle_trust,
-        )
+        qualified_fallback = None
+        released_fallback = None
+        if fallback_candidate_path is not None:
+            assert fallback_evidence_path is not None
+            try:
+                qualified_fallback = qualify_stage2_reranker_fallback(
+                    primary_candidate_path=candidate_path,
+                    backup_candidate_path=fallback_candidate_path,
+                    backup_evidence_path=fallback_evidence_path,
+                    omlx_base_url=fallback_omlx_base_url,
+                    api_key_env=fallback_api_key_env,
+                )
+                released_fallback = _load_released_reranker_fallback(
+                    candidate_path,
+                    dict(qualified_fallback.document),
+                    primary_profile=candidate.profile,
+                    primary_evaluation_manifest_hash=index.evaluation_manifest_hash,
+                    hidden_trust=hidden_trust,
+                    parity_oracle_trust=oracle_trust,
+                    primary_batch_binding=_hidden_promotion_batch_binding(index),
+                )
+            except (OSError, Stage2ReleaseError, ValueError) as error:
+                raise Stage2ReleaseAssemblyError(
+                    f"Stage 2 fallback assembly verification failed: {error}"
+                ) from error
         release_gate = {
             "candidate_id": candidate.profile_name,
+            "candidate_bundle_sha256": candidate.release_hash,
             "evaluation_manifest_hash": index.evaluation_manifest_hash,
             "evidence": {
                 "path": evidence_path.relative_to(bundle_root).as_posix(),
@@ -206,6 +270,10 @@ def _verify_stage2_release_assembly(
             "schema_version": "3",
             "release_gate": release_gate,
         }
+        if qualified_fallback is not None:
+            release_document["reranker_fallback"] = dict(
+                qualified_fallback.document
+            )
         release_bytes = _canonical_output_bytes(release_document)
         if write_output:
             _write_new(bundle_fd, output_path.name, output_path, release_bytes)
@@ -216,10 +284,18 @@ def _verify_stage2_release_assembly(
         candidate.profile,
         release_gate_hash=content_hash(release_gate),
     )
+    effective_config_hash = stage2_effective_config_hash(
+        released_profile.config_hash,
+        (
+            released_fallback.identity_document()
+            if released_fallback is not None
+            else None
+        ),
+    )
     return AssembledStage2Release(
         candidate_id=candidate.profile_name,
         evaluation_manifest_hash=index.evaluation_manifest_hash,
-        query_plan_config_hash=released_profile.config_hash,
+        query_plan_config_hash=effective_config_hash,
         query_plan_thresholds_hash=released_profile.threshold_hash,
         release_path=output_path,
         release_sha256=sha256(release_bytes).hexdigest(),
@@ -227,6 +303,11 @@ def _verify_stage2_release_assembly(
         evidence_sha256=evidence_sha256,
         throughput_runs=gate.throughput_runs,
         gate_hashes=gate.artifact_hashes,
+        fallback=(
+            qualified_fallback.summary()
+            if qualified_fallback is not None
+            else None
+        ),
     )
 
 
@@ -262,7 +343,7 @@ def _require_evidence_contained(
         )
     refs = [index.gold_manifest, index.hidden_attestation]
     for gate in index.public_gates.values():
-        if isinstance(gate, ParityEvidenceRefs):
+        if isinstance(gate, (ParityEvidenceRefs, RationaleEvidenceRefs)):
             refs.extend(gate.all_refs())
         else:
             refs.append(gate.manifest)

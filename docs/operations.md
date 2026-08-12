@@ -78,7 +78,9 @@ paper-agent --dry-run stage2-sampling finalize-annotations \
 隔离 evaluator 优先运行 `stage2-evaluator promote`，而不是手工构造 hidden gate 结论。先在全局
 `--dry-run` 下提供完整的 `--manifest`、`--private-labels`、重复的 `--candidate ID=PATH` 与
 `--submission ID=PATH`、重复的 `--public-evidence ID=PATH`、incumbent/evaluator/run IDs、`--state-root`、key ID、RFC 3339
-`--issued-at`、`--trust-manifest`、`--signing-key-file` 和不存在的 `--output`。dry-run 只读取并验证
+`--issued-at`、`--trust-manifest`、`--parity-oracle-trust`、`--signing-key-file` 和不存在的 `--output`。
+若要发布备用本地 reranker，还要在这一个 sealed batch 中加入可重复的
+`--qualified-fallback-output ID=PATH`。dry-run 只读取并验证
 公共 sampling manifest、schema-v2 candidates、公共质量/性能 evidence、trust 和 output 边界；它不读取 private labels、
 submissions 或私钥，不创建 output，也不消费 marker。确认结构化 `status: "validated"` 后，只移除
 `--dry-run` 并执行一次完全相同的命令。
@@ -89,6 +91,13 @@ API。真实 promotion 在 `<state-root>/<gold-manifest-hash>.promotion.json` �
 failure 也会生成 signed failure 并消费 holdout。如果 marker 已存在，即使 attestation 因后续签名或
 写盘错误缺失，也不得删除 marker 或以新 evaluator/run ID 重试同一 holdout。
 
+主 `--output` 签唯一 `release_role=winner`；每个 requested fallback 必须不是 winner，且自身通过完整
+Phase 3 public/hidden/performance gates，才会在同一批次签 `release_role=qualified_fallback`。失败的
+non-winner 只有公开安全摘要，不得为其补签 fallback。主、备 candidate 保持原样，并分别用对应
+attestation 构建 final evidence，避免 candidate/evidence hash 环。requested fallback 若成为 winner 或
+未过门，不创建其 fallback 文件，但合法 winner attestation 仍发布；调度器必须检查结构化结果中的
+`unqualified_fallback_candidate_ids`。
+
 `stage2-evaluator attest --payload --signing-key-file --trust-manifest --output` 只签已有 public-safe
 payload，不运行 hidden evaluation、不管理 marker；只有另一个已审阅的一次性 evaluator 已完成这些
 职责时才可使用。release builder 只接收 public-safe attestation，并在 bundle 外显式提供 trust：
@@ -97,6 +106,8 @@ payload，不运行 hidden evaluation、不管理 marker；只有另一个已审
 paper-agent --dry-run stage2-release assemble \
   --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
   --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
+  --fallback-candidate /absolute/path/to/release-bundle/backup-candidate-v2.json \
+  --fallback-evidence /absolute/path/to/release-bundle/backup-release-evidence.json \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
   --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --output /absolute/path/to/release-bundle/stage2-release.json
@@ -105,14 +116,23 @@ paper-agent --dry-run stage2-release assemble \
 candidate 与 output 必须具有同一 parent，evidence 与其引用必须留在该 bundle root，trust 必须在
 root 外，output 必须不存在。assembly dry-run 重算全部 public gates、验证 hidden attestation 和相同路径边界，但不写
 output；成功后只移除 `--dry-run` 执行真实组装。private labels、raw submissions、私钥和 marker state
-不能进入 bundle。组装后的生产加载才使用 `PAPER_AGENT_STAGE2_HIDDEN_TRUST`；它不替代 evaluator
+不能进入 bundle。无备用模型时同时省略两个 fallback 参数；使用备用模型时，assembly 要验证主 evidence
+的 winner 角色、backup evidence 的 qualified-fallback 角色、共同 evaluation manifest/gate policy/共享
+query+Qwen runtime 语义、相同签名 `promotion_batch_hash` 和不同 reranker lock。可选的 `--fallback-omlx-base-url` 与
+`--fallback-api-key-env` 绑定备用本地 endpoint/凭据变量；最终 v3 effective config hash 同时绑定
+fallback candidate、evidence、runtime 和 release binding，QueryPlan 必须使用 assembly summary 返回的
+hash。组装后的生产加载才使用 `PAPER_AGENT_STAGE2_HIDDEN_TRUST`；它不替代 evaluator
 或 assembler 的显式 `--trust-manifest`。
 
 组装前的 public-gate 工件必须是原始 no-replace outputs：rationale 依次使用
-`stage2-rationale derive-examples`、`freeze-worklist` 与人工完成后的 `import-worklist`；
+`stage2-rationale run-source`、`derive-examples`、`freeze-worklist` 与人工完成后的 `import-worklist`。
+run-source 从精确 candidate 与 benchmark papers bytes 出发，冻结全部 topic-query×paper 分数和确定性选样，
+原子发布 query metadata/source ledger；derive 必须从全量分数重算选样，并重放 papers → query metadata →
+typed Qwen ledger。随后
 `stage2-parity freeze-workload/run` 固定并运行
 10,000-pair 数值 parity；`stage2-tuning select` 选择完整 3×3 的实测 batch/concurrency winner；最后
-`stage2-release build-evidence` 绑定 gold、structured replay、rationale、10 个 parity artifacts、
+`stage2-release build-evidence` 写 schema-v3 index，绑定 candidate bytes、gold、structured replay、
+rationale 的 manifest/worklist/records/source ledger/query metadata/derived examples/papers、10 个 parity artifacts、
 benchmark（恰好六次 records）和 soak，带 hidden attestation 时才形成 final evidence。任何正式命令都先
 用全局 `--dry-run` 完整验证且不写文件；输出已存在即停止。人工标签、真实本地模型测量和 sealed hidden
 promotion 均不可由此绕过。

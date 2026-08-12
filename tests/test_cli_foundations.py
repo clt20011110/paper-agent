@@ -643,3 +643,45 @@ def test_console_entrypoint_structures_argument_errors(capsys) -> None:
     assert payload["error_type"] == "CliUsageError"
     assert payload["event_code"] == "grant.failed"
     assert capsys.readouterr().err == ""
+
+
+def test_local_http_probe_refuses_every_redirect(monkeypatch) -> None:
+    handlers = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return b'{"data": []}'
+
+    class Opener:
+        def open(self, _request, *, timeout):
+            assert timeout == 3
+            return Response()
+
+    def build(*values):
+        handlers.extend(values)
+        return Opener()
+
+    monkeypatch.setattr(cli, "build_opener", build)
+
+    assert cli._local_http_probe(
+        "http://127.0.0.1:8000/v1/models", {"Authorization": "Bearer secret"}
+    ) == (200, '{"data": []}')
+    redirect_handler = next(
+        handler for handler in handlers if isinstance(handler, cli._NoRedirectHandler)
+    )
+    assert redirect_handler.redirect_request(
+        cli.Request("http://127.0.0.1:8000/v1/models"),
+        None,
+        302,
+        "Found",
+        {},
+        "http://example.test/models",
+    ) is None

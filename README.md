@@ -221,7 +221,9 @@ dry-run 只校验并返回冻结 manifest hash；移除 `--dry-run` 后才调用
 失败、Warning、模型身份错配和 JSON/schema 错误统一记录为 schema failure，最多重试一次。
 
 生产 release 的顺序是 `promote → assemble → load`。优先在隔离 evaluator 中使用一次性
-`promote`；`--candidate` 与 `--submission` 是可重复的 `ID=PATH`，两边 ID 集合必须完全一致：
+`promote`；`--candidate`、`--submission` 与 `--public-evidence` 是可重复的 `ID=PATH`，三边 ID
+集合必须完全一致。若计划保留一个本地备用 reranker，还要在同一个 sealed batch 中传入可重复的
+`--qualified-fallback-output ID=PATH`：
 
 ```sh
 paper-agent --dry-run stage2-evaluator promote \
@@ -229,10 +231,13 @@ paper-agent --dry-run stage2-evaluator promote \
   --private-labels /secure/evaluator/private-labels.json \
   --candidate incumbent=/secure/evaluator/incumbent-candidate-v2.json \
   --candidate challenger=/secure/evaluator/challenger-candidate-v2.json \
+  --candidate backup=/secure/evaluator/backup-candidate-v2.json \
   --submission incumbent=/secure/evaluator/incumbent-submission.json \
   --submission challenger=/secure/evaluator/challenger-submission.json \
+  --submission backup=/secure/evaluator/backup-submission.json \
   --public-evidence incumbent=/secure/evaluator/incumbent-public-evidence.json \
   --public-evidence challenger=/secure/evaluator/challenger-public-evidence.json \
+  --public-evidence backup=/secure/evaluator/backup-public-evidence.json \
   --incumbent-candidate-id incumbent \
   --evaluator-id evaluator-team-1 \
   --evaluation-run-id promotion-2026-08-11 \
@@ -242,29 +247,46 @@ paper-agent --dry-run stage2-evaluator promote \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
   --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --signing-key-file /secure/evaluator/hidden-promotion-key.pem \
-  --output /secure/transfer/hidden-promotion-attestation.json
+  --output /secure/transfer/winner-attestation.json \
+  --qualified-fallback-output backup=/secure/transfer/backup-attestation.json
 ```
 
 dry-run 不读取 private labels、submission 或私钥，不消费 marker，也不创建 output；确认
 `status: "validated"` 后，只移除 `--dry-run`，以完全相同参数执行一次。真实执行无论 gate
-通过还是失败都会消费该 holdout；失败也会生成签名失败证明，不能组装为 release，更不能删除
+通过还是失败都会消费该 holdout；失败 winner 也会生成签名失败证明，不能组装为 release，更不能删除
 `<state-root>/<manifest-hash>.promotion.json` 后重试。私钥必须是当前用户拥有、非 symlink、精确
 `0600`、不超过 16 KiB 的 canonical unencrypted Ed25519 PKCS#8 PEM。当前 CLI 不直接支持 HSM
-或 secret-manager signing API。
+或 secret-manager signing API。主 `--output` 始终签唯一 winner；指定的 backup 必须不是 winner，且
+自身通过全部 Phase 3 门禁，才会以 `release_role=qualified_fallback` 签名。失败的非 winner 只保留
+公开安全摘要，不会生成可用于 release 的 fallback attestation。若 requested fallback 最终成为 winner
+或未通过门禁，CLI 仍发布合法 winner attestation，不创建该 fallback 文件，并在
+`unqualified_fallback_candidate_ids` 明确列出其 ID。
 
-Stage 2 的公共证据也必须按固定顺序产生：先用 `stage2-rationale derive-examples` 从绑定的 Qwen
-ledger 导出可审计例子，再以 `freeze-worklist` 冻结人工 rationale 审阅清单、在人工填写后用
-`import-worklist` 导入；随后以同一候选和 workload 运行
+Stage 2 的公共证据也必须按固定顺序产生。先让候选对冻结语料生成完整 rationale source chain：
+
+```sh
+paper-agent --dry-run stage2-rationale run-source \
+  --stage2-candidate /secure/release/stage2-candidate-v2.json \
+  --benchmark-papers /secure/workloads/performance-papers.json \
+  --output-dir /secure/evidence/rationale-source
+```
+
+dry-run 不调用模型或写目录；正式运行原子发布 `query-metadata.json` 与 `source-ledger.json`，两者绑定
+候选原始 bytes、papers bytes、全部 topic-query×paper 的 BGE score/probability、确定性选样结果和 typed
+Qwen decision。再用 `stage2-rationale derive-examples` 从全量分数重放 top/boundary 选样，再验证
+papers → query metadata → source ledger，导出可审计例子，
+以 `freeze-worklist` 冻结人工 rationale 审阅清单、在人工填写后用 `import-worklist` 导入；随后以同一候选和 workload 运行
 `stage2-parity freeze-workload`、`stage2-parity run`，再以完整 3×3 normal/stress 实测输入运行
 `stage2-tuning select`。这些命令及 `stage2-replay`、`benchmark-stage2` 的正式运行会调用本地模型；
 人工标注、真实模型和 hidden promotion 未完成时不得声明 release gate 通过。所有写入型命令先以全局
 `--dry-run` 执行完整校验且零写入，正式运行拒绝覆盖已有工件。
 
-`stage2-release build-evidence` 只接受 bundle 内所有原始 public gate 工件：gold、structured replay
-manifest/records/papers、rationale manifest/worklist/records、10 个 parity 引用、benchmark manifest/papers
-和恰好 6 个 record、soak manifest/papers/record；带 `--hidden-attestation` 才构造 final evidence，否则是
-public-promotion evidence。始终先运行 `paper-agent stage2-release build-evidence --help` 取得当前完整
-参数合同，不要手写或替换 evidence index。
+`stage2-release build-evidence` 写 schema-v3 evidence index，绑定候选文件的精确 SHA-256，并只接受
+bundle 内所有原始 public gate 工件：gold、structured replay manifest/records/papers、rationale 的
+manifest/worklist/records/source ledger/query metadata/derived examples/papers、10 个 parity 引用、benchmark
+manifest/papers 和恰好 6 个 record、soak manifest/papers/record；带 `--hidden-attestation` 才构造 final
+evidence，否则是 public-promotion evidence。始终先运行
+`paper-agent stage2-release build-evidence --help` 取得当前完整参数合同，不要手写或替换 evidence index。
 
 release builder 将 public-safe attestation 放入 evidence index 后，先 dry-run，再用同一参数组装：
 
@@ -272,6 +294,8 @@ release builder 将 public-safe attestation 放入 evidence index 后，先 dry-
 paper-agent --dry-run stage2-release assemble \
   --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
   --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
+  --fallback-candidate /absolute/path/to/release-bundle/backup-candidate-v2.json \
+  --fallback-evidence /absolute/path/to/release-bundle/backup-release-evidence.json \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
   --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --output /absolute/path/to/release-bundle/stage2-release.json
@@ -279,7 +303,13 @@ paper-agent --dry-run stage2-release assemble \
 
 candidate 与 output 必须具有同一 parent，evidence 与所有 evidence 引用必须留在该 bundle root；
 trust manifest 必须在 root 外，output 必须不存在。dry-run 重算同样的门禁但不写 output；验证后只移除 `--dry-run`
-执行组装。`stage2-evaluator attest --payload --signing-key-file --trust-manifest --output` 只适用于
+执行组装。无备用模型时同时省略 `--fallback-candidate` 与 `--fallback-evidence`；使用备用模型时，backup
+final evidence 必须携带同一 sealed batch 的 `qualified_fallback` attestation。可选的
+`--fallback-omlx-base-url` 与 `--fallback-api-key-env` 只覆盖已绑定的本地部署坐标。assembly 验证主
+evidence 的 `winner` 角色和 backup evidence 的 `qualified_fallback` 角色、共同 manifest/policy/共享
+query+Qwen runtime 语义、相同签名 `promotion_batch_hash` 与不同 reranker lock，最终 schema-v3 的有效 config hash 同时绑定 fallback
+candidate、evidence、runtime 与 release binding；QueryPlan 必须使用 assembly summary 返回的 config hash。
+`stage2-evaluator attest --payload --signing-key-file --trust-manifest --output` 只适用于
 另一个已审阅的一次性 evaluator 已经生成 public-safe payload 的场景；它本身不运行 hidden
 evaluation，也不创建 marker，不能用来绕过 `promote`。组装完成后，`PAPER_AGENT_STAGE2_HIDDEN_TRUST`
 才用于 `doctor`、search/filter/workflow 等生产 release 加载；evaluator 与 assembler 始终使用显式

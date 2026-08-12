@@ -1,4 +1,4 @@
-"""Write immutable schema-v2 Stage 2 release-evidence indexes."""
+"""Write immutable schema-v3 Stage 2 release-evidence indexes."""
 
 from __future__ import annotations
 
@@ -45,6 +45,10 @@ def write_stage2_release_evidence_index(
     rationale_manifest_path: Path,
     rationale_worklist_path: Path,
     rationale_records_path: Path,
+    rationale_source_ledger_path: Path,
+    rationale_query_metadata_path: Path,
+    rationale_derived_examples_path: Path,
+    rationale_papers_path: Path,
     parity_manifest_path: Path,
     parity_workload_path: Path,
     parity_selection_receipt_path: Path,
@@ -81,6 +85,10 @@ def write_stage2_release_evidence_index(
         rationale_manifest_path=rationale_manifest_path,
         rationale_worklist_path=rationale_worklist_path,
         rationale_records_path=rationale_records_path,
+        rationale_source_ledger_path=rationale_source_ledger_path,
+        rationale_query_metadata_path=rationale_query_metadata_path,
+        rationale_derived_examples_path=rationale_derived_examples_path,
+        rationale_papers_path=rationale_papers_path,
         parity_manifest_path=parity_manifest_path,
         parity_workload_path=parity_workload_path,
         parity_selection_receipt_path=parity_selection_receipt_path,
@@ -118,6 +126,10 @@ def build_stage2_release_evidence_index_bytes(
     rationale_manifest_path: Path,
     rationale_worklist_path: Path,
     rationale_records_path: Path,
+    rationale_source_ledger_path: Path,
+    rationale_query_metadata_path: Path,
+    rationale_derived_examples_path: Path,
+    rationale_papers_path: Path,
     parity_manifest_path: Path,
     parity_workload_path: Path,
     parity_selection_receipt_path: Path,
@@ -156,6 +168,10 @@ def build_stage2_release_evidence_index_bytes(
         "rationale_manifest": _artifact_ref(rationale_manifest_path, root),
         "rationale_worklist": _artifact_ref(rationale_worklist_path, root),
         "rationale_records": _artifact_ref(rationale_records_path, root),
+        "rationale_source_ledger": _artifact_ref(rationale_source_ledger_path, root),
+        "rationale_query_metadata": _artifact_ref(rationale_query_metadata_path, root),
+        "rationale_derived_examples": _artifact_ref(rationale_derived_examples_path, root),
+        "rationale_papers": _artifact_ref(rationale_papers_path, root),
         "benchmark_manifest": _artifact_ref(benchmark_manifest_path, root),
         "benchmark_papers": _artifact_ref(benchmark_papers_path, root),
         "soak_manifest": _artifact_ref(soak_manifest_path, root),
@@ -183,12 +199,13 @@ def build_stage2_release_evidence_index_bytes(
     ):
         raise Stage2EvidenceProducerError("candidate calibrators do not bind the supplied gold manifest")
     document: dict[str, Any] = {
-        "schema_version": "2",
+        "schema_version": "3",
         "evidence_type": (
             "stage2_release_evidence" if hidden_attestation_path is not None
             else "stage2_public_promotion_evidence"
         ),
         "candidate_id": release.profile_name,
+        "candidate_bundle_sha256": release.release_hash,
         "evaluation_manifest_hash": evaluation_manifest_hash,
         "stage2_config_hash": profile.base_runtime_config_hash,
         "model_lock_hashes": {"reranker": profile.reranker_lock_hash, "qwen": profile.adjudicator_lock_hash},
@@ -201,7 +218,15 @@ def build_stage2_release_evidence_index_bytes(
                 "records": refs["structured_records"],
                 "papers": refs["structured_papers"],
             },
-            "rationale": {"manifest": refs["rationale_manifest"], "worklist": refs["rationale_worklist"], "records": refs["rationale_records"]},
+            "rationale": {
+                "manifest": refs["rationale_manifest"],
+                "worklist": refs["rationale_worklist"],
+                "records": refs["rationale_records"],
+                "source_ledger": refs["rationale_source_ledger"],
+                "query_metadata": refs["rationale_query_metadata"],
+                "derived_examples": refs["rationale_derived_examples"],
+                "papers": refs["rationale_papers"],
+            },
             "parity": parity_refs,
             "benchmark": {"manifest": refs["benchmark_manifest"], "papers": refs["benchmark_papers"], "records": benchmark_records},
             "soak": {"manifest": refs["soak_manifest"], "papers": refs["soak_papers"], "record": refs["soak_record"]},

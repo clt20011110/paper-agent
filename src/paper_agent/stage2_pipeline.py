@@ -37,7 +37,11 @@ from .stage2_evaluation import (
     PathCalibrator,
     ThresholdArtifact as ProbabilityThresholdArtifact,
 )
-from .stage2_fallback import LocalCalibratedRerankerFallback
+from .stage2_fallback import (
+    LocalCalibratedRerankerFallback,
+    stage2_effective_config_hash,
+    stage2_shared_runtime_hash,
+)
 from .schema import schema_directory
 from .stage2_prompt_contract import (
     adjudication_messages,
@@ -48,7 +52,7 @@ from .stage2_prompt_contract import (
 from .storage import Database
 
 
-IMPLEMENTATION_VERSION = "stage2-cascade-v3"
+IMPLEMENTATION_VERSION = "stage2-cascade-v4"
 STAGE2_LEASE_OUTPUT_PREFIX = "filter-decision:"
 DEFAULT_LEASE_SECONDS = 3_600
 DEFAULT_PEER_WAIT_SECONDS = 3_900
@@ -370,6 +374,66 @@ class Stage2Profile:
 
 
 @dataclass(frozen=True, slots=True)
+class RerankerExecutionProvenance:
+    """The exact reranker path that produced (or last attempted) one result."""
+
+    source: str
+    backend: str
+    model_id: str
+    model_revision: str
+    model_lock_hash: str | None
+    calibrator_hash: str | None
+    threshold_hash: str | None
+
+    def __post_init__(self) -> None:
+        if self.source not in {"primary", "fallback"}:
+            raise ValueError("reranker provenance source must be primary or fallback")
+        if not self.backend or not self.model_id or not self.model_revision:
+            raise ValueError("reranker execution identity is required")
+
+    @property
+    def fallback_used(self) -> bool:
+        return self.source == "fallback"
+
+    def document(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "backend": self.backend,
+            "model_id": self.model_id,
+            "model_revision": self.model_revision,
+            "model_lock_hash": self.model_lock_hash,
+            "calibrator_hash": self.calibrator_hash,
+            "threshold_hash": self.threshold_hash,
+            "fallback_used": self.fallback_used,
+        }
+
+    @classmethod
+    def from_document(cls, document: object) -> RerankerExecutionProvenance | None:
+        if document is None:
+            return None
+        if not isinstance(document, dict):
+            raise ValueError("persisted reranker provenance must be an object")
+        expected = {
+            "source", "backend", "model_id", "model_revision", "model_lock_hash",
+            "calibrator_hash", "threshold_hash", "fallback_used",
+        }
+        if set(document) != expected:
+            raise ValueError("persisted reranker provenance fields are not exact")
+        provenance = cls(
+            source=str(document["source"]),
+            backend=str(document["backend"]),
+            model_id=str(document["model_id"]),
+            model_revision=str(document["model_revision"]),
+            model_lock_hash=document["model_lock_hash"],
+            calibrator_hash=document["calibrator_hash"],
+            threshold_hash=document["threshold_hash"],
+        )
+        if document["fallback_used"] is not provenance.fallback_used:
+            raise ValueError("persisted reranker fallback provenance is inconsistent")
+        return provenance
+
+
+@dataclass(frozen=True, slots=True)
 class Stage2Decision:
     paper_id: str
     status: FilterStatus
@@ -386,6 +450,7 @@ class Stage2Decision:
     adjudicator_attempt_count: int = 0
     adjudicator_retry_reason: str | None = None
     adjudicator_retry_outcome: str | None = None
+    reranker_provenance: RerankerExecutionProvenance | None = None
     resumed: bool = False
 
 
@@ -462,8 +527,21 @@ class Stage2Pipeline:
                 raise ValueError("fallback backend must differ from the primary reranker")
             self.reranker_fallback.validate_primary_binding(
                 primary_model_lock_hash=self.profile.reranker_lock_hash,
-                primary_release_gate_hash=self.profile.release_gate_hash,
+                primary_shared_runtime_hash=stage2_shared_runtime_hash(self.profile),
             )
+
+    @property
+    def effective_config_hash(self) -> str:
+        """Configuration identity used by SQLite resume semantics."""
+
+        return stage2_effective_config_hash(
+            self.profile.config_hash,
+            (
+                self.reranker_fallback.identity_document()
+                if self.reranker_fallback is not None
+                else None
+            ),
+        )
 
     def run(self, run_id: str, papers: Iterable[Stage2Paper]) -> Stage2Summary:
         self.profile.assert_runtime_ready()
@@ -621,9 +699,18 @@ class Stage2Pipeline:
                 CascadeRoute.NEEDS_REVIEW,
                 "reranker_backend_failure",
                 reranker_probability=self._failure_probability(),
+                reranker_provenance=self._terminal_reranker_provenance(),
             )
 
-        adjudication: list[tuple[Stage2Paper, float | None, float | None, str]] = []
+        adjudication: list[
+            tuple[
+                Stage2Paper,
+                float | None,
+                float | None,
+                str,
+                RerankerExecutionProvenance,
+            ]
+        ] = []
         for paper in rerank_inputs:
             if paper.paper_id in decisions:
                 continue
@@ -635,9 +722,10 @@ class Stage2Pipeline:
                     CascadeRoute.NEEDS_REVIEW,
                     "reranker_response_failure",
                     reranker_probability=self._failure_probability(),
+                    reranker_provenance=self._terminal_reranker_provenance(),
                 )
                 continue
-            score, calibration = score_binding
+            score, calibration, reranker_provenance = score_binding
             try:
                 route, probability = (
                     self._reranker_route(paper, score)
@@ -655,11 +743,14 @@ class Stage2Pipeline:
                     CascadeRoute.NEEDS_REVIEW,
                     "reranker_calibration_failure",
                     score,
+                    reranker_provenance=reranker_provenance,
                 )
                 continue
             if route is CascadeRoute.ADJUDICATE:
                 reason = self._adjudication_reason(paper)
-                adjudication.append((paper, score, probability, reason))
+                adjudication.append(
+                    (paper, score, probability, reason, reranker_provenance)
+                )
             else:
                 decisions[paper.paper_id] = self._from_route(
                     paper,
@@ -670,6 +761,7 @@ class Stage2Pipeline:
                     else "reranker_threshold",
                     score,
                     probability,
+                    reranker_provenance=reranker_provenance,
                 )
 
         for decision in self._adjudicate(adjudication):
@@ -701,9 +793,30 @@ class Stage2Pipeline:
             return DeterministicRuleDecision(CascadeRoute.RELEVANT, f"document_type_included:{document_type}")
         return None
 
-    def _rerank(self, papers: Sequence[Stage2Paper]) -> tuple[dict[str, tuple[float, PathCalibration | None]], tuple[Stage2Paper, ...]]:
-        scores: dict[str, tuple[float, PathCalibration | None]] = {}
+    def _rerank(
+        self,
+        papers: Sequence[Stage2Paper],
+    ) -> tuple[
+        dict[
+            str,
+            tuple[
+                float,
+                PathCalibration | None,
+                RerankerExecutionProvenance,
+            ],
+        ],
+        tuple[Stage2Paper, ...],
+    ]:
+        scores: dict[
+            str,
+            tuple[
+                float,
+                PathCalibration | None,
+                RerankerExecutionProvenance,
+            ],
+        ] = {}
         failures: list[Stage2Paper] = []
+        primary_provenance = self._primary_reranker_provenance()
         buckets: dict[int, list[Stage2Paper]] = {}
         for paper in papers:
             buckets.setdefault(self._bucket(paper), []).append(paper)
@@ -715,9 +828,27 @@ class Stage2Pipeline:
                     tuple(RerankInput(paper.paper_id, self.document(paper)) for paper in batch),
                 )
             except RerankBatchError as error:
-                scores.update({item.paper_id: (item.raw_score, self.profile.reranker_calibration) for item in error.scores})
+                expected = {paper.paper_id for paper in batch}
+                returned = {item.paper_id: item.raw_score for item in error.scores}
                 failed = set(error.failed_paper_ids)
-                failed_papers = tuple(paper for paper in batch if paper.paper_id in failed)
+                if (
+                    len(returned) != len(error.scores)
+                    or not set(returned) <= expected
+                    or not failed <= expected
+                    or set(returned) & failed
+                ):
+                    returned = {}
+                scores.update({
+                    paper_id: (
+                        score,
+                        self.profile.reranker_calibration,
+                        primary_provenance,
+                    )
+                    for paper_id, score in returned.items()
+                })
+                failed_papers = tuple(
+                    paper for paper in batch if paper.paper_id not in returned
+                )
                 fallback_scores, fallback_failures = self._rerank_fallback(failed_papers)
                 scores.update(fallback_scores)
                 failures.extend(fallback_failures)
@@ -729,17 +860,40 @@ class Stage2Pipeline:
                 continue
             expected = {paper.paper_id for paper in batch}
             returned = {item.paper_id: item.raw_score for item in response}
-            if not set(returned) <= expected:
+            if len(returned) != len(response) or not set(returned) <= expected:
                 fallback_scores, fallback_failures = self._rerank_fallback(batch)
                 scores.update(fallback_scores)
                 failures.extend(fallback_failures)
                 continue
-            scores.update({paper_id: (score, self.profile.reranker_calibration) for paper_id, score in returned.items()})
+            scores.update({
+                paper_id: (
+                    score,
+                    self.profile.reranker_calibration,
+                    primary_provenance,
+                )
+                for paper_id, score in returned.items()
+            })
+            missing = tuple(
+                paper for paper in batch if paper.paper_id not in returned
+            )
+            fallback_scores, fallback_failures = self._rerank_fallback(missing)
+            scores.update(fallback_scores)
+            failures.extend(fallback_failures)
         return scores, tuple(failures)
 
     def _rerank_fallback(
         self, papers: Sequence[Stage2Paper]
-    ) -> tuple[dict[str, tuple[float, PathCalibration | None]], tuple[Stage2Paper, ...]]:
+    ) -> tuple[
+        dict[
+            str,
+            tuple[
+                float,
+                PathCalibration | None,
+                RerankerExecutionProvenance,
+            ],
+        ],
+        tuple[Stage2Paper, ...],
+    ]:
         """Score only failed papers with the explicitly qualified local backup."""
         if not papers or self.reranker_fallback is None:
             return {}, tuple(papers)
@@ -749,22 +903,70 @@ class Stage2Pipeline:
                 tuple(RerankInput(paper.paper_id, self.document(paper)) for paper in papers),
             )
         except RerankBatchError as error:
+            response_items = error.scores
             returned = {item.paper_id: item.raw_score for item in error.scores}
             failed = set(error.failed_paper_ids)
         except _FAILURES:
             return {}, tuple(papers)
         else:
+            response_items = response
             returned = {item.paper_id: item.raw_score for item in response}
             failed = set()
         expected = {paper.paper_id for paper in papers}
-        if not set(returned) <= expected:
+        if (
+            len(returned) != len(response_items)
+            or not set(returned) <= expected
+            or not failed <= expected
+            or set(returned) & failed
+        ):
             return {}, tuple(papers)
         scores = {
-            paper_id: (score, self.reranker_fallback.calibration)
+            paper_id: (
+                score,
+                self.reranker_fallback.calibration,
+                self._fallback_reranker_provenance(),
+            )
             for paper_id, score in returned.items()
         }
         return scores, tuple(
             paper for paper in papers if paper.paper_id in failed or paper.paper_id not in returned
+        )
+
+    def _primary_reranker_provenance(self) -> RerankerExecutionProvenance:
+        binding = self.profile.reranker_calibration
+        return RerankerExecutionProvenance(
+            source="primary",
+            backend=self.reranker.backend_name,
+            model_id=self.profile.reranker_model_id,
+            model_revision=self.profile.reranker_revision,
+            model_lock_hash=self.profile.reranker_lock_hash,
+            calibrator_hash=(binding.calibrator.hash() if binding is not None else None),
+            threshold_hash=(
+                binding.threshold.hash()
+                if binding is not None
+                else self.profile.threshold_hash
+            ),
+        )
+
+    def _fallback_reranker_provenance(self) -> RerankerExecutionProvenance:
+        fallback = self.reranker_fallback
+        if fallback is None:
+            raise RuntimeError("fallback reranker provenance requested without a fallback")
+        return RerankerExecutionProvenance(
+            source="fallback",
+            backend=fallback.backend.backend_name,
+            model_id=fallback.model_id,
+            model_revision=fallback.model_revision,
+            model_lock_hash=fallback.model_lock_hash,
+            calibrator_hash=fallback.calibration.calibrator.hash(),
+            threshold_hash=fallback.calibration.threshold.hash(),
+        )
+
+    def _terminal_reranker_provenance(self) -> RerankerExecutionProvenance:
+        return (
+            self._fallback_reranker_provenance()
+            if self.reranker_fallback is not None
+            else self._primary_reranker_provenance()
         )
 
     def _reranker_route(
@@ -810,7 +1012,15 @@ class Stage2Pipeline:
 
     def _adjudicate(
         self,
-        requests: Sequence[tuple[Stage2Paper, float | None, float | None, str]],
+        requests: Sequence[
+            tuple[
+                Stage2Paper,
+                float | None,
+                float | None,
+                str,
+                RerankerExecutionProvenance,
+            ]
+        ],
     ) -> tuple[Stage2Decision, ...]:
         if not requests:
             return ()
@@ -852,6 +1062,7 @@ class Stage2Pipeline:
         reranker_score: float | None,
         reranker_probability: float | None,
         route_reason: str,
+        reranker_provenance: RerankerExecutionProvenance,
         *,
         first_attempt: tuple[AdjudicationDecision | None, str | None],
     ) -> Stage2Decision:
@@ -878,6 +1089,7 @@ class Stage2Pipeline:
                     adjudicator_attempt_count=attempt_count,
                     adjudicator_retry_reason=retry_reason,
                     adjudicator_retry_outcome="failed",
+                    reranker_provenance=reranker_provenance,
                 )
             retry_outcome = "succeeded"
         else:
@@ -905,6 +1117,7 @@ class Stage2Pipeline:
                     adjudicator_attempt_count=attempt_count,
                     adjudicator_retry_reason=retry_reason,
                     adjudicator_retry_outcome=retry_outcome,
+                    reranker_provenance=reranker_provenance,
                 )
             threshold = binding.threshold
             if adjudicator_probability <= threshold.low:
@@ -935,6 +1148,7 @@ class Stage2Pipeline:
             adjudicator_attempt_count=attempt_count,
             adjudicator_retry_reason=retry_reason,
             adjudicator_retry_outcome=retry_outcome,
+            reranker_provenance=reranker_provenance,
         )
 
     def _adjudication_prompt(self, paper: Stage2Paper) -> str:
@@ -963,6 +1177,7 @@ class Stage2Pipeline:
         reason_code: str,
         reranker_score: float | None = None,
         reranker_probability: float | None = None,
+        reranker_provenance: RerankerExecutionProvenance | None = None,
     ) -> Stage2Decision:
         return Stage2Decision(
             paper_id=paper.paper_id,
@@ -972,6 +1187,7 @@ class Stage2Pipeline:
             route=route,
             reranker_score=reranker_score,
             reranker_probability=reranker_probability,
+            reranker_provenance=reranker_provenance,
         )
 
     def _bucket(self, paper: Stage2Paper) -> int:
@@ -1000,7 +1216,7 @@ class Stage2Pipeline:
             expected = (
                 "stage-2",
                 input_hash,
-                self.profile.config_hash,
+                self.effective_config_hash,
                 self.implementation_version,
             )
             if existing is not None:
@@ -1013,7 +1229,7 @@ class Stage2Pipeline:
             connection.execute(
                 """INSERT INTO pipeline_runs(run_id, stage, status, input_hash, config_hash, implementation_version, started_at)
                    VALUES (?, 'stage-2', 'running', ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (run_id, input_hash, self.profile.config_hash, self.implementation_version),
+                (run_id, input_hash, self.effective_config_hash, self.implementation_version),
             )
 
     def _load_completed(self, run_id: str) -> dict[tuple[str, str], Stage2Decision]:
@@ -1042,6 +1258,9 @@ class Stage2Pipeline:
                 adjudicator_attempt_count=int(row["adjudicator_attempt_count"]),
                 adjudicator_retry_reason=row["adjudicator_retry_reason"],
                 adjudicator_retry_outcome=row["adjudicator_retry_outcome"],
+                reranker_provenance=RerankerExecutionProvenance.from_document(
+                    detail.get("reranker_provenance")
+                ),
                 resumed=True,
             )
         return completed
@@ -1094,13 +1313,18 @@ class Stage2Pipeline:
                     "base_runtime_config_hash": self.profile.base_runtime_config_hash,
                     "threshold_bundle_hash": self.profile.threshold_bundle_hash,
                     "full_profile_hash": self.profile.full_profile_hash,
+                    "effective_config_hash": self.effective_config_hash,
+                    "reranker_provenance": (
+                        decision.reranker_provenance.document()
+                        if decision.reranker_provenance is not None else None
+                    ),
                     "reranker_calibrator_hash": (
-                        self.profile.reranker_calibration.calibrator.hash()
-                        if self.profile.reranker_calibration is not None else None
+                        decision.reranker_provenance.calibrator_hash
+                        if decision.reranker_provenance is not None else None
                     ),
                     "reranker_threshold_hash": (
-                        self.profile.reranker_calibration.threshold.hash()
-                        if self.profile.reranker_calibration is not None else self.profile.threshold_hash
+                        decision.reranker_provenance.threshold_hash
+                        if decision.reranker_provenance is not None else None
                     ),
                     "qwen_calibrator_hash": (
                         self.profile.adjudicator_calibration.calibrator.hash()
@@ -1110,7 +1334,10 @@ class Stage2Pipeline:
                         self.profile.adjudicator_calibration.threshold.hash()
                         if self.profile.adjudicator_calibration is not None else None
                     ),
-                    "reranker_lock_hash": self.profile.reranker_lock_hash,
+                    "reranker_lock_hash": (
+                        decision.reranker_provenance.model_lock_hash
+                        if decision.reranker_provenance is not None else None
+                    ),
                     "adjudicator_lock_hash": self.profile.adjudicator_lock_hash,
                     "release_gate_hash": self.profile.release_gate_hash,
                     "task_lease": {
@@ -1169,7 +1396,12 @@ class Stage2Pipeline:
             return self.profile.adjudicator_model_id, self.profile.adjudicator_revision
         if decision.reason_code.startswith("document_type_"):
             return None, None
-        return self.profile.reranker_model_id, self.profile.reranker_revision
+        if decision.reranker_provenance is None:
+            raise ValueError("reranker decision is missing its execution provenance")
+        return (
+            decision.reranker_provenance.model_id,
+            decision.reranker_provenance.model_revision,
+        )
 
     def _failure_probability(self) -> float | None:
         return 0.5 if self.profile.production_calibrated else None

@@ -19,6 +19,10 @@ def _arguments(output: Path) -> list[str]:
         "--rationale-manifest", "rationale-manifest.json",
         "--rationale-worklist", "rationale-worklist.json",
         "--rationale-records", "rationale-records.json",
+        "--rationale-source-ledger", "rationale-source-ledger.json",
+        "--rationale-query-metadata", "rationale-query-metadata.json",
+        "--rationale-derived-examples", "rationale-derived-examples.json",
+        "--rationale-papers", "rationale-papers.json",
         "--parity-manifest", "parity-manifest.json",
         "--parity-workload", "parity-workload.json",
         "--parity-selection-receipt", "parity-receipt.json",
@@ -51,7 +55,7 @@ def test_build_evidence_help_lists_bound_artifacts(capsys: pytest.CaptureFixture
 
     assert stopped.value.code == 0
     help_text = capsys.readouterr().out
-    for option in ("--gold-manifest", "--rationale-worklist", "--parity-workload", "--benchmark-record", "--hidden-attestation", "--output"):
+    for option in ("--gold-manifest", "--rationale-worklist", "--rationale-source-ledger", "--rationale-derived-examples", "--parity-workload", "--benchmark-record", "--hidden-attestation", "--output"):
         assert option in help_text
 
 

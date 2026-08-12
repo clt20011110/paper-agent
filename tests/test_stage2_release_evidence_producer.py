@@ -44,7 +44,9 @@ def _candidate(gold_hash: str) -> SimpleNamespace:
         base_runtime_config_hash="d" * 64, reranker_lock_hash="e" * 64,
         adjudicator_lock_hash="f" * 64,
     )
-    return SimpleNamespace(profile_name="candidate-v2", profile=profile)
+    return SimpleNamespace(
+        profile_name="candidate-v2", profile=profile, release_hash="9" * 64
+    )
 
 
 def _write_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: object) -> Path:
@@ -54,6 +56,7 @@ def _write_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: o
     monkeypatch.setattr(producer, "load_stage2_benchmark_candidate", lambda _path: _candidate(gold.hash()))
     names = (
         "structured_manifest", "structured_records", "structured_papers", "rationale_manifest", "rationale_worklist", "rationale_records",
+        "rationale_source_ledger", "rationale_query_metadata", "rationale_derived_examples", "rationale_papers",
         "parity_manifest", "parity_workload", "parity_receipt", "parity_scores",
         "parity_oracle_lock", "parity_candidate_lock", "parity_oracle_calibrator",
         "parity_candidate_calibrator", "parity_oracle_threshold", "parity_candidate_threshold",
@@ -67,6 +70,10 @@ def _write_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: o
         "structured_manifest_path": paths["structured_manifest"], "structured_records_path": paths["structured_records"],
         "structured_papers_path": paths["structured_papers"],
         "rationale_manifest_path": paths["rationale_manifest"], "rationale_worklist_path": paths["rationale_worklist"], "rationale_records_path": paths["rationale_records"],
+        "rationale_source_ledger_path": paths["rationale_source_ledger"],
+        "rationale_query_metadata_path": paths["rationale_query_metadata"],
+        "rationale_derived_examples_path": paths["rationale_derived_examples"],
+        "rationale_papers_path": paths["rationale_papers"],
         "parity_manifest_path": paths["parity_manifest"], "parity_workload_path": paths["parity_workload"],
         "parity_selection_receipt_path": paths["parity_receipt"], "parity_scores_path": paths["parity_scores"],
         "parity_oracle_model_lock_path": paths["parity_oracle_lock"], "parity_candidate_model_lock_path": paths["parity_candidate_lock"],
@@ -86,6 +93,7 @@ def test_producer_writes_public_index_with_byte_refs_and_candidate_bindings(tmp_
     assert document["evidence_type"] == "stage2_public_promotion_evidence"
     assert "hidden_attestation" not in document
     assert document["candidate_id"] == "candidate-v2"
+    assert document["candidate_bundle_sha256"] == "9" * 64
     assert document["model_lock_hashes"] == {"reranker": "e" * 64, "qwen": "f" * 64}
     assert document["public_gates"]["structured_replay"]["papers"]["path"] == "structured_papers.json"
     assert document["public_gates"]["benchmark"]["records"][0]["sha256"] == sha256((tmp_path / "benchmark-record-0.json").read_bytes()).hexdigest()

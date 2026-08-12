@@ -95,7 +95,7 @@ def _fast_release_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
                 for index, name in enumerate(GATE_NAMES, start=1)
             },
             throughput_runs=(99.0, 100.0, 101.0),
-        )
+        ), None
 
     monkeypatch.setattr(stage2_search, "_release_gate", verified_gate)
 
@@ -105,6 +105,7 @@ def _release_bundle(
     *,
     base_url: str = "http://127.0.0.1:8000",
     reranker_lock_source: Path | None = None,
+    profile_name: str = "local-winner",
 ) -> tuple[Path, dict]:
     reranker = load_model_lock(
         reranker_lock_source
@@ -145,7 +146,10 @@ def _release_bundle(
         "query": "graph learning methods",
         "query_version": "screening-query-v1",
         "screening_scope_hash": scope_hash,
-        "evaluation_topic_queries": [],
+        "evaluation_topic_queries": [
+            {"topic": "molecular_generation", "language": "en", "query": "molecular generation"},
+            {"topic": "molecular_generation", "language": "zh", "query": "分子生成"},
+        ],
         "include_document_types": [],
         "exclude_document_types": ["editorial", "retraction"],
         "token_bucket_width": 128,
@@ -172,6 +176,10 @@ def _release_bundle(
         reranker_lock_hash=reranker_hash,
         adjudicator_lock_hash=adjudicator_hash,
         release_gate_hash=None,
+        evaluation_topic_queries=tuple(
+            (item["topic"], item["language"], item["query"])
+            for item in runtime["evaluation_topic_queries"]
+        ),
         include_document_types=frozenset(runtime["include_document_types"]),
         exclude_document_types=frozenset(runtime["exclude_document_types"]),
         token_bucket_width=runtime["token_bucket_width"],
@@ -266,7 +274,8 @@ def _release_bundle(
         },
     }
     gate = {
-        "candidate_id": "local-winner",
+        "candidate_id": profile_name,
+        "candidate_bundle_sha256": "9" * 64,
         "evaluation_manifest_hash": evaluation_manifest_hash,
         "evidence": {"path": "stage2-release-evidence.json", "sha256": "0" * 64},
     }
@@ -289,7 +298,7 @@ def _release_bundle(
             "synonyms": [],
         }],
         "filter": {
-            "profile": "local-winner",
+            "profile": profile_name,
             "config_hash": profile.config_hash,
             "thresholds_hash": profile.threshold_hash,
             "seed_selector_version": "1",
@@ -334,7 +343,7 @@ def _release_bundle(
     )
     release = {
         "schema_version": "3",
-        "profile": "local-winner",
+        "profile": profile_name,
         "reranker_lock": {"path": reranker_path.name, "sha256": reranker_hash},
         "adjudicator_lock": {"path": adjudicator_path.name, "sha256": adjudicator_hash},
         "calibration": calibration_documents,

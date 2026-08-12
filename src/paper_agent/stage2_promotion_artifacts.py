@@ -32,7 +32,10 @@ from .stage2_evaluation import (
     promotion_gate,
     winner_gate,
 )
-from .stage2_hidden_attestation import HIDDEN_PROMOTION_GATE_POLICY_HASH
+from .stage2_hidden_attestation import (
+    HIDDEN_PROMOTION_GATE_POLICY_HASH,
+    ReleaseRole,
+)
 from .schema import SchemaValidationError, validate
 
 
@@ -56,7 +59,9 @@ class PromotionSigningInput:
     hidden_split_pair_counts: Mapping[str, int]
     prediction_submission_hash: str
     promotion_marker_hash: str
+    promotion_batch_hash: str
     winner_candidate_id: str
+    release_role: ReleaseRole
     public_gate_artifact_hashes: Mapping[str, str]
     throughput_runs: tuple[float, float, float]
     consumed_hidden_splits: tuple[str, str]
@@ -71,6 +76,16 @@ class PromotionSigningInput:
         object.__setattr__(self, "hidden_pair_universe_hashes", MappingProxyType(dict(self.hidden_pair_universe_hashes)))
         object.__setattr__(self, "hidden_split_pair_counts", MappingProxyType(dict(self.hidden_split_pair_counts)))
         object.__setattr__(self, "public_gate_artifact_hashes", MappingProxyType(dict(self.public_gate_artifact_hashes)))
+        if self.release_role == "winner":
+            if self.candidate_id != self.winner_candidate_id:
+                raise ValueError("winner signing input must name the promotion winner")
+        elif self.release_role == "qualified_fallback":
+            if self.candidate_id == self.winner_candidate_id:
+                raise ValueError("qualified fallback signing input cannot name the winner")
+        else:
+            raise ValueError("promotion signing input release role is invalid")
+        if self.passed == bool(self.failures):
+            raise ValueError("promotion signing input passes exactly when it has no failures")
 
     def document(self) -> dict[str, Any]:
         """Return unsigned public-safe fields, with no labels or raw predictions."""
@@ -87,7 +102,9 @@ class PromotionSigningInput:
             "hidden_split_pair_counts": dict(self.hidden_split_pair_counts),
             "prediction_submission_hash": self.prediction_submission_hash,
             "promotion_marker_hash": self.promotion_marker_hash,
+            "promotion_batch_hash": self.promotion_batch_hash,
             "winner_candidate_id": self.winner_candidate_id,
+            "release_role": self.release_role,
             "public_gate_artifact_hashes": dict(self.public_gate_artifact_hashes),
             "throughput_runs": list(self.throughput_runs),
             "consumed_hidden_splits": list(self.consumed_hidden_splits),
@@ -107,6 +124,13 @@ class PromotionSigningInput:
         issued_at: str,
     ) -> dict[str, Any]:
         """Build a complete public-safe payload for the separate signing step."""
+
+        if self.release_role == "qualified_fallback" and (
+            not self.passed or self.failures
+        ):
+            raise PrivatePromotionArtifactError(
+                "failed promotion candidates cannot produce a qualified fallback payload"
+            )
 
         payload = {
             "schema_version": "1",
@@ -131,6 +155,7 @@ class PromotionEvaluationInputs:
     winner_candidate_id: str
     winner_passed: bool
     promotion_marker_hash: str
+    promotion_batch_hash: str
     candidates: Mapping[str, PromotionSigningInput]
 
     def __post_init__(self) -> None:
@@ -225,10 +250,23 @@ def load_promotion_submission(path: Path, *, manifest: GoldManifest) -> Promotio
 def candidate_artifacts_from_v2_bundle(path: Path) -> CandidateModelArtifacts:
     """Derive candidate provenance from a frozen v2 bundle, never a submission."""
 
-    from .stage2_search import Stage2ReleaseError, load_stage2_benchmark_candidate
+    return _candidate_artifacts_and_release_hash(path)[0]
+
+
+def _candidate_artifacts_and_release_hash(
+    path: Path,
+) -> tuple[CandidateModelArtifacts, str]:
+    """Load provenance and byte identity from one immutable candidate snapshot."""
+
+    from .stage2_search import (
+        Stage2ReleaseError,
+        _load_stage2_benchmark_candidate_bytes,
+    )
 
     try:
-        released = load_stage2_benchmark_candidate(path)
+        resolved = path.resolve(strict=True)
+        payload = resolved.read_bytes()
+        released = _load_stage2_benchmark_candidate_bytes(resolved, payload)
         profile = released.profile
         reranker = profile.reranker_calibration
         qwen = profile.adjudicator_calibration
@@ -238,7 +276,7 @@ def candidate_artifacts_from_v2_bundle(path: Path) -> CandidateModelArtifacts:
             released.profile_name,
             {CalibrationPath.RERANKER: reranker.calibrator, CalibrationPath.QWEN: qwen.calibrator},
             {CalibrationPath.RERANKER: reranker.threshold, CalibrationPath.QWEN: qwen.threshold},
-        )
+        ), released.release_hash
     except (OSError, Stage2ReleaseError, ValueError) as error:
         if isinstance(error, PrivatePromotionArtifactError):
             raise
@@ -304,9 +342,17 @@ def run_promotion_evaluation(
         parity_oracle_trust_path=parity_oracle_trust_path,
     )
     labels = load_private_gold_labels(private_labels_path, manifest=manifest)
-    candidate_artifacts = {
-        candidate_id: candidate_artifacts_from_v2_bundle(candidate_path)
+    candidate_snapshots = {
+        candidate_id: _candidate_artifacts_and_release_hash(candidate_path)
         for candidate_id, candidate_path in candidate_bundle_paths.items()
+    }
+    candidate_artifacts = {
+        candidate_id: snapshot[0]
+        for candidate_id, snapshot in candidate_snapshots.items()
+    }
+    candidate_bundle_hashes = {
+        candidate_id: snapshot[1]
+        for candidate_id, snapshot in candidate_snapshots.items()
     }
     if set(candidate_artifacts) != set(submission_paths) or set(candidate_artifacts) != set(public_evidence):
         raise PrivatePromotionArtifactError("promotion inputs must name the same candidates")
@@ -352,11 +398,49 @@ def run_promotion_evaluation(
         for candidate_id in batch.candidates
     }
     winner_candidate_id, winner_passed = _promotion_winner(batch, release_gates)
+    prediction_submission_hashes = {
+        candidate_id: content_hash(
+            promotion_submission_document(submissions[candidate_id])
+        )
+        for candidate_id in batch.candidates
+    }
+    promotion_batch_hash = content_hash({
+        "kind": "stage2-hidden-promotion-batch-v1",
+        "evaluation_manifest_hash": batch.manifest_hash,
+        "evaluation_run_id": batch.evaluation_run_id,
+        "evaluator_id": batch.marker.evaluator_id,
+        "incumbent_candidate_id": batch.incumbent_candidate_id,
+        "winner_candidate_id": winner_candidate_id,
+        "promotion_marker_hash": marker_hash,
+        "gate_policy_hash": HIDDEN_PROMOTION_GATE_POLICY_HASH,
+        "candidates": [
+            {
+                "candidate_id": candidate_id,
+                "candidate_bundle_sha256": candidate_bundle_hashes[candidate_id],
+                "prediction_submission_hash": prediction_submission_hashes[candidate_id],
+                "public_gate_artifact_hashes": {
+                    name: gate.evidence_hash
+                    for name, gate in public_evidence[candidate_id].gates.items()
+                },
+                "throughput_runs": list(
+                    public_evidence[candidate_id].throughput_runs
+                ),
+            }
+            for candidate_id in sorted(batch.candidates)
+        ],
+    })
     signing_inputs: dict[str, PromotionSigningInput] = {}
     for candidate_id, result in batch.candidates.items():
         release_gate = release_gates[candidate_id]
         provenance = result.determinism.provenance
         artifacts = candidate_artifacts[candidate_id]
+        release_role: ReleaseRole = (
+            "winner" if candidate_id == winner_candidate_id else "qualified_fallback"
+        )
+        passed = winner_passed and release_gate.gate.passed
+        failures = release_gate.gate.failures
+        if not winner_passed:
+            failures = (*failures, "promotion has no unique qualified winner")
         signing_inputs[candidate_id] = PromotionSigningInput(
             candidate_id=candidate_id,
             evaluator_id=batch.marker.evaluator_id,
@@ -368,9 +452,11 @@ def run_promotion_evaluation(
             threshold_hashes={path.value: artifact.hash() for path, artifact in artifacts.thresholds.items()},
             hidden_pair_universe_hashes={split.value: hash_value for split, hash_value in result.hidden_pair_universe_hashes.items()},
             hidden_split_pair_counts={split.value: evaluation.size for split, evaluation in result.evaluations.items()},
-            prediction_submission_hash=content_hash(promotion_submission_document(submissions[candidate_id])),
+            prediction_submission_hash=prediction_submission_hashes[candidate_id],
             promotion_marker_hash=marker_hash,
+            promotion_batch_hash=promotion_batch_hash,
             winner_candidate_id=winner_candidate_id,
+            release_role=release_role,
             public_gate_artifact_hashes={
                 name: gate.evidence_hash
                 for name, gate in public_evidence[candidate_id].gates.items()
@@ -378,12 +464,8 @@ def run_promotion_evaluation(
             throughput_runs=public_evidence[candidate_id].throughput_runs,
             consumed_hidden_splits=(GoldSplit.HIDDEN_HARD.value, GoldSplit.HIDDEN_REAL.value),
             gate_policy_hash=HIDDEN_PROMOTION_GATE_POLICY_HASH,
-            passed=release_gate.gate.passed and winner_passed and candidate_id == winner_candidate_id,
-            failures=(
-                release_gate.gate.failures
-                if winner_passed or candidate_id != winner_candidate_id
-                else (*release_gate.gate.failures, "no unique qualified winner")
-            ),
+            passed=passed,
+            failures=failures,
         )
     return PromotionEvaluationInputs(
         batch.manifest_hash,
@@ -392,6 +474,7 @@ def run_promotion_evaluation(
         winner_candidate_id,
         winner_passed,
         marker_hash,
+        promotion_batch_hash,
         signing_inputs,
     )
 
@@ -467,12 +550,14 @@ def validate_promotion_public_evidence(
         _validate_evidence_bindings(
             evidence,
             candidate_id=candidate_id,
+            candidate_bundle_sha256=candidate.release_hash,
             evaluation_manifest_hash=manifest_hash,
             profile=candidate.profile,
         )
         results[candidate_id] = verify_public_stage2_gates(
             evidence,
             profile=candidate.profile,
+            candidate_bundle_sha256=candidate.release_hash,
             oracle_trust=oracle_trust,
         )
     return MappingProxyType(results)

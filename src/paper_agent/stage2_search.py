@@ -36,11 +36,17 @@ from .stage2_evaluation import (
     pair_universe_hash,
     phase3_release_gate,
 )
-from .stage2_fallback import FallbackReleaseBinding, LocalCalibratedRerankerFallback
+from .stage2_fallback import (
+    FallbackReleaseBinding,
+    LocalCalibratedRerankerFallback,
+    stage2_effective_config_hash,
+    stage2_shared_runtime_hash,
+)
 from .stage2_hidden_attestation import HIDDEN_PROMOTION_GATE_POLICY_HASH
 from .stage2_hidden_attestation import (
     HiddenEvaluatorTrust,
     HiddenPromotionBindings,
+    ReleaseRole,
     load_hidden_evaluator_trust,
     verify_hidden_promotion_attestation,
 )
@@ -82,7 +88,7 @@ _RUNTIME_FIELDS = frozenset({
     "omlx_base_url", "api_key_env", "prompt_version", "schema_version",
 })
 _RELEASE_GATE_FIELDS = frozenset({
-    "candidate_id", "evaluation_manifest_hash", "evidence",
+    "candidate_id", "candidate_bundle_sha256", "evaluation_manifest_hash", "evidence",
 })
 _PATH_NAMES = frozenset({CalibrationPath.RERANKER.value, CalibrationPath.QWEN.value})
 
@@ -101,6 +107,21 @@ class ReleasedRerankerFallback:
     omlx_base_url: str
     api_key_env: str | None
     release_binding: FallbackReleaseBinding
+    runtime_config_hash: str
+
+    def identity_document(self) -> dict[str, object]:
+        """Match the runtime pipeline identity before any request is sent."""
+
+        return {
+            "backend": "omlx_rerank",
+            "model_id": self.model_lock.model_id,
+            "model_revision": _runtime_revision(self.model_lock),
+            "model_lock_hash": self.model_lock_hash,
+            "calibrator_hash": self.calibration.calibrator.hash(),
+            "threshold_hash": self.calibration.threshold.hash(),
+            "release_binding": self.release_binding.document(),
+            "runtime_config_hash": self.runtime_config_hash,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +133,18 @@ class ReleasedStage2:
     api_key_env: str | None = None
     reranker_fallback: ReleasedRerankerFallback | None = None
 
+    @property
+    def effective_config_hash(self) -> str:
+        """Configuration hash that QueryPlan and SQLite resume must bind."""
+
+        return stage2_effective_config_hash(
+            self.profile.config_hash,
+            (
+                self.reranker_fallback.identity_document()
+                if self.reranker_fallback is not None
+                else None
+            ),
+        )
     def screener(
         self,
         database: Database,
@@ -158,21 +191,55 @@ class ReleasedStage2:
         if fallback is None:
             return None
         transport = primary_transport
-        if fallback.omlx_base_url != self.omlx_base_url:
+        if (
+            fallback.omlx_base_url != self.omlx_base_url
+            or fallback.api_key_env != self.api_key_env
+        ):
             transport = UrlLibOmlxTransport(
                 fallback.omlx_base_url,
                 api_key=environment.get(fallback.api_key_env) if fallback.api_key_env else None,
             )
         return LocalCalibratedRerankerFallback(
-            OmlxRerankBackend(
+            backend=OmlxRerankBackend(
                 fallback.model_lock.model_id,
                 transport,
                 document_batch_size=self.profile.document_batch_size,
                 max_in_flight=self.profile.reranker_max_in_flight,
             ),
-            fallback.model_lock_hash,
-            fallback.calibration,
-            fallback.release_binding,
+            model_id=fallback.model_lock.model_id,
+            model_revision=_runtime_revision(fallback.model_lock),
+            model_lock_hash=fallback.model_lock_hash,
+            calibration=fallback.calibration,
+            release_binding=fallback.release_binding,
+            runtime_config_hash=fallback.runtime_config_hash,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HiddenPromotionBatchBinding:
+    """Public fields proving two attestations came from one sealed batch."""
+
+    promotion_batch_hash: str
+    evaluation_run_id: str
+    promotion_marker_hash: str
+    winner_candidate_id: str
+    evaluator_id: str
+    trust_manifest_hash: str
+    issued_at: str
+
+    @classmethod
+    def from_attestation(
+        cls, document: Mapping[str, Any]
+    ) -> "HiddenPromotionBatchBinding":
+        payload = _object(document, "payload")
+        return cls(
+            _sha256_text(payload, "promotion_batch_hash"),
+            _text(payload, "evaluation_run_id"),
+            _sha256_text(payload, "promotion_marker_hash"),
+            _text(payload, "winner_candidate_id"),
+            _text(payload, "evaluator_id"),
+            _sha256_text(payload, "trust_manifest_hash"),
+            _text(payload, "issued_at"),
         )
 
 
@@ -463,6 +530,10 @@ def _load_stage2_bundle(
             f"Stage 2 {'release' if released else 'benchmark candidate'} must use "
             f"schema_version {expected_schema_version}"
         )
+    if not released and "reranker_fallback" in document:
+        raise Stage2ReleaseError(
+            "Stage 2 fallback is injected only during final schema-v3 assembly"
+        )
     hidden_trust: HiddenEvaluatorTrust | None = None
     parity_oracle_trust: ParityOracleTrust | None = None
     if released:
@@ -549,11 +620,10 @@ def _load_stage2_bundle(
     if plan is not None:
         if profile.threshold_hash != plan["filter"]["thresholds_hash"]:
             raise Stage2ReleaseError("Stage 2 probability threshold bundle does not match QueryPlan")
-        if profile.config_hash != plan["filter"]["config_hash"]:
-            raise Stage2ReleaseError("Stage 2 release configuration does not match QueryPlan")
+    primary_batch_binding: HiddenPromotionBatchBinding | None = None
     if gate_document is not None:
         assert hidden_trust is not None and parity_oracle_trust is not None
-        _release_gate(
+        _, primary_batch_binding = _release_gate(
             path,
             gate_document,
             profile_name,
@@ -571,16 +641,12 @@ def _load_stage2_bundle(
             if gate_document is not None
             else None
         ),
-        primary_release_evidence_hash=(
-            _sha256_text(_object(gate_document, "evidence"), "sha256")
-            if gate_document is not None
-            else None
-        ),
         hidden_trust=hidden_trust,
         parity_oracle_trust=parity_oracle_trust,
+        primary_batch_binding=primary_batch_binding,
     )
 
-    return ReleasedStage2(
+    released_stage2 = ReleasedStage2(
         profile_name,
         profile,
         sha256(release_bytes).hexdigest(),
@@ -588,6 +654,14 @@ def _load_stage2_bundle(
         base_profile.api_key_env,
         fallback,
     )
+    if (
+        plan is not None
+        and released_stage2.effective_config_hash != plan["filter"]["config_hash"]
+    ):
+        raise Stage2ReleaseError(
+            "Stage 2 effective release configuration does not match QueryPlan"
+        )
+    return released_stage2
 
 
 def _release_gate(
@@ -597,8 +671,12 @@ def _release_gate(
     profile: Stage2Profile,
     hidden_trust: HiddenEvaluatorTrust,
     oracle_trust: ParityOracleTrust,
-) -> ReleaseGateResult:
-    _exact_fields(document, _RELEASE_GATE_FIELDS, "Stage 2 release gate")
+) -> tuple[ReleaseGateResult, HiddenPromotionBatchBinding]:
+    _exact_fields(
+        document,
+        _RELEASE_GATE_FIELDS,
+        "Stage 2 release gate",
+    )
     candidate_id = _text(document, "candidate_id")
     evaluation_manifest_hash = _sha256_text(document, "evaluation_manifest_hash")
     if candidate_id != profile_name:
@@ -610,14 +688,18 @@ def _release_gate(
     )
     try:
         index = load_stage2_release_evidence_index_bytes(evidence_path, evidence_bytes)
-        return verify_stage2_release_evidence_index(
+        gate = verify_stage2_release_evidence_index(
             index,
             candidate_id=candidate_id,
+            candidate_bundle_sha256=_sha256_text(
+                document, "candidate_bundle_sha256"
+            ),
             evaluation_manifest_hash=evaluation_manifest_hash,
             profile=profile,
             hidden_trust=hidden_trust,
             oracle_trust=oracle_trust,
         )
+        return gate, _hidden_promotion_batch_binding(index)
     except Stage2ReleaseError:
         raise
     except (OSError, ValueError) as error:
@@ -632,9 +714,9 @@ def _load_released_reranker_fallback(
     *,
     primary_profile: Stage2Profile,
     primary_evaluation_manifest_hash: str | None,
-    primary_release_evidence_hash: str | None,
     hidden_trust: HiddenEvaluatorTrust | None,
     parity_oracle_trust: ParityOracleTrust | None,
+    primary_batch_binding: HiddenPromotionBatchBinding | None = None,
 ) -> ReleasedRerankerFallback | None:
     if document is None:
         return None
@@ -645,7 +727,7 @@ def _load_released_reranker_fallback(
         frozenset({"candidate", "release_evidence", "runtime", "release_binding"}),
         "Stage 2 reranker fallback",
     )
-    candidate_path, _, candidate_bytes = _artifact(
+    candidate_path, candidate_hash, candidate_bytes = _artifact(
         release_path, _object(document, "candidate")
     )
     backup = _load_stage2_benchmark_candidate_bytes(candidate_path, candidate_bytes)
@@ -653,6 +735,11 @@ def _load_released_reranker_fallback(
         raise Stage2ReleaseError("Stage 2 reranker fallback candidates cannot nest fallbacks")
     if backup.profile.reranker_lock_hash == primary_profile.reranker_lock_hash:
         raise Stage2ReleaseError("Stage 2 reranker fallback must use a distinct model lock")
+    shared_runtime_hash = stage2_shared_runtime_hash(primary_profile)
+    if stage2_shared_runtime_hash(backup.profile) != shared_runtime_hash:
+        raise Stage2ReleaseError(
+            "Stage 2 fallback query, Qwen path, or runtime semantics differ from the primary"
+        )
     runtime = _object(document, "runtime")
     _exact_fields(
         runtime,
@@ -670,19 +757,25 @@ def _load_released_reranker_fallback(
     _exact_fields(
         binding_document,
         frozenset({
-            "primary_release_evidence_hash",
+            "backup_candidate_hash",
             "backup_release_evidence_hash",
             "evaluation_manifest_hash",
             "gate_policy_hash",
+            "shared_runtime_hash",
         }),
         "Stage 2 reranker fallback release binding",
     )
     binding = FallbackReleaseBinding(
-        _sha256_text(binding_document, "primary_release_evidence_hash"),
+        _sha256_text(binding_document, "backup_candidate_hash"),
         _sha256_text(binding_document, "backup_release_evidence_hash"),
         _sha256_text(binding_document, "evaluation_manifest_hash"),
         _sha256_text(binding_document, "gate_policy_hash"),
+        _sha256_text(binding_document, "shared_runtime_hash"),
     )
+    if binding.backup_candidate_hash != candidate_hash:
+        raise Stage2ReleaseError("Stage 2 fallback candidate does not match its binding")
+    if binding.shared_runtime_hash != shared_runtime_hash:
+        raise Stage2ReleaseError("Stage 2 fallback shared runtime binding drifted")
     if binding.gate_policy_hash != HIDDEN_PROMOTION_GATE_POLICY_HASH:
         raise Stage2ReleaseError("Stage 2 fallback does not use the frozen promotion gate policy")
     backup_evidence_path, backup_evidence_hash, backup_evidence_bytes = _artifact(
@@ -693,37 +786,73 @@ def _load_released_reranker_fallback(
     reranker = backup.profile.reranker_calibration
     if reranker is None or backup.profile.reranker_lock_hash is None:
         raise Stage2ReleaseError("Stage 2 fallback candidate is missing reranker calibration")
-    if primary_evaluation_manifest_hash is None:
-        return ReleasedRerankerFallback(
-            _model_lock_from_profile_candidate(candidate_path, candidate_bytes),
-            backup.profile.reranker_lock_hash,
-            reranker,
-            endpoint,
-            api_key_env,
-            binding,
-        )
-    if (
-        hidden_trust is None
-        or parity_oracle_trust is None
-        or primary_release_evidence_hash is None
-    ):
-        raise Stage2ReleaseError("Stage 2 fallback requires verified primary release evidence")
-    if binding.primary_release_evidence_hash != primary_release_evidence_hash:
-        raise Stage2ReleaseError("Stage 2 fallback primary release evidence does not match the release")
-    if binding.evaluation_manifest_hash != primary_evaluation_manifest_hash:
-        raise Stage2ReleaseError("Stage 2 fallback evaluation manifest does not match the primary release")
     try:
         backup_index = load_stage2_release_evidence_index_bytes(
             backup_evidence_path,
             backup_evidence_bytes,
         )
+        if backup_index.hidden_attestation is None:
+            raise Stage2ReleaseError(
+                "Stage 2 fallback requires final release evidence with hidden attestation"
+            )
+        if backup_index.candidate_bundle_sha256 != candidate_hash:
+            raise Stage2ReleaseError(
+                "Stage 2 fallback evidence does not bind the backup candidate"
+            )
+        if backup_index.evaluation_manifest_hash != binding.evaluation_manifest_hash:
+            raise Stage2ReleaseError(
+                "Stage 2 fallback evidence does not match its evaluation manifest binding"
+            )
+        _validate_evidence_bindings(
+            backup_index,
+            candidate_id=backup.profile_name,
+            candidate_bundle_sha256=candidate_hash,
+            evaluation_manifest_hash=binding.evaluation_manifest_hash,
+            profile=backup.profile,
+        )
+    except Stage2ReleaseError:
+        raise
+    except (OSError, ValueError) as error:
+        raise Stage2ReleaseError(
+            f"Stage 2 fallback release evidence verification failed: {error}"
+        ) from error
+    runtime_config_hash = content_hash(document)
+    fallback_model_lock = _model_lock_from_profile_candidate(
+        candidate_path, candidate_bytes
+    )
+    if primary_evaluation_manifest_hash is None:
+        return ReleasedRerankerFallback(
+            fallback_model_lock,
+            backup.profile.reranker_lock_hash,
+            reranker,
+            endpoint,
+            api_key_env,
+            binding,
+            runtime_config_hash,
+        )
+    if (
+        hidden_trust is None
+        or parity_oracle_trust is None
+        or primary_batch_binding is None
+    ):
+        raise Stage2ReleaseError("Stage 2 fallback requires verified primary release evidence")
+    if binding.evaluation_manifest_hash != primary_evaluation_manifest_hash:
+        raise Stage2ReleaseError("Stage 2 fallback evaluation manifest does not match the primary release")
+    backup_batch_binding = _hidden_promotion_batch_binding(backup_index)
+    if backup_batch_binding != primary_batch_binding:
+        raise Stage2ReleaseError(
+            "Stage 2 fallback attestation does not belong to the primary sealed batch"
+        )
+    try:
         backup_gate = verify_stage2_release_evidence_index(
             backup_index,
             candidate_id=backup.profile_name,
+            candidate_bundle_sha256=backup.release_hash,
             evaluation_manifest_hash=binding.evaluation_manifest_hash,
             profile=backup.profile,
             hidden_trust=hidden_trust,
             oracle_trust=parity_oracle_trust,
+            expected_release_role="qualified_fallback",
         )
     except (OSError, ValueError) as error:
         raise Stage2ReleaseError(
@@ -732,12 +861,13 @@ def _load_released_reranker_fallback(
     if not backup_gate.gate.passed:
         raise Stage2ReleaseError("Stage 2 fallback release gates did not pass")
     return ReleasedRerankerFallback(
-        _model_lock_from_profile_candidate(candidate_path, candidate_bytes),
+        fallback_model_lock,
         backup.profile.reranker_lock_hash,
         reranker,
         endpoint,
         api_key_env,
         binding,
+        runtime_config_hash,
     )
 
 
@@ -754,6 +884,7 @@ def verify_stage2_release_evidence(
     evidence_path: Path,
     *,
     candidate_id: str,
+    candidate_bundle_sha256: str,
     evaluation_manifest_hash: str,
     profile: Stage2Profile,
     hidden_trust_path: Path,
@@ -792,6 +923,7 @@ def verify_stage2_release_evidence(
     return verify_stage2_release_evidence_index(
         index,
         candidate_id=candidate_id,
+        candidate_bundle_sha256=candidate_bundle_sha256,
         evaluation_manifest_hash=evaluation_manifest_hash,
         profile=profile,
         hidden_trust=hidden_trust,
@@ -803,10 +935,12 @@ def verify_stage2_release_evidence_index(
     index: Stage2ReleaseEvidenceIndex,
     *,
     candidate_id: str,
+    candidate_bundle_sha256: str,
     evaluation_manifest_hash: str,
     profile: Stage2Profile,
     hidden_trust: HiddenEvaluatorTrust,
     oracle_trust: ParityOracleTrust,
+    expected_release_role: ReleaseRole = "winner",
 ) -> ReleaseGateResult:
     """Verify an already captured evidence index and trust manifest."""
 
@@ -824,6 +958,7 @@ def verify_stage2_release_evidence_index(
         _validate_evidence_bindings(
             index,
             candidate_id=candidate_id,
+            candidate_bundle_sha256=candidate_bundle_sha256,
             evaluation_manifest_hash=evaluation_manifest_hash,
             profile=profile,
         )
@@ -835,6 +970,7 @@ def verify_stage2_release_evidence_index(
         public_evidence = verify_public_stage2_gates(
             index,
             profile=replace(profile, release_gate_hash=None),
+            candidate_bundle_sha256=candidate_bundle_sha256,
             oracle_trust=oracle_trust,
         )
         if not public_evidence.passed:
@@ -877,6 +1013,7 @@ def verify_stage2_release_evidence_index(
             attestation_document,
             hidden_trust,
             expected_bindings=hidden_bindings,
+            expected_release_role=expected_release_role,
         )
         artifacts = {
             "promotion": index.hidden_attestation.sha256,
@@ -903,6 +1040,19 @@ def verify_stage2_release_evidence_index(
         raise Stage2ReleaseError(
             f"Stage 2 release evidence verification failed: {error}"
         ) from error
+
+
+def _hidden_promotion_batch_binding(
+    index: Stage2ReleaseEvidenceIndex,
+) -> HiddenPromotionBatchBinding:
+    if index.hidden_attestation is None:
+        raise Stage2ReleaseError(
+            "Stage 2 release evidence requires a hidden attestation"
+        )
+    document = index.hidden_attestation.read_json(index.bundle_root)
+    if not isinstance(document, Mapping):
+        raise Stage2ReleaseError("Stage 2 hidden attestation must be an object")
+    return HiddenPromotionBatchBinding.from_attestation(document)
 
 
 def _load_deployment_hidden_trust(
@@ -967,11 +1117,13 @@ def _validate_evidence_bindings(
     index: Stage2ReleaseEvidenceIndex,
     *,
     candidate_id: str,
+    candidate_bundle_sha256: str,
     evaluation_manifest_hash: str,
     profile: Stage2Profile,
 ) -> None:
     expected = {
         "candidate_id": candidate_id,
+        "candidate_bundle_sha256": candidate_bundle_sha256,
         "evaluation_manifest_hash": evaluation_manifest_hash,
         "stage2_config_hash": profile.base_runtime_config_hash,
         "model_lock_hashes": _profile_model_lock_hashes(profile),

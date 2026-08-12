@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import paper_agent.stage2_promotion_artifacts as artifacts_io
+from paper_agent.canonical import content_hash
 from paper_agent.stage2_evaluation import (
     CalibrationPath,
     CandidateModelArtifacts,
@@ -23,6 +24,7 @@ from paper_agent.stage2_evaluation import (
     ThresholdArtifact,
     write_gold_manifest,
 )
+from paper_agent.stage2_hidden_attestation import HIDDEN_PROMOTION_GATE_POLICY_HASH
 from paper_agent.stage2_promotion_artifacts import (
     PrivatePromotionArtifactError,
     candidate_artifacts_from_v2_bundle,
@@ -211,7 +213,7 @@ def test_public_promotion_verification_passes_the_candidate_profile(
     import paper_agent.stage2_search as stage2_search
 
     profile = object()
-    candidate = SimpleNamespace(profile=profile)
+    candidate = SimpleNamespace(profile=profile, release_hash="f" * 64)
     evidence = object()
     oracle_trust = object()
     observed: list[object] = []
@@ -232,7 +234,7 @@ def test_public_promotion_verification_passes_the_candidate_profile(
     monkeypatch.setattr(
         public_gates,
         "verify_public_stage2_gates",
-        lambda value, *, profile, oracle_trust: (
+        lambda value, *, profile, candidate_bundle_sha256, oracle_trust: (
             observed.extend((value, profile, oracle_trust)) or "verified"
         ),
     )
@@ -263,7 +265,11 @@ def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_fail
         json.dumps(promotion_submission_document(_submission(manifest, labels, candidate, reject_all=True))),
         encoding="utf-8",
     )
-    monkeypatch.setattr(artifacts_io, "candidate_artifacts_from_v2_bundle", lambda _path: candidate)
+    monkeypatch.setattr(
+        artifacts_io,
+        "_candidate_artifacts_and_release_hash",
+        lambda _path: (candidate, "d" * 64),
+    )
     monkeypatch.setattr(
         artifacts_io,
         "_public_release_evidence",
@@ -286,6 +292,7 @@ def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_fail
 
     unsigned = result.candidates["candidate"].document()
     assert unsigned["result_summary"]["passed"] is False
+    assert unsigned["release_role"] == "winner"
     assert "labels" not in json.dumps(unsigned) and "pair-" not in json.dumps(unsigned)
     payload = result.candidates["candidate"].attestation_payload(
         evaluator_key_id="synthetic-key",
@@ -293,6 +300,7 @@ def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_fail
         issued_at="2026-08-11T00:00:00Z",
     )
     assert payload["evaluator_id"] == "synthetic-evaluator"
+    assert payload["release_role"] == "winner"
     assert payload["prediction_submission_hash"] == result.candidates["candidate"].prediction_submission_hash
     assert (tmp_path / "state" / f"{manifest.hash()}.promotion.json").is_file()
 
@@ -327,8 +335,11 @@ def test_orchestration_derives_the_paired_hidden_winner_not_an_operator_choice(
     artifacts = {"incumbent": incumbent, "challenger": challenger}
     monkeypatch.setattr(
         artifacts_io,
-        "candidate_artifacts_from_v2_bundle",
-        lambda path: artifacts[path.stem.removesuffix("-v2")],
+        "_candidate_artifacts_and_release_hash",
+        lambda path: (
+            artifacts[path.stem.removesuffix("-v2")],
+            sha256(path.name.encode()).hexdigest(),
+        ),
     )
     monkeypatch.setattr(
         artifacts_io,
@@ -365,4 +376,68 @@ def test_orchestration_derives_the_paired_hidden_winner_not_an_operator_choice(
     assert result.winner_candidate_id == "challenger"
     winner = result.candidates[result.winner_candidate_id]
     assert winner.winner_candidate_id == winner.candidate_id
+    assert winner.release_role == "winner"
     assert winner.passed
+    fallback = result.candidates["incumbent"]
+    assert fallback.release_role == "qualified_fallback"
+    assert fallback.passed
+    assert fallback.promotion_batch_hash == winner.promotion_batch_hash
+    assert result.promotion_batch_hash == winner.promotion_batch_hash
+    assert result.promotion_batch_hash == content_hash({
+        "kind": "stage2-hidden-promotion-batch-v1",
+        "evaluation_manifest_hash": manifest.hash(),
+        "evaluation_run_id": "synthetic-run",
+        "evaluator_id": "synthetic-evaluator",
+        "incumbent_candidate_id": "incumbent",
+        "winner_candidate_id": "challenger",
+        "promotion_marker_hash": result.promotion_marker_hash,
+        "gate_policy_hash": HIDDEN_PROMOTION_GATE_POLICY_HASH,
+        "candidates": [
+            {
+                "candidate_id": candidate_id,
+                "candidate_bundle_sha256": sha256(
+                    candidate_paths[candidate_id].name.encode()
+                ).hexdigest(),
+                "prediction_submission_hash": content_hash(
+                    promotion_submission_document(
+                        _submission(
+                            manifest,
+                            labels,
+                            artifacts[candidate_id],
+                            reject_all=candidate_id == "incumbent",
+                        )
+                    )
+                ),
+                "public_gate_artifact_hashes": {
+                    name: "a" * 64
+                    for name in (
+                        "structured_replay",
+                        "rationale",
+                        "parity",
+                        "benchmark",
+                        "soak",
+                    )
+                },
+                "throughput_runs": [
+                    100 if candidate_id == "incumbent" else 120
+                ] * 3,
+            }
+            for candidate_id in ("challenger", "incumbent")
+        ],
+    })
+    assert fallback.attestation_payload(
+        evaluator_key_id="synthetic-key",
+        trust_manifest_hash="c" * 64,
+        issued_at="2026-08-11T00:00:00Z",
+    )["release_role"] == "qualified_fallback"
+    failed_fallback = replace(
+        fallback,
+        passed=False,
+        failures=("promotion: hidden gate failed",),
+    )
+    with pytest.raises(PrivatePromotionArtifactError, match="qualified fallback"):
+        failed_fallback.attestation_payload(
+            evaluator_key_id="synthetic-key",
+            trust_manifest_hash="c" * 64,
+            issued_at="2026-08-11T00:00:00Z",
+        )

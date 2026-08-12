@@ -1,19 +1,31 @@
-"""Authoring helpers for the human Stage 2 rationale audit.
-
-This module freezes already-selected rationale examples and turns completed
-human worklists into the raw artifacts consumed by ``rationale_audit_gate``.
-It deliberately does not generate, infer, or default audit labels.
-"""
+"""Produce and verify the human Stage 2 rationale-audit evidence chain."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+import ctypes
+import ctypes.util
+from dataclasses import dataclass, replace
+import errno
+from hashlib import sha256
 import json
+from math import isclose, isfinite
 from pathlib import Path
+import sys
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Sequence
 
 from .canonical import content_hash
-from .schema import validate
+from .schema import schema_directory, validate
+from .stage2_backends import (
+    AdjudicationDecision,
+    AdjudicationInput,
+    OmlxChatBackend,
+    OmlxRerankBackend,
+    OmlxTransport,
+    RerankInput,
+    StructuredOutputError,
+)
 from .stage2_benchmark_inputs import benchmark_corpus_hash, benchmark_papers_from_document
 from .stage2_evaluation import (
     RationaleAuditCase,
@@ -21,6 +33,8 @@ from .stage2_evaluation import (
     RationaleAuditRecord,
     RationaleStratum,
 )
+from .stage2_pipeline import Stage2Paper
+from .stage2_prompt_contract import adjudication_messages, render_stage2_document
 
 
 EVIDENCE_SUPPORT_RUBRIC = {
@@ -64,20 +78,343 @@ _SOURCE_CANDIDATE_FIELDS = frozenset({
     "adjudicator_model_lock_hash", "prompt_version", "response_schema",
 })
 _QUERY_METADATA_FIELDS = frozenset({
-    "schema_version", "kind", "benchmark_papers_sha256", "primary_languages",
-    "assignments",
+    "schema_version", "kind", "candidate_id", "candidate_bundle_sha256",
+    "benchmark_papers_sha256", "primary_languages", "scores", "assignments",
 })
-_QUERY_ASSIGNMENT_FIELDS = frozenset({
-    "paper_id", "language", "topic", "query_version", "query",
+_QUERY_SCORE_FIELDS = frozenset({
+    "pair_id", "source_paper_id", "language", "topic", "query_version",
+    "query", "stratum", "reranker_raw_score", "reranker_probability",
 })
 _LEDGER_RECORD_FIELDS = frozenset({
-    "paper_id", "decision", "score", "rationale", "evidence_fields",
+    "pair_id", "decision", "score", "rationale", "evidence_fields",
 })
 _DERIVED_DOCUMENT_FIELDS = frozenset({
     "schema_version", "kind", "corpus_hash", "model_lock_hash",
     "candidate_bundle_sha256", "source_ledger_sha256", "query_metadata_sha256",
     "examples",
 })
+
+
+@dataclass(frozen=True, slots=True)
+class RationaleSourcePlan:
+    """Model-free summary of the immutable rationale source run."""
+
+    candidate_id: str
+    paper_count: int
+    topic_query_count: int
+    reranker_pair_count: int
+    qwen_pair_count: int
+    primary_languages: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RationaleSourceArtifacts:
+    """Machine-produced query assignments and their typed Qwen outcomes."""
+
+    query_metadata: Mapping[str, Any]
+    source_ledger: Mapping[str, Any]
+
+
+def rationale_source_plan(
+    candidate: Any,
+    *,
+    benchmark_papers_document: object,
+) -> RationaleSourcePlan:
+    """Validate source inputs without calling either local model."""
+
+    validate(benchmark_papers_document, "stage2-benchmark-papers.schema.json")
+    papers = benchmark_papers_from_document(benchmark_papers_document)
+    if len({paper.paper_id for paper in papers}) != len(papers):
+        raise ValueError("benchmark papers must have unique paper_id values")
+    queries = candidate.profile.evaluation_topic_queries
+    languages = tuple(sorted({language for _, language, _ in queries}))
+    if not queries or len(languages) < 2:
+        raise ValueError(
+            "Stage 2 candidate needs frozen topic queries in at least two languages"
+        )
+    if candidate.profile.reranker_calibration is None:
+        raise ValueError("Stage 2 candidate needs a released reranker calibration")
+    return RationaleSourcePlan(
+        candidate.profile_name,
+        len(papers),
+        len(queries),
+        len(papers) * len(queries),
+        50 * len(languages),
+        languages,
+    )
+
+
+def collect_rationale_source_artifacts(
+    candidate: Any,
+    *,
+    candidate_bundle_sha256: str,
+    benchmark_papers_document: object,
+    benchmark_papers_sha256: str,
+    transport: OmlxTransport,
+) -> RationaleSourceArtifacts:
+    """Run the candidate's local BGE and Qwen paths and freeze their outputs."""
+
+    plan = rationale_source_plan(
+        candidate, benchmark_papers_document=benchmark_papers_document
+    )
+    papers = benchmark_papers_from_document(benchmark_papers_document)
+    profile = candidate.profile
+    calibration = profile.reranker_calibration
+    assert calibration is not None
+    reranker = OmlxRerankBackend(
+        profile.reranker_model_id,
+        transport,
+        document_batch_size=profile.document_batch_size,
+        max_in_flight=profile.reranker_max_in_flight,
+    )
+    documents = tuple(
+        RerankInput(paper.paper_id, render_stage2_document(paper))
+        for paper in papers
+    )
+    scored: list[dict[str, Any]] = []
+    for topic, language, query in profile.evaluation_topic_queries:
+        for score in reranker.rerank(query, documents):
+            probability = calibration.calibrator.predict(score.raw_score)
+            if not isfinite(score.raw_score) or not isfinite(probability):
+                raise ValueError("rationale source reranker scores must be finite")
+            if probability >= calibration.threshold.high:
+                stratum = RationaleStratum.RELEVANT.value
+            elif calibration.threshold.low < probability < calibration.threshold.high:
+                stratum = RationaleStratum.BOUNDARY.value
+            else:
+                stratum = "irrelevant"
+            pair_id = _rationale_pair_id(
+                score.paper_id,
+                topic=topic,
+                language=language,
+                query_version=profile.query_version,
+                query=query,
+            )
+            scored.append({
+                "pair_id": pair_id,
+                "source_paper_id": score.paper_id,
+                "language": language,
+                "topic": topic,
+                "query_version": profile.query_version,
+                "query": query,
+                "stratum": stratum,
+                "reranker_raw_score": score.raw_score,
+                "reranker_probability": probability,
+            })
+    if len(scored) != plan.reranker_pair_count or len({row["pair_id"] for row in scored}) != len(scored):
+        raise ValueError("rationale source reranker must score every topic-query/paper pair once")
+    scored = sorted(scored, key=lambda row: row["pair_id"])
+    assignments = _select_rationale_assignments(
+        scored,
+        plan.primary_languages,
+        boundary_midpoint=(calibration.threshold.low + calibration.threshold.high) / 2,
+    )
+    query_metadata = {
+        "schema_version": "3",
+        "kind": "stage2_rationale_query_metadata",
+        "candidate_id": candidate.profile_name,
+        "candidate_bundle_sha256": candidate_bundle_sha256,
+        "benchmark_papers_sha256": benchmark_papers_sha256,
+        "primary_languages": list(plan.primary_languages),
+        "scores": scored,
+        "assignments": assignments,
+    }
+    validate(query_metadata, "stage2-rationale-query-metadata.schema.json")
+    query_metadata_sha256 = sha256(_json_bytes(query_metadata)).hexdigest()
+
+    response_schema = json.loads(
+        (schema_directory() / profile.schema_version).read_text(encoding="utf-8")
+    )
+    adjudicator = OmlxChatBackend(
+        profile.adjudicator_model_id,
+        transport,
+        response_schema,
+        seed=profile.adjudicator_seed,
+        max_context_window=profile.adjudicator_max_context_window,
+        max_output_tokens=profile.adjudicator_max_output_tokens,
+    )
+    papers_by_id = {paper.paper_id: paper for paper in papers}
+    requests = tuple(
+        _rationale_adjudication_input(assignment, papers_by_id)
+        for assignment in assignments
+    )
+    with ThreadPoolExecutor(max_workers=profile.adjudicator_concurrency) as executor:
+        first_attempts = tuple(
+            executor.map(
+                lambda request: _rationale_adjudication_attempt(adjudicator, request),
+                requests,
+            )
+        )
+    decisions: list[AdjudicationDecision] = []
+    for request, (decision, error) in zip(requests, first_attempts, strict=True):
+        if error is None:
+            assert decision is not None
+            decisions.append(decision)
+        else:
+            decisions.append(adjudicator.adjudicate(request))
+    source_ledger = qwen_adjudication_ledger_document(
+        decisions,
+        candidate=candidate,
+        candidate_bundle_sha256=candidate_bundle_sha256,
+        benchmark_papers_document=benchmark_papers_document,
+        benchmark_papers_sha256=benchmark_papers_sha256,
+        query_metadata_document=query_metadata,
+        query_metadata_sha256=query_metadata_sha256,
+    )
+    return RationaleSourceArtifacts(query_metadata, source_ledger)
+
+
+def write_rationale_source_artifacts_no_replace(
+    artifacts: RationaleSourceArtifacts,
+    *,
+    output_directory: Path,
+) -> tuple[Path, Path]:
+    """Atomically publish the two-file source bundle without replacement."""
+
+    validate(artifacts.query_metadata, "stage2-rationale-query-metadata.schema.json")
+    validate(artifacts.source_ledger, "stage2-rationale-source-ledger.schema.json")
+    output_directory.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(
+        prefix=f".{output_directory.name}.", dir=output_directory.parent
+    ) as temporary:
+        temporary_directory = Path(temporary)
+        _write_json_no_replace(
+            temporary_directory / "query-metadata.json", artifacts.query_metadata
+        )
+        _write_json_no_replace(
+            temporary_directory / "source-ledger.json", artifacts.source_ledger
+        )
+        _rename_directory_no_replace(temporary_directory, output_directory)
+    return (
+        output_directory / "query-metadata.json",
+        output_directory / "source-ledger.json",
+    )
+
+
+def _rename_directory_no_replace(source: Path, target: Path) -> None:
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        rename_no_replace = libc.renameatx_np
+        rename_no_replace.argtypes = (
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+        )
+        rename_no_replace.restype = ctypes.c_int
+        result = rename_no_replace(
+            -2,
+            ctypes.c_char_p(bytes(source)),
+            -2,
+            ctypes.c_char_p(bytes(target)),
+            0x00000004,
+        )
+    elif sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        rename_no_replace = libc.renameat2
+        rename_no_replace.argtypes = (
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+        )
+        rename_no_replace.restype = ctypes.c_int
+        result = rename_no_replace(
+            -100,
+            ctypes.c_char_p(bytes(source)),
+            -100,
+            ctypes.c_char_p(bytes(target)),
+            1,
+        )
+    else:
+        raise OSError(errno.ENOTSUP, "atomic no-replace directory publish is unsupported")
+    if result:
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            raise FileExistsError(
+                f"rationale source output already exists: {target}"
+            )
+        raise OSError(error, f"cannot publish rationale source output: {target}")
+
+
+def _select_rationale_assignments(
+    scored: Sequence[Mapping[str, Any]],
+    primary_languages: Sequence[str],
+    *,
+    boundary_midpoint: float,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for language in primary_languages:
+        for stratum in RationaleStratum:
+            candidates = [
+                row for row in scored
+                if row["language"] == language and row["stratum"] == stratum.value
+            ]
+            candidates.sort(
+                key=(
+                    (lambda row: (-row["reranker_probability"], row["pair_id"]))
+                    if stratum is RationaleStratum.RELEVANT
+                    else (
+                        lambda row: (
+                            abs(row["reranker_probability"] - boundary_midpoint),
+                            row["pair_id"],
+                        )
+                    )
+                )
+            )
+            if len(candidates) < 25:
+                raise ValueError(
+                    f"rationale source needs at least 25 {stratum.value} "
+                    f"pairs for primary language {language}"
+                )
+            selected.extend(dict(row) for row in candidates[:25])
+    return sorted(selected, key=lambda row: row["pair_id"])
+
+
+def _rationale_pair_id(
+    source_paper_id: str,
+    *,
+    topic: str,
+    language: str,
+    query_version: str,
+    query: str,
+) -> str:
+    return content_hash({
+        "kind": "stage2-rationale-pair-v1",
+        "source_paper_id": source_paper_id,
+        "topic": topic,
+        "language": language,
+        "query_version": query_version,
+        "query": query,
+    })
+
+
+def _rationale_adjudication_input(
+    assignment: Mapping[str, Any],
+    papers_by_id: Mapping[str, Stage2Paper],
+) -> AdjudicationInput:
+    paper = replace(
+        papers_by_id[assignment["source_paper_id"]],
+        paper_id=assignment["pair_id"],
+    )
+    return AdjudicationInput(
+        paper.paper_id,
+        adjudication_messages(
+            query_version=assignment["query_version"],
+            query=assignment["query"],
+            paper=paper,
+        ),
+    )
+
+
+def _rationale_adjudication_attempt(
+    adjudicator: OmlxChatBackend,
+    request: AdjudicationInput,
+) -> tuple[AdjudicationDecision | None, Exception | None]:
+    try:
+        return adjudicator.adjudicate(request), None
+    except (StructuredOutputError, TimeoutError, OSError) as error:
+        return None, error
+
+
+def _json_bytes(document: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
 
 
 def derive_rationale_audit_examples(
@@ -113,6 +450,11 @@ def derive_rationale_audit_examples(
         raise ValueError("rationale source ledger does not bind the query metadata bytes")
     if query_metadata["benchmark_papers_sha256"] != benchmark_papers_sha256:
         raise ValueError("rationale query metadata does not bind the benchmark papers bytes")
+    if (
+        query_metadata["candidate_id"] != candidate.profile_name
+        or query_metadata["candidate_bundle_sha256"] != candidate_bundle_sha256
+    ):
+        raise ValueError("rationale query metadata does not bind the Stage 2 candidate")
 
     papers = benchmark_papers_from_document(benchmark_papers_document)
     corpus_hash = benchmark_corpus_hash(papers)
@@ -123,21 +465,22 @@ def derive_rationale_audit_examples(
     papers_by_id = {paper.paper_id: paper for paper in papers}
     if len(papers_by_id) != len(papers):
         raise ValueError("benchmark papers must have unique paper_id values")
-    assignments = _query_assignments(query_metadata, papers_by_id)
-    source_records = _ledger_records(source_ledger, assignments, papers_by_id)
+    assignments = _query_assignments(
+        query_metadata,
+        papers_by_id,
+        candidate=candidate,
+    )
+    source_records = _ledger_records(source_ledger, assignments)
     examples: list[dict[str, Any]] = []
     for language in query_metadata["primary_languages"]:
-        for stratum, decision in (
-            (RationaleStratum.RELEVANT, "relevant"),
-            (RationaleStratum.BOUNDARY, "needs_review"),
-        ):
+        for stratum in (RationaleStratum.RELEVANT, RationaleStratum.BOUNDARY):
             candidates = sorted(
                 (
                     record for record in source_records
-                    if record["decision"] == decision
-                    and assignments[record["paper_id"]]["language"] == language
+                    if assignments[record["pair_id"]]["stratum"] == stratum.value
+                    and assignments[record["pair_id"]]["language"] == language
                 ),
-                key=lambda record: (record["paper_id"], record["rationale"]),
+                key=lambda record: (record["pair_id"], record["rationale"]),
             )
             if len(candidates) < 25:
                 raise ValueError(
@@ -145,9 +488,10 @@ def derive_rationale_audit_examples(
                     f"records for primary language {language}"
                 )
             for record in candidates[:25]:
-                paper = papers_by_id[record["paper_id"]]
+                assignment = assignments[record["pair_id"]]
+                paper = papers_by_id[assignment["source_paper_id"]]
                 examples.append({
-                    "pair_id": record["paper_id"],
+                    "pair_id": record["pair_id"],
                     "stratum": stratum.value,
                     "language": language,
                     "rationale_artifact_hash": source_ledger_sha256,
@@ -176,50 +520,48 @@ def qwen_adjudication_ledger_document(
     candidate_bundle_sha256: str,
     benchmark_papers_document: object,
     benchmark_papers_sha256: str,
+    query_metadata_document: object,
     query_metadata_sha256: str,
 ) -> dict[str, Any]:
-    """Freeze actual Qwen ``Stage2Decision`` outputs as a source ledger.
+    """Freeze actual typed ``AdjudicationDecision`` outputs as a source ledger.
 
     This is the production boundary for rationale text.  It accepts the typed
-    decisions emitted by ``Stage2Pipeline`` rather than author-supplied
-    rationale dictionaries, and refuses non-Qwen or incomplete outcomes.
+    decisions emitted by ``OmlxChatBackend`` rather than author-supplied
+    rationale dictionaries.
     """
 
     validate(benchmark_papers_document, "stage2-benchmark-papers.schema.json")
+    validate(query_metadata_document, "stage2-rationale-query-metadata.schema.json")
     papers = benchmark_papers_from_document(benchmark_papers_document)
-    paper_ids = {paper.paper_id for paper in papers}
+    if not isinstance(query_metadata_document, Mapping):
+        raise ValueError("rationale query metadata must be an object")
+    assignment_ids = {
+        assignment["pair_id"] for assignment in query_metadata_document["assignments"]
+    }
     profile = candidate.profile
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for decision in decisions:
-        paper_id = getattr(decision, "paper_id", None)
-        route = getattr(getattr(decision, "route", None), "value", None)
-        score = getattr(decision, "adjudicator_score", None)
-        rationale = getattr(decision, "rationale", None)
-        evidence_fields = getattr(decision, "evidence_fields", None)
+        if not isinstance(decision, AdjudicationDecision):
+            raise ValueError("rationale ledger requires complete typed Qwen decisions")
+        pair_id = decision.paper_id
         if (
-            getattr(decision, "adjudicated", None) is not True
-            or paper_id not in paper_ids
-            or paper_id in seen
-            or route not in {"relevant", "irrelevant", "needs_review"}
-            or type(score) not in {int, float}
-            or not isinstance(rationale, str)
-            or not rationale.strip()
-            or not isinstance(evidence_fields, tuple)
+            pair_id not in assignment_ids
+            or pair_id in seen
         ):
-            raise ValueError("rationale ledger requires complete Qwen Stage2Decision outputs")
-        seen.add(paper_id)
+            raise ValueError("rationale ledger requires complete typed Qwen decisions")
+        seen.add(pair_id)
         records.append({
-            "paper_id": paper_id,
-            "decision": route,
-            "score": float(score),
-            "rationale": rationale,
-            "evidence_fields": list(evidence_fields),
+            "pair_id": pair_id,
+            "decision": decision.decision,
+            "score": decision.score,
+            "rationale": decision.rationale,
+            "evidence_fields": list(decision.evidence_fields),
         })
-    if len(records) < 100:
-        raise ValueError("rationale ledger requires at least 100 Qwen decisions")
+    if seen != assignment_ids:
+        raise ValueError("rationale ledger must cover every generated query assignment")
     document = {
-        "schema_version": "1",
+        "schema_version": "2",
         "kind": "stage2_qwen_adjudication_ledger",
         "candidate": {
             "candidate_id": candidate.profile_name,
@@ -273,42 +615,103 @@ def _validate_candidate_binding(
 
 
 def _query_assignments(
-    metadata: Mapping[str, Any], papers_by_id: Mapping[str, Any]
+    metadata: Mapping[str, Any],
+    papers_by_id: Mapping[str, Any],
+    *,
+    candidate: Any,
 ) -> Mapping[str, Mapping[str, Any]]:
+    scores = metadata["scores"]
     assignments = metadata["assignments"]
-    if not isinstance(assignments, list):
-        raise ValueError("rationale query metadata assignments must be a list")
-    by_paper: dict[str, Mapping[str, Any]] = {}
-    for assignment in assignments:
-        if not isinstance(assignment, Mapping) or set(assignment) != _QUERY_ASSIGNMENT_FIELDS:
-            raise ValueError("rationale query metadata assignment has an unsupported shape")
-        paper_id = assignment["paper_id"]
-        if paper_id in by_paper or paper_id not in papers_by_id:
-            raise ValueError("rationale query metadata must assign each benchmark paper at most once")
-        by_paper[paper_id] = assignment
+    if not isinstance(scores, list) or not isinstance(assignments, list):
+        raise ValueError("rationale query metadata scores and assignments must be lists")
+    scored_by_pair: dict[str, Mapping[str, Any]] = {}
+    profile = candidate.profile
+    expected_queries = profile.evaluation_topic_query_map
+    calibration = profile.reranker_calibration
+    if calibration is None:
+        raise ValueError("Stage 2 candidate needs a released reranker calibration")
+    expected_pairs = {
+        _rationale_pair_id(
+            paper_id,
+            topic=topic,
+            language=language,
+            query_version=profile.query_version,
+            query=query,
+        )
+        for topic, language, query in profile.evaluation_topic_queries
+        for paper_id in papers_by_id
+    }
+    for score in scores:
+        if not isinstance(score, Mapping) or set(score) != _QUERY_SCORE_FIELDS:
+            raise ValueError("rationale query score has an unsupported shape")
+        pair_id = score["pair_id"]
+        source_paper_id = score["source_paper_id"]
+        key = (score["topic"], score["language"])
+        expected_pair_id = _rationale_pair_id(
+            source_paper_id,
+            topic=score["topic"],
+            language=score["language"],
+            query_version=score["query_version"],
+            query=score["query"],
+        )
+        if (
+            pair_id in scored_by_pair
+            or source_paper_id not in papers_by_id
+            or expected_queries.get(key) != score["query"]
+            or score["query_version"] != profile.query_version
+            or pair_id != expected_pair_id
+        ):
+            raise ValueError("rationale query score is not derived from the candidate")
+        probability = calibration.calibrator.predict(score["reranker_raw_score"])
+        if not isfinite(score["reranker_raw_score"]) or not isfinite(probability):
+            raise ValueError("rationale query score must be finite")
+        if not isclose(probability, score["reranker_probability"], abs_tol=1e-12):
+            raise ValueError("rationale query score probability is not reproducible")
+        expected_stratum = (
+            RationaleStratum.RELEVANT.value
+            if probability >= calibration.threshold.high
+            else RationaleStratum.BOUNDARY.value
+            if calibration.threshold.low < probability < calibration.threshold.high
+            else "irrelevant"
+        )
+        if score["stratum"] != expected_stratum:
+            raise ValueError("rationale query score stratum is not reproducible")
+        scored_by_pair[pair_id] = score
     primary_languages = metadata["primary_languages"]
-    if not isinstance(primary_languages, list) or len(primary_languages) < 2:
+    expected_languages = sorted({language for _, language in expected_queries})
+    if primary_languages != expected_languages or len(primary_languages) < 2:
         raise ValueError("rationale query metadata needs at least two primary languages")
-    return by_paper
+    if set(scored_by_pair) != expected_pairs:
+        raise ValueError("rationale query metadata must cover every topic-query/paper pair")
+    expected_assignments = _select_rationale_assignments(
+        tuple(scored_by_pair.values()),
+        primary_languages,
+        boundary_midpoint=(calibration.threshold.low + calibration.threshold.high) / 2,
+    )
+    if assignments != expected_assignments:
+        raise ValueError("rationale query assignments are not the deterministic score selection")
+    by_pair = {assignment["pair_id"]: assignment for assignment in assignments}
+    return by_pair
 
 
 def _ledger_records(
     ledger: Mapping[str, Any],
     assignments: Mapping[str, Mapping[str, Any]],
-    papers_by_id: Mapping[str, Any],
 ) -> tuple[Mapping[str, Any], ...]:
     records = ledger["records"]
     if not isinstance(records, list):
         raise ValueError("rationale source ledger records must be a list")
-    by_paper: dict[str, Mapping[str, Any]] = {}
+    by_pair: dict[str, Mapping[str, Any]] = {}
     for record in records:
         if not isinstance(record, Mapping) or set(record) != _LEDGER_RECORD_FIELDS:
             raise ValueError("rationale source ledger record has an unsupported shape")
-        paper_id = record["paper_id"]
-        if paper_id in by_paper or paper_id not in papers_by_id or paper_id not in assignments:
-            raise ValueError("rationale source ledger records need one bound paper and query assignment")
-        by_paper[paper_id] = record
-    return tuple(by_paper.values())
+        pair_id = record["pair_id"]
+        if pair_id in by_pair or pair_id not in assignments:
+            raise ValueError("rationale source ledger records need one bound query assignment")
+        by_pair[pair_id] = record
+    if set(by_pair) != set(assignments):
+        raise ValueError("rationale source ledger must cover every query assignment")
+    return tuple(by_pair.values())
 
 
 def _render_evidence(paper: Any, evidence_fields: object) -> str:
@@ -381,6 +784,8 @@ class FrozenRationaleAudit:
 
 def rationale_audit_examples_from_document(
     document: object,
+    *,
+    require_derived: bool = False,
 ) -> tuple[tuple[RationaleAuditExample, ...], str, str]:
     """Load the explicit, already-selected examples used to freeze an audit."""
 
@@ -389,6 +794,8 @@ def rationale_audit_examples_from_document(
         if set(document) != _DERIVED_DOCUMENT_FIELDS or document.get("schema_version") != "2":
             raise ValueError("rationale audit derived examples have an unsupported shape")
         examples_document = document
+    elif require_derived:
+        raise ValueError("production rationale audits require schema-v2 derived examples")
     else:
         examples_document = document
     if not isinstance(examples_document, Mapping) or set(examples_document) not in ({
@@ -627,6 +1034,5 @@ def _worklist_row_content_hash(row: Mapping[str, Any]) -> str:
 
 def _write_json_no_replace(path: Path, document: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as handle:
-        json.dump(document, handle, sort_keys=True, indent=2)
-        handle.write("\n")
+    with path.open("xb") as handle:
+        handle.write(_json_bytes(document))

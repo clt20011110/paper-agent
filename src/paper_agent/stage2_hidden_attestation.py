@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -20,6 +20,8 @@ from .schema import SchemaValidationError, validate
 
 
 ATTESTATION_DOMAIN = b"paper-agent/stage2-hidden-promotion-attestation/v1\x00"
+ReleaseRole = Literal["winner", "qualified_fallback"]
+_RELEASE_ROLES = frozenset(("winner", "qualified_fallback"))
 _RELEASE_BINDING_FIELDS = (
     "candidate_id",
     "evaluation_manifest_hash",
@@ -82,6 +84,7 @@ class HiddenEvaluatorTrust:
 class VerifiedHiddenPromotionAttestation:
     evaluator_key_id: str
     payload_sha256: str
+    release_role: ReleaseRole
 
 
 def hidden_promotion_gate_policy_document() -> dict[str, Any]:
@@ -162,7 +165,7 @@ def hidden_evaluator_trust_from_document(document: Mapping[str, Any]) -> HiddenE
 def issue_hidden_promotion_attestation(
     payload: Mapping[str, Any], private_key: Ed25519PrivateKey
 ) -> dict[str, Any]:
-    """Sign a validated payload; callers retain custody of the private key."""
+    """Sign a role-consistent payload; qualified fallbacks must pass."""
 
     payload_document = dict(payload)
     provisional = {
@@ -172,6 +175,9 @@ def issue_hidden_promotion_attestation(
         "signature_b64": b64encode(bytes(64)).decode("ascii"),
     }
     _validate(provisional, "stage2-hidden-evaluator-attestation.schema.json")
+    _validate_release_role(payload_document)
+    if payload_document["release_role"] == "qualified_fallback":
+        _require_passing_result(payload_document)
     signature = private_key.sign(_signed_bytes(payload_document))
     return {
         **provisional,
@@ -184,6 +190,7 @@ def verify_hidden_promotion_attestation(
     trust: HiddenEvaluatorTrust,
     *,
     expected_bindings: HiddenPromotionBindings,
+    expected_release_role: ReleaseRole = "winner",
 ) -> VerifiedHiddenPromotionAttestation:
     """Verify signature, release bindings, policy version, and passing outcome."""
 
@@ -210,19 +217,43 @@ def verify_hidden_promotion_attestation(
             raise HiddenPromotionAttestationError(
                 f"hidden promotion {field} does not match the expected release binding"
             )
+    if expected_release_role not in _RELEASE_ROLES:
+        raise HiddenPromotionAttestationError(
+            "hidden promotion expected release role is invalid"
+        )
+    if payload["release_role"] != expected_release_role:
+        raise HiddenPromotionAttestationError(
+            "hidden promotion release role does not match the expected release role"
+        )
     if payload["gate_policy_hash"] != HIDDEN_PROMOTION_GATE_POLICY_HASH:
         raise HiddenPromotionAttestationError("hidden promotion gate policy hash is invalid")
-    if payload["winner_candidate_id"] != payload["candidate_id"]:
-        raise HiddenPromotionAttestationError(
-            "hidden promotion candidate is not the signed winner"
-        )
-    summary = payload["result_summary"]
-    if summary["passed"] is not True or summary["failures"]:
-        raise HiddenPromotionAttestationError("hidden promotion gates did not pass")
+    _validate_release_role(payload)
+    _require_passing_result(payload)
     return VerifiedHiddenPromotionAttestation(
         evaluator_key_id=key_id,
         payload_sha256=str(document["payload_sha256"]),
+        release_role=expected_release_role,
     )
+
+
+def _validate_release_role(payload: Mapping[str, Any]) -> None:
+    role = payload["release_role"]
+    candidate_id = payload["candidate_id"]
+    winner_candidate_id = payload["winner_candidate_id"]
+    if role == "winner" and candidate_id != winner_candidate_id:
+        raise HiddenPromotionAttestationError(
+            "hidden promotion winner role candidate is not the signed winner"
+        )
+    if role == "qualified_fallback" and candidate_id == winner_candidate_id:
+        raise HiddenPromotionAttestationError(
+            "hidden promotion qualified fallback must differ from the signed winner"
+        )
+
+
+def _require_passing_result(payload: Mapping[str, Any]) -> None:
+    summary = payload["result_summary"]
+    if summary["passed"] is not True or summary["failures"]:
+        raise HiddenPromotionAttestationError("hidden promotion gates did not pass")
 
 
 def _signed_bytes(payload: Mapping[str, Any]) -> bytes:

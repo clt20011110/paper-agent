@@ -5,6 +5,7 @@ from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -54,6 +55,9 @@ from paper_agent.stage2_rationale_workflow import (
     EVIDENCE_SUPPORT_RUBRIC_HASH,
     SEVERE_FABRICATION_RUBRIC,
     SEVERE_FABRICATION_RUBRIC_HASH,
+    derive_rationale_audit_examples,
+    freeze_rationale_audit,
+    rationale_audit_examples_from_document,
 )
 from paper_agent.stage2_pipeline import PathCalibration, Stage2Paper, Stage2Profile
 from paper_agent.stage2_prompt_contract import (
@@ -67,6 +71,7 @@ from paper_agent.stage2_release_evidence import (
 
 
 HASH = "a" * 64
+CANDIDATE_BUNDLE_HASH = "c" * 64
 
 
 def _write(path: Path, value: object) -> dict[str, str]:
@@ -177,6 +182,10 @@ def _base_profile(candidate_lock_hash: str, qwen_lock_hash: str) -> Stage2Profil
         screening_scope_hash="5" * 64,
         reranker_lock_hash=candidate_lock_hash,
         adjudicator_lock_hash=qwen_lock_hash,
+        evaluation_topic_queries=(
+            ("molecular_generation", "en", "molecular generation"),
+            ("molecular_generation", "zh", "分子生成"),
+        ),
     )
 
 
@@ -217,7 +226,9 @@ def _attestation(
         },
         "prediction_submission_hash": HASH,
         "promotion_marker_hash": HASH,
+        "promotion_batch_hash": "9" * 64,
         "winner_candidate_id": candidate_id,
+        "release_role": "winner",
         "public_gate_artifact_hashes": {name: HASH for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")},
         "throughput_runs": [1, 1, 1],
         "consumed_hidden_splits": ["hidden_hard", "hidden_real"],
@@ -313,6 +324,10 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
             "rationale-manifest",
             "rationale-worklist",
             "rationale-records",
+            "rationale-source-ledger",
+            "rationale-query-metadata",
+            "rationale-derived-examples",
+            "rationale-papers",
             "parity-manifest",
             "parity-workload",
             "parity-selection-receipt",
@@ -329,9 +344,10 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
         for index in range(6)
     ]
     document = {
-        "schema_version": "2",
+        "schema_version": "3",
         "evidence_type": "stage2_release_evidence",
         "candidate_id": "candidate-1",
+        "candidate_bundle_sha256": CANDIDATE_BUNDLE_HASH,
         "evaluation_manifest_hash": gold.hash(),
         "stage2_config_hash": stage2_config_hash,
         "model_lock_hashes": hashes,
@@ -349,6 +365,10 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
                 "manifest": refs["rationale-manifest"],
                 "worklist": refs["rationale-worklist"],
                 "records": refs["rationale-records"],
+                "source_ledger": refs["rationale-source-ledger"],
+                "query_metadata": refs["rationale-query-metadata"],
+                "derived_examples": refs["rationale-derived-examples"],
+                "papers": refs["rationale-papers"],
             },
             "parity": {
                 "manifest": refs["parity-manifest"],
@@ -611,6 +631,8 @@ def _install_public_gate_evidence(
     model_hashes = index_document["model_lock_hashes"]
     threshold_hashes = index_document["threshold_hashes"]
     config_hash = index_document["stage2_config_hash"]
+    candidate_id = index_document["candidate_id"]
+    candidate_bundle_sha256 = index_document["candidate_bundle_sha256"]
     gold = _gold_manifest()
 
     replay_ids = [f"replay-{index}" for index in range(1_000)]
@@ -658,60 +680,157 @@ def _install_public_gate_evidence(
         ),
     }
 
-    rationale_cases = tuple(
-        RationaleAuditCase(
-            f"rationale-{stratum.value}-{language}-{index}",
-            stratum,
-            language,
-            "8" * 64,
-        )
-        for stratum in RationaleStratum
-        for language in ("en", "zh")
-        for index in range(25)
-    )
-    rationale_manifest = RationaleAuditManifest(
-        1,
-        rationale_cases,
-        "9" * 64,
-        model_hashes["qwen"],
-        EVIDENCE_SUPPORT_RUBRIC_HASH,
-        SEVERE_FABRICATION_RUBRIC_HASH,
-    )
-    rationale_worklist = {
+    rationale_papers = []
+    rationale_assignments = []
+    rationale_scores = []
+    rationale_records = []
+    for language, query in (("en", "molecular generation"), ("zh", "分子生成")):
+        for stratum, raw_score in (("relevant", 4.0), ("boundary", 1.0)):
+            for index in range(25):
+                source_paper_id = f"rationale-paper-{language}-{stratum}-{index}"
+                pair_id = content_hash({
+                    "kind": "stage2-rationale-pair-v1",
+                    "source_paper_id": source_paper_id,
+                    "topic": "molecular_generation",
+                    "language": language,
+                    "query_version": profile.query_version,
+                    "query": query,
+                })
+                rationale_papers.append({
+                    "paper_id": source_paper_id,
+                    "title": f"Title {source_paper_id}",
+                    "abstract": f"Abstract {source_paper_id}",
+                    "keywords": ["molecule"],
+                })
+                rationale_assignments.append({
+                    "pair_id": pair_id,
+                    "source_paper_id": source_paper_id,
+                    "language": language,
+                    "topic": "molecular_generation",
+                    "query_version": profile.query_version,
+                    "query": query,
+                    "stratum": stratum,
+                    "reranker_raw_score": raw_score,
+                    "reranker_probability": profile.reranker_calibration.calibrator.predict(raw_score),
+                })
+                rationale_records.append({
+                    "pair_id": pair_id,
+                    "decision": "relevant",
+                    "score": 0.9,
+                    "rationale": f"rationale for {pair_id}",
+                    "evidence_fields": ["title", "abstract"],
+                })
+    for language, query in (("en", "molecular generation"), ("zh", "分子生成")):
+        for paper in rationale_papers:
+            same_language = paper["paper_id"].startswith(f"rationale-paper-{language}-")
+            if same_language and "-relevant-" in paper["paper_id"]:
+                raw_score, stratum = 4.0, "relevant"
+            elif same_language:
+                raw_score, stratum = 1.0, "boundary"
+            else:
+                raw_score, stratum = -4.0, "irrelevant"
+            rationale_scores.append({
+                "pair_id": content_hash({
+                    "kind": "stage2-rationale-pair-v1",
+                    "source_paper_id": paper["paper_id"],
+                    "topic": "molecular_generation",
+                    "language": language,
+                    "query_version": profile.query_version,
+                    "query": query,
+                }),
+                "source_paper_id": paper["paper_id"],
+                "language": language,
+                "topic": "molecular_generation",
+                "query_version": profile.query_version,
+                "query": query,
+                "stratum": stratum,
+                "reranker_raw_score": raw_score,
+                "reranker_probability": profile.reranker_calibration.calibrator.predict(raw_score),
+            })
+    rationale_papers_document = {
         "schema_version": "1",
-        "kind": "stage2_human_rationale_audit_worklist",
-        "manifest_hash": rationale_manifest.hash(),
-        "reviewer_id": "reviewer-7",
-        "evidence_support_rubric_hash": EVIDENCE_SUPPORT_RUBRIC_HASH,
-        "severe_fabrication_rubric_hash": SEVERE_FABRICATION_RUBRIC_HASH,
-        "evidence_support_rubric": EVIDENCE_SUPPORT_RUBRIC,
-        "severe_fabrication_rubric": SEVERE_FABRICATION_RUBRIC,
+        "kind": "stage2_benchmark_papers",
+        "papers": rationale_papers,
+    }
+    rationale_papers_ref = _write(
+        tmp_path / "rationale-papers.json", rationale_papers_document
+    )
+    rationale_query_metadata = {
+        "schema_version": "3",
+        "kind": "stage2_rationale_query_metadata",
+        "candidate_id": candidate_id,
+        "candidate_bundle_sha256": candidate_bundle_sha256,
+        "benchmark_papers_sha256": rationale_papers_ref["sha256"],
+        "primary_languages": ["en", "zh"],
+        "scores": sorted(rationale_scores, key=lambda item: item["pair_id"]),
+        "assignments": sorted(rationale_assignments, key=lambda item: item["pair_id"]),
+    }
+    rationale_query_ref = _write(
+        tmp_path / "rationale-query-metadata.json", rationale_query_metadata
+    )
+    rationale_ledger = {
+        "schema_version": "2",
+        "kind": "stage2_qwen_adjudication_ledger",
+        "candidate": {
+            "candidate_id": candidate_id,
+            "bundle_sha256": candidate_bundle_sha256,
+            "release_hash": candidate_bundle_sha256,
+            "adjudicator_model_id": profile.adjudicator_model_id,
+            "adjudicator_model_lock_hash": profile.adjudicator_lock_hash,
+            "prompt_version": profile.prompt_version,
+            "response_schema": profile.schema_version,
+        },
+        "benchmark_papers_sha256": rationale_papers_ref["sha256"],
+        "corpus_hash": benchmark_corpus_hash(
+            benchmark_papers_from_document(rationale_papers_document)
+        ),
+        "query_metadata_sha256": rationale_query_ref["sha256"],
+        "records": sorted(rationale_records, key=lambda item: item["pair_id"]),
+    }
+    rationale_ledger_ref = _write(
+        tmp_path / "rationale-source-ledger.json", rationale_ledger
+    )
+    rationale_candidate = SimpleNamespace(
+        profile_name=candidate_id,
+        release_hash=candidate_bundle_sha256,
+        profile=profile,
+    )
+    derived = derive_rationale_audit_examples(
+        rationale_ledger,
+        source_ledger_sha256=rationale_ledger_ref["sha256"],
+        candidate=rationale_candidate,
+        candidate_bundle_sha256=candidate_bundle_sha256,
+        benchmark_papers_document=rationale_papers_document,
+        benchmark_papers_sha256=rationale_papers_ref["sha256"],
+        query_metadata=rationale_query_metadata,
+        query_metadata_sha256=rationale_query_ref["sha256"],
+    )
+    derived_ref = _write(tmp_path / "rationale-derived-examples.json", derived)
+    rationale_examples, corpus_hash, qwen_hash = rationale_audit_examples_from_document(
+        derived, require_derived=True
+    )
+    rationale_frozen = freeze_rationale_audit(
+        rationale_examples,
+        corpus_hash=corpus_hash,
+        model_lock_hash=qwen_hash,
+        reviewer_id="reviewer-7",
+    )
+    rationale_manifest = rationale_frozen.manifest
+    rationale_worklist = {
+        **rationale_frozen.worklist,
         "rows": [
             {
-                "pair_id": item.pair_id,
-                "stratum": item.stratum.value,
-                "language": item.language,
-                "rationale_artifact_hash": item.rationale_artifact_hash,
-                "evidence": f"evidence for {item.pair_id}",
-                "rationale": f"rationale for {item.pair_id}",
+                **row,
                 "evidence_supported": True,
                 "severe_fabrication": False,
-                "content_hash": content_hash({
-                    "pair_id": item.pair_id,
-                    "stratum": item.stratum.value,
-                    "language": item.language,
-                    "rationale_artifact_hash": item.rationale_artifact_hash,
-                    "evidence": f"evidence for {item.pair_id}",
-                    "rationale": f"rationale for {item.pair_id}",
-                }),
             }
-            for item in rationale_cases
+            for row in rationale_frozen.worklist["rows"]
         ],
     }
     rationale_worklist_ref = _write(tmp_path / "rationale-worklist.json", rationale_worklist)
     rationale_records = [
         RationaleAuditRecord(item.pair_id, rationale_manifest.hash(), True, False).document()
-        for item in rationale_cases
+        for item in rationale_manifest.cases
     ]
     index_document["public_gates"]["rationale"] = {
         "manifest": _write(tmp_path / "rationale-manifest.json", rationale_manifest.document()),
@@ -722,6 +841,10 @@ def _install_public_gate_evidence(
             "worklist_sha256": rationale_worklist_ref["sha256"],
             "records": rationale_records,
         }),
+        "source_ledger": rationale_ledger_ref,
+        "query_metadata": rationale_query_ref,
+        "derived_examples": derived_ref,
+        "papers": rationale_papers_ref,
     }
 
     parity_refs = index_document["public_gates"]["parity"]

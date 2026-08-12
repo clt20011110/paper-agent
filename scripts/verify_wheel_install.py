@@ -47,6 +47,9 @@ def main() -> None:
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
     for arguments in (
+        ("stage2-evaluator", "promote", "--help"),
+        ("stage2-evaluator", "attest", "--help"),
+        ("stage2-rationale", "run-source", "--help"),
         ("stage2-rationale", "derive-examples", "--help"),
         ("stage2-rationale", "freeze-worklist", "--help"),
         ("stage2-rationale", "import-worklist", "--help"),
@@ -94,8 +97,12 @@ def main() -> None:
     assert batch.entries[0].external_id == "10.1000/wheel-check"
     schemas = schema_directory()
     for name in (
+        "stage2-hidden-evaluator-attestation.schema.json",
         "stage2-parity-workload.schema.json",
         "stage2-parity-oracle-trust.schema.json",
+        "stage2-rationale-query-metadata.schema.json",
+        "stage2-rationale-source-ledger.schema.json",
+        "stage2-release-evidence.schema.json",
         "stage2-tuning-selection-input.schema.json",
         "stage2-tuning-winner.schema.json",
     ):

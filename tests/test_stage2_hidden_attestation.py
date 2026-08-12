@@ -7,8 +7,9 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from paper_agent.canonical import content_hash
+from paper_agent.canonical import canonical_json, content_hash
 from paper_agent.stage2_hidden_attestation import (
+    ATTESTATION_DOMAIN,
     HIDDEN_PROMOTION_GATE_POLICY_HASH,
     HiddenPromotionAttestationError,
     HiddenPromotionBindings,
@@ -59,7 +60,13 @@ def _bindings() -> HiddenPromotionBindings:
     )
 
 
-def _payload(*, trust_hash: str, bindings: HiddenPromotionBindings | None = None) -> dict:
+def _payload(
+    *,
+    trust_hash: str,
+    bindings: HiddenPromotionBindings | None = None,
+    release_role: str = "winner",
+    winner_candidate_id: str | None = None,
+) -> dict:
     active_bindings = bindings or _bindings()
     return {
         "schema_version": "1",
@@ -71,7 +78,9 @@ def _payload(*, trust_hash: str, bindings: HiddenPromotionBindings | None = None
         "evaluation_run_id": "promotion-1",
         "prediction_submission_hash": HASH,
         "promotion_marker_hash": "1" * 64,
-        "winner_candidate_id": active_bindings.candidate_id,
+        "promotion_batch_hash": "9" * 64,
+        "winner_candidate_id": winner_candidate_id or active_bindings.candidate_id,
+        "release_role": release_role,
         "consumed_hidden_splits": ["hidden_hard", "hidden_real"],
         "gate_policy_hash": HIDDEN_PROMOTION_GATE_POLICY_HASH,
         "result_summary": {
@@ -101,6 +110,19 @@ def _verify(document: dict, trust: object, bindings: HiddenPromotionBindings) ->
         trust,
         expected_bindings=bindings,
     )
+
+
+def _sign_unchecked(payload: dict) -> dict:
+    """Model a trusted key signing malformed semantics to exercise the verifier."""
+
+    return {
+        "schema_version": "1",
+        "payload": payload,
+        "payload_sha256": content_hash(payload),
+        "signature_b64": b64encode(
+            PRIVATE_KEY.sign(ATTESTATION_DOMAIN + canonical_json(payload))
+        ).decode("ascii"),
+    }
 
 
 def _noncanonical_base64(value: str) -> str:
@@ -155,6 +177,30 @@ def test_issues_and_verifies_a_domain_separated_attestation() -> None:
 
     assert result.evaluator_key_id == "evaluator-2026-01"
     assert result.payload_sha256 == content_hash(document["payload"])
+    assert result.release_role == "winner"
+
+
+def test_issues_and_verifies_a_qualified_fallback_attestation() -> None:
+    trust = hidden_evaluator_trust_from_document(_trust_document())
+    bindings = _bindings()
+    payload = _payload(
+        trust_hash=trust.manifest_hash,
+        bindings=bindings,
+        release_role="qualified_fallback",
+        winner_candidate_id="candidate-2",
+    )
+    document = issue_hidden_promotion_attestation(payload, PRIVATE_KEY)
+
+    result = verify_hidden_promotion_attestation(
+        document,
+        trust,
+        expected_bindings=bindings,
+        expected_release_role="qualified_fallback",
+    )
+
+    assert result.release_role == "qualified_fallback"
+    with pytest.raises(HiddenPromotionAttestationError, match="expected release role"):
+        _verify(document, trust, bindings)
 
 
 @pytest.mark.parametrize(
@@ -171,6 +217,8 @@ def test_rejects_each_mismatched_release_binding(field: str, value: object) -> N
     document, trust, bindings = _signed_document()
     changed_payload = deepcopy(document["payload"])
     changed_payload[field] = value
+    if field == "candidate_id":
+        changed_payload["winner_candidate_id"] = value
     changed = issue_hidden_promotion_attestation(changed_payload, PRIVATE_KEY)
 
     with pytest.raises(HiddenPromotionAttestationError, match="expected release binding"):
@@ -228,7 +276,7 @@ def test_rejects_trust_manifest_hash_drift() -> None:
         {"passed": True, "failures": ["promotion"], "gate_versions": {"promotion": "1", "determinism": "1"}},
     ],
 )
-def test_rejects_non_passing_hidden_gate_summary(summary: dict) -> None:
+def test_verifier_rejects_non_passing_hidden_gate_summary(summary: dict) -> None:
     document, trust, bindings = _signed_document()
     changed_payload = deepcopy(document["payload"])
     changed_payload["result_summary"] = summary
@@ -238,14 +286,50 @@ def test_rejects_non_passing_hidden_gate_summary(summary: dict) -> None:
         _verify(changed, trust, bindings)
 
 
+def test_verifier_rejects_a_trusted_signature_over_a_failed_result() -> None:
+    document, trust, bindings = _signed_document()
+    changed_payload = deepcopy(document["payload"])
+    changed_payload["result_summary"] = {
+        "passed": False,
+        "failures": ["hidden gate failed"],
+        "gate_versions": {"promotion": "1", "determinism": "1"},
+    }
+
+    with pytest.raises(HiddenPromotionAttestationError, match="gates did not pass"):
+        _verify(_sign_unchecked(changed_payload), trust, bindings)
+
+
+def test_refuses_to_sign_a_failed_qualified_fallback() -> None:
+    document, _trust, _bindings = _signed_document()
+    changed_payload = deepcopy(document["payload"])
+    changed_payload["release_role"] = "qualified_fallback"
+    changed_payload["winner_candidate_id"] = "candidate-2"
+    changed_payload["result_summary"] = {
+        "passed": False,
+        "failures": ["hidden gate failed"],
+        "gate_versions": {"promotion": "1", "determinism": "1"},
+    }
+
+    with pytest.raises(HiddenPromotionAttestationError, match="gates did not pass"):
+        issue_hidden_promotion_attestation(changed_payload, PRIVATE_KEY)
+
+
 def test_rejects_attestation_whose_signed_winner_is_not_the_release_candidate() -> None:
     document, trust, bindings = _signed_document()
     changed_payload = deepcopy(document["payload"])
     changed_payload["winner_candidate_id"] = "candidate-2"
-    changed = issue_hidden_promotion_attestation(changed_payload, PRIVATE_KEY)
 
-    with pytest.raises(HiddenPromotionAttestationError, match="signed winner"):
-        _verify(changed, trust, bindings)
+    with pytest.raises(HiddenPromotionAttestationError, match="winner role"):
+        issue_hidden_promotion_attestation(changed_payload, PRIVATE_KEY)
+
+
+def test_rejects_qualified_fallback_that_names_the_winner() -> None:
+    document, _trust, _bindings = _signed_document()
+    changed_payload = deepcopy(document["payload"])
+    changed_payload["release_role"] = "qualified_fallback"
+
+    with pytest.raises(HiddenPromotionAttestationError, match="must differ"):
+        issue_hidden_promotion_attestation(changed_payload, PRIVATE_KEY)
 
 
 def test_rejects_wrong_gate_policy_and_untrusted_key() -> None:

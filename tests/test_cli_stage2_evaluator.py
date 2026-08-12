@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from base64 import b64encode
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -45,7 +46,9 @@ def _payload(*, trust_manifest_hash: str = "a" * 64) -> dict[str, object]:
         "hidden_split_pair_counts": {"hidden_hard": 150, "hidden_real": 150},
         "prediction_submission_hash": "5" * 64,
         "promotion_marker_hash": "6" * 64,
+        "promotion_batch_hash": "9" * 64,
         "winner_candidate_id": "candidate-1",
+        "release_role": "winner",
         "public_gate_artifact_hashes": {name: "7" * 64 for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")},
         "throughput_runs": [1, 1, 1],
         "consumed_hidden_splits": ["hidden_hard", "hidden_real"],
@@ -376,6 +379,7 @@ def _promotion_evaluation(payload: dict[str, object]) -> object:
         evaluation_manifest_hash=payload["evaluation_manifest_hash"],
         evaluation_run_id=payload["evaluation_run_id"],
         promotion_marker_hash="7" * 64,
+        promotion_batch_hash="9" * 64,
     )
 
 
@@ -396,7 +400,9 @@ def _promotion_signing_input(*, passed: bool = True) -> PromotionSigningInput:
         hidden_split_pair_counts={"hidden_hard": 150, "hidden_real": 150},
         prediction_submission_hash="5" * 64,
         promotion_marker_hash="7" * 64,
+        promotion_batch_hash="9" * 64,
         winner_candidate_id="candidate-1",
+        release_role="winner",
         public_gate_artifact_hashes={name: "8" * 64 for name in ("structured_replay", "rationale", "parity", "benchmark", "soak")},
         throughput_runs=(1, 1, 1),
         consumed_hidden_splits=("hidden_hard", "hidden_real"),
@@ -413,6 +419,7 @@ def _promotion_evaluation_from_signing(signing: PromotionSigningInput) -> object
         evaluation_manifest_hash=signing.evaluation_manifest_hash,
         evaluation_run_id=signing.evaluation_run_id,
         promotion_marker_hash=signing.promotion_marker_hash,
+        promotion_batch_hash=signing.promotion_batch_hash,
     )
 
 
@@ -461,6 +468,136 @@ def test_stage2_evaluator_promote_runs_once_and_signs_selected_public_payload(
     rendered = json.dumps(result)
     for forbidden in ("isolated-evaluator-1", str(key_path), str(trust_path), str(output)):
         assert forbidden not in rendered
+
+
+@pytest.mark.parametrize("requested_becomes_winner", (True, False))
+def test_stage2_evaluator_promote_keeps_winner_when_requested_fallback_is_unqualified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    requested_becomes_winner: bool,
+) -> None:
+    key_path = tmp_path / "evaluator-private.pem"
+    key = _write_private_key(key_path)
+    trust_path = tmp_path / "deployment-trust.json"
+    _write_trust_manifest(trust_path, key)
+    winner_output = tmp_path / "winner-attestation.json"
+    fallback_output = tmp_path / "fallback-attestation.json"
+    _patch_promote_public_preflight(monkeypatch)
+    base = _promotion_signing_input()
+    if requested_becomes_winner:
+        winner = replace(
+            base,
+            candidate_id="backup",
+            winner_candidate_id="backup",
+        )
+        candidates = {"backup": winner}
+    else:
+        winner = base
+        candidates = {
+            "candidate-1": winner,
+            "backup": replace(
+                base,
+                candidate_id="backup",
+                winner_candidate_id="candidate-1",
+                release_role="qualified_fallback",
+                passed=False,
+                failures=("hidden gate failed",),
+            ),
+        }
+    calls: list[object] = []
+
+    def run_once(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return SimpleNamespace(
+            candidates=candidates,
+            winner_candidate_id=winner.candidate_id,
+            evaluation_manifest_hash=winner.evaluation_manifest_hash,
+            evaluation_run_id=winner.evaluation_run_id,
+            promotion_marker_hash=winner.promotion_marker_hash,
+            promotion_batch_hash=winner.promotion_batch_hash,
+        )
+
+    monkeypatch.setattr(cli, "run_promotion_evaluation", run_once)
+    argv = _promote_argv(
+        tmp_path,
+        trust_path=trust_path,
+        key_path=key_path,
+        output=winner_output,
+    )
+    argv.extend([
+        "--candidate", f"backup={tmp_path / 'backup-candidate.json'}",
+        "--submission", f"backup={tmp_path / 'backup-submission.json'}",
+        "--public-evidence", f"backup={tmp_path / 'backup-evidence.json'}",
+        "--qualified-fallback-output", f"backup={fallback_output}",
+    ])
+
+    assert cli.main(argv) == 0
+    result = _stdout(capsys)
+    assert len(calls) == 1
+    assert winner_output.is_file()
+    assert not fallback_output.exists()
+    assert result["candidate_id"] == winner.candidate_id
+    assert result["unqualified_fallback_candidate_ids"] == ["backup"]
+    assert result["qualified_fallback_attestation_sha256"] == {}
+
+
+def test_stage2_evaluator_promote_signs_requested_qualified_fallback_in_same_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    key_path = tmp_path / "evaluator-private.pem"
+    key = _write_private_key(key_path)
+    trust_path = tmp_path / "deployment-trust.json"
+    _write_trust_manifest(trust_path, key)
+    winner_output = tmp_path / "winner-attestation.json"
+    fallback_output = tmp_path / "fallback-attestation.json"
+    _patch_promote_public_preflight(monkeypatch)
+    winner = _promotion_signing_input()
+    fallback = replace(
+        winner,
+        candidate_id="backup",
+        release_role="qualified_fallback",
+    )
+    calls: list[object] = []
+
+    def run_once(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return SimpleNamespace(
+            candidates={"candidate-1": winner, "backup": fallback},
+            winner_candidate_id="candidate-1",
+            evaluation_manifest_hash=winner.evaluation_manifest_hash,
+            evaluation_run_id=winner.evaluation_run_id,
+            promotion_marker_hash=winner.promotion_marker_hash,
+            promotion_batch_hash=winner.promotion_batch_hash,
+        )
+
+    monkeypatch.setattr(cli, "run_promotion_evaluation", run_once)
+    argv = _promote_argv(
+        tmp_path,
+        trust_path=trust_path,
+        key_path=key_path,
+        output=winner_output,
+    )
+    argv.extend([
+        "--candidate", f"backup={tmp_path / 'backup-candidate.json'}",
+        "--submission", f"backup={tmp_path / 'backup-submission.json'}",
+        "--public-evidence", f"backup={tmp_path / 'backup-evidence.json'}",
+        "--qualified-fallback-output", f"backup={fallback_output}",
+    ])
+
+    assert cli.main(argv) == 0
+    result = _stdout(capsys)
+    assert len(calls) == 1
+    assert winner_output.is_file() and fallback_output.is_file()
+    assert result["unqualified_fallback_candidate_ids"] == []
+    assert result["qualified_fallback_attestation_sha256"] == {
+        "backup": content_hash(json.loads(fallback_output.read_text(encoding="utf-8")))
+    }
+    assert json.loads(fallback_output.read_text(encoding="utf-8"))["payload"][
+        "release_role"
+    ] == "qualified_fallback"
 
 
 def test_stage2_evaluator_promote_signs_failed_gate_and_returns_failed_status(
@@ -521,7 +658,9 @@ def test_stage2_evaluator_promote_real_failed_gate_consumes_marker(
         lambda _candidates, _evidence, _manifest_hash, *, parity_oracle_trust_path: None,
     )
     monkeypatch.setattr(
-        artifacts_io, "candidate_artifacts_from_v2_bundle", lambda _path: candidate
+        artifacts_io,
+        "_candidate_artifacts_and_release_hash",
+        lambda _path: (candidate, "d" * 64),
     )
     monkeypatch.setattr(
         artifacts_io,
@@ -799,6 +938,60 @@ def test_stage2_evaluator_promote_removes_partial_reserved_output_on_write_failu
     )) == 1
     assert _stdout(capsys)["error"] == "Stage 2 promotion attestation output failed"
     assert not output.exists()
+
+
+def test_stage2_evaluator_promote_removes_winner_and_fallback_on_second_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key_path = tmp_path / "evaluator-private.pem"
+    key = _write_private_key(key_path)
+    trust_path = tmp_path / "deployment-trust.json"
+    _write_trust_manifest(trust_path, key)
+    winner_output = tmp_path / "winner.json"
+    fallback_output = tmp_path / "fallback.json"
+    _patch_promote_public_preflight(monkeypatch)
+    winner = _promotion_signing_input()
+    fallback = replace(
+        winner, candidate_id="backup", release_role="qualified_fallback"
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_promotion_evaluation",
+        lambda **_kwargs: SimpleNamespace(
+            candidates={"candidate-1": winner, "backup": fallback},
+            winner_candidate_id="candidate-1",
+            evaluation_manifest_hash=winner.evaluation_manifest_hash,
+            evaluation_run_id=winner.evaluation_run_id,
+            promotion_marker_hash=winner.promotion_marker_hash,
+            promotion_batch_hash=winner.promotion_batch_hash,
+        ),
+    )
+    write = cli._write_reserved_hidden_promotion_output
+    calls = 0
+
+    def fail_second(descriptor: int, attestation: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            os.write(descriptor, b"partial fallback")
+            raise OSError("second output failed")
+        write(descriptor, attestation)
+
+    monkeypatch.setattr(cli, "_write_reserved_hidden_promotion_output", fail_second)
+    argv = _promote_argv(
+        tmp_path, trust_path=trust_path, key_path=key_path, output=winner_output
+    )
+    argv.extend([
+        "--candidate", f"backup={tmp_path / 'backup-candidate.json'}",
+        "--submission", f"backup={tmp_path / 'backup-submission.json'}",
+        "--public-evidence", f"backup={tmp_path / 'backup-evidence.json'}",
+        "--qualified-fallback-output", f"backup={fallback_output}",
+    ])
+
+    assert cli.entrypoint(argv) == 1
+    assert _stdout(capsys)["error"] == "Stage 2 promotion attestation output failed"
+    assert not winner_output.exists()
+    assert not fallback_output.exists()
 
 
 def test_stage2_evaluator_promote_cleans_reservation_when_mode_preflight_fails(

@@ -3,33 +3,30 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from paper_agent import cli
+from paper_agent.stage2_rationale_workflow import derive_rationale_audit_examples
 from test_stage2_rationale_workflow import _derived_source_inputs
 
 
 def _examples_document() -> dict[str, object]:
-    return {
-        "schema_version": "1",
-        "kind": "stage2_rationale_audit_examples",
-        "corpus_hash": "c" * 64,
-        "model_lock_hash": "d" * 64,
-        "examples": [
-            {
-                "pair_id": f"pair-{stratum}-{language}-{index}",
-                "stratum": stratum,
-                "language": language,
-                "rationale_artifact_hash": f"{offset + index:064x}",
-                "evidence": f"Frozen {language} evidence {stratum} {index}",
-                "rationale": f"Frozen rationale {stratum} {index}",
-            }
-            for stratum in ("relevant", "boundary")
-            for language, offset in (("en", 0), ("zh", 100))
-            for index in range(25)
-        ],
-    }
+    ledger, candidate, papers, metadata = _derived_source_inputs()
+    ledger_bytes = json.dumps(ledger, sort_keys=True).encode()
+    papers_bytes = json.dumps(papers, sort_keys=True).encode()
+    metadata_bytes = json.dumps(metadata, sort_keys=True).encode()
+    return derive_rationale_audit_examples(
+        ledger,
+        source_ledger_sha256=sha256(ledger_bytes).hexdigest(),
+        candidate=candidate,
+        candidate_bundle_sha256="c" * 64,
+        benchmark_papers_document=papers,
+        benchmark_papers_sha256=sha256(papers_bytes).hexdigest(),
+        query_metadata=metadata,
+        query_metadata_sha256=sha256(metadata_bytes).hexdigest(),
+    )
 
 
 def test_rationale_cli_freezes_then_imports_only_explicit_human_labels(
@@ -132,6 +129,7 @@ def test_rationale_cli_derives_bound_examples_without_writing_in_dry_run(
     papers_path.write_text(json.dumps(papers, sort_keys=True), encoding="utf-8")
     papers_sha = sha256(papers_path.read_bytes()).hexdigest()
     metadata["benchmark_papers_sha256"] = papers_sha
+    metadata["candidate_bundle_sha256"] = candidate_sha
     metadata_path = tmp_path / "queries.json"
     metadata_path.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
     ledger["benchmark_papers_sha256"] = papers_sha
@@ -139,7 +137,13 @@ def test_rationale_cli_derives_bound_examples_without_writing_in_dry_run(
     ledger_path = tmp_path / "ledger.json"
     ledger_path.write_text(json.dumps(ledger, sort_keys=True), encoding="utf-8")
     output = tmp_path / "derived.json"
-    monkeypatch.setattr(cli, "load_stage2_benchmark_candidate", lambda _path: candidate)
+    snapshots = []
+
+    def load_snapshot(path, payload):
+        snapshots.append((path, payload))
+        return candidate
+
+    monkeypatch.setattr(cli, "_load_stage2_benchmark_candidate_bytes", load_snapshot)
     args = [
         "stage2-rationale", "derive-examples",
         "--stage2-candidate", str(candidate_path),
@@ -160,3 +164,58 @@ def test_rationale_cli_derives_bound_examples_without_writing_in_dry_run(
     assert written["written"] is True
     output_document = json.loads(output.read_text(encoding="utf-8"))
     assert output_document["kind"] == "stage2_rationale_audit_derived_examples"
+    assert snapshots == [
+        (candidate_path.resolve(), b"candidate-bytes"),
+        (candidate_path.resolve(), b"candidate-bytes"),
+    ]
+
+
+def test_rationale_cli_run_source_dry_run_uses_one_snapshot_and_no_model(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_bytes(b"candidate-snapshot")
+    papers_path = tmp_path / "papers.json"
+    papers_path.write_text("{}", encoding="utf-8")
+    output = tmp_path / "source"
+    candidate = SimpleNamespace(profile_name="candidate-v2")
+    snapshots = []
+
+    def load_snapshot(path, payload):
+        snapshots.append((path, payload))
+        return candidate
+
+    monkeypatch.setattr(cli, "_load_stage2_benchmark_candidate_bytes", load_snapshot)
+    monkeypatch.setattr(
+        cli,
+        "rationale_source_plan",
+        lambda loaded, *, benchmark_papers_document: SimpleNamespace(
+            candidate_id=loaded.profile_name,
+            paper_count=600,
+            topic_query_count=12,
+            reranker_pair_count=7200,
+            qwen_pair_count=100,
+            primary_languages=("en", "zh"),
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "UrlLibOmlxTransport",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry-run must not create a model transport")
+        ),
+    )
+
+    assert cli.main([
+        "--dry-run", "stage2-rationale", "run-source",
+        "--stage2-candidate", str(candidate_path),
+        "--benchmark-papers", str(papers_path),
+        "--output-dir", str(output),
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["reranker_pair_count"] == 7200
+    assert result["qwen_pair_count"] == 100
+    assert result["written"] is False
+    assert snapshots == [(candidate_path.resolve(), b"candidate-snapshot")]
+    assert not output.exists()

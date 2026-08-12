@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 from math import isclose
 import re
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 from .canonical import canonical_json, content_hash
@@ -31,9 +31,6 @@ from .stage2_evaluation import (
     PerformanceCase,
     PerformanceRoutingManifest,
     PerformanceRunRecord,
-    RationaleAuditCase,
-    RationaleAuditManifest,
-    RationaleStratum,
     ReplayError,
     SoakManifest,
     SoakRunRecord,
@@ -54,11 +51,16 @@ from .stage2_release_evidence import (
     ArtifactRef,
     GateEvidenceRefs,
     ParityEvidenceRefs,
+    RationaleEvidenceRefs,
     Stage2EvidenceError,
     Stage2ReleaseEvidenceIndex,
 )
 from .stage2_rationale_workflow import (
+    derive_rationale_audit_examples,
+    freeze_rationale_audit,
     import_completed_rationale_audit,
+    rationale_audit_examples_from_document,
+    rationale_audit_manifest_from_document,
     rationale_audit_records_document,
 )
 from .stage2_pipeline import Stage2Paper, Stage2Profile
@@ -118,14 +120,22 @@ def verify_public_stage2_gates(
     index: Stage2ReleaseEvidenceIndex,
     *,
     profile: Stage2Profile,
+    candidate_bundle_sha256: str | None = None,
     oracle_trust: ParityOracleTrust,
 ) -> VerifiedPublicStage2Evidence:
     """Recompute every non-hidden Stage 2 gate against one released profile."""
 
     _verify_profile_binding(index, profile)
+    if (
+        candidate_bundle_sha256 is not None
+        and index.candidate_bundle_sha256 != candidate_bundle_sha256
+    ):
+        raise Stage2EvidenceError(
+            "rationale evidence does not match the Stage 2 candidate bytes"
+        )
     gold = gold_manifest_from_document(index.gold_manifest.read_json(index.bundle_root))
     structured = _verify_structured_replay(index, profile)
-    rationale = _verify_rationale(index)
+    rationale = _verify_rationale(index, profile)
     parity = _verify_parity(index, gold, profile, oracle_trust)
     benchmark, throughput = _verify_benchmark(index, profile)
     soak = _verify_soak(index, profile)
@@ -260,26 +270,79 @@ def _verify_structured_replay(
     )
 
 
-def _verify_rationale(index: Stage2ReleaseEvidenceIndex) -> VerifiedPublicGate:
+def _verify_rationale(
+    index: Stage2ReleaseEvidenceIndex,
+    profile: Stage2Profile,
+) -> VerifiedPublicGate:
     refs = index.public_gates["rationale"]
-    if not isinstance(refs, GateEvidenceRefs) or refs.worklist is None:
-        raise Stage2EvidenceError("rationale evidence must include a human worklist")
-    manifest_document = refs.manifest.read_json(index.bundle_root)
-    validate(manifest_document, "stage2-rationale-audit-manifest.schema.json")
-    manifest = RationaleAuditManifest(
-        version=manifest_document["version"],
-        cases=tuple(
-            RationaleAuditCase(item[0], RationaleStratum(item[1]), item[2], item[3])
-            for item in manifest_document["cases"]
-        ),
-        corpus_hash=manifest_document["corpus_hash"],
-        model_lock_hash=manifest_document["model_lock_hash"],
-        evidence_rubric_hash=manifest_document["evidence_rubric_hash"],
-        fabrication_rubric_hash=manifest_document["fabrication_rubric_hash"],
+    if not isinstance(refs, RationaleEvidenceRefs):
+        raise Stage2EvidenceError("rationale evidence chain is incomplete")
+
+    papers_bytes = refs.papers.read_bytes(index.bundle_root)
+    query_metadata_bytes = refs.query_metadata.read_bytes(index.bundle_root)
+    source_ledger_bytes = refs.source_ledger.read_bytes(index.bundle_root)
+    derived_document = refs.derived_examples.read_json(index.bundle_root)
+    candidate = SimpleNamespace(
+        profile_name=index.candidate_id,
+        release_hash=index.candidate_bundle_sha256,
+        profile=profile,
     )
+    try:
+        expected_derived = derive_rationale_audit_examples(
+            json.loads(source_ledger_bytes),
+            source_ledger_sha256=refs.source_ledger.sha256,
+            candidate=candidate,
+            candidate_bundle_sha256=index.candidate_bundle_sha256,
+            benchmark_papers_document=json.loads(papers_bytes),
+            benchmark_papers_sha256=refs.papers.sha256,
+            query_metadata=json.loads(query_metadata_bytes),
+            query_metadata_sha256=refs.query_metadata.sha256,
+        )
+        if derived_document != expected_derived:
+            raise ValueError("derived examples do not reproduce the source ledger")
+        examples, corpus_hash, model_lock_hash = rationale_audit_examples_from_document(
+            derived_document,
+            require_derived=True,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise Stage2EvidenceError(f"rationale source chain is invalid: {error}") from error
+
+    manifest_document = refs.manifest.read_json(index.bundle_root)
+    manifest = rationale_audit_manifest_from_document(manifest_document)
     if manifest.model_lock_hash != index.model_lock_hashes["qwen"]:
         raise Stage2EvidenceError("rationale audit model does not match released Qwen")
     worklist_document = refs.worklist.read_json(index.bundle_root)
+    reviewer_id = (
+        worklist_document.get("reviewer_id")
+        if isinstance(worklist_document, Mapping)
+        else None
+    )
+    if not isinstance(reviewer_id, str) or not reviewer_id.strip():
+        raise Stage2EvidenceError("rationale worklist has no reviewer identity")
+    expected_frozen = freeze_rationale_audit(
+        examples,
+        corpus_hash=corpus_hash,
+        model_lock_hash=model_lock_hash,
+        reviewer_id=reviewer_id,
+    )
+    if manifest_document != expected_frozen.manifest.document():
+        raise Stage2EvidenceError("rationale manifest does not reproduce derived examples")
+    if not isinstance(worklist_document, Mapping):
+        raise Stage2EvidenceError("rationale worklist must be an object")
+    unlabelled_worklist = {
+        **worklist_document,
+        "rows": [
+            {
+                **row,
+                "evidence_supported": None,
+                "severe_fabrication": None,
+            }
+            for row in worklist_document.get("rows", [])
+            if isinstance(row, Mapping)
+        ],
+    }
+    if unlabelled_worklist != expected_frozen.worklist:
+        raise Stage2EvidenceError("rationale worklist does not reproduce derived examples")
     records_document = _one_document(index, refs)
     validate(records_document, "stage2-rationale-audit-records.schema.json")
     if records_document["worklist_sha256"] != refs.worklist.sha256:
@@ -1163,20 +1226,27 @@ def _verify_execution_aggregates(document: Mapping[str, Any], case_count: int) -
 
 def _one_document(
     index: Stage2ReleaseEvidenceIndex,
-    refs: GateEvidenceRefs,
+    refs: GateEvidenceRefs | RationaleEvidenceRefs,
 ) -> Any:
     if len(refs.records) != 1:
         raise Stage2EvidenceError("Stage 2 gate requires exactly one records artifact")
     return refs.records[0].read_json(index.bundle_root)
 
 
-def _evidence_hash(refs: GateEvidenceRefs) -> str:
-    return content_hash({
+def _evidence_hash(refs: GateEvidenceRefs | RationaleEvidenceRefs) -> str:
+    document = {
         "manifest": refs.manifest.sha256,
         "papers": refs.papers.sha256 if refs.papers is not None else None,
         "worklist": refs.worklist.sha256 if refs.worklist is not None else None,
         "records": [item.sha256 for item in refs.records],
-    })
+    }
+    if isinstance(refs, RationaleEvidenceRefs):
+        document.update({
+            "source_ledger": refs.source_ledger.sha256,
+            "query_metadata": refs.query_metadata.sha256,
+            "derived_examples": refs.derived_examples.sha256,
+        })
+    return content_hash(document)
 
 
 def _parity_evidence_hash(refs: ParityEvidenceRefs) -> str:

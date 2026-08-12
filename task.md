@@ -1,6 +1,6 @@
 # Paper Agent v2 — 可执行任务规格
 
-> 状态：核心实现与真实 Stage 1→4b 小规模验收已完成；Stage 2 已冻结无标签 600-pair manifest，人工双标、隐藏晋级与性能门禁待完成
+> 状态：核心实现、20/20 venue 的受控 Stage 1→4b 流程验收，以及 Stage 2 source/evidence/release 代码链已完成；Stage 2 已冻结无标签 600-pair manifest，但人工双标、隐藏真实晋级与性能/soak 生产门禁仍未完成
 > 规格日期：2026-08-09
 > 实施基线：feature/crawler-adapters
 > 本文用途：后续实现、验收和回归测试的唯一任务依据
@@ -414,7 +414,7 @@ Querit-4B 截至 2026-06-20 的模型卡自报为公开模型中 MTEB Multilingu
 
 运行要求：
 
-- oMLX 至少升级到 v0.5.7；当前本机 0.2.7 不满足要求。
+- oMLX 至少使用 v0.5.7；当前本机已安装并通过带认证探针的 doctor 验证 v0.5.7。该运行时检查不替代模型质量、hidden promotion 或性能/soak 门禁。
 - 使用 OpenAI-compatible chat endpoint。
 - 请求必须设置 chat_template_kwargs.enable_thinking=false；若迁移旧配置中的 thinking=false，adapter 必须映射到该字段，不得把非标准 thinking 字段原样发送后假定生效。
 - temperature=0、固定 seed、stream=false、max_tokens=256。真实 DEV 回放确认 oMLX 0.5.7 的并发 grammar 偶发停滞不能靠放大 token 上限修复；失败项必须等当前 continuous batch 排空后单并发重试一次。
@@ -679,9 +679,16 @@ dry-run 只冻结并验证 manifest；移除 `--dry-run` 才调用本地 oMLX。
 
 rationale 使用至少 100 条按 relevant/边界/语言分层的人工审计样本。预先冻结“证据支持”和“严重编造”rubric；证据支持率 ≥ 95%，严重编造率 ≤ 1%。
 
-已选样本先以 `stage2-rationale freeze-worklist` 冻结 manifest、证据、rationale、rubric 与未填写的人工
-布尔标签；审核者完成后使用 `stage2-rationale import-worklist` 严格导入。两个命令均支持 `--dry-run`，
-不调用模型、不选择样本、不推断或补默认标签，空标签直接拒绝。
+来源链必须从候选和冻结 benchmark papers 开始：`stage2-rationale run-source` 先以候选 BGE 对全部
+topic-query×paper 组合评分，在每种主要语言内确定性选择 25 条 relevant 与 25 条最接近灰区中点的
+boundary 样本，再用同一候选的本地 Qwen 生成 typed decision。命令原子发布 `query-metadata.json` 和
+`source-ledger.json`，两者绑定候选原始 bytes、papers bytes、全部 topic-query×paper 的 query/stratum/raw
+score/probability、确定性选样结果与 Qwen 输出；dry-run 只验证和报告计划，不调用模型或创建目录。随后
+`derive-examples` 必须从全量 score ledger 重算选样，并逐层重放
+papers → query metadata → source ledger 并生成 derived examples；`freeze-worklist` 只接受这条 v2 派生链，
+冻结 manifest、证据、rationale、rubric 与未填写的人工布尔标签。审核者完成后使用
+`stage2-rationale import-worklist` 严格导入。derive/freeze/import 均支持 `--dry-run`，不得选择新样本、
+推断或补默认标签，空标签直接拒绝。
 
 模型选择规则：
 
@@ -692,6 +699,18 @@ rationale 使用至少 100 条按 relevant/边界/语言分层的人工审计样
 - 第三方量化/转换使用相同 tokenizer、preprocess 和至少 10,000 个固定 pair；Kendall tau-b ≥ 0.995 作为数值诊断。
 - 量化模型必须重新校准阈值，并通过完整 pipeline 质量门。关键阈值两侧分类一致率 ≥ 99.5%，阈值窗口和分母写入 parity manifest。
 - 所谓“市面最强”在 task 中定义为本项目隐藏金标 winner，不能仅引用厂商榜单。
+
+晋级与发布证据使用无环的两段合同。`stage2-release build-evidence` 的 schema-v3 index 必须绑定候选
+文件的精确 `candidate_bundle_sha256`，并引用 structured replay、parity、benchmark、soak，以及
+rationale 的 manifest/worklist/records/source ledger/query metadata/derived examples/papers 全链；不含 hidden
+attestation 的 index 只可作为 public promotion evidence。隔离 evaluator 在一次 sealed batch 内重算每个候选
+的 Phase 3 门并签唯一 winner；所有该批 attestation 共享签名的 `promotion_batch_hash`，绑定完整候选集合、
+精确 candidate bytes、submission、public gate hashes、throughput、winner、policy 与 marker；得到签名后，
+再为主、备 candidate 分别构建 final evidence。最终
+`stage2-release assemble` 只接受主 candidate + winner evidence，以及可选的 backup candidate +
+qualified-fallback evidence，不允许通过预先修改 candidate 引入 fallback。requested fallback 最终成为
+winner 或未过门时不得生成 fallback attestation，但不能阻止合法 winner attestation 发布；结构化结果必须
+列出 `unqualified_fallback_candidate_ids`。
 
 ### 5.5 性能与恢复
 
@@ -710,7 +729,7 @@ rationale 使用至少 100 条按 relevant/边界/语言分层的人工审计样
 - 多机器严格遵循 3.5 的 snapshot、互斥分片、本地 SQLite、artifact bundle 和协调端幂等合并协议。
 - 预留 QueueBackend 接口供未来接入外部队列，但本阶段不新增外部基础设施。
 - 相同 paper/run 的结果必须具有唯一约束，重放分片不得重复提交。
-- 模型失败回退顺序：主模型 → 具有自己已校准 threshold artifact 且通过同一质量门的备用本地模型 → needs_review。
+- 模型失败回退顺序：主模型 → 具有自己已校准 threshold artifact 且通过同一质量门的备用本地模型 → needs_review。主、备 schema-v2 candidate 必须在同一个 sealed promotion batch 中评测：唯一 winner 以 `release_role=winner` 签名；非 winner 只有在 winner 有效且自身通过全部 Phase 3 门禁时，才能以 `release_role=qualified_fallback` 签名。`stage2-release assemble` 直接接收原样的 backup candidate 与其 final evidence，验证相同 evaluation manifest、gate policy、共享 query/Qwen/runtime 语义、相同签名 `promotion_batch_hash` 和不同 reranker lock 后，才在最终 schema-v3 envelope 注入 fallback；最终 QueryPlan/config hash 必须绑定 fallback candidate、evidence、runtime 和 release binding。不得预先改写 candidate 或形成 candidate/evidence hash 环。
 - 批次部分失败必须拆回 paper 级状态并可 resume；fail-open 仅表示不判 irrelevant、不丢记录，默认停在人工队列。
 - 禁止自动回退云端。
 
@@ -1374,7 +1393,9 @@ Codex skill：
 3. 实现 BGE 基线、候选 backend 和 Qwen 裁决器。
 4. 校准阈值并运行隐藏集。
 5. 运行 1,000/10,000 篇性能与 soak 测试。
-6. 固定 winner 的 revision、量化、prompt/schema 和阈值 artifact。
+6. 固定 winner 的 revision、量化、prompt/schema 和阈值 artifact；以 evidence schema-v3 绑定 candidate
+   bytes 与 rationale 全源链，在同一 sealed promotion 批次签 winner/可选 qualified fallback，再由
+   `stage2-release assemble` 产生有效配置 hash 已绑定 fallback 的最终 schema-v3 release。
 7. 用冻结 seed selector 运行完整 search↔Stage 2 round 状态机，验证新增候选仍完整经过 Stage 2、饱和/预算判断和 search audit。
 
 门禁：质量、结构化输出、吞吐、内存和稳定性硬门全部通过；真实筛选闭环的 depth、逐轮分母、经验饱和/budget_exhausted 和 resume 行为可重放。

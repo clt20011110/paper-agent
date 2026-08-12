@@ -9,6 +9,7 @@
     "schema_version",
     "evidence_type",
     "candidate_id",
+    "candidate_bundle_sha256",
     "evaluation_manifest_hash",
     "stage2_config_hash",
     "model_lock_hashes",
@@ -18,9 +19,10 @@
     "public_gates"
   ],
   "properties": {
-    "schema_version": {"const": "2"},
+    "schema_version": {"const": "3"},
     "evidence_type": {"enum": ["stage2_release_evidence", "stage2_public_promotion_evidence"]},
     "candidate_id": {"type": "string", "minLength": 1},
+    "candidate_bundle_sha256": {"$ref": "#/$defs/sha256"},
     "evaluation_manifest_hash": {"$ref": "#/$defs/sha256"},
     "stage2_config_hash": {"$ref": "#/$defs/sha256"},
     "model_lock_hashes": {"$ref": "#/$defs/pathHashes"},
@@ -34,7 +36,7 @@
       "required": ["structured_replay", "rationale", "parity", "benchmark", "soak"],
       "properties": {
         "structured_replay": {"$ref": "#/$defs/structuredReplay"},
-        "rationale": {"$ref": "#/$defs/rationaleManifestRecordsAndWorklist"},
+        "rationale": {"$ref": "#/$defs/rationaleEvidenceChain"},
         "parity": {
           "type": "object",
           "additionalProperties": false,
@@ -136,14 +138,18 @@
         "records": {"$ref": "#/$defs/artifactRef"}
       }
     },
-    "rationaleManifestRecordsAndWorklist": {
+    "rationaleEvidenceChain": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["manifest", "worklist", "records"],
+      "required": ["manifest", "worklist", "records", "source_ledger", "query_metadata", "derived_examples", "papers"],
       "properties": {
         "manifest": {"$ref": "#/$defs/artifactRef"},
         "worklist": {"$ref": "#/$defs/artifactRef"},
-        "records": {"$ref": "#/$defs/artifactRef"}
+        "records": {"$ref": "#/$defs/artifactRef"},
+        "source_ledger": {"$ref": "#/$defs/artifactRef"},
+        "query_metadata": {"$ref": "#/$defs/artifactRef"},
+        "derived_examples": {"$ref": "#/$defs/artifactRef"},
+        "papers": {"$ref": "#/$defs/artifactRef"}
       }
     },
     "structuredReplay": {

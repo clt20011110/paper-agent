@@ -1,6 +1,6 @@
 # Stage 2 hidden evaluator custody and promotion
 
-Production Stage 2 release schema v3 has two independently verified inputs: public raw gate evidence and a signed statement from the team that holds the hidden labels. The signed statement does not carry labels, pair IDs, annotations, raw predictions, scores, or private marker state.
+Production Stage 2 release schema v3 has two independently verified inputs: public raw gate evidence and a signed statement from the team that holds the hidden labels. The signed statement does not carry labels, pair IDs, annotations, raw predictions, scores, or private marker state. Every statement has an explicit `release_role`: the primary is `winner`; an optional non-winner backup is `qualified_fallback` only after it independently passes every Phase 3 gate in the same sealed promotion batch.
 
 ## Sampling and annotation custody
 
@@ -145,7 +145,7 @@ assemble the missing marker.
 
 ## Preferred sealed promotion
 
-`stage2-evaluator promote` is the preferred production path. It validates the public 600-pair sampling manifest and every schema-v2 benchmark candidate before opening private labels or submissions. Candidate and submission mappings are repeatable `ID=PATH` arguments and must name exactly the same candidate IDs.
+`stage2-evaluator promote` is the preferred production path. It validates the public 600-pair sampling manifest and every schema-v2 benchmark candidate before opening private labels or submissions. Candidate, submission, and public-evidence mappings are repeatable `ID=PATH` arguments and must name exactly the same candidate IDs. Optional `--qualified-fallback-output ID=PATH` mappings name candidates for which the same sealed batch may emit an additional fallback attestation.
 
 Each `--public-evidence` document uses `evidence_type: stage2_public_promotion_evidence`: it contains the same candidate binding, gold manifest, and raw public gate references as release evidence, but deliberately has no `hidden_attestation`. This lets the evaluator recompute quality, benchmark, and soak gates before the one-shot hidden comparison without a circular dependency.
 
@@ -157,10 +157,13 @@ paper-agent --dry-run stage2-evaluator promote \
   --private-labels /secure/evaluator/private-labels.json \
   --candidate incumbent=/secure/evaluator/incumbent-candidate-v2.json \
   --candidate challenger=/secure/evaluator/challenger-candidate-v2.json \
+  --candidate backup=/secure/evaluator/backup-candidate-v2.json \
   --submission incumbent=/secure/evaluator/incumbent-submission.json \
   --submission challenger=/secure/evaluator/challenger-submission.json \
+  --submission backup=/secure/evaluator/backup-submission.json \
   --public-evidence incumbent=/secure/evaluator/incumbent-public-evidence.json \
   --public-evidence challenger=/secure/evaluator/challenger-public-evidence.json \
+  --public-evidence backup=/secure/evaluator/backup-public-evidence.json \
   --incumbent-candidate-id incumbent \
   --evaluator-id evaluator-team-1 \
   --evaluation-run-id promotion-2026-08-11 \
@@ -168,8 +171,10 @@ paper-agent --dry-run stage2-evaluator promote \
   --evaluator-key-id evaluator-key-2026-08 \
   --issued-at 2026-08-11T08:00:00Z \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --signing-key-file /secure/evaluator/hidden-promotion-key.pem \
-  --output /secure/transfer/hidden-promotion-attestation.json
+  --output /secure/transfer/winner-attestation.json \
+  --qualified-fallback-output backup=/secure/transfer/backup-attestation.json
 ```
 
 Review the structured `status: "validated"` result and the frozen public inputs. Then remove only `--dry-run` and run the exact same command once. `--issued-at` must be an RFC 3339 timestamp. The optional `--bootstrap-iterations` and `--bootstrap-seed` default to `2000` and `0`; if overridden, record them before opening the holdout.
@@ -180,7 +185,9 @@ Public manifest/candidate errors, invalid trust, a missing or mismatched key, an
 <state-root>/<gold-manifest-hash>.promotion.json
 ```
 
-That marker is the authoritative one-shot state. A passing or failing gate consumes the same holdout. The evaluator derives the candidate from the frozen paired hidden comparison and recomputed public quality/performance evidence; an operator cannot select a lower-ranked candidate. The signed winner binding includes the public gate artifacts and throughput, and must equal the release candidate. Release assembly independently recomputes the same gates. A failed winner still produces a signed public-safe failure attestation and the command reports `status: "failed"`; preserve both the attestation and marker for audit, but never assemble that result into a production release. If signing or output persistence fails after the marker was claimed, the marker can exist without a transferable attestation. Do not delete it or retry against the same holdout. Investigate the failure and use a new frozen holdout for a new promotion. Never infer reusability from terminal output alone; inspect the protected marker state.
+That marker is the authoritative one-shot state. A passing or failing gate consumes the same holdout. The evaluator derives the candidate from the frozen paired hidden comparison and recomputed public quality/performance evidence; an operator cannot select a lower-ranked candidate. The main output always signs the unique `winner`. A requested non-winner is signed as `qualified_fallback` only when the winner is valid and that candidate independently passes every Phase 3 public, hidden, parity, performance, and soak gate. A requested fallback that becomes the winner or fails a gate gets no fallback file and is listed in `unqualified_fallback_candidate_ids`; the valid winner attestation is still published. Every attestation also carries the same `promotion_batch_hash`, committing the complete candidate set, exact candidate bytes, prediction submissions, public-gate artifact hashes, throughput runs, winner, policy, and one-shot marker. Assembly compares that signed commitment, so independently constructed attestations cannot imitate one sealed batch.
+
+The signed winner binding includes the public gate artifacts and throughput, and must equal the primary release candidate. Release assembly independently recomputes the same gates. A failed winner still produces a signed public-safe failure attestation and the command reports `status: "failed"`; preserve both the attestation and marker for audit, but never assemble that result into a production release. If signing or output persistence fails after the marker was claimed, the marker can exist without a transferable attestation. Do not delete it or retry against the same holdout. Investigate the failure and use a new frozen holdout for a new promotion. Never infer reusability from terminal output alone; inspect the protected marker state.
 
 ## Advanced payload-only attestation
 
@@ -200,7 +207,7 @@ After review, remove only `--dry-run` and run the same command. The real command
 
 ## Release assembly
 
-Transfer only the signed public-safe attestation to the release builder. The builder places it in the frozen evidence index's `hidden_attestation` FileRef alongside the gold-manifest commitment and all public structured-replay, rationale, parity, benchmark, and soak raw evidence. Private labels, raw hidden submissions, the private key, and evaluator marker state must remain outside the release bundle.
+Transfer only the signed public-safe attestations to the release builder. Build one final schema-v3 evidence index per candidate: the primary index contains the `winner` attestation and an optional backup index contains its `qualified_fallback` attestation. Each index binds the exact candidate bytes through `candidate_bundle_sha256`. Its rationale chain has seven FileRefs—manifest, worklist, records, source ledger, query metadata, derived examples, and papers—so the verifier can replay the deterministic selection from every topic-query×paper score, then verify typed Qwen source ledger → derived examples → human worklist/records. It also binds the gold-manifest commitment and all structured-replay, parity, benchmark, and soak raw evidence. Private labels, raw hidden submissions, the private key, and evaluator marker state must remain outside the release bundle.
 
 The schema-v2 benchmark candidate and output must have the same parent directory. The evidence index and every referenced evidence artifact must stay inside that release-bundle root. The deployment trust manifest must be outside the root. Validate the complete assembly without writing output:
 
@@ -208,19 +215,25 @@ The schema-v2 benchmark candidate and output must have the same parent directory
 paper-agent --dry-run stage2-release assemble \
   --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
   --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
+  --fallback-candidate /absolute/path/to/release-bundle/backup-candidate-v2.json \
+  --fallback-evidence /absolute/path/to/release-bundle/backup-release-evidence.json \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --output /absolute/path/to/release-bundle/stage2-release.json
 ```
 
-Dry-run reads and verifies the same public evidence and hidden attestation as the real assembly, enforces the path and absent-output rules, and does not create the output or its parent. After reviewing the structured summary, remove only `--dry-run` and run the same command. Assembly never overwrites an existing destination. It recomputes all public gates, verifies the hidden signature and exact candidate/model/calibrator/threshold/manifest/split bindings, and emits the schema-v3 envelope only when every gate passes.
+Omit both fallback artifact options when no backup is deployed; they are all-or-none. Optional `--fallback-omlx-base-url` and `--fallback-api-key-env` bind different local deployment coordinates without changing the already evaluated candidate. Dry-run reads and verifies the same public evidence and hidden attestations as the real assembly, enforces the path and absent-output rules, and does not create the output or its parent. After reviewing the structured summary, remove only `--dry-run` and run the same command. Assembly never overwrites an existing destination.
+
+Assembly recomputes all public gates, verifies the primary `winner` and backup `qualified_fallback` signatures, requires the same evaluation manifest, promotion gate policy, query/Qwen/shared runtime semantics, and a distinct reranker lock, then injects the fallback only into the final schema-v3 envelope. It never edits either schema-v2 candidate, which prevents a candidate/evidence hash cycle. The summary's `expected_query_plan.config_hash` binds the primary profile plus fallback candidate, evidence, runtime, and release binding; use that exact effective hash in QueryPlan approval.
 
 ## Production verification
 
-A production bundle has `schema_version: "3"` and exactly these top-level fields: `schema_version`, `profile`, `reranker_lock`, `adjudicator_lock`, `calibration`, `release_gate`, and `runtime`. Its `release_gate` has exactly:
+A production bundle has `schema_version: "3"` and, without a backup, exactly these top-level fields: `schema_version`, `profile`, `reranker_lock`, `adjudicator_lock`, `calibration`, `release_gate`, and `runtime`. A release with a qualified backup adds `reranker_fallback`. Its `release_gate` has exactly:
 
 ```json
 {
   "candidate_id": "<same as profile>",
+  "candidate_bundle_sha256": "<exact schema-v2 candidate sha256>",
   "evaluation_manifest_hash": "<lowercase sha256>",
   "evidence": {
     "path": "stage2-release-evidence.json",

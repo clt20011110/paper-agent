@@ -99,6 +99,9 @@ def _payload(
     gold: object,
     public_gate_artifact_hashes: dict[str, str],
     throughput_runs: tuple[float, float, float],
+    release_role: str = "winner",
+    winner_candidate_id: str | None = None,
+    promotion_batch_hash: str = "9" * 64,
 ) -> dict:
     return {
         "schema_version": "1",
@@ -129,7 +132,9 @@ def _payload(
         },
         "prediction_submission_hash": "1" * 64,
         "promotion_marker_hash": "2" * 64,
-        "winner_candidate_id": candidate_id,
+        "promotion_batch_hash": promotion_batch_hash,
+        "winner_candidate_id": winner_candidate_id or candidate_id,
+        "release_role": release_role,
         "public_gate_artifact_hashes": public_gate_artifact_hashes,
         "throughput_runs": list(throughput_runs),
         "consumed_hidden_splits": ["hidden_hard", "hidden_real"],
@@ -142,14 +147,24 @@ def _payload(
     }
 
 
-def _build_v3_bundle(root: Path) -> V3Bundle:
+def _build_v3_bundle(
+    root: Path,
+    *,
+    reranker_lock_source: Path | None = None,
+    profile_name: str = "local-winner",
+    release_role: str = "winner",
+    winner_candidate_id: str | None = None,
+    promotion_batch_hash: str = "9" * 64,
+) -> V3Bundle:
     repository_root = Path(__file__).parents[1]
     release_path, plan = _release_bundle(
         root,
         reranker_lock_source=(
-            repository_root
+            reranker_lock_source
+            or repository_root
             / "configs/stage2/models/bge-reranker-v2-m3-mlx-bf16.lock.json"
         ),
+        profile_name=profile_name,
     )
     release = json.loads(release_path.read_text(encoding="utf-8"))
     evidence_path, evidence = public_evidence._index(root)
@@ -225,6 +240,7 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
     candidate_path = root / "candidate.json"
     _write_json(candidate_path, candidate_document)
     candidate = load_stage2_benchmark_candidate(candidate_path)
+    evidence["candidate_bundle_sha256"] = candidate.release_hash
     parity.update({
         "candidate_model_lock": release["reranker_lock"],
         "candidate_calibrator": release["calibration"]["reranker"]["calibrator"],
@@ -320,6 +336,9 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
                 for name, gate in verified_public.gates.items()
             },
             throughput_runs=verified_public.throughput_runs,
+            release_role=release_role,
+            winner_candidate_id=winner_candidate_id,
+            promotion_batch_hash=promotion_batch_hash,
         ),
         private_key,
     )
@@ -331,6 +350,7 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
     release["schema_version"] = "3"
     release["release_gate"] = {
         "candidate_id": release["profile"],
+        "candidate_bundle_sha256": candidate.release_hash,
         "evaluation_manifest_hash": gold.hash(),
         "evidence": _ref(evidence_path),
     }
@@ -597,6 +617,7 @@ def test_v3_rejects_untrusted_or_invalid_hidden_promotion(
                 attestation["payload"]["gate_policy_hash"] = "f" * 64
             else:
                 attestation["payload"]["candidate_id"] = "different-candidate"
+                attestation["payload"]["winner_candidate_id"] = "different-candidate"
             attestation = issue_hidden_promotion_attestation(
                 attestation["payload"], v3_bundle.private_key
             )

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "kind", "candidate", "benchmark_papers_sha256", "corpus_hash", "query_metadata_sha256", "records"],
   "properties": {
-    "schema_version": {"const": "1"},
+    "schema_version": {"const": "2"},
     "kind": {"const": "stage2_qwen_adjudication_ledger"},
     "candidate": {"$ref": "#/$defs/candidate"},
     "benchmark_papers_sha256": {"$ref": "#/$defs/sha256"},
@@ -33,9 +33,9 @@
     "record": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["paper_id", "decision", "score", "rationale", "evidence_fields"],
+      "required": ["pair_id", "decision", "score", "rationale", "evidence_fields"],
       "properties": {
-        "paper_id": {"type": "string", "minLength": 1},
+        "pair_id": {"$ref": "#/$defs/sha256"},
         "decision": {"enum": ["relevant", "irrelevant", "needs_review"]},
         "score": {"type": "number"},
         "rationale": {"type": "string", "minLength": 1},

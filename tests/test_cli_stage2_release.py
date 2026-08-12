@@ -70,6 +70,10 @@ def test_stage2_release_assemble_help_lists_required_inputs(
         "--evidence",
         "--trust-manifest",
         "--parity-oracle-trust",
+        "--fallback-candidate",
+        "--fallback-evidence",
+        "--fallback-omlx-base-url",
+        "--fallback-api-key-env",
         "--output",
     ):
         assert option in help_text

@@ -16,7 +16,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from . import __version__
 from .authorized_skill_runtime import AuthorizedSkillRuntime, load_audit_record
@@ -81,7 +81,7 @@ from .repository import PaperRepository
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import (
     Stage2ReleaseError,
-    load_stage2_benchmark_candidate,
+    _load_stage2_benchmark_candidate_bytes,
     load_stage2_release,
 )
 from .stage2_annotation_artifacts import (
@@ -95,6 +95,7 @@ from .stage2_annotation_artifacts import (
     write_human_annotation_worklist,
     write_private_gold_labels,
 )
+from .stage2_backends import UrlLibOmlxTransport
 from .stage2_evaluation import load_gold_manifest, rationale_audit_gate
 from .stage2_evaluator import (
     issue_hidden_promotion_from_payload,
@@ -110,6 +111,7 @@ from .stage2_promotion_artifacts import (
     validate_promotion_candidate_bundles,
 )
 from .stage2_rationale_workflow import (
+    collect_rationale_source_artifacts,
     derive_rationale_audit_examples,
     freeze_rationale_audit,
     import_completed_rationale_audit,
@@ -117,9 +119,11 @@ from .stage2_rationale_workflow import (
     load_rationale_worklist,
     rationale_audit_examples_from_document,
     rationale_audit_records_document,
+    rationale_source_plan,
     write_frozen_rationale_audit,
     write_derived_rationale_examples_no_replace,
     write_rationale_records_no_replace,
+    write_rationale_source_artifacts_no_replace,
 )
 from .stage2_release_assembly import (
     assemble_stage2_release,
@@ -442,6 +446,13 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     stage2_rationale_commands = stage2_rationale.add_subparsers(
         dest="stage2_rationale_command", required=True
     )
+    rationale_source = stage2_rationale_commands.add_parser(
+        "run-source",
+        help="select rationale strata and run the candidate's local Qwen adjudicator",
+    )
+    rationale_source.add_argument("--stage2-candidate", required=True, type=Path)
+    rationale_source.add_argument("--benchmark-papers", required=True, type=Path)
+    rationale_source.add_argument("--output-dir", required=True, type=Path)
     rationale_freeze = stage2_rationale_commands.add_parser(
         "freeze-worklist",
         help="freeze already-selected rationale examples before human review",
@@ -648,6 +659,16 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     promote.add_argument("--parity-oracle-trust", required=True, type=Path)
     promote.add_argument("--signing-key-file", required=True, type=Path)
     promote.add_argument("--output", required=True, type=Path)
+    promote.add_argument(
+        "--qualified-fallback-output",
+        action="append",
+        default=[],
+        metavar="ID=PATH",
+        help=(
+            "sign an additional non-winner candidate that passed every release "
+            "gate as a qualified fallback; repeat for multiple fallbacks"
+        ),
+    )
     promote.add_argument("--bootstrap-iterations", type=int, default=2_000)
     promote.add_argument("--bootstrap-seed", type=int, default=0)
 
@@ -666,6 +687,10 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     assemble.add_argument("--evidence", required=True, type=Path)
     assemble.add_argument("--trust-manifest", required=True, type=Path)
     assemble.add_argument("--parity-oracle-trust", required=True, type=Path)
+    assemble.add_argument("--fallback-candidate", type=Path)
+    assemble.add_argument("--fallback-evidence", type=Path)
+    assemble.add_argument("--fallback-omlx-base-url")
+    assemble.add_argument("--fallback-api-key-env")
     assemble.add_argument("--output", required=True, type=Path)
     evidence = stage2_release_commands.add_parser(
         "build-evidence",
@@ -679,6 +704,10 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     evidence.add_argument("--rationale-manifest", required=True, type=Path)
     evidence.add_argument("--rationale-worklist", required=True, type=Path)
     evidence.add_argument("--rationale-records", required=True, type=Path)
+    evidence.add_argument("--rationale-source-ledger", required=True, type=Path)
+    evidence.add_argument("--rationale-query-metadata", required=True, type=Path)
+    evidence.add_argument("--rationale-derived-examples", required=True, type=Path)
+    evidence.add_argument("--rationale-papers", required=True, type=Path)
     evidence.add_argument("--parity-manifest", required=True, type=Path)
     evidence.add_argument("--parity-workload", required=True, type=Path)
     evidence.add_argument("--parity-selection-receipt", required=True, type=Path)
@@ -1007,6 +1036,11 @@ def main(
             output_dir=args.output_dir,
             dry_run=args.dry_run,
         ))
+    if (
+        args.command == "stage2-rationale"
+        and args.stage2_rationale_command == "run-source"
+    ):
+        return _finish(args, _stage2_rationale_run_source(args))
     if (
         args.command == "stage2-rationale"
         and args.stage2_rationale_command == "derive-examples"
@@ -1456,6 +1490,62 @@ def _stage2_annotations_finalize(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _stage2_rationale_run_source(args: argparse.Namespace) -> dict[str, Any]:
+    if os.path.lexists(args.output_dir):
+        raise FileExistsError(
+            f"Stage 2 rationale source output already exists: {args.output_dir}"
+        )
+    candidate_path = args.stage2_candidate.resolve(strict=True)
+    candidate_bytes = candidate_path.read_bytes()
+    papers_bytes = args.benchmark_papers.read_bytes()
+    candidate = _load_stage2_benchmark_candidate_bytes(candidate_path, candidate_bytes)
+    papers_document = json.loads(papers_bytes)
+    plan = rationale_source_plan(
+        candidate,
+        benchmark_papers_document=papers_document,
+    )
+    payload: dict[str, Any] = {
+        "command": "stage2-rationale.run-source",
+        "dry_run": args.dry_run,
+        "candidate_id": plan.candidate_id,
+        "paper_count": plan.paper_count,
+        "primary_languages": list(plan.primary_languages),
+        "qwen_pair_count": plan.qwen_pair_count,
+        "reranker_pair_count": plan.reranker_pair_count,
+        "status": "validated" if args.dry_run else "complete",
+        "topic_query_count": plan.topic_query_count,
+        "written": not args.dry_run,
+    }
+    if args.dry_run:
+        return payload
+    transport = UrlLibOmlxTransport(
+        candidate.omlx_base_url,
+        api_key=(
+            os.environ.get(candidate.api_key_env)
+            if candidate.api_key_env is not None
+            else None
+        ),
+    )
+    artifacts = collect_rationale_source_artifacts(
+        candidate,
+        candidate_bundle_sha256=sha256(candidate_bytes).hexdigest(),
+        benchmark_papers_document=papers_document,
+        benchmark_papers_sha256=sha256(papers_bytes).hexdigest(),
+        transport=transport,
+    )
+    query_metadata_path, source_ledger_path = write_rationale_source_artifacts_no_replace(
+        artifacts,
+        output_directory=args.output_dir,
+    )
+    payload.update({
+        "query_metadata_output": str(query_metadata_path),
+        "query_metadata_sha256": sha256(query_metadata_path.read_bytes()).hexdigest(),
+        "adjudication_ledger_output": str(source_ledger_path),
+        "adjudication_ledger_sha256": sha256(source_ledger_path.read_bytes()).hexdigest(),
+    })
+    return payload
+
+
 def _stage2_rationale_freeze(args: argparse.Namespace) -> dict[str, Any]:
     outputs = (args.manifest_output, args.worklist_output)
     if outputs[0].absolute() == outputs[1].absolute():
@@ -1464,7 +1554,7 @@ def _stage2_rationale_freeze(args: argparse.Namespace) -> dict[str, Any]:
     if existing is not None:
         raise FileExistsError(f"Stage 2 rationale output already exists: {existing}")
     examples, corpus_hash, model_lock_hash = rationale_audit_examples_from_document(
-        _load_json(args.examples)
+        _load_json(args.examples), require_derived=True
     )
     frozen = freeze_rationale_audit(
         examples,
@@ -1494,11 +1584,12 @@ def _stage2_rationale_freeze(args: argparse.Namespace) -> dict[str, Any]:
 def _stage2_rationale_derive(args: argparse.Namespace) -> dict[str, Any]:
     if args.output.exists():
         raise FileExistsError(f"Stage 2 rationale examples output already exists: {args.output}")
-    candidate_bytes = args.stage2_candidate.read_bytes()
+    candidate_path = args.stage2_candidate.resolve(strict=True)
+    candidate_bytes = candidate_path.read_bytes()
     benchmark_papers_bytes = args.benchmark_papers.read_bytes()
     query_metadata_bytes = args.query_metadata.read_bytes()
     ledger_bytes = args.adjudication_ledger.read_bytes()
-    candidate = load_stage2_benchmark_candidate(args.stage2_candidate)
+    candidate = _load_stage2_benchmark_candidate_bytes(candidate_path, candidate_bytes)
     document = derive_rationale_audit_examples(
         json.loads(ledger_bytes),
         source_ledger_sha256=sha256(ledger_bytes).hexdigest(),
@@ -1569,6 +1660,10 @@ def _stage2_release_assemble(args: argparse.Namespace) -> dict[str, Any]:
             args.trust_manifest,
             args.output,
             parity_oracle_trust_path=args.parity_oracle_trust,
+            fallback_candidate_path=args.fallback_candidate,
+            fallback_evidence_path=args.fallback_evidence,
+            fallback_omlx_base_url=args.fallback_omlx_base_url,
+            fallback_api_key_env=args.fallback_api_key_env,
         )
     except Exception:
         # Inputs include deployment-owned trust.  Keep the console boundary
@@ -1599,6 +1694,10 @@ def _stage2_release_build_evidence(args: argparse.Namespace) -> dict[str, Any]:
         "rationale_manifest_path": args.rationale_manifest,
         "rationale_worklist_path": args.rationale_worklist,
         "rationale_records_path": args.rationale_records,
+        "rationale_source_ledger_path": args.rationale_source_ledger,
+        "rationale_query_metadata_path": args.rationale_query_metadata,
+        "rationale_derived_examples_path": args.rationale_derived_examples,
+        "rationale_papers_path": args.rationale_papers,
         "parity_manifest_path": args.parity_manifest,
         "parity_workload_path": args.parity_workload,
         "parity_selection_receipt_path": args.parity_selection_receipt,
@@ -1709,7 +1808,7 @@ def _assert_attestation_output_absent(path: Path) -> None:
 
 
 def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
-    """Run exactly one sealed promotion batch and sign only its frozen winner.
+    """Run one sealed batch and sign its winner plus requested qualified backups.
 
     All public bindings, trust material, private-key custody, and the empty
     output reservation are checked before private labels or predictions are
@@ -1721,8 +1820,16 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
     candidate_paths = _stage2_promotion_paths(args.candidate, "candidate")
     submission_paths = _stage2_promotion_paths(args.submission, "submission")
     public_evidence_paths = _stage2_promotion_paths(args.public_evidence, "public evidence")
+    fallback_output_paths = _stage2_promotion_paths(
+        args.qualified_fallback_output,
+        "qualified fallback output",
+    )
     _validate_stage2_promotion_controls(
-        args, candidate_paths, submission_paths, public_evidence_paths
+        args,
+        candidate_paths,
+        submission_paths,
+        public_evidence_paths,
+        fallback_output_paths,
     )
     try:
         # A gold manifest and v2 bundles are public inputs.  Do this before
@@ -1744,7 +1851,9 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
     except (OSError, ValueError, TypeError, KeyError):
         raise CliUsageError("Stage 2 promotion public inputs are invalid") from None
 
-    _assert_attestation_output_absent(args.output)
+    output_paths = [args.output, *fallback_output_paths.values()]
+    for output_path in output_paths:
+        _assert_attestation_output_absent(output_path)
     try:
         trust = load_hidden_evaluator_trust(args.trust_manifest)
         if args.evaluator_key_id not in trust.keys:
@@ -1759,6 +1868,7 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
             "evaluation_run_id": args.evaluation_run_id,
             "evaluated": False,
             "signed": False,
+            "requested_fallback_candidate_ids": sorted(fallback_output_paths),
             "status": "validated",
         }
 
@@ -1770,14 +1880,30 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
         )
     except (OSError, ValueError, TypeError):
         raise CliUsageError("Stage 2 promotion signing prerequisites are invalid") from None
+    reservations: list[
+        tuple[Path, int, int, os.stat_result, os.stat_result]
+    ] = []
     try:
-        descriptor, directory, parent_reservation, reservation = (
-            _reserve_hidden_promotion_output(args.output)
-        )
+        for output_path in output_paths:
+            descriptor, directory, parent_reservation, reservation = (
+                _reserve_hidden_promotion_output(output_path)
+            )
+            reservations.append(
+                (
+                    output_path,
+                    descriptor,
+                    directory,
+                    parent_reservation,
+                    reservation,
+                )
+            )
     except FileExistsError:
+        _remove_hidden_promotion_reservations(reservations)
         raise
     except OSError:
+        _remove_hidden_promotion_reservations(reservations)
         raise CliUsageError("Stage 2 promotion attestation output failed") from None
+    published = False
     try:
         try:
             evaluation = run_promotion_evaluation(
@@ -1801,28 +1927,76 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
                 issued_at=args.issued_at,
             )
             attestation = issue_hidden_promotion_from_payload(payload, private_key)
+            fallback_attestations: dict[str, tuple[dict[str, Any], Mapping[str, Any]]] = {}
+            unqualified_fallback_candidate_ids: list[str] = []
+            for candidate_id in fallback_output_paths:
+                fallback_signing = evaluation.candidates[candidate_id]
+                if (
+                    fallback_signing.release_role != "qualified_fallback"
+                    or not fallback_signing.passed
+                    or fallback_signing.failures
+                ):
+                    unqualified_fallback_candidate_ids.append(candidate_id)
+                    continue
+                fallback_payload = fallback_signing.attestation_payload(
+                    evaluator_key_id=args.evaluator_key_id,
+                    trust_manifest_hash=trust.manifest_hash,
+                    issued_at=args.issued_at,
+                )
+                fallback_attestations[candidate_id] = (
+                    fallback_payload,
+                    issue_hidden_promotion_from_payload(fallback_payload, private_key),
+                )
         except Exception:
             raise CliUsageError("sealed Stage 2 promotion evaluation failed") from None
 
         try:
-            _write_reserved_hidden_promotion_output(descriptor, attestation)
-            _verify_reserved_hidden_promotion_output(
-                args.output.parent,
-                args.output.name,
-                parent_reservation,
-                reservation,
-                canonical_json(dict(attestation)),
-            )
-            os.close(descriptor)
+            requested_outputs = [
+                (args.output, attestation),
+                *((fallback_output_paths[candidate_id], fallback_attestation)
+                  for candidate_id, (_, fallback_attestation)
+                  in fallback_attestations.items()),
+            ]
+            reservations_by_path = {reserved[0]: reserved for reserved in reservations}
+            unqualified_paths = {
+                fallback_output_paths[candidate_id]
+                for candidate_id in unqualified_fallback_candidate_ids
+            }
+            for output_path in unqualified_paths:
+                reserved = reservations_by_path.pop(output_path)
+                _remove_hidden_promotion_reservation(
+                    reserved[2], output_path.name, reserved[1], reserved[4]
+                )
+                os.close(reserved[2])
+                reservations.remove(reserved)
+                if os.path.lexists(output_path):
+                    raise OSError(
+                        "cannot discard unqualified fallback attestation output"
+                    )
+            for output_path, output_attestation in requested_outputs:
+                reserved = reservations_by_path[output_path]
+                _write_reserved_hidden_promotion_output(
+                    reserved[1], output_attestation
+                )
+            for output_path, output_attestation in requested_outputs:
+                reserved = reservations_by_path[output_path]
+                _verify_reserved_hidden_promotion_output(
+                    reserved[0].parent,
+                    reserved[0].name,
+                    reserved[3],
+                    reserved[4],
+                    canonical_json(dict(output_attestation)),
+                )
         except OSError:
             raise CliUsageError("Stage 2 promotion attestation output failed") from None
-        descriptor = None
+        published = True
     finally:
-        if descriptor is not None:
-            _remove_hidden_promotion_reservation(
-                directory, args.output.name, descriptor, reservation
-            )
-        os.close(directory)
+        if published:
+            for _, descriptor, directory, _, _ in reservations:
+                os.close(descriptor)
+                os.close(directory)
+        else:
+            _remove_hidden_promotion_reservations(reservations)
 
     passed = bool(payload["result_summary"]["passed"])
     return {
@@ -1831,8 +2005,18 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
         "evaluation_manifest_hash": evaluation.evaluation_manifest_hash,
         "evaluation_run_id": evaluation.evaluation_run_id,
         "promotion_marker_hash": evaluation.promotion_marker_hash,
+        "promotion_batch_hash": evaluation.promotion_batch_hash,
         "payload_sha256": content_hash(payload),
         "attestation_sha256": content_hash(attestation),
+        "qualified_fallback_attestation_sha256": {
+            candidate_id: content_hash(fallback_attestation)
+            for candidate_id, (_, fallback_attestation)
+            in fallback_attestations.items()
+        },
+        "requested_fallback_candidate_ids": sorted(fallback_output_paths),
+        "unqualified_fallback_candidate_ids": sorted(
+            unqualified_fallback_candidate_ids
+        ),
         "evaluated": True,
         "signed": True,
         "passed": passed,
@@ -1862,6 +2046,7 @@ def _validate_stage2_promotion_controls(
     candidate_paths: Mapping[str, Path],
     submission_paths: Mapping[str, Path],
     public_evidence_paths: Mapping[str, Path],
+    fallback_output_paths: Mapping[str, Path],
 ) -> None:
     identifiers = (
         *candidate_paths,
@@ -1876,6 +2061,10 @@ def _validate_stage2_promotion_controls(
             raise CliUsageError("Stage 2 promotion identifiers are invalid")
     if set(candidate_paths) != set(submission_paths) or set(candidate_paths) != set(public_evidence_paths):
         raise CliUsageError("Stage 2 promotion candidate, submission, and public evidence mappings must match")
+    if not set(fallback_output_paths).issubset(candidate_paths):
+        raise CliUsageError(
+            "Stage 2 qualified fallback outputs must name submitted candidates"
+        )
     if (
         args.incumbent_candidate_id not in candidate_paths
     ):
@@ -1884,6 +2073,11 @@ def _validate_stage2_promotion_controls(
         raise CliUsageError("Stage 2 promotion issued-at is not a schema-valid date-time")
     if args.bootstrap_iterations <= 0:
         raise CliUsageError("Stage 2 promotion bootstrap iterations must be positive")
+    canonical_outputs = {
+        path.resolve(strict=False) for path in (args.output, *fallback_output_paths.values())
+    }
+    if len(canonical_outputs) != 1 + len(fallback_output_paths):
+        raise CliUsageError("Stage 2 promotion output paths must be unique")
 
 
 def _stage2_promotion_date_time(value: str) -> bool:
@@ -2054,6 +2248,23 @@ def _remove_hidden_promotion_reservation(
     ):
         try:
             os.unlink(name, dir_fd=directory)
+        except OSError:
+            pass
+
+
+def _remove_hidden_promotion_reservations(
+    reservations: Sequence[
+        tuple[Path, int, int, os.stat_result, os.stat_result]
+    ],
+) -> None:
+    """Remove only the exact still-reserved inodes and close their directories."""
+
+    for path, descriptor, directory, _, reservation in reversed(reservations):
+        _remove_hidden_promotion_reservation(
+            directory, path.name, descriptor, reservation
+        )
+        try:
+            os.close(directory)
         except OSError:
             pass
 
@@ -2894,10 +3105,15 @@ def _default_authorized_skill_roots() -> tuple[Path, ...]:
     return (codex_root / "skills",)
 
 
-def _local_http_probe(url: str) -> tuple[int, str]:
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, newurl):
+        return None
+
+
+def _local_http_probe(url: str, headers: Mapping[str, str]) -> tuple[int, str]:
     """Probe the already validated loopback oMLX endpoint with bounded I/O."""
-    request = Request(url, headers={"Accept": "application/json"}, method="GET")
-    opener = build_opener(ProxyHandler({}))
+    request = Request(url, headers=dict(headers), method="GET")
+    opener = build_opener(ProxyHandler({}), _NoRedirectHandler())
     try:
         with opener.open(request, timeout=3) as response:
             payload = response.read(2 * 1024 * 1024 + 1)

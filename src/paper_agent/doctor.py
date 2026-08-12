@@ -1,8 +1,9 @@
 """Composable, offline-first runtime diagnostics for Paper Agent.
 
 ``SystemDoctor`` deliberately does not create a database, make HTTP requests,
-download a model, or read credential values.  Callers that want to prove a
-local service is responding can explicitly inject an HTTP probe.
+or download a model.  Callers that want to prove a local service is responding
+can explicitly inject an HTTP probe; credentials are forwarded without being
+included in diagnostic output.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from .storage import Database
 
 CheckStatus = Literal["pass", "warning", "blocker"]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
-HttpProbe = Callable[[str], tuple[int, str]]
+HttpProbe = Callable[[str, Mapping[str, str]], tuple[int, str]]
 ExecutableFinder = Callable[[str], str | None]
 BrowserSessionProbe = Callable[[], tuple[bool, str]]
 
@@ -847,43 +848,63 @@ class SystemDoctor:
                 "omlx", "warning", False,
                 f"CLI {version_output}; no validated Stage 2 release endpoint", True,
             )
-        endpoint = released.omlx_base_url
         if self.http_probe is None:
             return DoctorCheck(
                 "omlx", "warning", False,
                 f"CLI {version_output}; validated local endpoint was not probed", True,
             )
-        parsed = urlparse(endpoint)
-        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-            return DoctorCheck("omlx", "blocker", True, "oMLX endpoint must be loopback HTTP", True)
-        try:
-            status, body = self.http_probe(f"{endpoint.rstrip('/')}/v1/models")
-        except OSError as error:
-            return DoctorCheck("omlx", "blocker", True, f"local endpoint unavailable: {error}", True)
-        if not 200 <= status < 300:
-            return DoctorCheck(
-                "omlx", "blocker", True,
-                f"local model inventory returned HTTP {status}", True,
-            )
-        listed = _model_ids(body)
-        expected = {
-            released.profile.reranker_model_id,
-            released.profile.adjudicator_model_id,
+        services: dict[tuple[str, str | None], set[str]] = {
+            (released.omlx_base_url.rstrip("/"), released.api_key_env): {
+                released.profile.reranker_model_id,
+                released.profile.adjudicator_model_id,
+            }
         }
-        if listed is None:
-            return DoctorCheck(
-                "omlx", "warning", False,
-                "local endpoint responded but did not provide a verifiable model inventory", True,
-            )
-        missing = expected - listed
-        if missing:
-            return DoctorCheck(
-                "omlx", "blocker", True,
-                "released local models are not loaded: " + ", ".join(sorted(missing)), True,
-            )
+        fallback = getattr(released, "reranker_fallback", None)
+        if fallback is not None:
+            key = (fallback.omlx_base_url.rstrip("/"), fallback.api_key_env)
+            services.setdefault(key, set()).add(fallback.model_lock.model_id)
+
+        probes: list[tuple[str, Mapping[str, str], set[str]]] = []
+        for (endpoint, api_key_env), expected in services.items():
+            parsed = urlparse(endpoint)
+            if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+                return DoctorCheck("omlx", "blocker", True, "oMLX endpoint must be loopback HTTP", True)
+            headers = {"Accept": "application/json"}
+            if api_key_env:
+                api_key = self.environment.get(api_key_env)
+                if not api_key:
+                    return DoctorCheck(
+                        "omlx", "blocker", True,
+                        f"oMLX endpoint requires environment variable {api_key_env}", True,
+                    )
+                headers["Authorization"] = f"Bearer {api_key}"
+            probes.append((endpoint, headers, expected))
+
+        for endpoint, headers, expected in probes:
+            try:
+                status, body = self.http_probe(f"{endpoint}/v1/models", headers)
+            except OSError:
+                return DoctorCheck("omlx", "blocker", True, "local endpoint unavailable", True)
+            if not 200 <= status < 300:
+                return DoctorCheck(
+                    "omlx", "blocker", True,
+                    f"local model inventory returned HTTP {status}", True,
+                )
+            listed = _model_ids(body)
+            if listed is None:
+                return DoctorCheck(
+                    "omlx", "warning", False,
+                    "local endpoint responded but did not provide a verifiable model inventory", True,
+                )
+            missing = expected - listed
+            if missing:
+                return DoctorCheck(
+                    "omlx", "blocker", True,
+                    "released local models are not loaded: " + ", ".join(sorted(missing)), True,
+                )
         return DoctorCheck(
             "omlx", "pass", True,
-            f"CLI {version_output}; local endpoint lists both released models", True,
+            f"CLI {version_output}; local endpoint inventory matches the released models", True,
         )
 
     def _codex(self) -> DoctorCheck:

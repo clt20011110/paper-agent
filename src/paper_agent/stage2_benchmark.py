@@ -818,15 +818,21 @@ class Stage2BenchmarkRunner:
                 clock,
             )
             fallback = LocalCalibratedRerankerFallback(
-                OmlxRerankBackend(
+                backend=OmlxRerankBackend(
                     reranker_fallback.model_lock.model_id,
                     fallback_probe,
                     document_batch_size=profile.document_batch_size,
                     max_in_flight=profile.reranker_max_in_flight,
                 ),
-                reranker_fallback.model_lock_hash,
-                reranker_fallback.calibration,
-                reranker_fallback.release_binding,
+                model_id=reranker_fallback.model_lock.model_id,
+                model_revision=(
+                    reranker_fallback.model_lock.conversion_revision
+                    or reranker_fallback.model_lock.source_revision
+                ),
+                model_lock_hash=reranker_fallback.model_lock_hash,
+                calibration=reranker_fallback.calibration,
+                release_binding=reranker_fallback.release_binding,
+                runtime_config_hash=reranker_fallback.runtime_config_hash,
             )
         return cls(
             database=database,
@@ -870,10 +876,13 @@ class Stage2BenchmarkRunner:
         adjudicator = _MeasuredAdjudicator(self.adjudicator, self.clock)
         measured_fallback = (
             LocalCalibratedRerankerFallback(
-                fallback_reranker,
-                self.reranker_fallback.model_lock_hash,
-                self.reranker_fallback.calibration,
-                self.reranker_fallback.release_binding,
+                backend=fallback_reranker,
+                model_id=self.reranker_fallback.model_id,
+                model_revision=self.reranker_fallback.model_revision,
+                model_lock_hash=self.reranker_fallback.model_lock_hash,
+                calibration=self.reranker_fallback.calibration,
+                release_binding=self.reranker_fallback.release_binding,
+                runtime_config_hash=self.reranker_fallback.runtime_config_hash,
             )
             if fallback_reranker is not None and self.reranker_fallback is not None
             else None
@@ -1269,7 +1278,10 @@ class Stage2BenchmarkRunner:
         if any(key in frozen_batch and frozen_batch[key] != value for key, value in expected_batch.items()):
             raise ValueError("benchmark environment batch/concurrency does not match the executed Stage 2 profile")
         if not spec.fixture_scale:
-            profile_locks = (self.profile.reranker_lock_hash, self.profile.adjudicator_lock_hash)
+            profile_locks = (
+                self.profile.reranker_lock_hash,
+                self.profile.adjudicator_lock_hash,
+            )
             if any(value is None for value in profile_locks) or tuple(profile_locks) != spec.model_lock_hashes:
                 raise ValueError("benchmark manifest does not match the executed model locks")
             if set(self.environment.resident_model_instances) != set(spec.model_lock_hashes):

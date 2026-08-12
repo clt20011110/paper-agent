@@ -28,6 +28,7 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent --version)
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-evaluator promote --help)
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-evaluator attest --help)
+(cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-rationale run-source --help)
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-rationale derive-examples --help)
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-rationale freeze-worklist --help)
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-rationale import-worklist --help)
@@ -55,12 +56,14 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
   key，实际交给 loader 时以 `no active key` fail closed，不能把 fixture trust 当生产默认值。
   隔离环境的普通 `paper-agent doctor` 必须返回成功，且 `stage2_model_locks=pass`；不允许仅接受
   非零退出码后跳过该检查。实际把 config 和 skill 从该路径复制到临时目标，确认无需源码 checkout。
-- [ ] CLI contract 回归必须覆盖 `stage2-evaluator promote/attest`、`stage2-rationale derive-examples/freeze-worklist/import-worklist`、
+- [ ] CLI contract 回归必须覆盖 `stage2-evaluator promote/attest`、`stage2-rationale run-source/derive-examples/freeze-worklist/import-worklist`、
   `stage2-parity freeze-workload/run`、`stage2-tuning select`、`stage2-release build-evidence/assemble` 的完整
   required options、结构化状态、existing-output 拒绝和 global `--dry-run`。dry-run 不得读取 evaluator
   private labels/submissions/key、消费 promotion marker 或创建 attestation/release output；assembly
   dry-run 必须执行与真实组装相同的 gate/trust/path 验证。parity/tuning/evidence dry-run 必须验证全部
-  input hash、配置和精确 record 数量，同时零写入。
+  input hash、配置和精确 record 数量，同时零写入。rationale run-source dry-run 不得调用模型或创建
+  output directory；正式输出必须绑定 exact candidate/papers bytes。evidence schema-v3 必须绑定
+  `candidate_bundle_sha256` 及 rationale 的 source ledger/query metadata/derived examples/papers 全链。
 - [ ] 告警契约回归覆盖 Stage 2 的 15%/30%、0.5%、28 GiB 边界、resume 等价和 report Codex
   budget exhaustion；Stage 4b 全量 prompt 超限必须 dispatch=0，正常路径必须 dispatch=1，且并发、
   resume、timeout 或 uncertain outcome 不得产生第二次调用。search audit 只保留 allowlist
@@ -86,14 +89,21 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
   的 canonical unencrypted Ed25519 PKCS#8 PEM，并匹配当前 active trust key。保存 attestation、marker
   hash、candidate/evaluation IDs 和结果；gate failure 也消费 holdout 并保留 signed failure，不得删除
   marker、重试同一 holdout 或将失败结果组装为 release。HSM/secret-manager API 未经独立集成不得
-  声称由当前 CLI 直接支持。
+  声称由当前 CLI 直接支持。若发布本地 reranker fallback，必须在同一 sealed promotion 命令中用
+  `--qualified-fallback-output ID=PATH` 签发：主 output 的角色为 winner，backup 只有在非 winner 且自身
+  通过全部 Phase 3 门禁时才可获得 qualified-fallback attestation。验证 requested fallback 成为 winner
+  或未过门时 winner output 仍发布、fallback 文件不存在，且其 ID 出现在
+  `unqualified_fallback_candidate_ids`。
 - [ ] 若使用 `stage2-evaluator attest`，证明 public-safe payload 来自另一个已审阅、已实施一次性
   marker 的 sealed evaluator；该命令本身不执行 hidden evaluation，不能替代 `promote` 的 custody。
-- [ ] 先以 global `--dry-run`、再以完全相同的 `--candidate --evidence --trust-manifest --output`
+- [ ] 先以 global `--dry-run`、再以完全相同的 `--candidate --evidence --trust-manifest --parity-oracle-trust --output`
   参数运行 `stage2-release assemble`。确认 candidate/output 具有同一 parent，evidence 及其全部引用
   留在该 bundle root，trust manifest 在 root 外且 output 原先不存在；assembly 重算 public gates、
   验证 hidden signature 与 candidate/model/calibrator/threshold/manifest/split bindings。bundle 不含 private labels、raw
-  submissions、私钥或 marker state。
+  submissions、私钥或 marker state。使用 fallback 时同时提供 `--fallback-candidate` 与
+  `--fallback-evidence`，验证 backup evidence 为同批次 qualified-fallback、主备共享 manifest/policy/
+  query+Qwen runtime、签名 `promotion_batch_hash` 相同且 reranker lock 不同；最终 QueryPlan 使用 assembly summary 中已绑定 fallback
+  candidate/evidence/runtime/release binding 的 effective config hash。
 - [ ] 对组装后的 schema-v3 release 配置部署控制的 `PAPER_AGENT_STAGE2_HIDDEN_TRUST`，从隔离 wheel
   环境实际运行 `doctor` 和至少一个 production release loader。该环境变量只供已组装 release 加载，
   不替代 evaluator/assembler 的显式 `--trust-manifest`；不得用 release 内 `passed`、fixture key、

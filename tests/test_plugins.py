@@ -129,6 +129,7 @@ def test_macos_profile_denies_network_and_limits_writes(tmp_path: Path) -> None:
     assert "require-not" in profile
 
 
+@pytest.mark.enable_socket
 def test_subprocess_json_roundtrip_when_platform_sandbox_is_available(tmp_path: Path) -> None:
     system = platform.system()
     available = (system == "Darwin" and shutil.which("sandbox-exec")) or (

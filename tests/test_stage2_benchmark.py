@@ -25,7 +25,7 @@ from paper_agent.stage2_evaluation import (
     ThresholdArtifact as ProbabilityThresholdArtifact,
     _hash,
 )
-from paper_agent.stage2_fallback import FallbackReleaseBinding
+from paper_agent.stage2_fallback import FallbackReleaseBinding, stage2_shared_runtime_hash
 from paper_agent.stage2_pipeline import (
     ADJUDICATOR_SHARE_ALARM,
     ERROR_RATE_ALARM,
@@ -236,7 +236,9 @@ def _fallback_release(profile: Stage2Profile):
             "2" * 64,
             "3" * 64,
             "4" * 64,
+            stage2_shared_runtime_hash(profile),
         ),
+        runtime_config_hash="5" * 64,
     )
 
 

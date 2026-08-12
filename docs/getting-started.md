@@ -78,6 +78,8 @@ Stage 2 只能使用已经验收的本地 oMLX release。安装并校验与配�
 calibrator、threshold 和 release bundle；`configs/stage2/models/*.lock.json` 仅是
 锁定输入，不等于 release 已通过。随后用同一 approved QueryPlan 和
 `--stage2-release` 运行 `doctor`，确认模型 ID、revision、digest 和本地 endpoint。
+当前开发机已通过带认证探针验证 oMLX 0.5.7；这只证明运行时和凭据路径可用，不代表人工金标、
+hidden promotion、性能回放或 soak 已完成。
 
 准备金标时，private snapshot 中标记的完整自然语料框由 evaluator 保管，**不需全量预标**。先按冻结 seed 从
 该框抽取 150 条 HIDDEN_REAL（不读 curated labels，记录真实纳入概率 150/N），再由剩余 paper-family 的 curated pool 构建 DEV/
@@ -147,10 +149,13 @@ paper-agent --dry-run stage2-evaluator promote \
   --private-labels /secure/evaluator/private-labels.json \
   --candidate incumbent=/secure/evaluator/incumbent-candidate-v2.json \
   --candidate challenger=/secure/evaluator/challenger-candidate-v2.json \
+  --candidate backup=/secure/evaluator/backup-candidate-v2.json \
   --submission incumbent=/secure/evaluator/incumbent-submission.json \
   --submission challenger=/secure/evaluator/challenger-submission.json \
+  --submission backup=/secure/evaluator/backup-submission.json \
   --public-evidence incumbent=/secure/evaluator/incumbent-public-evidence.json \
   --public-evidence challenger=/secure/evaluator/challenger-public-evidence.json \
+  --public-evidence backup=/secure/evaluator/backup-public-evidence.json \
   --incumbent-candidate-id incumbent \
   --evaluator-id evaluator-team-1 \
   --evaluation-run-id promotion-2026-08-11 \
@@ -160,7 +165,8 @@ paper-agent --dry-run stage2-evaluator promote \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
   --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --signing-key-file /secure/evaluator/hidden-promotion-key.pem \
-  --output /secure/transfer/hidden-promotion-attestation.json
+  --output /secure/transfer/winner-attestation.json \
+  --qualified-fallback-output backup=/secure/transfer/backup-attestation.json
 ```
 
 确认 `status: "validated"` 后只移除 `--dry-run`，以相同参数执行一次。真实 promotion 从冻结的
@@ -173,6 +179,13 @@ secret-manager signing API。`stage2-evaluator attest` 的必需选项是 `--pay
 `--signing-key-file`、`--trust-manifest` 和 `--output`；它只用于已有独立一次性 evaluator 的
 public-safe payload，本身不执行 hidden evaluation 或 marker 管理。
 
+同一 sealed batch 的主 `--output` 绑定 `release_role=winner`。可重复的
+`--qualified-fallback-output ID=PATH` 只允许为非 winner 且自身通过全部 Phase 3 门禁的候选签
+`release_role=qualified_fallback`；失败非 winner 没有可发布的 fallback attestation。主备候选后续各自
+使用自己的 attestation 构建 final evidence，不能改写已被 evidence 绑定的 schema-v2 candidate。requested
+fallback 若成为 winner 或未过门，CLI 保留 winner 输出、省略其 fallback 文件，并把 ID 放入
+`unqualified_fallback_candidate_ids`。
+
 release builder 只接收 public-safe attestation，并将它放入完整 evidence index。candidate 与 output
 具有同一 parent，evidence 和全部引用留在该 bundle root 内，trust manifest 位于 root 外。先验证，
 再组装：
@@ -181,6 +194,8 @@ release builder 只接收 public-safe attestation，并将它放入完整 eviden
 paper-agent --dry-run stage2-release assemble \
   --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
   --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
+  --fallback-candidate /absolute/path/to/release-bundle/backup-candidate-v2.json \
+  --fallback-evidence /absolute/path/to/release-bundle/backup-release-evidence.json \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
   --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --output /absolute/path/to/release-bundle/stage2-release.json
@@ -188,15 +203,26 @@ paper-agent --dry-run stage2-release assemble \
 
 dry-run 重算相同 public gates、验证 hidden attestation 与路径边界，但不写 output；成功后只移除
 `--dry-run` 执行一次真实 assembly。output 已存在时不会覆盖。private labels、raw submissions、
-私钥和 marker state 永远不能进入 release bundle。
+私钥和 marker state 永远不能进入 release bundle。没有备用模型时同时省略两个 fallback 参数；有备用
+模型时，assembly 验证主 evidence 的 winner 角色、backup evidence 的 qualified-fallback 角色、共同
+evaluation manifest/gate policy/共享 query+Qwen runtime 语义、相同签名 `promotion_batch_hash` 与不同 reranker lock，只在最终 schema-v3
+envelope 注入 fallback。可选的 `--fallback-omlx-base-url` 和 `--fallback-api-key-env` 只用于绑定本地
+部署坐标。最终 QueryPlan 的 config hash 必须取 assembly summary 的 `expected_query_plan.config_hash`，
+因为该 hash 已包含 fallback candidate、evidence、runtime 和 release binding。
 
-在 assembly 前，按冻结顺序准备 public evidence：`stage2-rationale derive-examples` 从绑定 Qwen ledger
-导出例子，`freeze-worklist` 冻结 100 条人工 rationale worklist，再由人工完成后执行 `import-worklist`；
+在 assembly 前，按冻结顺序准备 public evidence。先运行
+`stage2-rationale run-source --stage2-candidate ... --benchmark-papers ... --output-dir ...`；dry-run 只验证，
+正式运行以候选 BGE 对全部 topic-query×paper 组合评分，确定性选择每种主要语言 25 条 relevant 和 25 条
+boundary，再用同一候选的本地 Qwen 生成 typed decision，并原子发布绑定 candidate bytes、papers bytes、
+全量 queries/strata/scores 和选样结果的 `query-metadata.json` 和 `source-ledger.json`。然后
+`derive-examples` 从全量 score ledger 重算选样并重放 papers → query metadata →
+source ledger，`freeze-worklist` 冻结 100 条人工 rationale worklist，再由人工完成后执行 `import-worklist`；
 `stage2-parity freeze-workload` 与
 `stage2-parity run` 产出 10,000-pair FP32/BF16 parity 工件；`stage2-tuning select --input <frozen-grid.json>
 --output <winner.json>` 只接受完整 3×3、每配置 3 次 normal 和 3 次 stress 的实际 records，以及候选无关
-selection input 或 soak。最后用 `stage2-release build-evidence` 绑定这些原始工件、structured replay、
-benchmark（恰好 6 个 record）与 soak。每个命令先加全局 `--dry-run`，它必须完整校验且零写入；正式执行
+selection input 或 soak。最后用 `stage2-release build-evidence` 写 schema-v3 evidence index，绑定候选
+精确 bytes、rationale 的全部七个 artifact refs、structured replay、benchmark（恰好 6 个 record）与
+soak。每个命令先加全局 `--dry-run`，它必须完整校验且零写入；正式执行
 拒绝覆盖输出。rationale 的人工标注、真实 oMLX 运行和 sealed hidden promotion 都是独立生产门禁，不能由
 fixture 或 dry-run 代替。用各子命令的 `--help` 获取当前完整参数合同。
 

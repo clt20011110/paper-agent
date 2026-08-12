@@ -11,12 +11,17 @@ import shutil
 import pytest
 
 import paper_agent.stage2_release_assembly as stage2_release_assembly
+from paper_agent.approval import approved_content_hash
+from paper_agent.domain import FilterStatus
+from paper_agent.query_plan import approve_query_plan
+from paper_agent.stage2_backends import OmlxResponse
 from paper_agent.stage2_release_assembly import (
     Stage2ReleaseAssemblyError,
     assemble_stage2_release,
     validate_stage2_release_assembly,
 )
-from paper_agent.stage2_search import load_stage2_release
+from paper_agent.stage2_search import Stage2ReleaseError, load_stage2_release
+from paper_agent.storage import Database
 
 from test_stage2_release_v3 import V3Bundle, _build_v3_bundle
 
@@ -52,6 +57,59 @@ def assembly_bundle(assembly_template: V3Bundle, tmp_path: Path) -> V3Bundle:
     )
 
 
+@pytest.fixture(scope="module")
+def fallback_assembly_template(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> V3Bundle:
+    template_root = tmp_path_factory.mktemp("stage2-fallback-assembly")
+    root = template_root / "bundle"
+    backup_root = root / "backup"
+    backup_root.mkdir(parents=True)
+    repository_root = Path(__file__).parents[1]
+    backup_lock = json.loads(
+        (repository_root / "configs/stage2/models/bge-reranker-v2-m3-mlx-bf16.lock.json")
+        .read_text(encoding="utf-8")
+    )
+    backup_lock["model_id"] = "bge-reranker-v2-m3-mlx-backup"
+    backup_lock_path = template_root / "backup-reranker.lock.json"
+    _write_json(backup_lock_path, backup_lock)
+    promotion_batch_hash = "9" * 64
+    _build_v3_bundle(
+        backup_root,
+        reranker_lock_source=backup_lock_path,
+        profile_name="local-backup",
+        release_role="qualified_fallback",
+        winner_candidate_id="local-winner",
+        promotion_batch_hash=promotion_batch_hash,
+    )
+    return _build_v3_bundle(
+        root,
+        profile_name="local-winner",
+        promotion_batch_hash=promotion_batch_hash,
+    )
+
+
+@pytest.fixture
+def fallback_assembly_bundle(
+    fallback_assembly_template: V3Bundle,
+    tmp_path: Path,
+) -> V3Bundle:
+    root = tmp_path / "bundle"
+    shutil.copytree(fallback_assembly_template.root, root)
+    trust_path = tmp_path / "deployment-hidden-evaluator-trust.json"
+    parity_trust_path = tmp_path / "deployment-parity-oracle-trust.json"
+    shutil.copy2(fallback_assembly_template.trust_path, trust_path)
+    shutil.copy2(fallback_assembly_template.parity_trust_path, parity_trust_path)
+    return replace(
+        fallback_assembly_template,
+        root=root,
+        release_path=root / fallback_assembly_template.release_path.name,
+        trust_path=trust_path,
+        parity_trust_path=parity_trust_path,
+        plan=deepcopy(fallback_assembly_template.plan),
+    )
+
+
 def test_assemble_v3_release_from_verified_candidate_and_evidence(
     assembly_bundle: V3Bundle,
 ) -> None:
@@ -74,6 +132,9 @@ def test_assemble_v3_release_from_verified_candidate_and_evidence(
         "schema_version": "3",
         "release_gate": {
             "candidate_id": candidate["profile"],
+            "candidate_bundle_sha256": sha256(
+                candidate_path.read_bytes()
+            ).hexdigest(),
             "evaluation_manifest_hash": result.evaluation_manifest_hash,
             "evidence": _ref(evidence_path),
         },
@@ -123,6 +184,206 @@ def test_validate_assembly_runs_all_gates_without_writing(
     )
     assert validation.summary() == assembled.summary()
     assert sha256(output_path.read_bytes()).hexdigest() == validation.release_sha256
+
+
+def test_assemble_load_and_screen_with_same_batch_qualified_fallback(
+    fallback_assembly_bundle: V3Bundle,
+    tmp_path: Path,
+) -> None:
+    """Exercise real v2 evidence, v3 assembly, load, and fallback execution."""
+
+    root = fallback_assembly_bundle.root
+    backup_root = root / "backup"
+    trust_path = fallback_assembly_bundle.trust_path
+    parity_trust_path = fallback_assembly_bundle.parity_trust_path
+
+    output_path = root / "assembled-with-fallback.json"
+    validation = validate_stage2_release_assembly(
+        root / "candidate.json",
+        root / "stage2-release-evidence.json",
+        trust_path,
+        output_path,
+        parity_oracle_trust_path=parity_trust_path,
+        fallback_candidate_path=backup_root / "candidate.json",
+        fallback_evidence_path=backup_root / "stage2-release-evidence.json",
+    )
+    assert not output_path.exists()
+    result = assemble_stage2_release(
+        root / "candidate.json",
+        root / "stage2-release-evidence.json",
+        trust_path,
+        output_path,
+        parity_oracle_trust_path=parity_trust_path,
+        fallback_candidate_path=backup_root / "candidate.json",
+        fallback_evidence_path=backup_root / "stage2-release-evidence.json",
+    )
+    assert validation.summary() == result.summary()
+    document = json.loads(output_path.read_text(encoding="utf-8"))
+    assert document["reranker_fallback"]["candidate"]["path"] == (
+        "backup/candidate.json"
+    )
+    assert result.fallback is not None
+
+    with pytest.raises(Stage2ReleaseError, match="effective release configuration"):
+        load_stage2_release(
+            output_path,
+            fallback_assembly_bundle.plan,
+            hidden_trust_path=trust_path,
+            parity_oracle_trust_path=parity_trust_path,
+        )
+
+    draft = deepcopy(fallback_assembly_bundle.plan)
+    draft["status"] = "draft"
+    draft["approval"] = None
+    draft["filter"]["config_hash"] = result.query_plan_config_hash
+    draft["filter"]["thresholds_hash"] = result.query_plan_thresholds_hash
+    draft["plan_hash"] = approved_content_hash(draft)
+    plan = approve_query_plan(
+        draft,
+        draft["plan_hash"],
+        approved_by="test-owner",
+        approved_at="2026-08-12T00:00:00Z",
+    )
+    released = load_stage2_release(
+        output_path,
+        plan,
+        hidden_trust_path=trust_path,
+        parity_oracle_trust_path=parity_trust_path,
+    )
+    assert released.reranker_fallback is not None
+    assert released.effective_config_hash == result.query_plan_config_hash
+    assert released.effective_config_hash != released.profile.config_hash
+
+    class PrimaryFails:
+        def __init__(self) -> None:
+            self.models: list[str] = []
+
+        def request(self, path: str, payload: dict) -> OmlxResponse:
+            assert path == "/v1/rerank"
+            model = payload["model"]
+            self.models.append(model)
+            if model == released.profile.reranker_model_id:
+                return OmlxResponse(503, b"{}")
+            assert model == "bge-reranker-v2-m3-mlx-backup"
+            return OmlxResponse(
+                200,
+                json.dumps({
+                    "model": model,
+                    "results": [{"index": 0, "relevance_score": 20.0}],
+                }).encode(),
+            )
+
+    transport = PrimaryFails()
+    with Database(tmp_path / "papers.sqlite3") as database:
+        database.migrate()
+        database.connection.execute(
+            "INSERT INTO papers(paper_id, title, abstract) VALUES (?, ?, ?)",
+            ("paper-1", "Relevant molecular generation", "Graph learning methods"),
+        )
+        screener = released.screener(database, "fallback-crawl", transport=transport)
+        assert screener.screen(("paper-1",)) == {
+            "paper-1": FilterStatus.RELEVANT
+        }
+        row = database.connection.execute(
+            "SELECT model_id, reason FROM filter_decisions WHERE paper_id = ?",
+            ("paper-1",),
+        ).fetchone()
+        assert row["model_id"] == "bge-reranker-v2-m3-mlx-backup"
+        reason = json.loads(row["reason"])
+        assert reason["reranker_provenance"]["fallback_used"] is True
+        run = database.connection.execute(
+            "SELECT config_hash FROM pipeline_runs WHERE run_id = ?",
+            (screener.run_ids[0],),
+        ).fetchone()
+        assert run["config_hash"] == released.effective_config_hash
+    assert transport.models == [
+        released.profile.reranker_model_id,
+        "bge-reranker-v2-m3-mlx-backup",
+    ]
+
+
+def test_fallback_runtime_overrides_are_bound_into_the_effective_config(
+    fallback_assembly_bundle: V3Bundle,
+) -> None:
+    root = fallback_assembly_bundle.root
+    backup_root = root / "backup"
+    common = dict(
+        candidate_path=root / "candidate.json",
+        evidence_path=root / "stage2-release-evidence.json",
+        hidden_trust_path=fallback_assembly_bundle.trust_path,
+        parity_oracle_trust_path=fallback_assembly_bundle.parity_trust_path,
+        fallback_candidate_path=backup_root / "candidate.json",
+        fallback_evidence_path=backup_root / "stage2-release-evidence.json",
+    )
+    default = validate_stage2_release_assembly(
+        output_path=root / "default-release.json", **common
+    )
+    overridden = validate_stage2_release_assembly(
+        output_path=root / "overridden-release.json",
+        fallback_omlx_base_url="http://127.0.0.1:9000",
+        fallback_api_key_env="BACKUP_OMLX_KEY",
+        **common,
+    )
+
+    assert overridden.query_plan_config_hash != default.query_plan_config_hash
+    assemble_stage2_release(
+        output_path=root / "overridden-release.json",
+        fallback_omlx_base_url="http://127.0.0.1:9000",
+        fallback_api_key_env="BACKUP_OMLX_KEY",
+        **common,
+    )
+    document = json.loads((root / "overridden-release.json").read_text())
+    assert document["reranker_fallback"]["runtime"] == {
+        "omlx_base_url": "http://127.0.0.1:9000",
+        "api_key_env": "BACKUP_OMLX_KEY",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("evaluation_run_id", "different-run"),
+        ("promotion_marker_hash", "f" * 64),
+        ("promotion_batch_hash", "e" * 64),
+        ("winner_candidate_id", "different-winner"),
+        ("evaluator_id", "different-evaluator"),
+        ("issued_at", "2026-08-12T01:00:00Z"),
+    ),
+)
+def test_assembly_rejects_fallback_attestation_from_another_sealed_batch(
+    fallback_assembly_bundle: V3Bundle,
+    field: str,
+    value: str,
+) -> None:
+    backup_root = fallback_assembly_bundle.root / "backup"
+    attestation_path = backup_root / "attestation.json"
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    payload = attestation["payload"]
+    payload[field] = value
+    from paper_agent.stage2_hidden_attestation import issue_hidden_promotion_attestation
+
+    _write_json(
+        attestation_path,
+        issue_hidden_promotion_attestation(
+            payload,
+            fallback_assembly_bundle.private_key,
+        ),
+    )
+    evidence_path = backup_root / "stage2-release-evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["hidden_attestation"] = _ref(attestation_path)
+    _write_json(evidence_path, evidence)
+
+    with pytest.raises(Stage2ReleaseAssemblyError, match="sealed batch"):
+        assemble_stage2_release(
+            fallback_assembly_bundle.root / "candidate.json",
+            fallback_assembly_bundle.root / "stage2-release-evidence.json",
+            fallback_assembly_bundle.trust_path,
+            fallback_assembly_bundle.root / "assembled-with-fallback.json",
+            parity_oracle_trust_path=fallback_assembly_bundle.parity_trust_path,
+            fallback_candidate_path=backup_root / "candidate.json",
+            fallback_evidence_path=evidence_path,
+        )
 
 
 def test_validate_assembly_does_not_create_an_invalid_output_parent(

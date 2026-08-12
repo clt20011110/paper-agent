@@ -53,6 +53,8 @@
         "trust_manifest_hash",
         "issued_at",
         "candidate_id",
+        "release_role",
+        "promotion_batch_hash",
         "evaluation_manifest_hash",
         "evaluation_run_id",
         "stage2_config_hash",
@@ -78,6 +80,11 @@
         "trust_manifest_hash": {"$ref": "#/$defs/sha256"},
         "issued_at": {"type": "string", "format": "date-time"},
         "candidate_id": {"type": "string", "minLength": 1},
+        "release_role": {
+          "type": "string",
+          "enum": ["winner", "qualified_fallback"]
+        },
+        "promotion_batch_hash": {"$ref": "#/$defs/sha256"},
         "evaluation_manifest_hash": {"$ref": "#/$defs/sha256"},
         "evaluation_run_id": {"$ref": "#/$defs/identifier"},
         "stage2_config_hash": {"$ref": "#/$defs/sha256"},

@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 from types import SimpleNamespace
+from typing import Mapping
 
 import pytest
 
@@ -240,10 +241,12 @@ summary:
 
 
 def test_omlx_endpoint_is_not_invented_without_a_validated_release(tmp_path: Path) -> None:
-    calls: list[str] = []
+    calls: list[tuple[str, dict[str, str]]] = []
     doctor = SystemDoctor(
         _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
-        http_probe=lambda endpoint: (calls.append(endpoint) or (200, "ok")),
+        http_probe=lambda endpoint, headers: (
+            calls.append((endpoint, dict(headers))) or (200, "ok")
+        ),
         disk_usage=lambda _: type("Disk", (), {"free": 2_000_000_000})(),
     )
     report = doctor.run()
@@ -269,6 +272,7 @@ def test_omlx_old_or_unparseable_version_is_a_blocker(tmp_path: Path, version: s
 def test_omlx_requires_2xx_and_a_matching_model_inventory(tmp_path: Path) -> None:
     released = SimpleNamespace(
         omlx_base_url="http://127.0.0.1:8000",
+        api_key_env=None,
         profile=SimpleNamespace(
             reranker_model_id="bge-reranker-v2-m3",
             adjudicator_model_id="qwen3.5-9b-8bit",
@@ -276,19 +280,21 @@ def test_omlx_requires_2xx_and_a_matching_model_inventory(tmp_path: Path) -> Non
     )
     denied = SystemDoctor(
         _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
-        http_probe=lambda _: (401, "unauthorized"),
+        http_probe=lambda _url, _headers: (401, "unauthorized"),
     )
     assert denied._omlx(released).status == "blocker"  # type: ignore[arg-type]
 
     incomplete = SystemDoctor(
         _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
-        http_probe=lambda _: (200, json.dumps({"data": [{"id": "bge-reranker-v2-m3"}]})),
+        http_probe=lambda _url, _headers: (
+            200, json.dumps({"data": [{"id": "bge-reranker-v2-m3"}]})
+        ),
     )
     assert incomplete._omlx(released).status == "blocker"  # type: ignore[arg-type]
 
     available = SystemDoctor(
         _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
-        http_probe=lambda _: (
+        http_probe=lambda _url, _headers: (
             200,
             json.dumps({"data": [
                 {"id": "bge-reranker-v2-m3"}, {"id": "qwen3.5-9b-8bit"},
@@ -296,6 +302,219 @@ def test_omlx_requires_2xx_and_a_matching_model_inventory(tmp_path: Path) -> Non
         ),
     )
     assert available._omlx(released).status == "pass"  # type: ignore[arg-type]
+
+
+def test_omlx_probe_forwards_release_bearer_credential_without_reporting_it(
+    tmp_path: Path,
+) -> None:
+    released = SimpleNamespace(
+        omlx_base_url="http://127.0.0.1:8000",
+        api_key_env="OMLX_API_KEY",
+        profile=SimpleNamespace(
+            reranker_model_id="bge-reranker-v2-m3",
+            adjudicator_model_id="qwen3.5-9b-8bit",
+        ),
+    )
+    calls: list[tuple[str, dict[str, str]]] = []
+    secret = "local-test-secret"
+    doctor = SystemDoctor(
+        _paths(tmp_path),
+        command_runner=_runner,
+        executable_finder=_executable,
+        environment={"OMLX_API_KEY": secret},
+        http_probe=lambda url, headers: (
+            calls.append((url, dict(headers)))
+            or (
+                200,
+                json.dumps({"data": [
+                    {"id": "bge-reranker-v2-m3"}, {"id": "qwen3.5-9b-8bit"},
+                ]}),
+            )
+        ),
+    )
+
+    check = doctor._omlx(released)  # type: ignore[arg-type]
+
+    assert check.status == "pass"
+    assert calls == [(
+        "http://127.0.0.1:8000/v1/models",
+        {"Accept": "application/json", "Authorization": f"Bearer {secret}"},
+    )]
+    assert secret not in check.detail
+
+
+def test_omlx_probe_fails_closed_when_release_credential_is_missing(tmp_path: Path) -> None:
+    released = SimpleNamespace(
+        omlx_base_url="http://127.0.0.1:8000",
+        api_key_env="OMLX_API_KEY",
+        profile=SimpleNamespace(
+            reranker_model_id="bge-reranker-v2-m3",
+            adjudicator_model_id="qwen3.5-9b-8bit",
+        ),
+    )
+    called = False
+
+    def probe(_url: str, _headers: Mapping[str, str]) -> tuple[int, str]:
+        nonlocal called
+        called = True
+        return 200, "{}"
+
+    doctor = SystemDoctor(
+        _paths(tmp_path),
+        command_runner=_runner,
+        executable_finder=_executable,
+        environment={},
+        http_probe=probe,
+    )
+
+    check = doctor._omlx(released)  # type: ignore[arg-type]
+
+    assert check.status == "blocker"
+    assert check.required
+    assert "OMLX_API_KEY" in check.detail
+    assert not called
+
+
+def test_omlx_requires_the_fallback_model_on_the_shared_endpoint(tmp_path: Path) -> None:
+    released = SimpleNamespace(
+        omlx_base_url="http://127.0.0.1:8000",
+        api_key_env=None,
+        profile=SimpleNamespace(
+            reranker_model_id="bge-reranker-v2-m3",
+            adjudicator_model_id="qwen3.5-9b-8bit",
+        ),
+        reranker_fallback=SimpleNamespace(
+            omlx_base_url="http://127.0.0.1:8000",
+            api_key_env=None,
+            model_lock=SimpleNamespace(model_id="jina-reranker-v2-base"),
+        ),
+    )
+    calls: list[tuple[str, dict[str, str]]] = []
+    doctor = SystemDoctor(
+        _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
+        http_probe=lambda url, headers: (
+            calls.append((url, dict(headers)))
+            or (200, json.dumps({"data": [
+                {"id": "bge-reranker-v2-m3"}, {"id": "qwen3.5-9b-8bit"},
+            ]}))
+        ),
+    )
+
+    check = doctor._omlx(released)  # type: ignore[arg-type]
+
+    assert check.status == "blocker"
+    assert "jina-reranker-v2-base" in check.detail
+    assert calls == [("http://127.0.0.1:8000/v1/models", {"Accept": "application/json"})]
+
+
+def test_omlx_probes_separate_fallback_endpoint_with_its_own_credential(
+    tmp_path: Path,
+) -> None:
+    primary_secret = "primary-local-secret"
+    fallback_secret = "fallback-local-secret"
+    released = SimpleNamespace(
+        omlx_base_url="http://127.0.0.1:8000",
+        api_key_env="PRIMARY_OMLX_KEY",
+        profile=SimpleNamespace(
+            reranker_model_id="bge-reranker-v2-m3",
+            adjudicator_model_id="qwen3.5-9b-8bit",
+        ),
+        reranker_fallback=SimpleNamespace(
+            omlx_base_url="http://127.0.0.1:8001",
+            api_key_env="FALLBACK_OMLX_KEY",
+            model_lock=SimpleNamespace(model_id="jina-reranker-v2-base"),
+        ),
+    )
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def probe(url: str, headers: Mapping[str, str]) -> tuple[int, str]:
+        calls.append((url, dict(headers)))
+        if url.startswith("http://127.0.0.1:8000"):
+            return 200, json.dumps({"data": [
+                {"id": "bge-reranker-v2-m3"}, {"id": "qwen3.5-9b-8bit"},
+            ]})
+        return 200, json.dumps({"data": [{"id": "jina-reranker-v2-base"}]})
+
+    doctor = SystemDoctor(
+        _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
+        environment={"PRIMARY_OMLX_KEY": primary_secret, "FALLBACK_OMLX_KEY": fallback_secret},
+        http_probe=probe,
+    )
+
+    check = doctor._omlx(released)  # type: ignore[arg-type]
+
+    assert check.status == "pass"
+    assert calls == [
+        ("http://127.0.0.1:8000/v1/models", {
+            "Accept": "application/json", "Authorization": f"Bearer {primary_secret}",
+        }),
+        ("http://127.0.0.1:8001/v1/models", {
+            "Accept": "application/json", "Authorization": f"Bearer {fallback_secret}",
+        }),
+    ]
+    assert primary_secret not in check.detail
+    assert fallback_secret not in check.detail
+
+
+def test_omlx_fails_closed_when_fallback_credential_is_missing(tmp_path: Path) -> None:
+    released = SimpleNamespace(
+        omlx_base_url="http://127.0.0.1:8000",
+        api_key_env=None,
+        profile=SimpleNamespace(
+            reranker_model_id="bge-reranker-v2-m3",
+            adjudicator_model_id="qwen3.5-9b-8bit",
+        ),
+        reranker_fallback=SimpleNamespace(
+            omlx_base_url="http://127.0.0.1:8001",
+            api_key_env="FALLBACK_OMLX_KEY",
+            model_lock=SimpleNamespace(model_id="jina-reranker-v2-base"),
+        ),
+    )
+    calls: list[tuple[str, Mapping[str, str]]] = []
+    doctor = SystemDoctor(
+        _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
+        environment={},
+        http_probe=lambda url, headers: (calls.append((url, headers)) or (200, "{}")),
+    )
+
+    check = doctor._omlx(released)  # type: ignore[arg-type]
+
+    assert check.status == "blocker"
+    assert "FALLBACK_OMLX_KEY" in check.detail
+    assert calls == []
+
+
+def test_omlx_fails_closed_when_fallback_endpoint_is_unavailable(tmp_path: Path) -> None:
+    released = SimpleNamespace(
+        omlx_base_url="http://127.0.0.1:8000",
+        api_key_env=None,
+        profile=SimpleNamespace(
+            reranker_model_id="bge-reranker-v2-m3",
+            adjudicator_model_id="qwen3.5-9b-8bit",
+        ),
+        reranker_fallback=SimpleNamespace(
+            omlx_base_url="http://127.0.0.1:8001",
+            api_key_env=None,
+            model_lock=SimpleNamespace(model_id="jina-reranker-v2-base"),
+        ),
+    )
+
+    def probe(url: str, _headers: Mapping[str, str]) -> tuple[int, str]:
+        if url.startswith("http://127.0.0.1:8001"):
+            raise OSError("connection refused")
+        return 200, json.dumps({"data": [
+            {"id": "bge-reranker-v2-m3"}, {"id": "qwen3.5-9b-8bit"},
+        ]})
+
+    doctor = SystemDoctor(
+        _paths(tmp_path), command_runner=_runner, executable_finder=_executable,
+        http_probe=probe,
+    )
+
+    check = doctor._omlx(released)  # type: ignore[arg-type]
+
+    assert check.status == "blocker"
+    assert check.detail == "local endpoint unavailable"
 
 
 def test_empty_or_malformed_model_locks_fail_closed(tmp_path: Path) -> None:
