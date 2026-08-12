@@ -2,6 +2,6 @@ schema_version: "1"
 venue_id: science
 name: Science
 venue_type: journal
-primary_provider: aaas_science
-provider_params: {journal_slug: science, issns: [0036-8075, 1095-9203], article_types: [article, review, analysis]}
+primary_provider: crossref_serial
+provider_params: {journal_slug: science, registry_issn: 0036-8075, issns: [0036-8075, 1095-9203], article_types: [journal-article]}
 official_url: https://www.science.org/journal/science

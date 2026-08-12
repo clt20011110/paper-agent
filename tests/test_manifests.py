@@ -41,7 +41,7 @@ PRIMARY = {
     "ijcai": "ijcai_proceedings",
     "dac": "eda_proceedings",
     "iccad": "eda_proceedings",
-    "tcad": "ieee_xplore",
+    "tcad": "crossref_serial",
     "nature_machine_intelligence": "crossref_serial",
     "nature_synthesis": "crossref_serial",
     "nature_chemistry": "crossref_serial",
@@ -56,8 +56,8 @@ PRIMARY = {
     "nature_catalysis": "crossref_serial",
     "nature_biotechnology": "crossref_serial",
     "nature_biomedical_engineering": "crossref_serial",
-    "cell": "cell_press",
-    "science": "aaas_science",
+    "cell": "crossref_serial",
+    "science": "crossref_serial",
 }
 
 FALLBACKS = {
@@ -79,7 +79,7 @@ FALLBACKS = {
     "ijcai": ["crossref", "dblp", "semantic_scholar", "openalex"],
     "dac": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
     "iccad": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
-    "tcad": ["crossref", "dblp", "semantic_scholar", "openalex"],
+    "tcad": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
     "nature_machine_intelligence": ["springer_nature", "crossref", "semantic_scholar", "openalex"],
     "nature_synthesis": ["springer_nature", "crossref", "semantic_scholar", "openalex"],
     "nature_chemistry": ["springer_nature", "crossref", "pubmed", "europe_pmc"],
@@ -94,8 +94,8 @@ FALLBACKS = {
     "nature_catalysis": ["springer_nature", "crossref", "pubmed", "europe_pmc"],
     "nature_biotechnology": ["springer_nature", "crossref", "pubmed", "europe_pmc"],
     "nature_biomedical_engineering": ["springer_nature", "crossref", "pubmed", "europe_pmc"],
-    "cell": ["crossref", "pubmed", "europe_pmc", "semantic_scholar", "openalex"],
-    "science": ["crossref", "pubmed", "europe_pmc", "semantic_scholar", "openalex"],
+    "cell": ["cell_press", "crossref", "pubmed", "europe_pmc", "semantic_scholar", "openalex"],
+    "science": ["aaas_science", "crossref", "pubmed", "europe_pmc", "semantic_scholar", "openalex"],
 }
 
 
@@ -469,4 +469,4 @@ def test_frozen_journal_identifiers_and_venue_constraints() -> None:
     assert catalog.venue("iccv")["provider_params"]["exclude_workshops"]
     for venue_id in ("dac", "iccad"):
         assert catalog.venue(venue_id)["provider_params"]["deduplicate_by"] == "doi"
-    assert catalog.venue("tcad")["provider_params"]["publication_number"] == 43
+    assert catalog.venue("tcad")["provider_params"]["registry_issn"] == "0278-0070"

@@ -1,14 +1,14 @@
 schema_version: "2"
 venue_id: science
-primary_provider: aaas_science
+primary_provider: crossref_serial
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-science.json
 fixture_sha256: f4f2571c3f161889c7a9a9e376d8e117d0b6d535bbf867279c5aec9f8ffe62a8
 expected_stable_ids: [10.1126/science.abc0009]
 transport_fixture_routes:
-  - {path: tests/fixtures/providers/science-toc.html, sha256: fdb55c0f315d28b37f09215de77d7b7cbc5390b4d863281189e74b1c34be9669, content_type: text/html, url_contains: www.science.org/toc/science/2024}
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-science.json, sha256: ba24ee00d75e4f80eddac3ade76b75d959a7b0f050b0cd0aaceea10501dbbd85, content_type: application/json, url_contains: api.crossref.org/journals/0036-8075/works}
 transport_expected_stable_ids: [10.1126/science.abc0009]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
-fallbacks: [{provider: crossref, role: search}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
-journal: {slug: science, issns: [0036-8075, 1095-9203], article_types: [article, review, analysis]}
+fallbacks: [{provider: aaas_science, role: metadata_enricher}, {provider: crossref, role: search}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+journal: {slug: science, issns: [0036-8075, 1095-9203], article_types: [journal-article]}

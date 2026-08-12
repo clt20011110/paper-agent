@@ -1,14 +1,14 @@
 schema_version: "2"
 venue_id: tcad
-primary_provider: ieee_xplore
+primary_provider: crossref_serial
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-tcad.json
 fixture_sha256: d08098f831eca53e5222168f0d743e209c7af42188703ec41923c4a08e9ac7ae
-expected_stable_ids: [tcad-2024-0001]
+expected_stable_ids: [10.1109/tcad.2024.000001]
 transport_fixture_routes:
-  - {path: tests/fixtures/providers/ieee-xplore-native.json, sha256: b3191d187a934c7535ea9e2f4b5f8572ef4793cf11c6c74a20784241922b4c6e, content_type: application/json, url_contains: ieeexploreapi.ieee.org/api/v1/search/articles}
-transport_expected_stable_ids: ["10000001"]
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-tcad.json, sha256: a95fe17789e125af418be7f48abc4c8f7d5c722ce1c34e64c5c2dff7e39072a8, content_type: application/json, url_contains: api.crossref.org/journals/0278-0070/works}
+transport_expected_stable_ids: [10.1109/tcad.2024.00001]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
-fallbacks: [{provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
-journal: {slug: ieee-tcad, issns: [0278-0070], article_types: [journal_article]}
+fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+journal: {slug: ieee-tcad, issns: [0278-0070], article_types: [journal-article]}

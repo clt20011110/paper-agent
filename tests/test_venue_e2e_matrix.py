@@ -221,9 +221,6 @@ def test_restricted_primary_terms_and_journal_native_envelopes_are_frozen() -> N
     module = _runner_module()
     matrix = module.load_matrix(ROOT / "configs" / "e2e" / "venue-smoke-matrix.yaml")
     expectations = {
-        "tcad": ("ieee_xplore", "articles"),
-        "cell": ("cell_press", "search-results"),
-        "science": ("aaas_science", "entries"),
     }
     for venue_id, (provider, envelope_key) in expectations.items():
         venue = module._venue_by_id(matrix, venue_id)
