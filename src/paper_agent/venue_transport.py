@@ -471,7 +471,7 @@ def _acl(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
     if not re.fullmatch(r"[0-9a-f]{40}", snapshot):
         raise ValueError("acl_anthology requires a 40-character frozen snapshot_version")
     venue_slug = str(parameters.get("venue_slug") or "acl").casefold()
-    if venue_slug != "acl":
+    if "venue_slug" in parameters:
         return _acl_venue_index(
             parameters, fetch, provider, snapshot, venue_slug, _year(parameters)
         )

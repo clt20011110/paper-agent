@@ -428,9 +428,13 @@ def test_frozen_journal_identifiers_and_venue_constraints() -> None:
         assert journal["issns"] == issns
         assert catalog.runtime_venue(venue_id).parameters == catalog.venue(venue_id)["provider_params"]
     assert catalog.venue("iclr")["provider_params"]["accepted_decision_required"]
-    assert catalog.venue("acl")["provider_params"]["collections"] == ["main", "findings", "workshop"]
+    acl_parameters = catalog.venue("acl")["provider_params"]
+    assert "collections" not in acl_parameters
+    assert acl_parameters["tracks"] == [
+        "main", "long", "short", "demo", "demos", "industry", "tutorial", "tutorials"
+    ]
     acl_snapshot = catalog.venue("acl")["provider_params"]["snapshot_version"]
-    assert acl_snapshot == "1941968b51805719b418a0b0919e335662cdd172"
+    assert acl_snapshot == "59602102d4cfc36e56554579e7dac2a762b56e92"
     acl_fixture = json.loads((ROOT / catalog.acceptance("acl")["fixture_path"]).read_text())
     assert acl_fixture["entries"][0]["snapshot_version"] == acl_snapshot
     assert catalog.venue("cvpr")["provider_params"]["exclude_workshops"]

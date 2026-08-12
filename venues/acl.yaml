@@ -3,5 +3,10 @@ venue_id: acl
 name: Annual Meeting of the Association for Computational Linguistics
 venue_type: conference
 primary_provider: acl_anthology
-provider_params: {collections: [main, findings, workshop], snapshot_version: 1941968b51805719b418a0b0919e335662cdd172}
-official_url: https://aclanthology.org/
+provider_params:
+  venue_slug: acl
+  tracks: [main, long, short, demo, demos, industry, tutorial, tutorials]
+  snapshot_version: 59602102d4cfc36e56554579e7dac2a762b56e92
+official_url: https://aclanthology.org/venues/acl/
+proceedings_url: https://aclanthology.org/venues/acl/
+date_range: {start: 2016-01-01, end: 2025-12-31}

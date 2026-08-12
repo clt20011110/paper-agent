@@ -142,6 +142,20 @@
       "duplicate_external_ids": 0,
       "parser_rejected_records": 0,
       "note": "All yearly OJS issue/article enumerations reconcile. Membership is complete; abstracts, DOIs, and direct PDFs are not exposed by this listing transport and remain a separate enrichment gap."
+    },
+    {
+      "venue_id": "acl",
+      "provider": "acl_anthology",
+      "status": "complete",
+      "run_id": "7307b14f-3bf1-5256-b913-89a98053c58d",
+      "metadata_sha256": "8971d07ce25f06c57017aa9962b12ffe66a97008bf9ffc7bcf46716d28e0894b",
+      "total_unique_records": 8211,
+      "annual_counts": {"2016": 364, "2017": 329, "2018": 413, "2019": 703, "2020": 829, "2021": 759, "2022": 735, "2023": 1215, "2024": 984, "2025": 1880},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "explicit_non_paper_exclusions": 39,
+      "note": "The source boundary was corrected from a mixed main/findings/workshop collection to the official ACL venue index. Included tracks are main/long/short, demo, industry, and tutorial; SRW, Findings, and co-located workshops are outside the declared ACL conference scope."
     }
   ],
   "known_limits": [
