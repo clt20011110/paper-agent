@@ -129,6 +129,19 @@
       "parser_rejected_records": 0,
       "explicit_non_paper_exclusions": 8,
       "note": "The 2016 legacy template excludes seven named frontmatter records. The 2021 official page lists the same SASS record twice under two sections; one duplicate display is explicitly excluded. All 8,808 records retain official direct PDF URLs."
+    },
+    {
+      "venue_id": "aaai",
+      "provider": "aaai_ojs",
+      "status": "complete",
+      "run_id": "b90a04d4-8c3b-5822-b1e6-69841d9988cd",
+      "metadata_sha256": "d87799b0b20964a5f93a2058e390a233ecb6c82ae412474595e54ee235fc485e",
+      "total_unique_records": 17746,
+      "annual_counts": {"2016": 691, "2017": 786, "2018": 1102, "2019": 1343, "2020": 1865, "2021": 1961, "2022": 1624, "2023": 2023, "2024": 2865, "2025": 3486},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "note": "All yearly OJS issue/article enumerations reconcile. Membership is complete; abstracts, DOIs, and direct PDFs are not exposed by this listing transport and remain a separate enrichment gap."
     }
   ],
   "known_limits": [
