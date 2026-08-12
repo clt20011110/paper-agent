@@ -102,6 +102,7 @@ class Stage1UnitReceipt:
     response_hashes: tuple[str, ...] = ()
     request_hashes: tuple[str, ...] = ()
     field_coverage: Mapping[str, int] = field(default_factory=dict)
+    provider_warnings: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
 
 
@@ -161,9 +162,15 @@ class CensusCapturingAdapter:
         batch = self.delegate.discover(descriptor, window, cursor)
         payload = getattr(self.transport, "last_payload", None)
         census = payload.get("census") if isinstance(payload, Mapping) else None
+        warnings = payload.get("warnings") if isinstance(payload, Mapping) else None
         return replace(
             batch,
             census=dict(census) if isinstance(census, Mapping) else batch.census,
+            warnings=(
+                tuple(str(value) for value in warnings)
+                if isinstance(warnings, (list, tuple))
+                else batch.warnings
+            ),
         )
 
 
@@ -453,6 +460,9 @@ def _collect_unit(
         field: sum(_field_present(entry, field) for entry in unique.values())
         for field in _OUTPUT_FIELDS
     }
+    provider_warnings = tuple(
+        dict.fromkeys(warning for batch in batches for warning in batch.warnings)
+    )
     records = tuple(
         _record_document(entry, venue, venue_id, year, batches)
         for entry in sorted(unique.values(), key=lambda item: (item.title.casefold(), item.external_id))
@@ -479,6 +489,7 @@ def _collect_unit(
         response_hashes=response_hashes,
         request_hashes=request_hashes,
         field_coverage=field_coverage,
+        provider_warnings=provider_warnings,
         reasons=tuple(dict.fromkeys(reasons)),
     )
 

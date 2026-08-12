@@ -30,6 +30,18 @@ The default is fail-closed. The receipt is always written to
 venue-year is proven complete. `--allow-incomplete` is an explicit diagnostic
 escape hatch; its receipt and command status remain `incomplete`.
 
+Sources whose manifests declare reviewable terms remain fail-closed. Accept an
+exact manifest URL explicitly when your use is authorized:
+
+```bash
+paper-agent stage1 collect ... \
+  --accept-terms eda_proceedings:dac_program=https://www.dac.com/ \
+  --accept-terms eda_proceedings:acm_dl=https://www.acm.org/publications/policies/terms-of-use
+```
+
+The provider key and URL must exactly match the installed manifest; the flag
+does not bypass authentication, access controls, robots policy, or rate limits.
+
 ## Python API
 
 ```python
@@ -54,6 +66,11 @@ census, parser raw/rejected/explicitly-excluded counts, stable-ID duplicates,
 field coverage, and
 response hashes. Missing abstracts or DOIs remain null with an explicit field
 status; they are never synthesized.
+
+Metadata enrichment failures do not invalidate a membership census when the
+declared official container itself supplies a reconciled paper count. They are
+retained as provider warnings and visible as missing-field coverage in the
+receipt. A source with no authoritative membership census still fails closed.
 
 If a descriptor has an authoritative `date_range`, years before launch or
 after closure are recorded as `not_applicable`. They do not contact a provider

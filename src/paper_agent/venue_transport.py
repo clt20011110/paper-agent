@@ -1134,6 +1134,9 @@ def _eda(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
         raise ValueError("eda_proceedings requires both ieee_xplore and acm_dl upstreams")
     if parameters.get("resolve_platforms_by_year") is not True or parameters.get("deduplicate_by") != "doi":
         raise ValueError("eda_proceedings requires year-specific routes and DOI deduplication")
+    metadata_resolution_required = parameters.get("metadata_resolution_required", True)
+    if type(metadata_resolution_required) is not bool:
+        raise ValueError("eda_proceedings metadata_resolution_required must be boolean")
     year = _year(parameters)
     official_catalog = parameters.get("official_routes_by_year")
     official_route = None
@@ -1237,12 +1240,13 @@ def _eda(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
         except (ProviderPolicyDenied, ProviderRequestError) as error:
             message = f"{upstream}: {error}"
             unavailable_upstreams.append(upstream)
-            if route["required"]:
+            if route["required"] and metadata_resolution_required:
                 errors.append(message)
             else:
                 warnings.append(message)
     resolved: list[dict[str, Any]] = []
     doi_indexes: dict[str, int] = {}
+    unresolved_metadata_count = 0
     for program_entry in program_entries:
         matches = [
             (upstream, entry)
@@ -1289,7 +1293,10 @@ def _eda(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
                 "doi_candidates": doi_candidates,
             }
             resolved.append(record)
-            errors.append(f"{program_entry['external_id']}: no upstream metadata match")
+            if metadata_resolution_required:
+                errors.append(f"{program_entry['external_id']}: no upstream metadata match")
+            else:
+                unresolved_metadata_count += 1
             continue
         if len(distinct_dois) > 1:
             record["upstream_resolution"] = {
@@ -1330,6 +1337,10 @@ def _eda(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
             continue
         doi_indexes[doi] = len(resolved)
         resolved.append(record)
+    if unresolved_metadata_count:
+        warnings.append(
+            f"{unresolved_metadata_count} official record(s) lack resolved upstream metadata"
+        )
     selected, cursor = _page(resolved, parameters)
     status = "partial" if errors else "success"
     return VenueOperationResult(

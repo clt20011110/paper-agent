@@ -363,6 +363,13 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     stage1_collect.add_argument("--output", required=True, type=Path)
     stage1_collect.add_argument("--receipt", type=Path)
     stage1_collect.add_argument("--contact")
+    stage1_collect.add_argument(
+        "--accept-terms",
+        action="append",
+        default=[],
+        metavar="PROVIDER=URL",
+        help="explicitly accept the exact manifest terms URL for one provider or upstream",
+    )
     stage1_collect.add_argument("--page-size", type=int, default=500)
     stage1_collect.add_argument("--max-workers", type=int, default=4)
     stage1_collect.add_argument(
@@ -3677,7 +3684,12 @@ def _stage1_collect(args: argparse.Namespace) -> dict[str, Any]:
     if not contact:
         raise ValueError("stage1 collect requires --contact or PAPER_AGENT_CONTACT")
     catalog = load_catalog()
-    transport = ControlledHTTPTransport(contact, timeout_seconds=30)
+    accepted_terms = _key_value_mapping(args.accept_terms, "--accept-terms")
+    transport = ControlledHTTPTransport(
+        contact,
+        timeout_seconds=30,
+        accepted_terms=accepted_terms,
+    )
     request = Stage1Request(
         venue_ids=tuple(args.venue),
         year_from=args.year_from,
@@ -3752,6 +3764,20 @@ def _stage1_live_adapter(
         create_builtin(descriptor.provider, unit_transport),
         unit_transport,
     )
+
+
+def _key_value_mapping(values: Sequence[str], option: str) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for value in values:
+        key, separator, mapped = value.partition("=")
+        if not separator or not key.strip() or not mapped.strip():
+            raise ValueError(f"{option} must be PROVIDER=URL")
+        normalized_key = key.strip()
+        normalized_value = mapped.strip()
+        if normalized_key in resolved and resolved[normalized_key] != normalized_value:
+            raise ValueError(f"{option} contains conflicting values for {normalized_key}")
+        resolved[normalized_key] = normalized_value
+    return resolved
 
 
 def _assert_venue_only_plan(

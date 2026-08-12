@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from paper_agent.cli import _key_value_mapping
 from paper_agent.domain import EnvelopeStatus, SourceBatch, SourceEntry
 from paper_agent.manifests import ManifestCatalog
 from paper_agent.providers.api import VenueDescriptor
@@ -74,6 +75,7 @@ class _Adapter:
                 if self.census
                 else {}
             ),
+            warnings=("optional enrichment unavailable",),
         )
 
 
@@ -93,6 +95,9 @@ def test_collect_expands_venue_year_and_proves_each_census() -> None:
     assert all(unit.field_coverage["abstract"] == 2 for unit in result.receipt.units)
     assert result.records[0]["membership_status"] == "official_confirmed"
     assert result.records[0]["volume"] == "23"
+    assert result.receipt.units[0].provider_warnings == (
+        "optional enrichment unavailable",
+    )
 
 
 def test_strict_publication_writes_receipt_but_not_unproven_metadata(tmp_path: Path) -> None:
@@ -193,3 +198,16 @@ def test_year_when_periodic_venue_was_not_held_is_not_applicable() -> None:
         "complete",
     ]
     assert result.receipt.units[0].reasons == ("venue was not held in 2023",)
+
+
+def test_terms_acceptance_mapping_is_exact_and_rejects_conflicts() -> None:
+    assert _key_value_mapping(
+        ["provider:upstream=https://example.test/terms"], "--accept-terms"
+    ) == {"provider:upstream": "https://example.test/terms"}
+    with pytest.raises(ValueError, match="PROVIDER=URL"):
+        _key_value_mapping(["provider-only"], "--accept-terms")
+    with pytest.raises(ValueError, match="conflicting"):
+        _key_value_mapping(
+            ["provider=https://example.test/one", "provider=https://example.test/two"],
+            "--accept-terms",
+        )

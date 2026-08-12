@@ -9,6 +9,7 @@ provider_params:
   upstreams: [ieee_xplore, acm_dl]
   resolve_platforms_by_year: true
   deduplicate_by: doi
+  metadata_resolution_required: false
   official_routes_by_year:
     2022:
       route_kind: ieee_xplore_publication

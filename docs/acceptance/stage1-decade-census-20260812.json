@@ -94,6 +94,7 @@
   "known_limits": [
     "Counts prove membership enumeration against each official primary container; they do not prove every optional metadata field is populated.",
     "NeurIPS annual list pages do not expose abstracts or DOIs; field enrichment remains a separate acceptance gate.",
-    "Raw live response bodies were held in the local run and hashed by the receipt but are not committed because the current standalone CLI does not yet persist a run-scoped artifact store."
+    "Raw live response bodies were held in the local run and hashed by the receipt but are not committed because the current standalone CLI does not yet persist a run-scoped artifact store.",
+    "DAC and ICCAD are not yet decade-complete: 2016-2021 lack frozen official routes. Explicit terms acceptance enabled successful 2024 official membership censuses (DAC 337, ICCAD 195), while ACM metadata enrichment returned HTTP 403; those enrichment gaps are now reported separately from membership completeness."
   ]
 }
