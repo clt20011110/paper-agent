@@ -59,6 +59,21 @@
       "all_terminal_cursors_reached": true,
       "duplicate_external_ids": 0,
       "parser_rejected_records": 0
+    },
+    {
+      "venue_id": "naacl",
+      "provider": "acl_anthology",
+      "status": "complete",
+      "run_id": "89bbf6fb-a49f-5c99-838c-15b8b2d70add",
+      "metadata_sha256": "c6dce07c0641df76487884e900d86b751adfa9861c2978015343837c216893c0",
+      "total_unique_records": 3594,
+      "annual_counts": {"2016": 207, "2017": 0, "2018": 383, "2019": 481, "2020": 0, "2021": 539, "2022": 502, "2023": 0, "2024": 632, "2025": 850},
+      "not_applicable_years": [2017, 2020, 2023],
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "explicit_non_paper_exclusions": 30,
+      "note": "Official ACL Anthology badges were reconciled for main, long/short, industry, demo, and tutorial volumes; Student Research Workshop and co-located workshop volumes are outside the declared track scope."
     }
   ],
   "known_limits": [

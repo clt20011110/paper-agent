@@ -1205,12 +1205,12 @@ def test_stage4b_implementation_version_is_explicit_and_fail_closed(
     assert matrix["summary"]["all_passed"] is passed
 
 
-def test_real_catalog_reaches_20_of_20_only_with_explicit_neurips_import(
+def test_real_catalog_reaches_full_coverage_only_with_explicit_neurips_import(
     tmp_path: Path,
 ) -> None:
     module = _module()
     catalog_ids = module._venue_catalog_ids(ROOT / "venues")
-    assert len(catalog_ids) == 20
+    assert len(catalog_ids) == 24
     for venue_id in catalog_ids:
         if venue_id != "neurips":
             _venue_run(tmp_path, venue_id)
@@ -1227,9 +1227,9 @@ def test_real_catalog_reaches_20_of_20_only_with_explicit_neurips_import(
     assert without_import["summary"]["all_passed"] is False
     assert without_import["summary"]["missing_venues"] == ["neurips"]
     assert with_import["summary"] == {
-        "venue_count": 20,
-        "catalog_venue_count": 20,
-        "passed": 20,
+        "venue_count": 24,
+        "catalog_venue_count": 24,
+        "passed": 24,
         "failed": 0,
         "coverage_complete": True,
         "missing_venues": [],

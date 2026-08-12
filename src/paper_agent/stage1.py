@@ -323,6 +323,26 @@ def _collect_unit(
     run_id: str,
 ) -> tuple[tuple[Mapping[str, Any], ...], Stage1UnitReceipt]:
     venue = catalog.venue(venue_id)
+    held_years = venue.get("provider_params", {}).get("held_years", [])
+    if held_years and year not in {int(value) for value in held_years}:
+        return (), Stage1UnitReceipt(
+            venue_id=venue_id,
+            venue_name=str(venue["name"]),
+            venue_type=str(venue["venue_type"]),
+            provider=str(venue["primary_provider"]),
+            year=year,
+            status="not_applicable",
+            pages_fetched=0,
+            terminal_cursor_reached=True,
+            returned_records=0,
+            unique_records=0,
+            expected_total=0,
+            parser_raw_records=0,
+            parser_rejected_records=0,
+            parser_excluded_records=0,
+            field_coverage={field: 0 for field in _OUTPUT_FIELDS},
+            reasons=(f"venue was not held in {year}",),
+        )
     date_range = venue.get("date_range")
     if isinstance(date_range, Mapping):
         start_year = int(str(date_range["start"])[:4])

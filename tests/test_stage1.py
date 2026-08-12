@@ -175,3 +175,21 @@ def test_year_before_venue_launch_is_not_applicable_and_does_not_call_adapter() 
         "complete",
     ]
     assert len(result.records) == 2
+
+
+def test_year_when_periodic_venue_was_not_held_is_not_applicable() -> None:
+    catalog = _catalog()
+    catalog.venues["example"]["provider_params"] = {"held_years": [2022, 2024]}
+
+    result = collect_stage1_metadata(
+        Stage1Request(("example",), 2023, 2024),
+        catalog=catalog,
+        adapter_factory=lambda _: _Adapter(),
+    )
+
+    assert result.complete
+    assert [unit.status for unit in result.receipt.units] == [
+        "not_applicable",
+        "complete",
+    ]
+    assert result.receipt.units[0].reasons == ("venue was not held in 2023",)

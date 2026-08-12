@@ -1,0 +1,17 @@
+{
+  "fixture_venue_id": "naacl",
+  "entries": [{
+    "stable_id": "2024.naacl-long.1",
+    "title": "Auditable Language Understanding",
+    "authors": ["Ada Lovelace"],
+    "abstract": "Primary abstract.",
+    "doi": "10.18653/v1/2024.naacl-long.1",
+    "publication_date": "2024-06-01",
+    "year": 2024,
+    "venue": "Proceedings of NAACL 2024",
+    "venue_id": "naacl",
+    "landing_url": "https://aclanthology.org/2024.naacl-long.1/"
+  }],
+  "next_cursor": "naacl:page-2",
+  "raw_response_artifact_hash": "fixture-naacl-2024"
+}

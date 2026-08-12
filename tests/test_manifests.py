@@ -30,6 +30,7 @@ PRIMARY = {
     "acl": "acl_anthology",
     "cvpr": "cvf_open_access",
     "emnlp": "acl_anthology",
+    "naacl": "acl_anthology",
     "iccv": "cvf_open_access",
     "ijcai": "ijcai_proceedings",
     "dac": "eda_proceedings",
@@ -56,6 +57,7 @@ FALLBACKS = {
     "acl": ["crossref", "dblp", "semantic_scholar", "openalex"],
     "cvpr": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
     "emnlp": ["crossref", "dblp", "semantic_scholar", "openalex"],
+    "naacl": ["crossref", "dblp", "semantic_scholar", "openalex"],
     "iccv": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
     "ijcai": ["crossref", "dblp", "semantic_scholar", "openalex"],
     "dac": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
@@ -174,7 +176,7 @@ def test_built_in_manifests_are_schema_valid_and_unique() -> None:
     assert set(catalog.venues) == set(PRIMARY)
     assert set(catalog.acceptances) == set(PRIMARY)
     assert len(catalog.providers) == 25
-    assert len({acceptance["fixture_path"] for acceptance in catalog.acceptances.values()}) == 23
+    assert len({acceptance["fixture_path"] for acceptance in catalog.acceptances.values()}) == 24
     for path in (ROOT / "providers").glob("*.yaml"):
         validate(catalog.providers[path.stem], "provider-manifest.schema.json")
     for path in (ROOT / "venues").glob("*.yaml"):

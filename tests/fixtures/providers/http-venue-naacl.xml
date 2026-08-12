@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<collection id="2024.naacl">
+  <volume id="long"><meta><booktitle>Proceedings of NAACL 2024</booktitle><month>June</month></meta>
+    <paper id="1"><title>Auditable Language Understanding</title><author><first>Ada</first><last>Lovelace</last></author><pages>1-10</pages><url>2024.naacl-long.1</url><doi>10.18653/v1/2024.naacl-long.1</doi><abstract>Primary abstract.</abstract></paper>
+    <paper id="2"><title>Complete Conference Enumeration</title><author><first>Alan</first><last>Turing</last></author><pages>11-20</pages><url>2024.naacl-long.2</url><doi>10.18653/v1/2024.naacl-long.2</doi><abstract>Second abstract.</abstract></paper>
+  </volume>
+</collection>

@@ -558,7 +558,7 @@ def _acl_venue_index(
     expected_total = 0
     raw_records = 0
     excluded_records = 0
-    for volume_id, expected_count in volumes:
+    for volume_id, expected_count, track in volumes:
         expected_total += expected_count
         collection_id, native_volume_id = _acl_collection_volume(volume_id)
         xml_url = (
@@ -582,9 +582,7 @@ def _acl_venue_index(
         frontmatter_count = len(volume.findall("./frontmatter"))
         raw_records += paper_count + frontmatter_count
         excluded_records += frontmatter_count
-        mapped = _acl_volume_entries(
-            root, (volume,), _acl_track(volume_id, venue_slug), year, snapshot
-        )
+        mapped = _acl_volume_entries(root, (volume,), track, year, snapshot)
         if len(mapped) + frontmatter_count != expected_count:
             raise ProviderRequestError(
                 f"acl_anthology: {volume_id} badge={expected_count}, papers={len(mapped)}, "
@@ -609,7 +607,7 @@ def _acl_venue_index(
 
 def _acl_index_volumes(
     body: bytes, venue_slug: str, year: int, allowed_tracks: tuple[str, ...]
-) -> list[tuple[str, int]]:
+) -> list[tuple[str, int, str]]:
     root = _html(body, "acl_anthology")
     event_href = f"/events/{venue_slug}-{year}/"
     year_anchor = next(
@@ -632,7 +630,7 @@ def _acl_index_volumes(
     )
     if container is None:
         raise ProviderRequestError("acl_anthology: venue index year row is malformed")
-    volumes: list[tuple[str, int]] = []
+    volumes: list[tuple[str, int, str]] = []
     for item in _nodes(container, "li"):
         anchor = next(
             (
@@ -645,13 +643,13 @@ def _acl_index_volumes(
         if anchor is None:
             continue
         volume_id = anchor.attributes["href"].strip("/").split("/", 1)[1]
-        track = _acl_track(volume_id, venue_slug)
+        track = _acl_track(volume_id, venue_slug, anchor.text)
         if track not in allowed_tracks:
             continue
         count_match = re.search(r"\b(\d[\d,]*)\s+papers\b", item.text, re.I)
         if count_match is None:
             raise ProviderRequestError(f"acl_anthology: {volume_id} has no official paper count")
-        volumes.append((volume_id, int(count_match.group(1).replace(",", ""))))
+        volumes.append((volume_id, int(count_match.group(1).replace(",", "")), track))
     return volumes
 
 
@@ -663,11 +661,26 @@ def _acl_collection_volume(volume_id: str) -> tuple[str, str]:
     return volume_id.rsplit("-", 1) if "-" in volume_id else (volume_id, "main")
 
 
-def _acl_track(volume_id: str, venue_slug: str) -> str:
+def _acl_track(volume_id: str, venue_slug: str, title: str = "") -> str:
     lower = volume_id.casefold()
     for track in ("main", "long", "short", "demo", "demos", "industry", "tutorial", "tutorials", "srw"):
         if lower.endswith(f"-{track}"):
             return track
+    normalized_title = title.casefold()
+    if "student research" in normalized_title:
+        return "srw"
+    if "industry" in normalized_title:
+        return "industry"
+    if "demonstration" in normalized_title:
+        return "demo"
+    if "tutorial" in normalized_title:
+        return "tutorials"
+    if "long and short" in normalized_title:
+        return "main"
+    if "long paper" in normalized_title:
+        return "long"
+    if "short paper" in normalized_title:
+        return "short"
     if re.fullmatch(r"[a-z]\d{2}-1", lower):
         return "main"
     if re.fullmatch(r"[a-z]\d{2}-2", lower):

@@ -57,7 +57,7 @@ def test_runtime_data_and_builtin_work_outside_repository_cwd(tmp_path, monkeypa
     )
     batch = provider.search(QuerySpec(1, "package-check", "fixture", page_size=1))
 
-    assert len(catalog.venues) == 20
+    assert len(catalog.venues) == 24
     assert batch.entries[0].external_id == "10.1000/package-check"
     assert doctor()["python_supported"] is True
 
