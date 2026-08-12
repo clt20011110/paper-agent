@@ -23,6 +23,10 @@ from paper_agent.stage2_pipeline import (
     Stage2Paper,
     Stage2Profile,
 )
+from paper_agent.stage2_prompt_contract import (
+    adjudication_messages,
+    estimate_omlx_chat_input_token_proxy,
+)
 from paper_agent.storage import Database
 
 
@@ -106,9 +110,18 @@ def _papers() -> tuple[Stage2Paper, ...]:
 
 
 def _cases() -> tuple[PerformanceCase, ...]:
+    profile = _profile()
     return tuple(
-        PerformanceCase(paper.paper_id, 100 + index, paper.abstract is None)
-        for index, paper in enumerate(_papers())
+        PerformanceCase(
+            paper.paper_id,
+            estimate_omlx_chat_input_token_proxy(adjudication_messages(
+                query_version=profile.query_version,
+                query=profile.query,
+                paper=paper,
+            )),
+            paper.abstract is None,
+        )
+        for paper in _papers()
     )
 
 
@@ -458,6 +471,27 @@ def test_runner_rejects_input_drift_before_warmup(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="missing-abstract"):
         runner.run(spec, _papers(), run_id="drift-fixture")
+
+    assert transport.requests == []
+    database.close()
+
+
+def test_runner_rejects_tampered_prompt_token_proxy_before_transport(tmp_path) -> None:
+    transport = FakeOmlxTransport()
+    database, runner = _runner(tmp_path, transport)
+    cases = list(_cases())
+    first = cases[0]
+    cases[0] = PerformanceCase(
+        first.pair_id, first.input_tokens + 1, first.abstract_missing,
+    )
+    spec = BenchmarkRunSpec.fixture(
+        kind="soak",
+        cases=cases,
+        stage2_config_hash=runner.profile.base_runtime_config_hash,
+    )
+
+    with pytest.raises(ValueError, match="prompt proxy estimator"):
+        runner.run(spec, _papers(), run_id="token-proxy-drift")
 
     assert transport.requests == []
     database.close()

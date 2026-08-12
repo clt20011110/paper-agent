@@ -53,6 +53,11 @@ from .stage2_release_evidence import (
     Stage2EvidenceError,
     Stage2ReleaseEvidenceIndex,
 )
+from .stage2_pipeline import Stage2Paper, Stage2Profile
+from .stage2_prompt_contract import (
+    adjudication_messages,
+    estimate_omlx_chat_input_token_proxy,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,15 +108,18 @@ class VerifiedPublicStage2Evidence:
 
 def verify_public_stage2_gates(
     index: Stage2ReleaseEvidenceIndex,
+    *,
+    profile: Stage2Profile,
 ) -> VerifiedPublicStage2Evidence:
-    """Recompute every non-hidden Stage 2 gate without trusting result claims."""
+    """Recompute every non-hidden Stage 2 gate against one released profile."""
 
+    _verify_profile_binding(index, profile)
     gold = gold_manifest_from_document(index.gold_manifest.read_json(index.bundle_root))
-    structured = _verify_structured_replay(index)
+    structured = _verify_structured_replay(index, profile)
     rationale = _verify_rationale(index)
     parity = _verify_parity(index, gold)
-    benchmark, throughput = _verify_benchmark(index)
-    soak = _verify_soak(index)
+    benchmark, throughput = _verify_benchmark(index, profile)
+    soak = _verify_soak(index, profile)
     return VerifiedPublicStage2Evidence(
         MappingProxyType({
             "structured_replay": structured,
@@ -124,8 +132,39 @@ def verify_public_stage2_gates(
     )
 
 
+def _verify_profile_binding(
+    index: Stage2ReleaseEvidenceIndex,
+    profile: Stage2Profile,
+) -> None:
+    reranker = profile.reranker_calibration
+    qwen = profile.adjudicator_calibration
+    if reranker is None or qwen is None:
+        raise Stage2EvidenceError("public Stage 2 verification requires a calibrated profile")
+    expected_models = {
+        "reranker": profile.reranker_lock_hash,
+        "qwen": profile.adjudicator_lock_hash,
+    }
+    expected_thresholds = {
+        "reranker": reranker.threshold.hash(),
+        "qwen": qwen.threshold.hash(),
+    }
+    expected_calibrators = {
+        "reranker": reranker.calibrator.hash(),
+        "qwen": qwen.calibrator.hash(),
+    }
+    if index.stage2_config_hash != profile.base_runtime_config_hash:
+        raise Stage2EvidenceError("public evidence config does not match the released profile")
+    if dict(index.model_lock_hashes) != expected_models:
+        raise Stage2EvidenceError("public evidence models do not match the released profile")
+    if dict(index.calibrator_hashes) != expected_calibrators:
+        raise Stage2EvidenceError("public evidence calibrators do not match the released profile")
+    if dict(index.threshold_hashes) != expected_thresholds:
+        raise Stage2EvidenceError("public evidence thresholds do not match the released profile")
+
+
 def _verify_structured_replay(
     index: Stage2ReleaseEvidenceIndex,
+    profile: Stage2Profile,
 ) -> VerifiedPublicGate:
     refs = index.public_gates["structured_replay"]
     manifest_document = refs.manifest.read_json(index.bundle_root)
@@ -143,6 +182,8 @@ def _verify_structured_replay(
         raise Stage2EvidenceError("structured replay config does not match release evidence")
     if manifest.model_lock_hash != index.model_lock_hashes["qwen"]:
         raise Stage2EvidenceError("structured replay model does not match released Qwen")
+    if manifest.prompt_hash != profile.prompt_hash or manifest.schema_hash != profile.schema_hash:
+        raise Stage2EvidenceError("structured replay prompt or schema does not match the released profile")
     records_document = _one_document(index, refs)
     validate(records_document, "stage2-structured-replay-records.schema.json")
     records = tuple(
@@ -289,6 +330,7 @@ def _verify_parity(
 
 def _verify_benchmark(
     index: Stage2ReleaseEvidenceIndex,
+    profile: Stage2Profile,
 ) -> tuple[VerifiedPublicGate, tuple[float, float, float]]:
     refs = index.public_gates["benchmark"]
     manifest_document = refs.manifest.read_json(index.bundle_root)
@@ -307,14 +349,16 @@ def _verify_benchmark(
         normal_qwen_ids=frozenset(manifest_document["normal_qwen_ids"]),
         stress_qwen_ids=frozenset(manifest_document["stress_qwen_ids"]),
         pipeline_components=tuple(manifest_document["pipeline_components"]),
+        input_token_estimator=manifest_document["input_token_estimator"],
     )
     _verify_benchmark_manifest_binding(index, manifest)
-    papers, input_hash = _verify_benchmark_papers(index, refs, manifest)
+    papers, input_hash = _verify_benchmark_papers(index, refs, manifest, profile)
     records = tuple(
         _performance_execution_record(
             _execution_document(index, ref),
             manifest,
             input_hash,
+            profile,
         )
         for ref in refs.records
     )
@@ -336,7 +380,10 @@ def _verify_benchmark(
     )
 
 
-def _verify_soak(index: Stage2ReleaseEvidenceIndex) -> VerifiedPublicGate:
+def _verify_soak(
+    index: Stage2ReleaseEvidenceIndex,
+    profile: Stage2Profile,
+) -> VerifiedPublicGate:
     refs = index.public_gates["soak"]
     manifest_document = refs.manifest.read_json(index.bundle_root)
     validate(manifest_document, "stage2-soak-manifest.schema.json")
@@ -348,13 +395,15 @@ def _verify_soak(index: Stage2ReleaseEvidenceIndex) -> VerifiedPublicGate:
         threshold_artifact_hashes=tuple(manifest_document["threshold_artifact_hashes"]),
         output_token_limit=manifest_document["output_token_limit"],
         cases=tuple(PerformanceCase(item[0], item[1], item[2]) for item in manifest_document["cases"]),
+        input_token_estimator=manifest_document["input_token_estimator"],
     )
     _verify_benchmark_manifest_binding(index, manifest)
-    _, input_hash = _verify_benchmark_papers(index, refs, manifest)
+    _, input_hash = _verify_benchmark_papers(index, refs, manifest, profile)
     record = _soak_execution_record(
         _execution_document(index, refs.records[0]),
         manifest,
         input_hash,
+        profile,
     )
     gate = soak_gate(manifest, record)
     return VerifiedPublicGate(
@@ -393,8 +442,9 @@ def _performance_execution_record(
     document: Any,
     manifest: PerformanceRoutingManifest,
     input_hash: str,
+    profile: Stage2Profile,
 ) -> PerformanceRunRecord:
-    _verify_execution_record(document, manifest, "performance", input_hash)
+    _verify_execution_record(document, manifest, "performance", input_hash, profile)
     return BenchmarkExecutionRecord(document).as_performance_record()
 
 
@@ -402,8 +452,9 @@ def _soak_execution_record(
     document: Any,
     manifest: SoakManifest,
     input_hash: str,
+    profile: Stage2Profile,
 ) -> SoakRunRecord:
-    _verify_execution_record(document, manifest, "soak", input_hash)
+    _verify_execution_record(document, manifest, "soak", input_hash, profile)
     return BenchmarkExecutionRecord(document).as_soak_record()
 
 
@@ -412,6 +463,7 @@ def _verify_execution_record(
     manifest: PerformanceRoutingManifest | SoakManifest,
     kind: str,
     input_hash: str,
+    profile: Stage2Profile,
 ) -> None:
     if not isinstance(document, dict):
         raise Stage2EvidenceError("benchmark execution record must be a JSON object")
@@ -465,9 +517,22 @@ def _verify_execution_record(
         "input_hash": input_hash,
         "stage2_config_hash": manifest.stage2_config_hash,
         "observed_stage2_config_hash": manifest.stage2_config_hash,
+        "full_profile_hash": profile.full_profile_hash,
         "model_lock_hashes": list(manifest.model_lock_hashes),
         "threshold_artifact_hashes": list(manifest.threshold_artifact_hashes),
         "observed_threshold_artifact_hashes": list(manifest.threshold_artifact_hashes),
+        "model_releases": {
+            "reranker": {
+                "model_id": profile.reranker_model_id,
+                "revision": profile.reranker_revision,
+            },
+            "qwen": {
+                "model_id": profile.adjudicator_model_id,
+                "revision": profile.adjudicator_revision,
+            },
+        },
+        "prompt_hash": profile.prompt_hash,
+        "schema_hash": profile.schema_hash,
         "output_token_limit": manifest.output_token_limit,
         "observed_output_token_limit": manifest.output_token_limit,
         "fixture_scale": False,
@@ -535,6 +600,7 @@ def _verify_benchmark_papers(
     index: Stage2ReleaseEvidenceIndex,
     refs: GateEvidenceRefs,
     manifest: PerformanceRoutingManifest | SoakManifest,
+    profile: Stage2Profile,
 ) -> tuple[Sequence[Any], str]:
     if refs.papers is None:
         raise Stage2EvidenceError("benchmark evidence is missing its public paper inputs")
@@ -553,7 +619,27 @@ def _verify_benchmark_papers(
         raise Stage2EvidenceError("benchmark papers do not match missing-abstract flags")
     if benchmark_corpus_hash(papers) != manifest.corpus_hash:
         raise Stage2EvidenceError("benchmark papers do not match the manifest corpus hash")
+    _verify_benchmark_case_tokens(manifest, papers, profile)
     return papers, benchmark_workload_hash(manifest.cases, papers)
+
+
+def _verify_benchmark_case_tokens(
+    manifest: PerformanceRoutingManifest | SoakManifest,
+    papers: Sequence[Stage2Paper],
+    profile: Stage2Profile,
+) -> None:
+    paper_by_id = {paper.paper_id: paper for paper in papers}
+    for case in manifest.cases:
+        paper = paper_by_id[case.pair_id]
+        messages = adjudication_messages(
+            query_version=profile.query_version,
+            query=profile.query,
+            paper=paper,
+        )
+        if case.input_tokens != estimate_omlx_chat_input_token_proxy(messages):
+            raise Stage2EvidenceError(
+                "benchmark case input_tokens do not match the released prompt proxy estimator"
+            )
 
 
 def _verify_service_measurements(document: Mapping[str, Any]) -> None:

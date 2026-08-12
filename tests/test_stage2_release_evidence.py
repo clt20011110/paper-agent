@@ -4,6 +4,7 @@ from base64 import b64encode
 from hashlib import sha256
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +36,11 @@ from paper_agent.stage2_evaluation import (
     write_gold_manifest,
 )
 from paper_agent.stage2_public_gates import verify_public_stage2_gates
+from paper_agent.stage2_pipeline import Stage2Profile
+from paper_agent.stage2_prompt_contract import (
+    adjudication_messages,
+    estimate_omlx_chat_input_token_proxy,
+)
 from paper_agent.stage2_release_evidence import (
     Stage2EvidenceError,
     load_stage2_release_evidence_index,
@@ -232,6 +238,7 @@ def _benchmark_paper_document(pair_ids: list[str], missing: set[str]) -> dict:
 def _execution_payload(
     manifest: PerformanceRoutingManifest | SoakManifest,
     papers_document: dict,
+    profile: Stage2Profile,
     *,
     kind: str,
     scenario: str | None,
@@ -316,16 +323,22 @@ def _execution_payload(
         "release_hash": "1" * 64,
         "stage2_config_hash": manifest.stage2_config_hash,
         "observed_stage2_config_hash": manifest.stage2_config_hash,
-        "full_profile_hash": "2" * 64,
+        "full_profile_hash": profile.full_profile_hash,
         "model_lock_hashes": model_hashes,
         "threshold_artifact_hashes": threshold_hashes,
         "observed_threshold_artifact_hashes": threshold_hashes,
         "model_releases": {
-            "reranker": {"model_id": "reranker", "revision": "revision-1"},
-            "qwen": {"model_id": "qwen", "revision": "revision-1"},
+            "reranker": {
+                "model_id": profile.reranker_model_id,
+                "revision": profile.reranker_revision,
+            },
+            "qwen": {
+                "model_id": profile.adjudicator_model_id,
+                "revision": profile.adjudicator_revision,
+            },
         },
-        "prompt_hash": "3" * 64,
-        "schema_hash": "4" * 64,
+        "prompt_hash": profile.prompt_hash,
+        "schema_hash": profile.schema_hash,
         "output_token_limit": manifest.output_token_limit,
         "observed_output_token_limit": manifest.output_token_limit,
         "fixture_scale": False,
@@ -421,7 +434,13 @@ def _write_execution(path: Path, payload: dict) -> dict[str, str]:
     return {"path": path.name, "sha256": sha256(path.read_bytes()).hexdigest()}
 
 
-def _install_public_gate_evidence(tmp_path: Path, path: Path, index_document: dict) -> None:
+def _install_public_gate_evidence(
+    tmp_path: Path,
+    path: Path,
+    index_document: dict,
+    *,
+    profile: Stage2Profile,
+) -> None:
     model_hashes = index_document["model_lock_hashes"]
     threshold_hashes = index_document["threshold_hashes"]
     config_hash = index_document["stage2_config_hash"]
@@ -434,8 +453,8 @@ def _install_public_gate_evidence(tmp_path: Path, path: Path, index_document: di
         "5" * 64,
         config_hash,
         model_hashes["qwen"],
-        "6" * 64,
-        "7" * 64,
+        profile.prompt_hash,
+        profile.schema_hash,
     )
     replay_records = [
         StructuredReplayRecord(
@@ -543,7 +562,14 @@ def _install_public_gate_evidence(tmp_path: Path, path: Path, index_document: di
         (model_hashes["reranker"], model_hashes["qwen"]),
         (threshold_hashes["reranker"], threshold_hashes["qwen"]),
         256,
-        tuple(PerformanceCase(pair_id, 100, pair_id in performance_missing) for pair_id in performance_ids),
+        tuple(
+            PerformanceCase(
+                paper.paper_id,
+                _benchmark_input_tokens(profile, paper),
+                paper.paper_id in performance_missing,
+            )
+            for paper in performance_papers
+        ),
         frozenset(performance_ids[:150]),
         frozenset(performance_ids[:300]),
     )
@@ -556,6 +582,7 @@ def _install_public_gate_evidence(tmp_path: Path, path: Path, index_document: di
             payload = _execution_payload(
                 performance_manifest,
                 performance_papers_document,
+                profile,
                 kind="performance",
                 scenario=scenario,
                 run_id=f"{scenario}-{run}",
@@ -582,11 +609,19 @@ def _install_public_gate_evidence(tmp_path: Path, path: Path, index_document: di
         (model_hashes["reranker"], model_hashes["qwen"]),
         (threshold_hashes["reranker"], threshold_hashes["qwen"]),
         256,
-        tuple(PerformanceCase(pair_id, 100, False) for pair_id in soak_ids),
+        tuple(
+            PerformanceCase(
+                paper.paper_id,
+                _benchmark_input_tokens(profile, paper),
+                False,
+            )
+            for paper in soak_papers
+        ),
     )
     soak_payload = _execution_payload(
         soak_manifest,
         soak_papers_document,
+        profile,
         kind="soak",
         scenario=None,
         run_id="soak-0",
@@ -599,6 +634,39 @@ def _install_public_gate_evidence(tmp_path: Path, path: Path, index_document: di
         "record": _write_execution(tmp_path / "soak-record.json", soak_payload),
     }
     path.write_text(json.dumps(index_document, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _benchmark_input_tokens(profile: Stage2Profile, paper: Stage2Paper) -> int:
+    return estimate_omlx_chat_input_token_proxy(adjudication_messages(
+        query_version=profile.query_version,
+        query=profile.query,
+        paper=paper,
+    ))
+
+
+def _public_profile() -> SimpleNamespace:
+    return SimpleNamespace(
+        query="frozen query",
+        query_version="query-v1",
+        base_runtime_config_hash="d" * 64,
+        full_profile_hash="2" * 64,
+        prompt_hash="3" * 64,
+        schema_hash="4" * 64,
+        reranker_lock_hash=HASH,
+        adjudicator_lock_hash="b" * 64,
+        reranker_calibration=SimpleNamespace(
+            calibrator=SimpleNamespace(hash=lambda: HASH),
+            threshold=SimpleNamespace(hash=lambda: HASH),
+        ),
+        adjudicator_calibration=SimpleNamespace(
+            calibrator=SimpleNamespace(hash=lambda: "b" * 64),
+            threshold=SimpleNamespace(hash=lambda: "b" * 64),
+        ),
+        reranker_model_id="reranker",
+        reranker_revision="revision-1",
+        adjudicator_model_id="qwen",
+        adjudicator_revision="revision-1",
+    )
 
 
 def test_release_evidence_index_verifies_every_bound_file(tmp_path: Path) -> None:
@@ -726,9 +794,12 @@ def test_hidden_attestation_schema_forbids_private_evaluator_content() -> None:
 
 def test_public_stage2_gates_are_recomputed_from_raw_evidence(tmp_path: Path) -> None:
     path, document = _index(tmp_path)
-    _install_public_gate_evidence(tmp_path, path, document)
+    profile = _public_profile()
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
 
-    result = verify_public_stage2_gates(load_stage2_release_evidence_index(path))
+    result = verify_public_stage2_gates(
+        load_stage2_release_evidence_index(path), profile=profile,
+    )
 
     assert result.passed
     assert result.throughput_runs == (10.0, 1000 / 101, 1000 / 102)
@@ -743,11 +814,69 @@ def test_public_stage2_gates_are_recomputed_from_raw_evidence(tmp_path: Path) ->
     assert result.gates["soak"].metrics["request_count"] == 10_000
 
 
+def test_public_verifier_recomputes_benchmark_prompt_token_bounds(tmp_path: Path) -> None:
+    path, document = _index(tmp_path)
+    profile = _public_profile()
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
+    manifest_path = tmp_path / "benchmark-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["cases"][0]["input_tokens"] += 1
+    document["public_gates"]["benchmark"]["manifest"] = _write(
+        manifest_path, manifest,
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(Stage2EvidenceError, match="input_tokens do not match"):
+        verify_public_stage2_gates(
+            load_stage2_release_evidence_index(path), profile=profile,
+        )
+
+
+@pytest.mark.parametrize("field", ("prompt_hash", "schema_hash", "full_profile_hash"))
+def test_public_verifier_binds_execution_profile_hashes(
+    tmp_path: Path, field: str,
+) -> None:
+    path, document = _index(tmp_path)
+    profile = _public_profile()
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
+    record_path = tmp_path / document["public_gates"]["benchmark"]["records"][0]["path"]
+    record = json.loads(record_path.read_bytes())
+    record[field] = "f" * 64
+    document["public_gates"]["benchmark"]["records"][0] = _write_execution(
+        record_path, record,
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(Stage2EvidenceError, match=f"execution {field}"):
+        verify_public_stage2_gates(
+            load_stage2_release_evidence_index(path), profile=profile,
+        )
+
+
+def test_public_verifier_binds_execution_model_identity(tmp_path: Path) -> None:
+    path, document = _index(tmp_path)
+    profile = _public_profile()
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
+    record_path = tmp_path / document["public_gates"]["benchmark"]["records"][0]["path"]
+    record = json.loads(record_path.read_bytes())
+    record["model_releases"]["qwen"]["revision"] = "other-revision"
+    document["public_gates"]["benchmark"]["records"][0] = _write_execution(
+        record_path, record,
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(Stage2EvidenceError, match="execution model_releases"):
+        verify_public_stage2_gates(
+            load_stage2_release_evidence_index(path), profile=profile,
+        )
+
+
 def test_public_stage2_gates_ignore_hash_valid_but_failing_rationale_claims(
     tmp_path: Path,
 ) -> None:
     path, document = _index(tmp_path)
-    _install_public_gate_evidence(tmp_path, path, document)
+    profile = _public_profile()
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     records_path = tmp_path / "rationale-records.json"
     records = json.loads(records_path.read_text(encoding="utf-8"))
     for item in records["records"][:6]:
@@ -755,7 +884,9 @@ def test_public_stage2_gates_ignore_hash_valid_but_failing_rationale_claims(
     document["public_gates"]["rationale"]["records"] = _write(records_path, records)
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    result = verify_public_stage2_gates(load_stage2_release_evidence_index(path))
+    result = verify_public_stage2_gates(
+        load_stage2_release_evidence_index(path), profile=profile,
+    )
 
     assert not result.passed
     assert result.gates["rationale"].gate.failures == (
@@ -767,7 +898,8 @@ def test_public_stage2_gates_reject_rewritten_benchmark_memory_summary(
     tmp_path: Path,
 ) -> None:
     path, document = _index(tmp_path)
-    _install_public_gate_evidence(tmp_path, path, document)
+    profile = _public_profile()
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     record_ref = document["public_gates"]["benchmark"]["records"][0]
     record_path = tmp_path / record_ref["path"]
     record = json.loads(record_path.read_bytes())
@@ -779,14 +911,17 @@ def test_public_stage2_gates_reject_rewritten_benchmark_memory_summary(
     path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(Stage2EvidenceError, match="memory summaries do not match"):
-        verify_public_stage2_gates(load_stage2_release_evidence_index(path))
+        verify_public_stage2_gates(
+            load_stage2_release_evidence_index(path), profile=profile,
+        )
 
 
 def test_public_stage2_gates_require_chat_trace_for_every_qwen_route(
     tmp_path: Path,
 ) -> None:
     path, document = _index(tmp_path)
-    _install_public_gate_evidence(tmp_path, path, document)
+    profile = _public_profile()
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     record_ref = document["public_gates"]["benchmark"]["records"][0]
     record_path = tmp_path / record_ref["path"]
     record = json.loads(record_path.read_bytes())
@@ -808,12 +943,15 @@ def test_public_stage2_gates_require_chat_trace_for_every_qwen_route(
     path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(Stage2EvidenceError, match="model-call routing"):
-        verify_public_stage2_gates(load_stage2_release_evidence_index(path))
+        verify_public_stage2_gates(
+            load_stage2_release_evidence_index(path), profile=profile,
+        )
 
 
 def test_public_stage2_gates_require_real_boolean_primitives(tmp_path: Path) -> None:
     path, document = _index(tmp_path)
-    _install_public_gate_evidence(tmp_path, path, document)
+    profile = _public_profile()
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     record_ref = document["public_gates"]["benchmark"]["records"][0]
     record_path = tmp_path / record_ref["path"]
     record = json.loads(record_path.read_bytes())
@@ -825,4 +963,6 @@ def test_public_stage2_gates_require_real_boolean_primitives(tmp_path: Path) -> 
     path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(Stage2EvidenceError, match="JSON booleans"):
-        verify_public_stage2_gates(load_stage2_release_evidence_index(path))
+        verify_public_stage2_gates(
+            load_stage2_release_evidence_index(path), profile=profile,
+        )

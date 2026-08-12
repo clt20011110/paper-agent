@@ -24,12 +24,8 @@ from .stage2_evaluation import (
     StructuredReplayResult,
     structured_replay_gate,
 )
-from .stage2_pipeline import (
-    ADJUDICATION_SYSTEM_PROMPT,
-    ADJUDICATION_USER_TEMPLATE,
-    Stage2Paper,
-    Stage2Profile,
-)
+from .stage2_pipeline import Stage2Paper, Stage2Profile
+from .stage2_prompt_contract import adjudication_messages
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,15 +167,11 @@ class StructuredReplayRunner:
     ) -> _Attempt:
         payload = {
             "model": self.profile.adjudicator_model_id,
-            "messages": [
-                {"role": "system", "content": ADJUDICATION_SYSTEM_PROMPT},
-                {"role": "user", "content": ADJUDICATION_USER_TEMPLATE.format(
-                    query_version=self.profile.query_version,
-                    query=self.profile.query,
-                    paper_id=paper.paper_id,
-                    document=_paper_text(paper),
-                )},
-            ],
+            "messages": list(adjudication_messages(
+                query_version=self.profile.query_version,
+                query=self.profile.query,
+                paper=paper,
+            )),
             "temperature": 0,
             "seed": self.profile.adjudicator_seed,
             "stream": False,
@@ -320,10 +312,6 @@ def _model_lock_hash(profile: Stage2Profile) -> str:
         "model_id": profile.adjudicator_model_id,
         "revision": profile.adjudicator_revision,
     })
-
-
-def _paper_text(paper: Stage2Paper) -> str:
-    return f"Title: {paper.title}\nAbstract: {paper.abstract or ''}\nKeywords: {', '.join(paper.keywords)}"
 
 
 def _paper_document(paper: Stage2Paper) -> dict[str, object]:

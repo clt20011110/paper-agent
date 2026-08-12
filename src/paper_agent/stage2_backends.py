@@ -19,6 +19,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .schema import SchemaValidationError, validate
+from .stage2_prompt_contract import estimate_omlx_chat_input_token_proxy
 
 
 class Stage2BackendError(RuntimeError):
@@ -298,7 +299,7 @@ class OmlxChatBackend:
             raise ValueError("max_output_tokens must be in 1..1024")
 
     def adjudicate(self, request: AdjudicationInput) -> AdjudicationDecision:
-        if self._estimated_tokens(request.messages) > self.max_context_window:
+        if self._estimated_token_proxy(request.messages) > self.max_context_window:
             raise StructuredOutputError("adjudicator input exceeds configured max_context_window")
         payload = {
             "model": self.model,
@@ -346,8 +347,8 @@ class OmlxChatBackend:
         )
 
     @staticmethod
-    def _estimated_tokens(messages: Sequence[Mapping[str, str]]) -> int:
-        return sum(len(message.get("content", "")) for message in messages) // 4 + 1
+    def _estimated_token_proxy(messages: Sequence[Mapping[str, str]]) -> int:
+        return estimate_omlx_chat_input_token_proxy(messages)
 
 
 @dataclass(slots=True)

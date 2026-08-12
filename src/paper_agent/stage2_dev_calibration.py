@@ -30,7 +30,8 @@ from .stage2_backends import (
     StructuredOutputError,
 )
 from .stage2_evaluation import CalibrationPath, GoldManifest, GoldSplit
-from .stage2_pipeline import ADJUDICATION_SYSTEM_PROMPT, ADJUDICATION_USER_TEMPLATE, Stage2Paper, Stage2Profile
+from .stage2_pipeline import Stage2Paper, Stage2Profile
+from .stage2_prompt_contract import adjudication_messages, render_stage2_document
 from .stage2_sampling import PrivateCorpusSnapshot
 
 
@@ -267,7 +268,7 @@ class Stage2DevRawScoreRunner:
             for score in reranker.rerank(
                 topic_queries[key],
                 tuple(
-                    RerankInput(case.paper.paper_id, _paper_text(case.paper))
+                    RerankInput(case.paper.paper_id, render_stage2_document(case.paper))
                     for case in cases if (case.topic, case.language) == key
                 ),
             )
@@ -340,17 +341,12 @@ def _adjudication_attempt(
 
 
 def _adjudication_input(profile: Stage2Profile, paper: Stage2Paper, query: str) -> AdjudicationInput:
-    return AdjudicationInput(paper.paper_id, (
-        {"role": "system", "content": ADJUDICATION_SYSTEM_PROMPT},
-        {"role": "user", "content": ADJUDICATION_USER_TEMPLATE.format(
-            query_version=profile.query_version, query=query, paper_id=paper.paper_id,
-            document=_paper_text(paper),
-        )},
-    ))
-
-
-def _paper_text(paper: Stage2Paper) -> str:
-    return f"Title: {paper.title}\nAbstract: {paper.abstract or ''}\nKeywords: {', '.join(paper.keywords)}"
+    return AdjudicationInput(
+        paper.paper_id,
+        adjudication_messages(
+            query_version=profile.query_version, query=query, paper=paper,
+        ),
+    )
 
 
 def _load_schema(name: str) -> tuple[Mapping[str, Any], str]:

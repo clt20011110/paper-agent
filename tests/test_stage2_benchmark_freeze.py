@@ -14,6 +14,11 @@ from paper_agent.stage2_benchmark_freeze import (
 )
 from paper_agent.stage2_benchmark_inputs import benchmark_corpus_hash
 from paper_agent.stage2_pipeline import Stage2Paper
+from paper_agent.stage2_prompt_contract import (
+    OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR,
+    adjudication_messages,
+    estimate_omlx_chat_input_token_proxy,
+)
 
 
 def _papers(count: int, *, missing: int = 0) -> tuple[Stage2Paper, ...]:
@@ -59,6 +64,7 @@ def _release() -> SimpleNamespace:
         adjudicator_lock_hash="b" * 64,
         base_runtime_config_hash="c" * 64,
         query="frozen molecular generation query",
+        query_version="screening-query-v1",
         adjudicator_max_output_tokens=256,
         reranker_calibration=SimpleNamespace(threshold=SimpleNamespace(hash=lambda: "d" * 64)),
         adjudicator_calibration=SimpleNamespace(threshold=SimpleNamespace(hash=lambda: "e" * 64)),
@@ -81,10 +87,20 @@ def test_freezer_binds_only_candidate_and_frozen_workloads(tmp_path: Path) -> No
     assert manifests.performance.threshold_artifact_hashes == ("d" * 64, "e" * 64)
     assert manifests.performance.output_token_limit == 256
     assert manifests.soak.output_token_limit == 256
+    assert manifests.performance.input_token_estimator == OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR
+    assert manifests.soak.input_token_estimator == OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR
     assert len(manifests.performance.normal_qwen_ids) == 150
     assert len(manifests.performance.stress_qwen_ids) == 300
     assert sum(case.abstract_missing for case in manifests.performance.cases) == 100
     assert all(case.input_tokens > 0 for case in manifests.soak.cases)
+    first = performance[0]
+    assert manifests.performance.cases[0].input_tokens == estimate_omlx_chat_input_token_proxy(
+        adjudication_messages(
+            query_version=_release().profile.query_version,
+            query=_release().profile.query,
+            paper=first,
+        )
+    )
     validate(manifests.performance.document(), "stage2-performance-manifest.schema.json")
     validate(manifests.soak.document(), "stage2-soak-manifest.schema.json")
 

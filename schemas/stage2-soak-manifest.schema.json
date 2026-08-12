@@ -4,7 +4,7 @@
   "title": "Stage 2 soak manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "kind", "corpus_hash", "stage2_config_hash", "model_lock_hashes", "threshold_artifact_hashes", "output_token_limit", "cases"],
+  "required": ["version", "kind", "corpus_hash", "stage2_config_hash", "model_lock_hashes", "threshold_artifact_hashes", "output_token_limit", "input_token_estimator", "cases"],
   "properties": {
     "version": {"const": 1},
     "kind": {"const": "soak"},
@@ -13,6 +13,10 @@
     "model_lock_hashes": {"$ref": "#/$defs/hashArray"},
     "threshold_artifact_hashes": {"$ref": "#/$defs/hashArray"},
     "output_token_limit": {"type": "integer", "minimum": 1},
+    "input_token_estimator": {
+      "description": "Versioned prompt-size proxy identity; values are not exact tokenizer counts.",
+      "const": "omlx-chat-content-chars-proxy-v1"
+    },
     "cases": {"type": "array", "minItems": 10000, "maxItems": 10000, "uniqueItems": true, "items": {"$ref": "#/$defs/case"}}
   },
   "$defs": {
@@ -23,7 +27,11 @@
       "type": "array",
       "prefixItems": [
         {"$ref": "#/$defs/id"},
-        {"type": "integer", "minimum": 1},
+        {
+          "description": "Prompt-size proxy produced by input_token_estimator, not an exact tokenizer count.",
+          "type": "integer",
+          "minimum": 1
+        },
         {"type": "boolean"}
       ],
       "items": false,

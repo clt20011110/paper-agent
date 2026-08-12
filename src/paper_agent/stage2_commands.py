@@ -753,6 +753,17 @@ def _cases(value: Sequence[Mapping[str, Any]]) -> tuple[PerformanceCase, ...]:
     )
 
 
+def _soak_cases(value: Sequence[Sequence[Any]]) -> tuple[PerformanceCase, ...]:
+    return tuple(
+        PerformanceCase(
+            pair_id=str(item[0]),
+            input_tokens=int(item[1]),
+            abstract_missing=bool(item[2]),
+        )
+        for item in value
+    )
+
+
 def _environment(value: Mapping[str, Any]) -> BenchmarkEnvironment:
     return BenchmarkEnvironment(
         machine_model=str(value["machine_model"]),
@@ -782,6 +793,7 @@ def _performance_manifest(value: Mapping[str, Any]) -> PerformanceRoutingManifes
         normal_qwen_ids=frozenset(value["normal_qwen_ids"]),
         stress_qwen_ids=frozenset(value["stress_qwen_ids"]),
         pipeline_components=tuple(value.get("pipeline_components", ("rules", "reranker", "qwen", "schema_validation", "sqlite_commit"))),
+        input_token_estimator=str(value["input_token_estimator"]),
     )
 
 
@@ -828,7 +840,8 @@ def _soak_manifest(value: Mapping[str, Any]) -> SoakManifest:
         model_lock_hashes=tuple(value["model_lock_hashes"]),
         threshold_artifact_hashes=tuple(value["threshold_artifact_hashes"]),
         output_token_limit=int(value["output_token_limit"]),
-        cases=_cases(value["cases"]),
+        cases=_soak_cases(value["cases"]),
+        input_token_estimator=str(value["input_token_estimator"]),
     )
 
 

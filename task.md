@@ -694,6 +694,7 @@ rationale 使用至少 100 条按 relevant/边界/语言分层的人工审计样
 目标机器：Apple Silicon M4 Max、36 GB unified memory。
 
 - 冻结带 hash 的 1,000 篇性能回放集，固定输入 token 分布、10% 缺摘要、输出上限和所有阈值。
+- benchmark manifest 的 `input_tokens` 是版本化 `chars/4` prompt-size proxy，不是 tokenizer 实测值；performance/soak schema v1 尚未发布，当前直接将该 proxy estimator 身份纳入 v1 冻结合同。
 - normal 场景固定 15% Qwen 裁决；stress 场景固定 30%。两者使用冻结的 performance-only routing manifest 指定进入 Qwen 的 paper_id，不改质量阈值，也不能通过缩小灰区规避 Qwen 工作量。
 - “完整 Stage 2”包含规则、rerank、Qwen、schema 校验和 SQLite 提交；只排除首次模型加载。
 - 每个场景预热后独立运行三次。normal 场景三次均 ≤ 15 分钟；stress 场景三次均 ≤ 25 分钟，并报告中位数、p50 和 p95。

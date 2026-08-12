@@ -188,14 +188,17 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
         "calibrator_hashes": calibrator_hashes,
         "threshold_hashes": threshold_hashes,
     })
-    public_evidence._install_public_gate_evidence(root, evidence_path, evidence)
+    public_evidence._install_public_gate_evidence(
+        root, evidence_path, evidence, profile=candidate.profile,
+    )
     public_index = deepcopy(evidence)
     public_index["evidence_type"] = "stage2_public_promotion_evidence"
     public_index.pop("hidden_attestation")
     public_index_path = root / "stage2-public-promotion-evidence.json"
     _write_json(public_index_path, public_index)
     verified_public = public_evidence.verify_public_stage2_gates(
-        public_evidence.load_stage2_release_evidence_index(public_index_path)
+        public_evidence.load_stage2_release_evidence_index(public_index_path),
+        profile=candidate.profile,
     )
 
     private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))

@@ -38,6 +38,12 @@ from .stage2_evaluation import (
     ThresholdArtifact as ProbabilityThresholdArtifact,
 )
 from .schema import schema_directory
+from .stage2_prompt_contract import (
+    adjudication_messages,
+    render_adjudication_user_prompt,
+    render_stage2_document,
+    stage2_prompt_hash,
+)
 from .storage import Database
 
 
@@ -45,13 +51,6 @@ IMPLEMENTATION_VERSION = "stage2-cascade-v3"
 STAGE2_LEASE_OUTPUT_PREFIX = "filter-decision:"
 DEFAULT_LEASE_SECONDS = 3_600
 DEFAULT_PEER_WAIT_SECONDS = 3_900
-ADJUDICATION_SYSTEM_PROMPT = (
-    "Return only the required structured screening decision. "
-    "Keep the rationale to one sentence of at most 20 words."
-)
-ADJUDICATION_USER_TEMPLATE = (
-    "Query version: {query_version}\nQuery: {query}\nPaper ID: {paper_id}\n{document}"
-)
 _FAILURES = (Stage2BackendError, StructuredOutputError, TimeoutError, OSError, ValueError)
 _RETRYABLE_ADJUDICATOR_FAILURES = (Stage2BackendError, TimeoutError, OSError)
 ADJUDICATOR_SHARE_ALARM = "stage2.adjudicator_share_exceeded"
@@ -360,11 +359,7 @@ class Stage2Profile:
 
     @property
     def prompt_hash(self) -> str:
-        return _hash({
-            "version": self.prompt_version,
-            "system": ADJUDICATION_SYSTEM_PROMPT,
-            "user_template": ADJUDICATION_USER_TEMPLATE,
-        })
+        return stage2_prompt_hash(self.prompt_version)
 
     @property
     def schema_hash(self) -> str:
@@ -678,8 +673,7 @@ class Stage2Pipeline:
         })
 
     def document(self, paper: Stage2Paper) -> str:
-        keywords = ", ".join(paper.keywords)
-        return f"Title: {paper.title}\nAbstract: {paper.abstract or ''}\nKeywords: {keywords}"
+        return render_stage2_document(paper)
 
     def _deterministic(self, paper: Stage2Paper) -> DeterministicRuleDecision | None:
         document_type = (paper.document_type or "").strip().casefold()
@@ -765,10 +759,14 @@ class Stage2Pipeline:
         self,
         paper: Stage2Paper,
     ) -> tuple[AdjudicationDecision | None, str | None]:
-        request = AdjudicationInput(paper.paper_id, (
-            {"role": "system", "content": ADJUDICATION_SYSTEM_PROMPT},
-            {"role": "user", "content": self._adjudication_prompt(paper)},
-        ))
+        request = AdjudicationInput(
+            paper.paper_id,
+            adjudication_messages(
+                query_version=self.profile.query_version,
+                query=self.profile.query,
+                paper=paper,
+            ),
+        )
         try:
             response = self.adjudicator.adjudicate(request)
         except StructuredOutputError:
@@ -871,11 +869,10 @@ class Stage2Pipeline:
         )
 
     def _adjudication_prompt(self, paper: Stage2Paper) -> str:
-        return ADJUDICATION_USER_TEMPLATE.format(
+        return render_adjudication_user_prompt(
             query_version=self.profile.query_version,
             query=self.profile.query,
-            paper_id=paper.paper_id,
-            document=self.document(paper),
+            paper=paper,
         )
 
     def _adjudication_reason(self, paper: Stage2Paper) -> str:

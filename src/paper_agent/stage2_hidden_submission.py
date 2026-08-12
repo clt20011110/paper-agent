@@ -38,7 +38,8 @@ from .stage2_evaluation import (
     ReviewReason,
     Stage2Decision,
 )
-from .stage2_pipeline import ADJUDICATION_SYSTEM_PROMPT, ADJUDICATION_USER_TEMPLATE, Stage2Paper, Stage2Profile
+from .stage2_pipeline import Stage2Paper, Stage2Profile
+from .stage2_prompt_contract import adjudication_messages, render_stage2_document
 from .stage2_promotion_artifacts import promotion_submission_document
 from .stage2_sampling import PrivateCorpusSnapshot
 from .schema import validate
@@ -176,7 +177,7 @@ class HiddenPromotionSubmissionRunner:
             group = tuple(case for case in cases if case.query == query)
             try:
                 scores = reranker.rerank(query, tuple(
-                    RerankInput(case.paper.paper_id, _paper_text(case.paper))
+                    RerankInput(case.paper.paper_id, render_stage2_document(case.paper))
                     for case in group
                 ))
             except RerankBatchError as error:
@@ -360,15 +361,14 @@ def _adjudication_request(
     profile: Stage2Profile,
     case: HiddenSubmissionCase,
 ) -> AdjudicationInput:
-    return AdjudicationInput(case.paper.paper_id, (
-        {"role": "system", "content": ADJUDICATION_SYSTEM_PROMPT},
-        {"role": "user", "content": ADJUDICATION_USER_TEMPLATE.format(
+    return AdjudicationInput(
+        case.paper.paper_id,
+        adjudication_messages(
             query_version=profile.query_version,
             query=case.query,
-            paper_id=case.paper.paper_id,
-            document=_paper_text(case.paper),
-        )},
-    ))
+            paper=case.paper,
+        ),
+    )
 
 
 def _adjudication_attempt(
@@ -418,10 +418,6 @@ def _qwen_prediction(
         case.query,
         review_reason,
     )
-
-
-def _paper_text(paper: Stage2Paper) -> str:
-    return f"Title: {paper.title}\nAbstract: {paper.abstract or ''}\nKeywords: {', '.join(paper.keywords)}"
 
 
 def _forces_adjudication(paper: Stage2Paper) -> bool:

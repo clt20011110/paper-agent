@@ -13,6 +13,11 @@ from .schema import validate
 from .stage2_benchmark_inputs import benchmark_corpus_hash
 from .stage2_evaluation import PerformanceCase, PerformanceRoutingManifest, SoakManifest
 from .stage2_pipeline import Stage2Paper
+from .stage2_prompt_contract import (
+    OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR,
+    adjudication_messages,
+    estimate_omlx_chat_input_token_proxy,
+)
 from .stage2_search import ReleasedStage2
 
 
@@ -81,17 +86,19 @@ def freeze_candidate_benchmark_manifests(
         corpus_hash=benchmark_corpus_hash(performance),
         **provenance,
         output_token_limit=profile.adjudicator_max_output_tokens,
-        cases=tuple(_case(profile.query, paper) for paper in performance),
+        cases=tuple(_case(profile, paper) for paper in performance),
         normal_qwen_ids=normal_qwen_ids,
         stress_qwen_ids=stress_qwen_ids,
         pipeline_components=_PIPELINE_COMPONENTS,
+        input_token_estimator=OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR,
     )
     soak_manifest = SoakManifest(
         version=1,
         corpus_hash=benchmark_corpus_hash(soak),
         **provenance,
         output_token_limit=profile.adjudicator_max_output_tokens,
-        cases=tuple(_case(profile.query, paper) for paper in soak),
+        cases=tuple(_case(profile, paper) for paper in soak),
+        input_token_estimator=OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR,
     )
     validate(performance_manifest.document(), "stage2-performance-manifest.schema.json")
     validate(soak_manifest.document(), "stage2-soak-manifest.schema.json")
@@ -172,11 +179,13 @@ def _validate_workload(
         raise BenchmarkFreezeError(f"{label} workload corpus hash does not match its receipt")
 
 
-def _case(query: str, paper: Stage2Paper) -> PerformanceCase:
-    document = f"Title: {paper.title}\nAbstract: {paper.abstract or ''}\nKeywords: {', '.join(paper.keywords)}"
-    # The serving client uses a stable characters/4 bound for chat context;
-    # include the reranker query because every non-rule paper receives it.
-    input_tokens = max(1, (len(query) + len(document)) // 4 + 1)
+def _case(profile: object, paper: Stage2Paper) -> PerformanceCase:
+    messages = adjudication_messages(
+        query_version=profile.query_version,
+        query=profile.query,
+        paper=paper,
+    )
+    input_tokens = estimate_omlx_chat_input_token_proxy(messages)
     return PerformanceCase(
         pair_id=paper.paper_id,
         input_tokens=input_tokens,

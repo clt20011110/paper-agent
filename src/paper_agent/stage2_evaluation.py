@@ -20,6 +20,7 @@ from types import MappingProxyType
 from typing import Mapping, Sequence
 
 from .stage2_hidden_attestation import hidden_promotion_gate_policy_document
+from .stage2_prompt_contract import OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR
 
 
 def _hash(document: object) -> str:
@@ -1346,6 +1347,7 @@ class PerformanceRoutingManifest:
     normal_qwen_ids: frozenset[str]
     stress_qwen_ids: frozenset[str]
     pipeline_components: tuple[str, ...] = ("rules", "reranker", "qwen", "schema_validation", "sqlite_commit")
+    input_token_estimator: str = OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR
 
     def __post_init__(self) -> None:
         if self.version != 1 or len(self.cases) != 1_000 or not self.corpus_hash or not self.stage2_config_hash:
@@ -1363,6 +1365,8 @@ class PerformanceRoutingManifest:
             raise ValueError("normal/stress routing must send exactly 15%/30% to Qwen")
         if self.pipeline_components != ("rules", "reranker", "qwen", "schema_validation", "sqlite_commit"):
             raise ValueError("benchmark must execute the complete Stage 2 pipeline")
+        if self.input_token_estimator != OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR:
+            raise ValueError("benchmark must use the released oMLX input-token proxy estimator")
 
     def document(self) -> dict[str, object]:
         return {
@@ -1372,6 +1376,7 @@ class PerformanceRoutingManifest:
             "cases": [{"pair_id": item.pair_id, "input_tokens": item.input_tokens, "abstract_missing": item.abstract_missing} for item in self.cases],
             "normal_qwen_ids": sorted(self.normal_qwen_ids), "stress_qwen_ids": sorted(self.stress_qwen_ids),
             "pipeline_components": list(self.pipeline_components),
+            "input_token_estimator": self.input_token_estimator,
         }
 
     def hash(self) -> str:
@@ -1394,6 +1399,7 @@ class SoakManifest:
     threshold_artifact_hashes: tuple[str, ...]
     output_token_limit: int
     cases: tuple[PerformanceCase, ...]
+    input_token_estimator: str = OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR
 
     def __post_init__(self) -> None:
         if self.version != 1 or len(self.cases) != 10_000 or not self.corpus_hash or not self.stage2_config_hash:
@@ -1404,6 +1410,8 @@ class SoakManifest:
             raise ValueError("soak manifest requires unique model lock hashes")
         if not self.threshold_artifact_hashes or not all(self.threshold_artifact_hashes) or self.output_token_limit < 1:
             raise ValueError("soak manifest requires thresholds and a positive output cap")
+        if self.input_token_estimator != OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR:
+            raise ValueError("soak manifest must use the released oMLX input-token proxy estimator")
 
     def document(self) -> dict[str, object]:
         return {
@@ -1411,6 +1419,7 @@ class SoakManifest:
             "stage2_config_hash": self.stage2_config_hash, "model_lock_hashes": list(self.model_lock_hashes),
             "threshold_artifact_hashes": list(self.threshold_artifact_hashes), "output_token_limit": self.output_token_limit,
             "cases": [[item.pair_id, item.input_tokens, item.abstract_missing] for item in self.cases],
+            "input_token_estimator": self.input_token_estimator,
         }
 
     def hash(self) -> str:

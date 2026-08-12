@@ -56,6 +56,11 @@ from .stage2_pipeline import (
     Stage2Profile,
     adjudicator_capacity,
 )
+from .stage2_prompt_contract import (
+    OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR,
+    adjudication_messages,
+    estimate_omlx_chat_input_token_proxy,
+)
 from .storage import Database
 
 
@@ -316,6 +321,7 @@ class BenchmarkRunSpec:
     forced_qwen_pair_ids: frozenset[str] = frozenset()
     executed_components: tuple[str, ...] = _COMPONENTS
     fixture_scale: bool = False
+    input_token_estimator: str = OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "model_lock_hashes", tuple(self.model_lock_hashes))
@@ -338,6 +344,8 @@ class BenchmarkRunSpec:
             raise ValueError("benchmark model lock hashes must be unique")
         if self.output_token_limit < 1 or not self.cases:
             raise ValueError("benchmark spec requires cases and a positive output token limit")
+        if self.input_token_estimator != OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR:
+            raise ValueError("benchmark spec requires the released input-token proxy estimator")
         pair_ids = [case.pair_id for case in self.cases]
         if len(pair_ids) != len(set(pair_ids)) or not self.forced_qwen_pair_ids <= set(pair_ids):
             raise ValueError("benchmark pair IDs must be unique and contain all frozen Qwen routes")
@@ -375,6 +383,7 @@ class BenchmarkRunSpec:
             threshold_artifact_hashes=manifest.threshold_artifact_hashes,
             output_token_limit=manifest.output_token_limit,
             cases=manifest.cases,
+            input_token_estimator=manifest.input_token_estimator,
             forced_qwen_pair_ids=qwen_ids,
             executed_components=manifest.pipeline_components,
         )
@@ -391,6 +400,7 @@ class BenchmarkRunSpec:
             threshold_artifact_hashes=manifest.threshold_artifact_hashes,
             output_token_limit=manifest.output_token_limit,
             cases=manifest.cases,
+            input_token_estimator=manifest.input_token_estimator,
         )
 
     @classmethod
@@ -406,6 +416,7 @@ class BenchmarkRunSpec:
         model_lock_hashes: tuple[str, ...] = ("fixture-reranker-lock", "fixture-qwen-lock"),
         threshold_artifact_hashes: tuple[str, ...] = ("fixture-threshold",),
         output_token_limit: int = 256,
+        input_token_estimator: str = OMLX_CHAT_INPUT_TOKEN_PROXY_ESTIMATOR,
     ) -> BenchmarkRunSpec:
         """Build a deliberately non-production-scale spec for offline tests."""
 
@@ -418,6 +429,7 @@ class BenchmarkRunSpec:
             "model_lock_hashes": list(model_lock_hashes),
             "threshold_artifact_hashes": list(threshold_artifact_hashes),
             "output_token_limit": output_token_limit,
+            "input_token_estimator": input_token_estimator,
             "cases": [[item.pair_id, item.input_tokens, item.abstract_missing] for item in case_tuple],
             "forced_qwen_pair_ids": sorted(forced_qwen_pair_ids),
             "fixture_scale": True,
@@ -432,6 +444,7 @@ class BenchmarkRunSpec:
             threshold_artifact_hashes=threshold_artifact_hashes,
             output_token_limit=output_token_limit,
             cases=case_tuple,
+            input_token_estimator=input_token_estimator,
             forced_qwen_pair_ids=frozenset(forced_qwen_pair_ids),
             fixture_scale=True,
         )
@@ -1112,6 +1125,18 @@ class Stage2BenchmarkRunner:
         observed_missing = {item.paper_id for item in papers if not item.abstract or not item.abstract.strip()}
         if missing != observed_missing:
             raise ValueError("benchmark paper abstracts do not match frozen missing-abstract flags")
+        paper_by_id = {paper.paper_id: paper for paper in papers}
+        for case in spec.cases:
+            messages = adjudication_messages(
+                query_version=self.profile.query_version,
+                query=self.profile.query,
+                paper=paper_by_id[case.pair_id],
+            )
+            observed = estimate_omlx_chat_input_token_proxy(messages)
+            if case.input_tokens != observed:
+                raise ValueError(
+                    "benchmark case input_tokens do not match the released prompt proxy estimator"
+                )
         if spec.stage2_config_hash != self.profile.base_runtime_config_hash:
             raise ValueError("benchmark manifest does not match the executed Stage 2 config")
         if spec.output_token_limit != self.adjudicator_output_token_limit:

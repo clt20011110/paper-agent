@@ -27,6 +27,10 @@ from paper_agent.stage2_pipeline import (
     Stage2Paper,
     Stage2Profile,
 )
+from paper_agent.stage2_prompt_contract import (
+    adjudication_messages,
+    estimate_omlx_chat_input_token_proxy,
+)
 from paper_agent.storage import Database
 
 
@@ -520,17 +524,25 @@ def test_measure_stage2_dry_run_validates_release_workload_and_macos_observation
         reranker_max_in_flight=2,
         adjudicator_concurrency=4,
     )
-    cases = tuple(
-        PerformanceCase(f"paper-{index}", 100, index < 100)
-        for index in range(1_000)
-    )
     papers = tuple(
         Stage2Paper(
-            case.pair_id,
+            f"paper-{index}",
             f"Paper {index}",
-            None if case.abstract_missing else "Frozen abstract",
+            None if index < 100 else "Frozen abstract",
         )
-        for index, case in enumerate(cases)
+        for index in range(1_000)
+    )
+    cases = tuple(
+        PerformanceCase(
+            paper.paper_id,
+            estimate_omlx_chat_input_token_proxy(adjudication_messages(
+                query_version=profile.query_version,
+                query=profile.query,
+                paper=paper,
+            )),
+            paper.abstract is None,
+        )
+        for paper in papers
     )
     manifest = PerformanceRoutingManifest(
         1,

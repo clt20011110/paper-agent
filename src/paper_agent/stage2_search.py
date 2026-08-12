@@ -596,7 +596,12 @@ def verify_stage2_release_evidence_index(
         manifest = gold_manifest_from_document(
             index.gold_manifest.read_json(index.bundle_root)
         )
-        public_evidence = verify_public_stage2_gates(index)
+        # Public benchmark evidence is produced by the v2 candidate before a
+        # release-gate hash exists, so verify its full profile in that state.
+        public_evidence = verify_public_stage2_gates(
+            index,
+            profile=replace(profile, release_gate_hash=None),
+        )
         if not public_evidence.passed:
             failures = [
                 f"{name}: {failure}"

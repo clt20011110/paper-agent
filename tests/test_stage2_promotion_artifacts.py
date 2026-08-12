@@ -203,6 +203,42 @@ def test_candidate_preflight_requires_every_calibrator_to_bind_gold_manifest(
         )
 
 
+def test_public_promotion_verification_passes_the_candidate_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import paper_agent.stage2_public_gates as public_gates
+    import paper_agent.stage2_release_evidence as evidence_io
+    import paper_agent.stage2_search as stage2_search
+
+    profile = object()
+    candidate = SimpleNamespace(profile=profile)
+    evidence = object()
+    observed: list[object] = []
+    monkeypatch.setattr(
+        stage2_search, "load_stage2_benchmark_candidate", lambda _path: candidate,
+    )
+    monkeypatch.setattr(
+        stage2_search, "_validate_evidence_bindings", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        evidence_io, "load_stage2_release_evidence_index", lambda _path: evidence,
+    )
+    monkeypatch.setattr(
+        public_gates,
+        "verify_public_stage2_gates",
+        lambda value, *, profile: observed.extend((value, profile)) or "verified",
+    )
+
+    result = artifacts_io.validate_promotion_public_evidence(
+        {"candidate": tmp_path / "candidate.json"},
+        {"candidate": tmp_path / "evidence.json"},
+        "a" * 64,
+    )
+
+    assert result["candidate"] == "verified"
+    assert observed == [evidence, profile]
+
+
 def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

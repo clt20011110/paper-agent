@@ -441,7 +441,9 @@ def validate_promotion_public_evidence(
             evaluation_manifest_hash=manifest_hash,
             profile=candidate.profile,
         )
-        results[candidate_id] = verify_public_stage2_gates(evidence)
+        results[candidate_id] = verify_public_stage2_gates(
+            evidence, profile=candidate.profile,
+        )
     return MappingProxyType(results)
 
 
