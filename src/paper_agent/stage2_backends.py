@@ -208,6 +208,7 @@ class OmlxRerankBackend:
     document_batch_size: int = 32
     max_in_flight: int = 2
     backend_name: str = field(default="omlx_rerank", init=False)
+    is_local: bool = field(default=True, init=False)
 
     def __post_init__(self) -> None:
         if self.document_batch_size not in {16, 32, 64}:
@@ -387,6 +388,7 @@ class MlxNativeExperimentalBackend:
     execute: Callable[[str, Sequence[RerankInput]], Sequence[float]]
     enabled: bool = False
     backend_name: str = field(default="mlx_native", init=False)
+    is_local: bool = field(default=True, init=False)
 
     def rerank(self, query: str, documents: Sequence[RerankInput]) -> tuple[RerankScore, ...]:
         if not self.enabled:

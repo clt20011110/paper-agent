@@ -37,6 +37,7 @@ from .stage2_evaluation import (
     PathCalibrator,
     ThresholdArtifact as ProbabilityThresholdArtifact,
 )
+from .stage2_fallback import LocalCalibratedRerankerFallback
 from .schema import schema_directory
 from .stage2_prompt_contract import (
     adjudication_messages,
@@ -438,6 +439,7 @@ class Stage2Pipeline:
     reranker: RerankerBackend
     adjudicator: AdjudicatorBackend
     profile: Stage2Profile
+    reranker_fallback: LocalCalibratedRerankerFallback | None = None
     implementation_version: str = IMPLEMENTATION_VERSION
     worker_id: str = field(default_factory=lambda: f"stage2-worker-{uuid4().hex}")
     lease_seconds: int = DEFAULT_LEASE_SECONDS
@@ -455,6 +457,13 @@ class Stage2Pipeline:
             raise ValueError("Stage 2 lease_seconds must be positive")
         if self.peer_wait_seconds <= 0 or self.lease_poll_seconds <= 0:
             raise ValueError("Stage 2 peer wait settings must be positive")
+        if self.reranker_fallback is not None:
+            if self.reranker_fallback.backend is self.reranker:
+                raise ValueError("fallback backend must differ from the primary reranker")
+            self.reranker_fallback.validate_primary_binding(
+                primary_model_lock_hash=self.profile.reranker_lock_hash,
+                primary_release_gate_hash=self.profile.release_gate_hash,
+            )
 
     def run(self, run_id: str, papers: Iterable[Stage2Paper]) -> Stage2Summary:
         self.profile.assert_runtime_ready()
@@ -618,8 +627,8 @@ class Stage2Pipeline:
         for paper in rerank_inputs:
             if paper.paper_id in decisions:
                 continue
-            score = scored.get(paper.paper_id)
-            if score is None:
+            score_binding = scored.get(paper.paper_id)
+            if score_binding is None:
                 decisions[paper.paper_id] = self._from_route(
                     paper,
                     self.input_hash(paper),
@@ -628,8 +637,17 @@ class Stage2Pipeline:
                     reranker_probability=self._failure_probability(),
                 )
                 continue
+            score, calibration = score_binding
             try:
-                route, probability = self._reranker_route(paper, score)
+                route, probability = (
+                    self._reranker_route(paper, score)
+                    if calibration is self.profile.reranker_calibration
+                    else self._reranker_route_with_calibration(
+                        paper,
+                        score,
+                        calibration,
+                    )
+                )
             except ValueError:
                 decisions[paper.paper_id] = self._from_route(
                     paper,
@@ -683,8 +701,8 @@ class Stage2Pipeline:
             return DeterministicRuleDecision(CascadeRoute.RELEVANT, f"document_type_included:{document_type}")
         return None
 
-    def _rerank(self, papers: Sequence[Stage2Paper]) -> tuple[dict[str, float], tuple[Stage2Paper, ...]]:
-        scores: dict[str, float] = {}
+    def _rerank(self, papers: Sequence[Stage2Paper]) -> tuple[dict[str, tuple[float, PathCalibration | None]], tuple[Stage2Paper, ...]]:
+        scores: dict[str, tuple[float, PathCalibration | None]] = {}
         failures: list[Stage2Paper] = []
         buckets: dict[int, list[Stage2Paper]] = {}
         for paper in papers:
@@ -697,22 +715,73 @@ class Stage2Pipeline:
                     tuple(RerankInput(paper.paper_id, self.document(paper)) for paper in batch),
                 )
             except RerankBatchError as error:
-                scores.update({item.paper_id: item.raw_score for item in error.scores})
+                scores.update({item.paper_id: (item.raw_score, self.profile.reranker_calibration) for item in error.scores})
                 failed = set(error.failed_paper_ids)
-                failures.extend(paper for paper in batch if paper.paper_id in failed)
+                failed_papers = tuple(paper for paper in batch if paper.paper_id in failed)
+                fallback_scores, fallback_failures = self._rerank_fallback(failed_papers)
+                scores.update(fallback_scores)
+                failures.extend(fallback_failures)
                 continue
             except _FAILURES:
-                failures.extend(batch)
+                fallback_scores, fallback_failures = self._rerank_fallback(batch)
+                scores.update(fallback_scores)
+                failures.extend(fallback_failures)
                 continue
             expected = {paper.paper_id for paper in batch}
             returned = {item.paper_id: item.raw_score for item in response}
             if not set(returned) <= expected:
-                failures.extend(batch)
+                fallback_scores, fallback_failures = self._rerank_fallback(batch)
+                scores.update(fallback_scores)
+                failures.extend(fallback_failures)
                 continue
-            scores.update(returned)
+            scores.update({paper_id: (score, self.profile.reranker_calibration) for paper_id, score in returned.items()})
         return scores, tuple(failures)
 
-    def _reranker_route(self, paper: Stage2Paper, score: float) -> tuple[CascadeRoute, float | None]:
+    def _rerank_fallback(
+        self, papers: Sequence[Stage2Paper]
+    ) -> tuple[dict[str, tuple[float, PathCalibration | None]], tuple[Stage2Paper, ...]]:
+        """Score only failed papers with the explicitly qualified local backup."""
+        if not papers or self.reranker_fallback is None:
+            return {}, tuple(papers)
+        try:
+            response = self.reranker_fallback.backend.rerank(
+                self.profile.query,
+                tuple(RerankInput(paper.paper_id, self.document(paper)) for paper in papers),
+            )
+        except RerankBatchError as error:
+            returned = {item.paper_id: item.raw_score for item in error.scores}
+            failed = set(error.failed_paper_ids)
+        except _FAILURES:
+            return {}, tuple(papers)
+        else:
+            returned = {item.paper_id: item.raw_score for item in response}
+            failed = set()
+        expected = {paper.paper_id for paper in papers}
+        if not set(returned) <= expected:
+            return {}, tuple(papers)
+        scores = {
+            paper_id: (score, self.reranker_fallback.calibration)
+            for paper_id, score in returned.items()
+        }
+        return scores, tuple(
+            paper for paper in papers if paper.paper_id in failed or paper.paper_id not in returned
+        )
+
+    def _reranker_route(
+        self, paper: Stage2Paper, score: float
+    ) -> tuple[CascadeRoute, float | None]:
+        return self._reranker_route_with_calibration(
+            paper,
+            score,
+            self.profile.reranker_calibration,
+        )
+
+    def _reranker_route_with_calibration(
+        self,
+        paper: Stage2Paper,
+        score: float,
+        calibration: PathCalibration | None,
+    ) -> tuple[CascadeRoute, float | None]:
         cascade_input = CascadeInput(
             raw_score=score,
             abstract_missing=not bool(paper.abstract and paper.abstract.strip()),
@@ -720,7 +789,7 @@ class Stage2Pipeline:
             multi_condition_conflict=paper.multi_condition_conflict,
             language_anomaly=paper.language_anomaly,
         )
-        binding = self.profile.reranker_calibration
+        binding = calibration
         if binding is None:
             assert self.profile.thresholds is not None
             return route_cascade(cascade_input, self.profile.thresholds), None
