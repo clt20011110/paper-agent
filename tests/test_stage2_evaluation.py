@@ -50,6 +50,7 @@ from paper_agent.stage2_evaluation import (
     load_promotion_marker,
     measure_predictions,
     paired_bootstrap_comparison,
+    pair_universe_hash,
     parity_gate,
     performance_gate,
     phase3_release_gate,
@@ -593,32 +594,92 @@ def test_rationale_manifest_freezes_balanced_strata_language_and_artifact_proven
     assert any("support" in failure for failure in failures) and any("fabrication" in failure for failure in failures)
 
 
+def _parity_bindings() -> tuple[PathCalibrator, ThresholdArtifact, PathCalibrator, ThresholdArtifact]:
+    calibration_ids = ("dev-a", "dev-b")
+    calibration_hash = sha256(
+        json.dumps(sorted(calibration_ids), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    calibrators = tuple(
+        PathCalibrator(
+            1, CalibrationPath.RERANKER, 1.0, 0.0, "dev-manifest", "gold-manifest",
+            model_lock, "dev-labels", calibration_hash, 2, calibration_ids,
+        )
+        for model_lock in ("fp32-lock", "quantized-lock")
+    )
+    thresholds = tuple(
+        ThresholdArtifact(
+            1, CalibrationPath.RERANKER, 0.25, 0.75, calibrator.hash(),
+            calibrator.model_lock_hash, "dev-manifest", "dev-labels", "config",
+        )
+        for calibrator in calibrators
+    )
+    return calibrators[0], thresholds[0], calibrators[1], thresholds[1]
+
+
 def _parity_manifest() -> ParityManifest:
     pair_ids = tuple(f"parity-{index}" for index in range(10_000))
+    oracle_calibrator, oracle_threshold, candidate_calibrator, candidate_threshold = _parity_bindings()
     return ParityManifest(
-        1, pair_ids, "parity-corpus", "tokenizer", "preprocess", "fp32-lock", "quantized-lock",
-        "oracle-thresholds", "candidate-thresholds", "dev-manifest", "selector-v1", 100, 9_900, 100, 9_900,
-        frozenset(pair_ids[:200]), frozenset(pair_ids[-200:]), "abs(low-score)<=100", "abs(high-score)<=100",
+        2, pair_ids, "workload", "receipt", pair_universe_hash(pair_ids), "query-assignment",
+        "parity-corpus", "tokenizer", "preprocess", "fp32-lock", "quantized-lock",
+        oracle_calibrator.hash(), candidate_calibrator.hash(), oracle_threshold.hash(),
+        candidate_threshold.hash(), "gold-manifest", "dev-manifest", "dev-labels",
+        oracle_calibrator.calibration_pair_ids_hash, "selector-v2",
+        frozenset(pair_ids[:200]), frozenset(pair_ids[-200:]),
     )
 
 
 def test_kendall_tau_b_ties_and_dual_threshold_parity_are_bound_to_manifest() -> None:
     assert kendall_tau_b((1, 1, 2, 3), (1, 2, 2, 3)) == pytest.approx(0.8)
     manifest = _parity_manifest()
+    bindings = _parity_bindings()
     scores = tuple(
-        ParityScore(pair_id, manifest.hash(), float(index), float(index))
+        ParityScore(pair_id, float(index) - 5_000, float(index) - 5_000)
         for index, pair_id in enumerate(manifest.pair_ids)
     )
-    result = parity_gate(manifest, scores)
+    result = parity_gate(manifest, scores, *bindings)
     assert result.gate.passed and result.kendall_tau_b == 1
     assert result.low_threshold_denominator == result.high_threshold_denominator == 200
 
     changed = list(scores)
     for index in (0, 1):
-        changed[index] = replace(changed[index], candidate_score=1_000)
-    failed = parity_gate(manifest, changed)
+        changed[index] = replace(changed[index], candidate_score=5_000)
+    failed = parity_gate(manifest, changed, *bindings)
     assert failed.low_threshold_agreement == 0.99
     assert any("low-threshold" in failure for failure in failed.gate.failures)
+
+
+def test_parity_rejects_self_comparison_and_uses_calibrated_probability_semantics() -> None:
+    manifest = _parity_manifest()
+    with pytest.raises(ValueError, match="must differ"):
+        replace(manifest, candidate_model_lock_hash=manifest.oracle_model_lock_hash)
+
+    oracle_calibrator, oracle_threshold, candidate_calibrator, candidate_threshold = _parity_bindings()
+    shifted_candidate = replace(candidate_calibrator, slope=2.0, intercept=1.0)
+    shifted_threshold = replace(
+        candidate_threshold,
+        calibrator_hash=shifted_candidate.hash(),
+        low=shifted_candidate.predict(-1.1),
+        high=shifted_candidate.predict(1.1),
+    )
+    calibrated_manifest = replace(
+        manifest,
+        candidate_calibrator_hash=shifted_candidate.hash(),
+        candidate_threshold_artifact_hash=shifted_threshold.hash(),
+    )
+    scores = tuple(
+        ParityScore(pair_id, float(index) - 5_000, float(index) - 5_000)
+        for index, pair_id in enumerate(manifest.pair_ids)
+    )
+    result = parity_gate(
+        calibrated_manifest,
+        scores,
+        oracle_calibrator,
+        oracle_threshold,
+        shifted_candidate,
+        shifted_threshold,
+    )
+    assert result.gate.passed
 
 
 def _release(candidate_id: str, manifest_hash: str, throughput: tuple[float, float, float], passed: bool = True):

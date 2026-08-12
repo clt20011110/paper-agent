@@ -1963,58 +1963,73 @@ def rationale_audit_gate(manifest: RationaleAuditManifest, records: Sequence[Rat
 class ParityManifest:
     version: int
     pair_ids: tuple[str, ...]
+    workload_hash: str
+    selection_receipt_hash: str
+    pair_universe_hash: str
+    query_assignment_hash: str
     corpus_hash: str
     tokenizer_hash: str
     preprocess_hash: str
     oracle_model_lock_hash: str
     candidate_model_lock_hash: str
+    oracle_calibrator_hash: str
+    candidate_calibrator_hash: str
     oracle_threshold_artifact_hash: str
     candidate_threshold_artifact_hash: str
+    gold_manifest_hash: str
     dev_manifest_hash: str
+    dev_label_hash: str
+    calibration_pair_ids_hash: str
     window_selector_hash: str
-    oracle_low: float
-    oracle_high: float
-    candidate_low: float
-    candidate_high: float
     low_window_pair_ids: frozenset[str]
     high_window_pair_ids: frozenset[str]
-    low_window_definition: str
-    high_window_definition: str
 
     def __post_init__(self) -> None:
         ids = set(self.pair_ids)
         hashes = (
-            self.corpus_hash, self.tokenizer_hash, self.preprocess_hash, self.oracle_model_lock_hash,
-            self.candidate_model_lock_hash, self.oracle_threshold_artifact_hash,
-            self.candidate_threshold_artifact_hash, self.dev_manifest_hash, self.window_selector_hash,
+            self.workload_hash, self.selection_receipt_hash, self.pair_universe_hash,
+            self.query_assignment_hash, self.corpus_hash, self.tokenizer_hash,
+            self.preprocess_hash, self.oracle_model_lock_hash,
+            self.candidate_model_lock_hash, self.oracle_calibrator_hash,
+            self.candidate_calibrator_hash, self.oracle_threshold_artifact_hash,
+            self.candidate_threshold_artifact_hash, self.gold_manifest_hash,
+            self.dev_manifest_hash, self.dev_label_hash,
+            self.calibration_pair_ids_hash, self.window_selector_hash,
         )
-        if self.version != 1 or len(self.pair_ids) < 10_000 or len(ids) != len(self.pair_ids) or not all(hashes):
-            raise ValueError("parity manifest requires at least 10,000 unique pairs and complete provenance")
+        if self.version != 2 or len(self.pair_ids) != 10_000 or len(ids) != 10_000 or not all(hashes):
+            raise ValueError("parity manifest requires exactly 10,000 unique pairs and complete provenance")
+        if self.pair_universe_hash != pair_universe_hash(self.pair_ids):
+            raise ValueError("parity manifest pair universe hash is invalid")
+        if self.oracle_model_lock_hash == self.candidate_model_lock_hash:
+            raise ValueError("parity oracle and candidate model locks must differ")
         if (
-            not self.low_window_pair_ids or not self.high_window_pair_ids
+            len(self.low_window_pair_ids) != 200 or len(self.high_window_pair_ids) != 200
             or not self.low_window_pair_ids <= ids or not self.high_window_pair_ids <= ids
-            or not self.low_window_definition or not self.high_window_definition
         ):
-            raise ValueError("parity manifest must freeze non-empty low/high windows and denominators")
-        thresholds = (self.oracle_low, self.oracle_high, self.candidate_low, self.candidate_high)
-        if not all(isfinite(item) for item in thresholds) or not self.oracle_low < self.oracle_high or not self.candidate_low < self.candidate_high:
-            raise ValueError("parity low/high thresholds must be finite and ordered")
+            raise ValueError("parity manifest must freeze exact 200-pair low/high windows")
 
     def document(self) -> dict[str, object]:
         return {
-            "version": self.version, "pair_ids": list(self.pair_ids), "corpus_hash": self.corpus_hash,
+            "version": self.version, "pair_ids": list(self.pair_ids),
+            "workload_hash": self.workload_hash,
+            "selection_receipt_hash": self.selection_receipt_hash,
+            "pair_universe_hash": self.pair_universe_hash,
+            "query_assignment_hash": self.query_assignment_hash,
+            "corpus_hash": self.corpus_hash,
             "tokenizer_hash": self.tokenizer_hash, "preprocess_hash": self.preprocess_hash,
             "oracle_model_lock_hash": self.oracle_model_lock_hash,
             "candidate_model_lock_hash": self.candidate_model_lock_hash,
+            "oracle_calibrator_hash": self.oracle_calibrator_hash,
+            "candidate_calibrator_hash": self.candidate_calibrator_hash,
             "oracle_threshold_artifact_hash": self.oracle_threshold_artifact_hash,
             "candidate_threshold_artifact_hash": self.candidate_threshold_artifact_hash,
-            "dev_manifest_hash": self.dev_manifest_hash, "window_selector_hash": self.window_selector_hash,
-            "oracle_low": self.oracle_low, "oracle_high": self.oracle_high,
-            "candidate_low": self.candidate_low, "candidate_high": self.candidate_high,
+            "gold_manifest_hash": self.gold_manifest_hash,
+            "dev_manifest_hash": self.dev_manifest_hash,
+            "dev_label_hash": self.dev_label_hash,
+            "calibration_pair_ids_hash": self.calibration_pair_ids_hash,
+            "window_selector_hash": self.window_selector_hash,
             "low_window_pair_ids": sorted(self.low_window_pair_ids),
             "high_window_pair_ids": sorted(self.high_window_pair_ids),
-            "low_window_definition": self.low_window_definition,
-            "high_window_definition": self.high_window_definition,
         }
 
     def hash(self) -> str:
@@ -2024,18 +2039,16 @@ class ParityManifest:
 @dataclass(frozen=True, slots=True)
 class ParityScore:
     pair_id: str
-    manifest_hash: str
     oracle_score: float
     candidate_score: float
 
     def __post_init__(self) -> None:
-        if not self.pair_id or not self.manifest_hash or not isfinite(self.oracle_score) or not isfinite(self.candidate_score):
+        if not self.pair_id or not isfinite(self.oracle_score) or not isfinite(self.candidate_score):
             raise ValueError("parity scores require pair_id and finite values")
 
     def document(self) -> dict[str, object]:
         return {
             "pair_id": self.pair_id,
-            "manifest_hash": self.manifest_hash,
             "oracle_score": self.oracle_score,
             "candidate_score": self.candidate_score,
         }
@@ -2099,23 +2112,55 @@ def kendall_tau_b(left: Sequence[float], right: Sequence[float]) -> float:
     return 0.0 if denominator == 0 else (comparable - 2 * discordant) / denominator
 
 
-def parity_gate(manifest: ParityManifest, scores: Sequence[ParityScore]) -> ParityResult:
+def parity_gate(
+    manifest: ParityManifest,
+    scores: Sequence[ParityScore],
+    oracle_calibrator: PathCalibrator,
+    oracle_threshold: ThresholdArtifact,
+    candidate_calibrator: PathCalibrator,
+    candidate_threshold: ThresholdArtifact,
+) -> ParityResult:
+    bindings = (
+        (oracle_calibrator, oracle_threshold, manifest.oracle_model_lock_hash,
+         manifest.oracle_calibrator_hash, manifest.oracle_threshold_artifact_hash),
+        (candidate_calibrator, candidate_threshold, manifest.candidate_model_lock_hash,
+         manifest.candidate_calibrator_hash, manifest.candidate_threshold_artifact_hash),
+    )
+    for calibrator, threshold, model_lock_hash, calibrator_hash, threshold_hash in bindings:
+        if calibrator.path is not CalibrationPath.RERANKER or threshold.path is not CalibrationPath.RERANKER:
+            raise ValueError("parity calibrators and thresholds must use the reranker path")
+        if (
+            calibrator.model_lock_hash != model_lock_hash
+            or threshold.model_lock_hash != model_lock_hash
+            or calibrator.hash() != calibrator_hash
+            or threshold.hash() != threshold_hash
+            or threshold.calibrator_hash != calibrator_hash
+        ):
+            raise ValueError("parity calibration does not match its model or threshold binding")
+        if (
+            calibrator.gold_manifest_hash != manifest.gold_manifest_hash
+            or calibrator.dev_manifest_hash != manifest.dev_manifest_hash
+            or calibrator.dev_label_hash != manifest.dev_label_hash
+            or calibrator.calibration_pair_ids_hash != manifest.calibration_pair_ids_hash
+            or threshold.dev_manifest_hash != manifest.dev_manifest_hash
+            or threshold.dev_label_hash != manifest.dev_label_hash
+        ):
+            raise ValueError("parity calibration does not share frozen DEV provenance")
     by_id = {item.pair_id: item for item in scores}
     if len(by_id) != len(scores) or set(by_id) != set(manifest.pair_ids):
         raise ValueError("parity scores must exactly cover the frozen pair universe")
-    manifest_hash = manifest.hash()
-    if any(item.manifest_hash != manifest_hash for item in scores):
-        raise ValueError("parity score provenance mismatch")
     ordered = [by_id[pair_id] for pair_id in manifest.pair_ids]
     tau = kendall_tau_b([item.oracle_score for item in ordered], [item.candidate_score for item in ordered])
     low_window = [by_id[pair_id] for pair_id in manifest.low_window_pair_ids]
     high_window = [by_id[pair_id] for pair_id in manifest.high_window_pair_ids]
     low_agreement = sum(
-        (item.oracle_score <= manifest.oracle_low) == (item.candidate_score <= manifest.candidate_low)
+        (oracle_calibrator.predict(item.oracle_score) <= oracle_threshold.low)
+        == (candidate_calibrator.predict(item.candidate_score) <= candidate_threshold.low)
         for item in low_window
     ) / len(low_window)
     high_agreement = sum(
-        (item.oracle_score >= manifest.oracle_high) == (item.candidate_score >= manifest.candidate_high)
+        (oracle_calibrator.predict(item.oracle_score) >= oracle_threshold.high)
+        == (candidate_calibrator.predict(item.candidate_score) >= candidate_threshold.high)
         for item in high_window
     ) / len(high_window)
     failures = []
@@ -2126,7 +2171,7 @@ def parity_gate(manifest: ParityManifest, scores: Sequence[ParityScore]) -> Pari
     if high_agreement < 0.995:
         failures.append("high-threshold classification agreement < 99.5%")
     return ParityResult(
-        manifest_hash, GateResult(not failures, tuple(failures)), tau, low_agreement, high_agreement,
+        manifest.hash(), GateResult(not failures, tuple(failures)), tau, low_agreement, high_agreement,
         len(low_window), len(high_window),
     )
 
