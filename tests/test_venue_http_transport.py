@@ -26,6 +26,7 @@ VENUE_PROVIDERS = (
     "crossref_serial",
     "neurips_proceedings",
     "pmlr",
+    "jmlr_official",
     "acl_anthology",
     "cvf_open_access",
     "ijcai_proceedings",
@@ -428,6 +429,60 @@ def test_pmlr_uses_uai_held_year_when_volume_was_published_later() -> None:
         "pmlr",
     )
     assert _pmlr_publication_date(root, 2019, conference_year=2019) == "2019-07-22"
+
+
+def test_jmlr_resolves_every_volume_covering_year_then_filters_paper_year() -> None:
+    index = b"""<html><body>
+    <p><a href='v18'>Volume 18</a> (February 2017 - August 2018)</p>
+    <p><a href='v19'>Volume 19</a> (August 2018 - December 2018)</p>
+    </body></html>"""
+    volume18 = b"""<html><body>
+    <dl><dt>Old Paper</dt><dd><i>Old Author</i>; (1):1-2, 2017.
+    <a href='/papers/v18/old.html'>abs</a><a href='/papers/volume18/old/old.pdf'>pdf</a></dd></dl>
+    <dl><dt>First 2018 Paper</dt><dd><i>Ada Lovelace, Grace Hopper</i>; (2):1-9, 2018.
+    <a href='/papers/v18/first.html'>abs</a><a href='/papers/volume18/first/first.pdf'>pdf</a></dd></dl>
+    </body></html>"""
+    volume19 = b"""<html><body>
+    <dl><dt>Second 2018 Paper</dt><dd><i>Alan Turing</i>; (1):1-5, 2018.
+    <a href='/papers/v19/second.html'>abs</a><a href='/papers/volume19/second/second.pdf'>pdf</a></dd></dl>
+    </body></html>"""
+    bodies = {
+        "https://www.jmlr.org/papers/": index,
+        "https://www.jmlr.org/papers/v18/": volume18,
+        "https://www.jmlr.org/papers/v19/": volume19,
+    }
+    calls: list[str] = []
+
+    class Response:
+        content_type = "text/html"
+
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
+    def fetch(url: str, api_version: str, policy_provider: str | None = None):
+        calls.append(url)
+        return Response(bodies[url])
+
+    result = execute_venue_operation(
+        "jmlr_official",
+        "discover",
+        {"year": 2018, "date_from": "2018-01-01", "date_to": "2018-12-31"},
+        fetch,
+    )
+
+    assert calls == list(bodies)
+    assert [entry["external_id"] for entry in result.payload["entries"]] == [
+        "v18/first",
+        "v19/second",
+    ]
+    assert result.payload["entries"][0]["authors"] == ["Ada Lovelace", "Grace Hopper"]
+    assert result.payload["entries"][0]["pdf_url"].endswith("/first/first.pdf")
+    assert result.payload["census"] == {
+        "expected_total": 2,
+        "parser_raw_records": 3,
+        "parser_rejected_records": 0,
+        "parser_excluded_records": 1,
+    }
 
 
 def test_acl_uses_frozen_official_xml_and_honors_collection_and_date_window() -> None:

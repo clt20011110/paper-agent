@@ -736,6 +736,136 @@ def _uai_auai(
     )
 
 
+@register_venue_handler("jmlr_official")
+def _jmlr_official(
+    operation: str, parameters: Mapping[str, Any], fetch: VenueFetch
+) -> VenueOperationResult:
+    """Enumerate JMLR papers from the journal's authoritative volume lists.
+
+    JMLR volumes 17-19 do not align one-to-one with calendar years.  The
+    journal index is therefore resolved on every cached operation and every
+    paper is filtered using the publication year printed in its volume entry.
+    """
+
+    provider = "jmlr_official"
+    _require_operation(provider, operation, {"discover"})
+    year = _year(parameters)
+    index_url = "https://www.jmlr.org/papers/"
+    index_response = fetch(index_url, "jmlr-volume-index-html-v1")
+    index_root = _html(index_response.body, provider)
+    volume_ids: list[str] = []
+    for paragraph in _nodes(index_root, "p"):
+        link = next(
+            (
+                node
+                for node in _nodes(paragraph, "a")
+                if re.fullmatch(r"/?v\d+/?", node.attributes.get("href", ""))
+            ),
+            None,
+        )
+        if link is None:
+            continue
+        years = {int(value) for value in re.findall(r"\b(?:19|20)\d{2}\b", paragraph.text)}
+        if year not in years:
+            continue
+        match = re.search(r"v(\d+)", link.attributes["href"])
+        if match:
+            volume_ids.append(match.group(1))
+    volume_ids = list(dict.fromkeys(volume_ids))
+    if not volume_ids:
+        raise ProviderRequestError(f"{provider}: official index has no volume covering {year}")
+
+    parsed: list[dict[str, Any]] = []
+    raw_records = 0
+    bodies: list[bytes] = [index_response.body]
+    for volume_id in volume_ids:
+        volume_url = f"https://www.jmlr.org/papers/v{volume_id}/"
+        response = fetch(volume_url, "jmlr-volume-html-v1")
+        bodies.append(response.body)
+        root = _html(response.body, provider)
+        for definition_list in _nodes(root, "dl"):
+            title_node = _first(definition_list, "dt")
+            details_node = _first(definition_list, "dd")
+            if title_node is None or details_node is None:
+                continue
+            raw_records += 1
+            links = _nodes(details_node, "a")
+            landing_path = next(
+                (
+                    node.attributes.get("href")
+                    for node in links
+                    if re.search(
+                        rf"/papers/v{volume_id}/[^/]+\.html$",
+                        node.attributes.get("href", ""),
+                    )
+                ),
+                None,
+            )
+            pdf_path = next(
+                (
+                    node.attributes.get("href")
+                    for node in links
+                    if node.attributes.get("href", "").casefold().endswith(".pdf")
+                ),
+                None,
+            )
+            publication = re.search(r",\s*((?:19|20)\d{2})\s*\.", details_node.text)
+            issue = re.search(r";\s*\((\d+)\):", details_node.text)
+            identifier = (
+                str(landing_path).rsplit("/", 1)[-1].removesuffix(".html")
+                if landing_path
+                else ""
+            )
+            if not title_node.text or not identifier or not pdf_path or not publication:
+                continue
+            paper_year = int(publication.group(1))
+            author_node = _first(details_node, "i")
+            authors = [
+                value.strip()
+                for value in (author_node.text if author_node else "").split(",")
+                if value.strip()
+            ]
+            parsed.append(
+                {
+                    "external_id": f"v{volume_id}/{identifier}",
+                    "title": title_node.text,
+                    "authors": authors,
+                    "abstract": None,
+                    "publication_date": f"{paper_year:04d}-01-01",
+                    "year": paper_year,
+                    "venue": "Journal of Machine Learning Research",
+                    "landing_url": _absolute(volume_url, str(landing_path)),
+                    "pdf_url": _absolute(volume_url, str(pdf_path)).replace(
+                        "http://", "https://", 1
+                    ),
+                    "volume": volume_id,
+                    "issue": issue.group(1) if issue else None,
+                    "publication_version": "published",
+                    "host_type": "official",
+                    "access_basis": "public_read_only",
+                    "document_type": "journal-article",
+                    "date_precision": "year",
+                    "upstream": "jmlr",
+                }
+            )
+
+    entries = [entry for entry in parsed if _in_window(entry, parameters)]
+    if not entries:
+        raise ProviderRequestError(f"{provider}: no papers found for {year}")
+    rejected = raw_records - len(parsed)
+    census = {
+        "expected_total": len(entries),
+        "parser_raw_records": raw_records,
+        "parser_rejected_records": rejected,
+        "parser_excluded_records": len(parsed) - len(entries),
+    }
+    selected, cursor = _page(entries, parameters)
+    return VenueOperationResult(
+        {"entries": selected, "next_cursor": cursor, "census": census},
+        tuple(bodies),
+    )
+
+
 @register_venue_handler("acl_anthology")
 def _acl(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> VenueOperationResult:
     provider = "acl_anthology"

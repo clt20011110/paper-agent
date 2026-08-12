@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: jmlr
+primary_provider: jmlr_official
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-jmlr.json
+fixture_sha256: 31f31455c1f7097e7979f62614f2b497dbbeb700b17756cea3f5b799e3a00f3e
+expected_stable_ids: [v25/19-301]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-jmlr-index.html, sha256: 7a9ce8136e346c696e2ed0d966510e1c7e0e85f935e63f7f85ad02f514a3a8c4, content_type: text/html, url_contains: "https://www.jmlr.org/papers/"}
+  - {path: tests/fixtures/providers/http-venue-jmlr.html, sha256: e4ec0f262812bba9e7c0fa88eeb763b2e64d3ef866b49fdbf85a07a6f1923c60, content_type: text/html, url_contains: "https://www.jmlr.org/papers/v25/"}
+transport_expected_stable_ids: [v25/19-301, v25/21-0264]
+required_fields: [stable_id, metadata, date_filter]
+required_capabilities: [stable_id, metadata, date_filter]
+fallbacks: [{provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

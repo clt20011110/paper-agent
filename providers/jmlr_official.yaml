@@ -1,0 +1,16 @@
+schema_version: "1"
+provider: jmlr_official
+distribution: paper-agent
+version: 2.0.0a0
+entry_point: paper_agent.providers.builtin:VenueBuiltinAdapter
+artifact_sha256: 3ef41d7aed1629cf1b65730621db38f9b6fec633c9a9282644bfd35fdae93649
+enabled: true
+builtin: true
+authority: official
+roles: [venue_primary]
+capabilities: [stable_id, metadata, date_filter]
+authentication: {required: false}
+rate_limit: {global_qps: 1, max_concurrency: 2, cache_ttl_seconds: 3600}
+terms: {data_use: permitted, url: https://www.jmlr.org/}
+independence_group: jmlr_official
+upstream_families: [jmlr]

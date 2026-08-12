@@ -258,6 +258,21 @@
       "parser_rejected_records": 0
     },
     {
+      "venue_id": "jmlr",
+      "provider": "jmlr_official",
+      "authority": "official",
+      "status": "complete",
+      "run_id": "2081dc8d-7df0-55a6-824a-c8dac324ba70",
+      "metadata_sha256": "2409c3867fb35459505bb489687f0338e76a33509ec6e48da42ee22e9ee97b6c",
+      "total_unique_records": 2765,
+      "annual_counts": {"2016": 236, "2017": 149, "2018": 169, "2019": 184, "2020": 252, "2021": 290, "2022": 353, "2023": 401, "2024": 422, "2025": 309},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "direct_pdf_records": 2765,
+      "note": "The official JMLR volume index is resolved before every cached run. Volume 18 spans 2017-2018 and the 2018 census combines 85 papers from Volume 18 with 84 from Volume 19; paper-level years are filtered and the parser's excluded counts reconcile the overlapping volumes. The volume lists expose official landing and PDF URLs but not abstracts or DOIs, which remain enrichment fields."
+    },
+    {
       "venue_id": "uai",
       "provider": "pmlr",
       "authority": "official",
