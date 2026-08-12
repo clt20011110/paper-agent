@@ -1,14 +1,14 @@
 schema_version: "2"
 venue_id: nature_catalysis
-primary_provider: springer_nature
+primary_provider: crossref_serial
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-nature-catalysis.json
 fixture_sha256: 0087c7ae7f01d021710f80e6b9f019fbd9c627ae865a78da9c2766ce7e904c16
 expected_stable_ids: [10.1038/s41929-024-00005-5]
 transport_fixture_routes:
-  - {path: tests/fixtures/providers/acceptance-native-nature-catalysis.json, sha256: 229104ce576dd64a1acc311b2bc465937e934bb15fc159b2c3cc0b91d1f334bd, content_type: application/json, url_contains: api.springernature.com/metadata/v1/articles}
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-nature-catalysis.json, sha256: a11013eea113bfa78e6e4e878f421255cf7b1b1b26ba75280847b11936f59bb7, content_type: application/json, url_contains: api.crossref.org/journals/2520-1158/works}
 transport_expected_stable_ids: [10.1038/s41929-024-00005-5]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
-fallbacks: [{provider: crossref, role: search}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}]
-journal: {slug: natcatal, issns: [2520-1158], article_types: [article, review, analysis]}
+fallbacks: [{provider: springer_nature, role: metadata_enricher}, {provider: crossref, role: search}, {provider: pubmed, role: metadata_verifier}, {provider: europe_pmc, role: metadata_verifier}]
+journal: {slug: natcatal, issns: [2520-1158], article_types: [journal-article]}

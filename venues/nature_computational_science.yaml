@@ -2,6 +2,7 @@ schema_version: "1"
 venue_id: nature_computational_science
 name: Nature Computational Science
 venue_type: journal
-primary_provider: springer_nature
-provider_params: {journal_slug: natcomputsci, issns: [2662-8457], article_types: [article, review, analysis]}
+primary_provider: crossref_serial
+provider_params: {journal_slug: natcomputsci, registry_issn: 2662-8457, issns: [2662-8457], article_types: [journal-article]}
 official_url: https://www.nature.com/natcomputsci/
+date_range: {start: 2021-01-01, end: 2025-12-31}

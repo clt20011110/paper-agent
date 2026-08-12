@@ -1,14 +1,14 @@
 schema_version: "2"
 venue_id: nature_synthesis
-primary_provider: springer_nature
+primary_provider: crossref_serial
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-nature-synthesis.json
 fixture_sha256: 214ccd16ef630b4cafb83fe0dc99ccd87b9461b779c55c6b474c38a7d3a4a3fb
 expected_stable_ids: [10.1038/s44160-024-00001-1]
 transport_fixture_routes:
-  - {path: tests/fixtures/providers/acceptance-native-nature-synthesis.json, sha256: 80a06f73409fcde2ad53acebefd3b3a2529c3c62aacbb2a6d2877256930dafbe, content_type: application/json, url_contains: api.springernature.com/metadata/v1/articles}
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-nature-synthesis.json, sha256: ca71ef829354a30685a141e07984ddc604e18cd35d33e540d7d878ff3a61dfa1, content_type: application/json, url_contains: api.crossref.org/journals/2731-0582/works}
 transport_expected_stable_ids: [10.1038/s44160-024-00001-1]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
-fallbacks: [{provider: crossref, role: search}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
-journal: {slug: natsynth, issns: [2731-0582], article_types: [article, review, analysis]}
+fallbacks: [{provider: springer_nature, role: metadata_enricher}, {provider: crossref, role: search}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+journal: {slug: natsynth, issns: [2731-0582], article_types: [journal-article]}

@@ -2,6 +2,6 @@ schema_version: "1"
 venue_id: nature_communications
 name: Nature Communications
 venue_type: journal
-primary_provider: springer_nature
-provider_params: {journal_slug: ncomms, issns: [2041-1723], article_types: [article, review, analysis]}
+primary_provider: crossref_serial
+provider_params: {journal_slug: ncomms, registry_issn: 2041-1723, issns: [2041-1723], article_types: [journal-article]}
 official_url: https://www.nature.com/ncomms/

@@ -222,7 +222,6 @@ def test_restricted_primary_terms_and_journal_native_envelopes_are_frozen() -> N
     matrix = module.load_matrix(ROOT / "configs" / "e2e" / "venue-smoke-matrix.yaml")
     expectations = {
         "tcad": ("ieee_xplore", "articles"),
-        "nature_communications": ("springer_nature", "records"),
         "cell": ("cell_press", "search-results"),
         "science": ("aaas_science", "entries"),
     }
@@ -235,3 +234,13 @@ def test_restricted_primary_terms_and_journal_native_envelopes_are_frozen() -> N
         discover = next(item for item in bundle["responses"] if item["operation"] == "discover")
         payload = json.loads(base64.b64decode(discover["body_base64"]))
         assert envelope_key in payload
+
+    venue = module._venue_by_id(matrix, "nature_communications")
+    descriptor = yaml.safe_load((ROOT / venue["descriptor"]).read_text())
+    draft = module._query_draft(venue, descriptor)
+    assert descriptor["primary_provider"] == "crossref_serial"
+    assert draft["terms_approvals"] == []
+    bundle, _ = module._snapshot_bundle(venue, descriptor)
+    discover = next(item for item in bundle["responses"] if item["operation"] == "discover")
+    payload = json.loads(base64.b64decode(discover["body_base64"]))
+    assert "entries" in payload
