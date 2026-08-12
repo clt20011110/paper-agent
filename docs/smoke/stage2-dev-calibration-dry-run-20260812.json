@@ -10,7 +10,7 @@
   "topic_query_count": 12,
   "gold_manifest_hash": "579ac1f30770066e02510885727bf818a4598d1415805bccdbda6fe3ca02381d",
   "dev_manifest_hash": "a214b4f8dc99a637eaf1ef897758694acc70957162b72c8ba07358bea46ca765",
-  "stage2_config_hash": "c368e1a94aacee0a258eec51dd2ec52c56b28574cdbf6b6be14d34a5a7d618ef",
+  "stage2_config_hash": "4478d079f42dcbfc7233e5be279687ce2f839cbe9738d04c846886a260a9ddf7",
   "inputs": {
     "gold_manifest": {
       "private_reference": "local-evaluator-transfer:stage2/crossref-real-v1-20260812/gold-manifest.json",

@@ -57,6 +57,15 @@ def _decision(paper_id: str = "paper-1") -> dict[str, object]:
     }
 
 
+def test_production_schema_keeps_rationale_last_for_omlx_grammar() -> None:
+    schema = json.loads(
+        (Path(__file__).parents[1] / "schemas" / "filter-decision.schema.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert list(schema["properties"])[-2:] == ["evidence_fields", "rationale"]
+
+
 def test_omlx_rerank_batches_documents_and_never_sends_unsupported_limits() -> None:
     transport = FakeTransport([
         _response({"results": [{"index": 1, "relevance_score": -2.0}, {"index": 0, "relevance_score": 4.0}]})

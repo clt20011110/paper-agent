@@ -415,7 +415,7 @@ Querit-4B 截至 2026-06-20 的模型卡自报为公开模型中 MTEB Multilingu
 - 请求必须设置 chat_template_kwargs.enable_thinking=false；若迁移旧配置中的 thinking=false，adapter 必须映射到该字段，不得把非标准 thinking 字段原样发送后假定生效。
 - temperature=0、固定 seed、stream=false、max_tokens=256。真实 DEV 回放确认 oMLX 0.5.7 的并发 grammar 偶发停滞不能靠放大 token 上限修复；失败项必须等当前 continuous batch 排空后单并发重试一次。
 - 每模型 max_context_window 初始固定为 16384；只有压测通过后才能提高，硬上限为 32768，不继承模型声明的超大原生上下文。
-- 使用 extra_body.structured_outputs.json 传递 logit-level JSON schema；grammar 编译失败必须以 400 fail-closed。
+- 使用 extra_body.structured_outputs.json 传递 logit-level JSON schema；grammar 编译失败必须以 400 fail-closed。oMLX 0.5.7 对字符串后的对象分隔符存在已复现的 grammar 停滞，`filter-decision` 固定把 `rationale` 放在最后一个 property，避免合法内容在 256 token 上限处被卡住。
 - 不能只依赖可能退化为 prompt 注入的 response_format；出现 Warning header 视为结构化约束失败。
 - 模型返回后仍由 Pydantic/jsonschema 二次验证。
 - 一个 paper 对应一个逻辑请求；依靠 continuous batching，不把多篇论文塞进一个巨大 JSON。

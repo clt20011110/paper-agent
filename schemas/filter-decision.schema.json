@@ -13,11 +13,11 @@
       "maxItems": 4,
       "items": {"type": "string", "minLength": 1, "maxLength": 48}
     },
-    "rationale": {"type": "string", "minLength": 1, "maxLength": 200},
     "evidence_fields": {
       "type": "array",
       "maxItems": 4,
       "items": {"type": "string", "minLength": 1, "maxLength": 32}
-    }
+    },
+    "rationale": {"type": "string", "minLength": 1, "maxLength": 200}
   }
 }
