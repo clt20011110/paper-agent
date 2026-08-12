@@ -867,6 +867,7 @@ def _ijcai(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> 
     response = fetch(url, "ijcai-proceedings-html-v1")
     root = _html(response.body, provider)
     entries: list[dict[str, Any]] = []
+    excluded_records = 0
     for paper in _nodes(root, "div", "paper_wrapper"):
         title = _first(paper, class_name="title")
         author_node = _first(paper, class_name="authors")
@@ -881,6 +882,14 @@ def _ijcai(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> 
         )
         if title is None or anchor is None:
             continue
+        pdf_anchor = next(
+            (
+                value
+                for value in (_nodes(details, "a") if details is not None else [])
+                if value.attributes.get("href", "").casefold().endswith(".pdf")
+            ),
+            None,
+        )
         landing = _absolute(url, anchor.attributes["href"])
         paper_id = urlsplit(landing).path.rstrip("/").rsplit("/", 1)[-1]
         entries.append(
@@ -891,12 +900,102 @@ def _ijcai(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> 
                 "year": year,
                 "venue": f"IJCAI {year}",
                 "landing_url": landing,
+                "pdf_url": (
+                    _absolute(url, pdf_anchor.attributes["href"])
+                    if pdf_anchor is not None
+                    else None
+                ),
             }
         )
     if not entries:
+        entries, excluded_records = _ijcai_legacy_entries(root, url, year)
+    if not entries:
         raise ProviderRequestError("ijcai_proceedings: official page contained no papers")
+    raw_records = len(entries) + excluded_records
+    unique_entries = list({entry["external_id"]: entry for entry in entries}.values())
+    excluded_records += len(entries) - len(unique_entries)
+    entries = unique_entries
     selected, cursor = _filtered_page(entries, parameters)
-    return VenueOperationResult({"entries": selected, "next_cursor": cursor, "census": _census(entries)}, (response.body,))
+    return VenueOperationResult(
+        {
+            "entries": selected,
+            "next_cursor": cursor,
+            "census": {
+                "expected_total": len(entries),
+                "parser_raw_records": raw_records,
+                "parser_rejected_records": 0,
+                "parser_excluded_records": excluded_records,
+            },
+        },
+        (response.body,),
+    )
+
+
+def _ijcai_legacy_entries(
+    root: _HTMLNode, url: str, year: int
+) -> tuple[list[dict[str, Any]], int]:
+    short_year = str(year)[-2:]
+    frontmatter_titles = {
+        "preface",
+        "conference organization",
+        "program committee",
+        "conference organizers and sponsors",
+        "awards and distinguished papers",
+        "ijcai organization",
+        "past ijcai conferences",
+    }
+    entries: list[dict[str, Any]] = []
+    excluded = 0
+    for paragraph in _nodes(root, "p"):
+        abstract_anchor = next(
+            (
+                anchor
+                for anchor in _nodes(paragraph, "a")
+                if re.fullmatch(
+                    rf"/Abstract/{short_year}/\d+", anchor.attributes.get("href", "")
+                )
+            ),
+            None,
+        )
+        if abstract_anchor is None:
+            continue
+        paper_id = abstract_anchor.attributes["href"].rstrip("/").rsplit("/", 1)[-1]
+        leading_text = next(
+            (value for value in paragraph.content if isinstance(value, str) and value.strip()),
+            "",
+        )
+        title = re.sub(r"\s+/\s+(?:[ivxlcdm]+|\d+)\s*$", "", leading_text, flags=re.I).strip()
+        if not title:
+            continue
+        if title.casefold() in frontmatter_titles:
+            excluded += 1
+            continue
+        author_node = _first(paragraph, "i")
+        pdf_anchor = next(
+            (
+                anchor
+                for anchor in _nodes(paragraph, "a")
+                if anchor.attributes.get("href", "").casefold().endswith(".pdf")
+            ),
+            None,
+        )
+        landing = _absolute(url, abstract_anchor.attributes["href"])
+        entries.append(
+            {
+                "external_id": f"IJCAI-{year}-{paper_id}",
+                "title": title,
+                "authors": _authors(author_node),
+                "year": year,
+                "venue": f"IJCAI {year}",
+                "landing_url": landing,
+                "pdf_url": (
+                    _absolute(url, pdf_anchor.attributes["href"])
+                    if pdf_anchor is not None
+                    else None
+                ),
+            }
+        )
+    return entries, excluded
 
 
 @register_venue_handler("openreview")

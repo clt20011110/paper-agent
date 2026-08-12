@@ -310,6 +310,51 @@ def test_ijcai_uses_details_links_and_never_pdf_links() -> None:
     assert batch.entries[0].landing_url == "https://www.ijcai.org/proceedings/2024/1"
 
 
+def test_ijcai_legacy_template_excludes_frontmatter_and_emits_direct_pdf() -> None:
+    transport, _ = _transport({
+        "www.ijcai.org/proceedings/2016/": (
+            "http-venue-ijcai-legacy.html",
+            "text/html",
+        ),
+    })
+    descriptor = VenueDescriptor(
+        1, "ijcai", "ijcai_proceedings", "ijcai_proceedings", {"series": "IJCAI"}
+    )
+
+    batch = create_builtin("ijcai_proceedings", transport).discover(
+        descriptor, CrawlWindow(year=2016)
+    )
+
+    assert [entry.external_id for entry in batch.entries] == ["IJCAI-2016-008", "IJCAI-2016-009"]
+    assert batch.entries[0].pdf_url == "https://www.ijcai.org/Proceedings/16/Papers/008.pdf"
+
+
+def test_ijcai_duplicate_official_listing_is_counted_as_explicit_exclusion() -> None:
+    transport, _ = _transport({
+        "www.ijcai.org/proceedings/2021/": (
+            "http-venue-ijcai-duplicate.html",
+            "text/html",
+        ),
+    })
+    descriptor = VenueDescriptor(
+        1, "ijcai", "ijcai_proceedings", "ijcai_proceedings", {"series": "IJCAI"}
+    )
+
+    payload = transport(
+        "ijcai_proceedings",
+        "discover",
+        {"series": "IJCAI", "year": 2021, "venue_id": "ijcai"},
+    )
+
+    assert len(payload["entries"]) == 1
+    assert payload["census"] == {
+        "expected_total": 1,
+        "parser_raw_records": 2,
+        "parser_rejected_records": 0,
+        "parser_excluded_records": 1,
+    }
+
+
 def test_openreview_resolves_v2_venueid_and_maps_value_wrappers_and_cursor() -> None:
     transport, opener = _transport({
         "api2.openreview.net/groups": ("http-venue-openreview-group.json", "application/json"),

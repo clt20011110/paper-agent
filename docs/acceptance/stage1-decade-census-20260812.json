@@ -115,6 +115,20 @@
       "all_terminal_cursors_reached": true,
       "duplicate_external_ids": 0,
       "parser_rejected_records": 0
+    },
+    {
+      "venue_id": "ijcai",
+      "provider": "ijcai_proceedings",
+      "status": "complete",
+      "run_id": "05ffc2dc-3ab4-5420-b15f-0b2a18c344c4",
+      "metadata_sha256": "a9511263770ec46e1ddd63714f667448e954ea7f279e9e6c9636412b5eadfc18",
+      "total_unique_records": 8808,
+      "annual_counts": {"2016": 651, "2017": 781, "2018": 870, "2019": 964, "2020": 779, "2021": 722, "2022": 862, "2023": 851, "2024": 1048, "2025": 1280},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "explicit_non_paper_exclusions": 8,
+      "note": "The 2016 legacy template excludes seven named frontmatter records. The 2021 official page lists the same SASS record twice under two sections; one duplicate display is explicitly excluded. All 8,808 records retain official direct PDF URLs."
     }
   ],
   "known_limits": [
