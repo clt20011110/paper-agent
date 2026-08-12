@@ -368,7 +368,8 @@ Stage 2 使用以下级联：
 - 官方 oracle revision：953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e。
 - oMLX 原生路径：POST /v1/rerank。
 - 官方 FP32 权重作为数值 oracle。
-- 初始 MLX BF16 候选为 soichisumi/bge-reranker-v2-m3-mlx@b4577f49e18adb53ed9e557192094f69f3dc2c1c；它属于第三方转换，完成供应链审计并通过 parity gate 后才能进入生产。
+- 初始 MLX BF16 候选为 soichisumi/bge-reranker-v2-m3-mlx@b4577f49e18adb53ed9e557192094f69f3dc2c1c；它属于第三方转换，必须完成供应链审计并通过 parity gate 后才能进入生产。
+- 2026-08-12 已完成该 BF16 候选的供应链/派生审计：固定官方 FP32 与第三方转换 revision，验证下载文件和 7 文件混合运行时，并使用 MLX 0.32.0 对 393 个张量、567,755,777 个元素逐项重算 FP32→BF16，结果 393/393 精确一致。可复现脚本、候选锁和公开摘要分别为 `scripts/verify_stage2_bf16_derivation.py`、`configs/stage2/models/bge-reranker-v2-m3-mlx-bf16.lock.json`、`docs/smoke/stage2-bf16-derivation-audit-20260812.json`；这只关闭供应链审计，候选仍须通过 parity 与完整 Stage 2 门禁才能晋升。
 
 质量/速度挑战者：
 

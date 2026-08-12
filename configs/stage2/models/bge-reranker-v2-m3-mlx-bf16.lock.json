@@ -1,0 +1,24 @@
+{
+  "backend": "omlx_rerank",
+  "conversion_repo": "soichisumi/bge-reranker-v2-m3-mlx",
+  "conversion_revision": "b4577f49e18adb53ed9e557192094f69f3dc2c1c",
+  "file_hashes": {
+    "config.json": "f6af7b8ee660a78a5a6f129766823712a7a0a5f93994014dbbb17c79cc2ed2b8",
+    "model.safetensors": "80be6e38dfd2156d865a5068cdd78774f29b4b91ce100acc9f331c382e2b18b4",
+    "model.safetensors.index.json": "1792b5cbb59f52c8d68eea2c6be07d6ad07af77ffe812fa5fab583a71e206c4f",
+    "sentencepiece.bpe.model": "cfc8146abe2a0488e9e2a0c56de7952f7c11ab059eca145a0a727afce0db2865",
+    "special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+    "tokenizer.json": "69564b696052886ed0ac63fa393e928384e0f8caada38c1f4864a9bfbf379c15",
+    "tokenizer_config.json": "7e4c1cc848840aeccdd763458c18dd525eb0f795c992e00ebe9c28554e7db2d4"
+  },
+  "format": "safetensors-bf16",
+  "license": "apache-2.0",
+  "lock_version": 1,
+  "mlx_version": "0.32.0",
+  "model_id": "bge-reranker-v2-m3-mlx",
+  "omlx_version": "0.5.7",
+  "parameter_count": 567755777,
+  "quantization": "none",
+  "source_repo": "BAAI/bge-reranker-v2-m3",
+  "source_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+}
