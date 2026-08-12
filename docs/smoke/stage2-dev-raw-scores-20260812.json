@@ -1,0 +1,45 @@
+{
+  "schema_version": "1",
+  "kind": "stage2_dev_raw_scores_smoke_evidence",
+  "run_date": "2026-08-12",
+  "status": "complete",
+  "runtime": {
+    "backend": "oMLX",
+    "omlx_version": "0.5.7",
+    "reranker_model": "BAAI/bge-reranker-v2-m3",
+    "adjudicator_model": "Qwen3.5-9B-8bit"
+  },
+  "coverage": {
+    "dev_pairs": 300,
+    "reranker_scores": 300,
+    "qwen_scores": 300,
+    "topic_language_queries": 12,
+    "same_pair_universe": true
+  },
+  "execution": {
+    "qwen_retry_count": 0,
+    "qwen_length_finish_count": 0,
+    "partial_artifact_published": false
+  },
+  "provenance": {
+    "gold_manifest_hash": "579ac1f30770066e02510885727bf818a4598d1415805bccdbda6fe3ca02381d",
+    "dev_manifest_hash": "a214b4f8dc99a637eaf1ef897758694acc70957162b72c8ba07358bea46ca765",
+    "stage2_config_hash": "4478d079f42dcbfc7233e5be279687ce2f839cbe9738d04c846886a260a9ddf7",
+    "filter_schema_sha256": "3267b23319882fc8e2a6f6d4fd2e150bd20d4a01fa8281332770179e2e24884b",
+    "reranker_model_lock_hash": "ad6774a493a3575ca551f78db65152d60a43016ef87422e0dccd8c1c1a737d1f",
+    "adjudicator_model_lock_hash": "ec9227eab52573a921d737a1b36e7b069975034d9f4a843baa4e5a56c53e9e2c",
+    "private_artifact_hash": "8a3cda3a3da48205f210516230acfad9f325f2e8138805a903cb3770a16c46ab",
+    "private_file_sha256": "5097fded0bca1ef322b9a723a045462a869c34cfa13844a4c49f771f5095a14a"
+  },
+  "privacy": {
+    "contains_pair_ids": false,
+    "contains_raw_scores": false,
+    "private_artifact_contains_human_labels": false,
+    "private_artifact_contains_hidden_or_hard_flags": false
+  },
+  "release_gate_claim": false,
+  "notes": [
+    "The complete raw-score artifact remains in evaluator custody and is not part of a candidate or release bundle.",
+    "The run did not read human labels; dual annotation, adjudication, calibration, hidden evaluation, and production gates remain separate requirements."
+  ]
+}

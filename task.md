@@ -603,8 +603,11 @@ pair，以同一映射完整运行三次；模型或 schema 技术失败只能�
 
 2026-08-12 已实现上述两段命令、无标签 raw-score schema、多 topic/language query 绑定、candidate 最后发布
 标记和离线回归测试，并以现有真实 manifest/snapshot 完成 300 DEV、12 topic-language query 的零模型调用
-dry-run，记录见 `docs/smoke/stage2-dev-calibration-dry-run-20260812.json`；真实 DEV 模型评分尚未执行，
-人工双标/仲裁与 private labels 仍是 candidate 构建硬门。
+dry-run，记录见 `docs/smoke/stage2-dev-calibration-dry-run-20260812.json`。随后使用锁定的 BGE 与 Qwen、
+oMLX 0.5.7 完成真实 DEV 评分：两条路径各覆盖精确 300 pair，Qwen 0 次重试、0 次 length finish；私有
+raw-score artifact 留在 evaluator custody，仓库只保存不含 pair ID/分数的摘要证据
+`docs/smoke/stage2-dev-raw-scores-20260812.json`。该运行不读取人工标签且不满足 release gate；人工双标/
+仲裁与 private labels 仍是 candidate 构建硬门。
 
 标注 rubric：
 
