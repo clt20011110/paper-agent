@@ -366,13 +366,13 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
             anchor = next((value for value in _nodes(item, "a") if re.fullmatch(r"/?v\d+/?", value.attributes.get("href", ""))), None)
             if series == "ICML":
                 main_pattern = (
-                    rf"\bProceedings of (?:the )?(?:\d+(?:st|nd|rd|th) )?"
-                    rf"{series_names[series]},? {year}\b"
+                    rf"(?:\bProceedings of (?:the )?(?:\d+(?:st|nd|rd|th) )?"
+                    rf"{series_names[series]},? {year}|\bICML {year} Proceedings)\s*$"
                 )
             else:
                 main_pattern = (
                     rf"\b(?:Proceedings of (?:the |The )?(?:\d+(?:st|nd|rd|th) )?)?"
-                    rf"{series_names[series]}(?: Proceedings)?,? {year}\b"
+                    rf"{series_names[series]}(?: Proceedings)?,? {year}\s*$"
                 )
             main_volume = re.search(main_pattern, text, re.I)
             if anchor and main_volume:
