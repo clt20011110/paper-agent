@@ -675,6 +675,10 @@ dry-run 只冻结并验证 manifest；移除 `--dry-run` 才调用本地 oMLX。
 
 rationale 使用至少 100 条按 relevant/边界/语言分层的人工审计样本。预先冻结“证据支持”和“严重编造”rubric；证据支持率 ≥ 95%，严重编造率 ≤ 1%。
 
+已选样本先以 `stage2-rationale freeze-worklist` 冻结 manifest、证据、rationale、rubric 与未填写的人工
+布尔标签；审核者完成后使用 `stage2-rationale import-worklist` 严格导入。两个命令均支持 `--dry-run`，
+不调用模型、不选择样本、不推断或补默认标签，空标签直接拒绝。
+
 模型选择规则：
 
 - 先满足全部质量硬门，再比较速度、内存和稳定性。

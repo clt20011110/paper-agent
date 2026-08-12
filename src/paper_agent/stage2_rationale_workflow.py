@@ -99,6 +99,70 @@ class FrozenRationaleAudit:
     worklist: Mapping[str, Any]
 
 
+def rationale_audit_examples_from_document(
+    document: object,
+) -> tuple[tuple[RationaleAuditExample, ...], str, str]:
+    """Load the explicit, already-selected examples used to freeze an audit."""
+
+    if not isinstance(document, Mapping) or set(document) != {
+        "schema_version", "kind", "corpus_hash", "model_lock_hash", "examples",
+    }:
+        raise ValueError("rationale audit examples have an unsupported shape")
+    if (
+        document["schema_version"] != "1"
+        or document["kind"] != "stage2_rationale_audit_examples"
+        or not isinstance(document["examples"], list)
+    ):
+        raise ValueError("not a Stage 2 rationale audit examples document")
+    examples: list[RationaleAuditExample] = []
+    required = {
+        "pair_id", "stratum", "language", "rationale_artifact_hash",
+        "evidence", "rationale",
+    }
+    for row in document["examples"]:
+        if not isinstance(row, Mapping) or set(row) != required:
+            raise ValueError("rationale audit example has an unsupported shape")
+        examples.append(RationaleAuditExample(
+            pair_id=row["pair_id"],
+            stratum=RationaleStratum(row["stratum"]),
+            language=row["language"],
+            rationale_artifact_hash=row["rationale_artifact_hash"],
+            evidence=row["evidence"],
+            rationale=row["rationale"],
+        ))
+    return tuple(examples), document["corpus_hash"], document["model_lock_hash"]
+
+
+def rationale_audit_manifest_from_document(document: object) -> RationaleAuditManifest:
+    """Load one schema-validated frozen rationale audit manifest."""
+
+    validate(document, "stage2-rationale-audit-manifest.schema.json")
+    if not isinstance(document, Mapping):
+        raise ValueError("rationale audit manifest must be an object")
+    return RationaleAuditManifest(
+        version=document["version"],
+        cases=tuple(
+            RationaleAuditCase(row[0], RationaleStratum(row[1]), row[2], row[3])
+            for row in document["cases"]
+        ),
+        corpus_hash=document["corpus_hash"],
+        model_lock_hash=document["model_lock_hash"],
+        evidence_rubric_hash=document["evidence_rubric_hash"],
+        fabrication_rubric_hash=document["fabrication_rubric_hash"],
+    )
+
+
+def load_rationale_audit_manifest(path: Path) -> RationaleAuditManifest:
+    return rationale_audit_manifest_from_document(json.loads(path.read_text(encoding="utf-8")))
+
+
+def load_rationale_worklist(path: Path) -> Mapping[str, Any]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, Mapping):
+        raise ValueError("rationale audit worklist must be an object")
+    return document
+
+
 def freeze_rationale_audit(
     examples: Sequence[RationaleAuditExample],
     *,
@@ -140,6 +204,8 @@ def import_completed_rationale_audit(
 
     if worklist.get("kind") != "stage2_human_rationale_audit_worklist":
         raise ValueError("not a Stage 2 human rationale audit worklist")
+    if not isinstance(worklist.get("reviewer_id"), str) or not worklist["reviewer_id"].strip():
+        raise ValueError("rationale audit worklist reviewer_id is required")
     if worklist.get("manifest_hash") != manifest.hash():
         raise ValueError("rationale audit worklist does not bind the frozen manifest")
     if (
@@ -208,6 +274,33 @@ def write_rationale_audit_artifacts(
     records_document = rationale_audit_records_document(records)
     _write_json_no_replace(records_path, records_document)
     _write_json_no_replace(manifest_path, manifest_document)
+
+
+def write_frozen_rationale_audit(
+    frozen: FrozenRationaleAudit,
+    *,
+    manifest_path: Path,
+    worklist_path: Path,
+) -> None:
+    """Publish a human worklist first and its completion-marker manifest last."""
+
+    if manifest_path.absolute() == worklist_path.absolute():
+        raise ValueError("rationale audit manifest and worklist paths must differ")
+    if manifest_path.exists() or worklist_path.exists():
+        raise FileExistsError("rationale audit output already exists")
+    manifest_document = frozen.manifest.document()
+    validate(manifest_document, "stage2-rationale-audit-manifest.schema.json")
+    _write_json_no_replace(worklist_path, frozen.worklist)
+    _write_json_no_replace(manifest_path, manifest_document)
+
+
+def write_rationale_records_no_replace(
+    path: Path,
+    records: Sequence[RationaleAuditRecord],
+) -> None:
+    """Publish completed human audit records without replacing prior evidence."""
+
+    _write_json_no_replace(path, rationale_audit_records_document(records))
 
 
 def write_rationale_worklist_no_replace(path: Path, worklist: Mapping[str, Any]) -> None:

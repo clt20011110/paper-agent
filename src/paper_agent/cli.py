@@ -90,7 +90,7 @@ from .stage2_annotation_artifacts import (
     write_human_annotation_worklist,
     write_private_gold_labels,
 )
-from .stage2_evaluation import load_gold_manifest
+from .stage2_evaluation import load_gold_manifest, rationale_audit_gate
 from .stage2_evaluator import (
     issue_hidden_promotion_from_payload,
     load_hidden_evaluator_private_key,
@@ -103,6 +103,16 @@ from .stage2_promotion_artifacts import (
     run_promotion_evaluation,
     validate_promotion_public_evidence,
     validate_promotion_candidate_bundles,
+)
+from .stage2_rationale_workflow import (
+    freeze_rationale_audit,
+    import_completed_rationale_audit,
+    load_rationale_audit_manifest,
+    load_rationale_worklist,
+    rationale_audit_examples_from_document,
+    rationale_audit_records_document,
+    write_frozen_rationale_audit,
+    write_rationale_records_no_replace,
 )
 from .stage2_release_assembly import (
     assemble_stage2_release,
@@ -407,6 +417,29 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     stage2_sampling_finalize.add_argument(
         "--private-labels-output", required=True, type=Path
     )
+
+    stage2_rationale = subcommands.add_parser(
+        "stage2-rationale",
+        help="freeze and import an explicitly human-labelled rationale audit",
+    )
+    stage2_rationale_commands = stage2_rationale.add_subparsers(
+        dest="stage2_rationale_command", required=True
+    )
+    rationale_freeze = stage2_rationale_commands.add_parser(
+        "freeze-worklist",
+        help="freeze already-selected rationale examples before human review",
+    )
+    rationale_freeze.add_argument("--examples", required=True, type=Path)
+    rationale_freeze.add_argument("--reviewer-id", required=True)
+    rationale_freeze.add_argument("--manifest-output", required=True, type=Path)
+    rationale_freeze.add_argument("--worklist-output", required=True, type=Path)
+    rationale_import = stage2_rationale_commands.add_parser(
+        "import-worklist",
+        help="validate explicit human booleans and emit raw rationale audit records",
+    )
+    rationale_import.add_argument("--manifest", required=True, type=Path)
+    rationale_import.add_argument("--worklist", required=True, type=Path)
+    rationale_import.add_argument("--records-output", required=True, type=Path)
 
     stage2_calibration = subcommands.add_parser(
         "stage2-calibration",
@@ -857,6 +890,16 @@ def main(
             output_dir=args.output_dir,
             dry_run=args.dry_run,
         ))
+    if (
+        args.command == "stage2-rationale"
+        and args.stage2_rationale_command == "freeze-worklist"
+    ):
+        return _finish(args, _stage2_rationale_freeze(args))
+    if (
+        args.command == "stage2-rationale"
+        and args.stage2_rationale_command == "import-worklist"
+    ):
+        return _finish(args, _stage2_rationale_import(args))
     if args.command == "stage2-replay":
         return _finish(args, run_structured_replay(
             papers_path=args.papers,
@@ -1282,6 +1325,68 @@ def _stage2_annotations_finalize(args: argparse.Namespace) -> dict[str, Any]:
             ledger.summary.quadratic_weighted_kappa
         ),
         "private_labels_output": str(args.private_labels_output),
+        "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
+    }
+
+
+def _stage2_rationale_freeze(args: argparse.Namespace) -> dict[str, Any]:
+    outputs = (args.manifest_output, args.worklist_output)
+    if outputs[0].absolute() == outputs[1].absolute():
+        raise CliUsageError("Stage 2 rationale outputs must use different paths")
+    existing = next((path for path in outputs if path.exists()), None)
+    if existing is not None:
+        raise FileExistsError(f"Stage 2 rationale output already exists: {existing}")
+    examples, corpus_hash, model_lock_hash = rationale_audit_examples_from_document(
+        _load_json(args.examples)
+    )
+    frozen = freeze_rationale_audit(
+        examples,
+        corpus_hash=corpus_hash,
+        model_lock_hash=model_lock_hash,
+        reviewer_id=args.reviewer_id,
+    )
+    if not args.dry_run:
+        write_frozen_rationale_audit(
+            frozen,
+            manifest_path=args.manifest_output,
+            worklist_path=args.worklist_output,
+        )
+    return {
+        "command": "stage2-rationale.freeze-worklist",
+        "dry_run": args.dry_run,
+        "manifest_hash": frozen.manifest.hash(),
+        "manifest_output": str(args.manifest_output),
+        "reviewer_id": args.reviewer_id,
+        "row_count": len(frozen.manifest.cases),
+        "status": "validated" if args.dry_run else "complete",
+        "worklist_output": str(args.worklist_output),
+        "written": not args.dry_run,
+    }
+
+
+def _stage2_rationale_import(args: argparse.Namespace) -> dict[str, Any]:
+    if args.records_output.exists():
+        raise FileExistsError(
+            f"Stage 2 rationale records output already exists: {args.records_output}"
+        )
+    manifest = load_rationale_audit_manifest(args.manifest)
+    worklist = load_rationale_worklist(args.worklist)
+    records = import_completed_rationale_audit(worklist, manifest=manifest)
+    gate = rationale_audit_gate(manifest, records)
+    document = rationale_audit_records_document(records)
+    if not args.dry_run:
+        write_rationale_records_no_replace(args.records_output, records)
+    return {
+        "command": "stage2-rationale.import-worklist",
+        "dry_run": args.dry_run,
+        "evidence_support_rate": sum(row.evidence_supported for row in records) / len(records),
+        "failures": list(gate.failures),
+        "manifest_hash": manifest.hash(),
+        "record_count": len(records),
+        "records_hash": content_hash(document),
+        "records_output": str(args.records_output),
+        "severe_fabrication_rate": sum(row.severe_fabrication for row in records) / len(records),
         "status": "validated" if args.dry_run else "complete",
         "written": not args.dry_run,
     }
@@ -3429,6 +3534,7 @@ def _command_from_argv(argv: Sequence[str]) -> str:
         "report",
         "stage2-calibration",
         "stage2-evaluator",
+        "stage2-rationale",
         "stage2-release",
     } and index + 1 < len(argv):
         if argv[index + 1].startswith("-"):
