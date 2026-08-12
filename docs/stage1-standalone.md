@@ -58,6 +58,11 @@ result = collect_stage1_metadata(
 The injected factory keeps the core interface usable with live HTTP,
 approved response snapshots, or deterministic test adapters.
 
+Venue descriptors may declare `provider_params.year_overrides` keyed by year.
+Stage 1 merges the selected override over the shared provider parameters before
+creating that venue-year adapter, allowing historical API versions, invitation
+IDs, issue IDs, or official route identifiers without hard-coding venue logic.
+
 ## What `complete` means
 
 Completeness is a membership claim, not a claim that every metadata field is

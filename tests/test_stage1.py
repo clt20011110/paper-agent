@@ -41,6 +41,8 @@ class _Adapter:
         self.cycle = cycle
 
     def discover(self, descriptor, window, cursor=None):
+        if descriptor.parameters.get("expected_override") is not None:
+            assert descriptor.parameters["expected_override"] == int(window.year)
         offset = int(cursor or 0)
         year = int(window.year)
         entry = SourceEntry(
@@ -211,3 +213,19 @@ def test_terms_acceptance_mapping_is_exact_and_rejects_conflicts() -> None:
             ["provider=https://example.test/one", "provider=https://example.test/two"],
             "--accept-terms",
         )
+
+
+def test_year_specific_provider_parameters_override_descriptor_defaults() -> None:
+    catalog = _catalog()
+    catalog.venues["example"]["provider_params"] = {
+        "expected_override": 0,
+        "year_overrides": {"2024": {"expected_override": 2024}},
+    }
+
+    result = collect_stage1_metadata(
+        Stage1Request(("example",), 2024, 2024),
+        catalog=catalog,
+        adapter_factory=lambda _: _Adapter(),
+    )
+
+    assert result.complete

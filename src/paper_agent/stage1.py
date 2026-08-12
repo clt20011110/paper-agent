@@ -376,12 +376,23 @@ def _collect_unit(
                 ),
             )
     descriptor = catalog.runtime_venue(venue_id)
+    year_overrides = descriptor.parameters.get("year_overrides", {})
+    override: Mapping[str, Any] = {}
+    if isinstance(year_overrides, Mapping):
+        candidate = year_overrides.get(str(year), year_overrides.get(year))
+        if isinstance(candidate, Mapping):
+            override = candidate
     descriptor = VenueDescriptor(
         descriptor.schema_version,
         descriptor.venue_id,
         descriptor.provider,
         descriptor.adapter,
-        {**descriptor.parameters, "page_size": page_size, "stage1_run_id": run_id},
+        {
+            **descriptor.parameters,
+            **override,
+            "page_size": page_size,
+            "stage1_run_id": run_id,
+        },
     )
     adapter = adapter_factory(descriptor)
     window = CrawlWindow(
