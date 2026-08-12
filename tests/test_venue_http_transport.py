@@ -408,6 +408,49 @@ def test_pmlr_colt_excludes_declared_preface_and_reconciles_census() -> None:
     }
 
 
+def test_pmlr_corl_uses_held_date_when_published_next_year() -> None:
+    index = b"""<html><body><ul><li><a href='v270'><b>Volume 270</b></a>
+    Proceedings of CoRL 2024</li></ul></body></html>"""
+    volume = b"""<html><head><meta name='description' content='Proceedings of CoRL Held in Munich on 06-09 November 2024. Published on 10 January 2025.'></head><body>
+    <div class='paper'><p class='title'>A Robot Learning Paper</p><p class='authors'>Ada Lovelace</p><a href='/v270/paper.html'>abs</a></div>
+    </body></html>"""
+
+    class Response:
+        content_type = "text/html"
+
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
+    def fetch(url: str, api_version: str, policy_provider: str | None = None):
+        return Response(volume if "/v270/" in url else index)
+
+    resolved = execute_venue_operation(
+        "pmlr", "resolve_volume", {"series": "CORL", "year": 2024}, fetch
+    )
+    assert resolved.payload["official_url"].endswith("/v270/")
+    result = execute_venue_operation(
+        "pmlr",
+        "discover",
+        {
+            "series": "CORL",
+            "year": 2024,
+            "volume_id": "v270",
+            "date_from": "2024-01-01",
+            "date_to": "2024-12-31",
+        },
+        fetch,
+    )
+    assert result.payload["entries"][0]["publication_date"] == "2024-11-06"
+
+
+def test_pmlr_corl_parses_cross_month_conference_range() -> None:
+    root = _html(
+        b"""<html><head><meta name='description' content='Proceedings of CoRL on 30 October to 01 November 2019 Published on 12 May 2020.'></head></html>""",
+        "pmlr",
+    )
+    assert _pmlr_publication_date(root, 2019, conference_year=2019) == "2019-10-30"
+
+
 def test_uai_legacy_auai_page_transcodes_and_maps_official_pdf() -> None:
     html = """<!doctype html><html><body><table>
     <tr><td><b>ID: 7</b><a href='proceedings/papers/7.pdf'>pdf</a></td>

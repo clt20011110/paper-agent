@@ -530,10 +530,11 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
         "AISTATS": r"(?:AISTATS|Artificial Intelligence and Statistics)",
         "UAI": r"(?:UAI|Uncertainty in Artificial Intelligence)",
         "COLT": r"(?:COLT|Conference on Learning Theory)",
+        "CORL": r"(?:CoRL|Conference on Robot Learning)",
     }
     if series not in series_names:
         raise ValueError(
-            "pmlr conference discovery requires series=ICML, AISTATS, UAI, or COLT"
+            "pmlr conference discovery requires series=ICML, AISTATS, UAI, COLT, or CORL"
         )
     year = _year(parameters)
     if operation == "discover" and series == "UAI" and year <= 2018:
@@ -552,6 +553,11 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
                     rf"{series_names[series]},? {year}|\b{series} {year} Proceedings)\s*$"
                 )
             elif series == "COLT":
+                main_pattern = (
+                    rf"\b(?:Proceedings of (?:the )?)?{series_names[series]}"
+                    rf"\s+{year}(?:\s+Proceedings)?\s*$"
+                )
+            elif series == "CORL":
                 main_pattern = (
                     rf"\b(?:Proceedings of (?:the )?)?{series_names[series]}"
                     rf"\s+{year}(?:\s+Proceedings)?\s*$"
@@ -614,11 +620,23 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
     if not entries:
         raise ProviderRequestError("pmlr: official volume contained no papers")
     exclusions = tuple(str(value) for value in parameters.get("exclude_title_patterns", ()))
-    included = [
+    filtered = [
         entry
         for entry in entries
         if not any(re.search(pattern, str(entry["title"]), re.I) for pattern in exclusions)
     ]
+    included_by_id: dict[str, dict[str, Any]] = {}
+    for entry in filtered:
+        identifier = str(entry["external_id"])
+        prior = included_by_id.get(identifier)
+        if prior is not None and (
+            prior["title"] != entry["title"] or prior["authors"] != entry["authors"]
+        ):
+            raise ProviderRequestError(
+                f"pmlr: duplicate stable ID {identifier} has conflicting metadata"
+            )
+        included_by_id.setdefault(identifier, entry)
+    included = list(included_by_id.values())
     selected, cursor = _filtered_page(included, parameters)
     rejected = len(paper_nodes) - len(entries)
     return VenueOperationResult(
@@ -645,16 +663,19 @@ def _pmlr_publication_date(
         if node.attributes.get("name", "").casefold() == "description"
         or node.attributes.get("property", "").casefold() in {"og:description", "twitter:description"}
     )
-    held = (
+    conference_date = (
         re.search(
-            rf"\bHeld\b.*?\bon\s+(\d{{1,2}})(?:-\d{{1,2}})?\s+([A-Za-z]+)\s+({conference_year})\b",
+            rf"\bon\s+(\d{{1,2}})(?:-\d{{1,2}})?\s+([A-Za-z]+)"
+            rf"(?:\s+to\s+\d{{1,2}}\s+[A-Za-z]+)?\s+({conference_year})\b",
             description,
             re.I,
         )
         if conference_year is not None
         else None
     )
-    match = held or re.search(r"\bon\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b", description)
+    match = conference_date or re.search(
+        r"\bon\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b", description
+    )
     if not match:
         return str(year)
     month = _month_number(match.group(2))

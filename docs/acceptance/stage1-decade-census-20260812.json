@@ -258,6 +258,23 @@
       "parser_rejected_records": 0
     },
     {
+      "venue_id": "corl",
+      "provider": "pmlr",
+      "authority": "official",
+      "status": "complete",
+      "run_id": "9136c997-aea2-563a-9837-90335906863e",
+      "metadata_sha256": "fc5b090e3e2afdada56a6a579d5c17b0e5658bb137e84ea5d56dbde75f157927",
+      "total_unique_records": 1488,
+      "annual_counts": {"2016": 0, "2017": 49, "2018": 75, "2019": 110, "2020": 165, "2021": 166, "2022": 197, "2023": 199, "2024": 264, "2025": 263},
+      "not_applicable_years": [2016],
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "explicit_duplicate_display_exclusions": 2,
+      "direct_pdf_records": 1488,
+      "note": "CoRL began in 2017, so 2016 is explicitly not applicable. The first live run exposed a cross-month 2019 conference-date expression and two byte-equivalent duplicate paper displays in the official 2023 volume. Conference-date parsing now covers the historical expression; duplicate displays are accepted only when title and authors agree, counted as explicit exclusions, and conflicting stable IDs fail closed."
+    },
+    {
       "venue_id": "colt",
       "provider": "pmlr",
       "authority": "official",

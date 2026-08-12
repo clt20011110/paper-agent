@@ -31,6 +31,7 @@ _VENUE_DESCRIPTORS = {
     "UAI": "venues/uai.yaml",
     "JMLR": "venues/jmlr.yaml",
     "COLT": "venues/colt.yaml",
+    "CoRL": "venues/corl.yaml",
     "ICLR": "venues/iclr.yaml",
     "AAAI": "venues/aaai.yaml",
     "ACL": "venues/acl.yaml",
