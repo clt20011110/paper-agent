@@ -8,6 +8,11 @@
     "field_completeness_claimed": false
   },
   "interface_version": "stage1-standalone-v1",
+  "coverage": {
+    "catalog_venues": 35,
+    "decade_complete_venues": 32,
+    "remaining_unproven_venues": ["dac", "iccad", "iclr"]
+  },
   "venues": [
     {
       "venue_id": "aistats",
@@ -494,6 +499,7 @@
     "Raw live response bodies were held in the local run and hashed by the receipt but are not committed because the current standalone CLI does not yet persist a run-scoped artifact store.",
     "Nature Chemistry completeness is scoped to Crossref DOI registrations for the declared serial/year/type query. It does not claim that unregistered publisher content is present or that every optional metadata field is populated.",
     "JACS completeness has the same registry scope. Its 30,480-item decade run validates deep pagination and rate-limit behavior but is not a publisher issue-table claim.",
-    "DAC and ICCAD are not yet decade-complete: 2016-2021 lack frozen official routes. Explicit terms acceptance enabled successful 2024 official membership censuses (DAC 337, ICCAD 195), while ACM metadata enrichment returned HTTP 403; those enrichment gaps are now reported separately from membership completeness."
+    "DAC and ICCAD are not yet decade-complete: 2016-2021 lack frozen official routes. Explicit terms acceptance enabled successful 2024 official membership censuses (DAC 337, ICCAD 195), while ACM metadata enrichment returned HTTP 403. Crossref exact container-title research shows that some years have multiple ACM/IEEE containers, so a multi-container census with DOI deduplication is required; fuzzy search results are explicitly not accepted as completeness evidence.",
+    "ICLR is not yet decade-complete. A live 2016-2025 run failed closed: 2016-2017 lack the modern group path, 2018-2023 require frozen API-v1 invitations, and both OpenReview API hosts currently return ChallengeRequired to unattended requests. The in-app browser also blocks direct API navigation. No CAPTCHA or access-control bypass was attempted."
   ]
 }
