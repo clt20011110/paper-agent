@@ -86,15 +86,27 @@ def _backup_calibration(profile: Stage2Profile) -> PathCalibration:
     ))
 
 
-def test_fallback_requires_local_backend_and_same_release_gate() -> None:
+def _binding(
+    primary: str = "a" * 64,
+    backup: str = "b" * 64,
+) -> FallbackReleaseBinding:
+    return FallbackReleaseBinding(
+        primary,
+        backup,
+        "c" * 64,
+        "d" * 64,
+    )
+
+
+def test_fallback_requires_local_backend_and_independent_evidence() -> None:
     profile = _profile()
     with pytest.raises(ValueError, match="explicitly local"):
         LocalCalibratedRerankerFallback(
             _Reranker(2.0), "c" * 64, _backup_calibration(profile),
-            FallbackReleaseBinding("gate-hash", "gate-hash"),
+            _binding(),
         )
-    with pytest.raises(ValueError, match="same release gate"):
-        FallbackReleaseBinding("primary-gate", "backup-gate")
+    with pytest.raises(ValueError, match="independent release evidence"):
+        _binding("a" * 64, "a" * 64)
 
 
 def test_primary_failure_uses_only_a_qualified_local_backup(tmp_path) -> None:
@@ -103,7 +115,7 @@ def test_primary_failure_uses_only_a_qualified_local_backup(tmp_path) -> None:
     backup = _Reranker(2.0, is_local=True)
     fallback = LocalCalibratedRerankerFallback(
         backup, "c" * 64, _backup_calibration(profile),
-        FallbackReleaseBinding("gate-hash", "gate-hash"),
+        _binding(),
     )
     database = Database(tmp_path / "papers.sqlite3")
     database.migrate()

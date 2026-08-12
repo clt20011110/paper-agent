@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-rationale-derived-examples.schema.json",
+  "title": "Deterministically derived Stage 2 rationale audit examples",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "corpus_hash", "model_lock_hash", "candidate_bundle_sha256", "source_ledger_sha256", "query_metadata_sha256", "examples"],
+  "properties": {
+    "schema_version": {"const": "2"},
+    "kind": {"const": "stage2_rationale_audit_derived_examples"},
+    "corpus_hash": {"$ref": "#/$defs/sha256"},
+    "model_lock_hash": {"$ref": "#/$defs/sha256"},
+    "candidate_bundle_sha256": {"$ref": "#/$defs/sha256"},
+    "source_ledger_sha256": {"$ref": "#/$defs/sha256"},
+    "query_metadata_sha256": {"$ref": "#/$defs/sha256"},
+    "examples": {"type": "array", "minItems": 100, "items": {"$ref": "#/$defs/example"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "example": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pair_id", "stratum", "language", "rationale_artifact_hash", "evidence", "rationale"],
+      "properties": {
+        "pair_id": {"type": "string", "minLength": 1},
+        "stratum": {"enum": ["relevant", "boundary"]},
+        "language": {"type": "string", "minLength": 1},
+        "rationale_artifact_hash": {"$ref": "#/$defs/sha256"},
+        "evidence": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from math import ceil, isclose
+from math import isclose
 import re
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -1013,27 +1013,48 @@ def _verify_model_call_measurements(document: Mapping[str, Any]) -> None:
             raise Stage2EvidenceError("benchmark model-call trace is invalid")
     reranker = [item for item in trace if item["backend"] == "reranker"]
     qwen = [item for item in trace if item["backend"] == "qwen"]
+    fallback_trace = document["reranker_fallback_trace"]
+    if not isinstance(fallback_trace, list):
+        raise Stage2EvidenceError("benchmark fallback trace is invalid")
+    for item in fallback_trace:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"model_lock_hash", "pair_ids", "duration_seconds", "failed"}
+            or not isinstance(item["model_lock_hash"], str)
+            or re.fullmatch(r"[a-f0-9]{64}", item["model_lock_hash"]) is None
+            or not isinstance(item["pair_ids"], list)
+            or not item["pair_ids"]
+            or len(item["pair_ids"]) != len(set(item["pair_ids"]))
+            or not all(isinstance(pair_id, str) and pair_id for pair_id in item["pair_ids"])
+            or isinstance(item["duration_seconds"], bool)
+            or not isinstance(item["duration_seconds"], (int, float))
+            or item["duration_seconds"] < 0
+            or type(item["failed"]) is not bool
+        ):
+            raise Stage2EvidenceError("benchmark fallback trace is invalid")
+    primary_failed_ids = {
+        pair_id for item in reranker if item["failed"] for pair_id in item["pair_ids"]
+    }
+    if any(
+        pair_id not in primary_failed_ids
+        for item in fallback_trace
+        for pair_id in item["pair_ids"]
+    ):
+        raise Stage2EvidenceError("benchmark fallback trace includes a paper not failed by primary")
     service = document["service_request_trace"]
     service_reranker_count = sum(item["path"] == "/v1/rerank" for item in service)
     service_qwen_count = sum(item["path"] == "/v1/chat/completions" for item in service)
-    expected_fallbacks = max(
-        0,
-        service_reranker_count - sum(
-            ceil(len(item["pair_ids"]) / document["batch_concurrency"]["document_batch_size"])
-            for item in reranker
-        ),
-    )
     if (
-        document["model_call_count"] != len(trace)
+        document["model_call_count"] != len(trace) + len(fallback_trace)
         or document["reranker_batch_call_count"] != len(reranker)
         or document["adjudicator_call_count"] != len(qwen)
-        or document["pair_attempt_count"] != sum(len(item["pair_ids"]) for item in trace)
-        or document["backend_failed_call_count"] != sum(item["failed"] for item in trace)
+        or document["pair_attempt_count"] != sum(len(item["pair_ids"]) for item in trace) + sum(len(item["pair_ids"]) for item in fallback_trace)
+        or document["backend_failed_call_count"] != sum(item["failed"] for item in trace) + sum(item["failed"] for item in fallback_trace)
         or set(pair_id for item in qwen for pair_id in item["pair_ids"])
         != set(document["qwen_pair_ids"])
         or service_qwen_count != len(qwen)
-        or service_reranker_count < len(reranker)
-        or document["reranker_fallback_count"] != expected_fallbacks
+        or service_reranker_count < len(reranker) + len(fallback_trace)
+        or document["reranker_fallback_count"] != len(fallback_trace)
         or document["service_pair_attempt_count"] < document["pair_attempt_count"]
         or document["resume_service_request_trace"] != []
     ):

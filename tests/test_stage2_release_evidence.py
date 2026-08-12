@@ -541,6 +541,7 @@ def _execution_payload(
         "service_request_failure_rate": 0.0,
         "reranker_batch_call_count": 1,
         "reranker_fallback_count": 0,
+        "reranker_fallback_trace": [],
         "reranker_fallback_measurement_available": True,
         "adjudicator_call_count": qwen_count,
         "backend_failed_call_count": 0,

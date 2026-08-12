@@ -33,6 +33,14 @@ paper-agent export
 paper-agent import
 paper-agent migrate-config
 paper-agent benchmark-stage2
+paper-agent stage2-sampling freeze-frame | curation-worklist | curation-import | build | annotation-worklist | finalize-annotations
+paper-agent stage2-calibration freeze-dev-scores | build-candidate
+paper-agent stage2-rationale derive-examples | freeze-worklist | import-worklist
+paper-agent stage2-parity freeze-workload | run
+paper-agent stage2-replay
+paper-agent stage2-tuning select
+paper-agent stage2-evaluator attest | predict-hidden | promote
+paper-agent stage2-release build-evidence | assemble
 ```
 
 Stage 3 的 `not_available/failed_terminal` 表示候选已得到确定的无 PDF 结论，可由 Stage 4
@@ -84,6 +92,10 @@ pin its path/hash in a new config, and run Report as a separate single-stage wor
 Never append a guessed pre-crawl ReportPlan to the dynamic manifest.
 
 For Stage 2, require a passed local release bundle and oMLX models. Never use a test fake, cloud fallback, unapproved model revision, or raw uncalibrated thresholds in production.
+For release preparation, run each installed subcommand's `--help` first. Derive/freeze/import human rationale records, run
+the frozen parity workload, select the complete 3×3 tuning grid, then build the immutable public/final evidence index
+before promotion and assembly. `--dry-run` validates without writing; output artifacts are no-replace. Human labels,
+real oMLX measurements, and the sealed hidden promotion remain distinct gates and must never be inferred from fixtures.
 
 For Stage 3, exhaust public and authorized open-access providers first. Before a browser handoff, show the approved grant scope, domain allowlist, `max_papers`, expiry, and attended/unattended mode. The CLI can prepare an audited handoff only when `--authorized-skill-queue`, `--authorized-skill-output`, and at least one `--authorized-skill-root` are supplied together (with the approved `--grant-id` and enabled configuration). Read `authorized_queue_path` from the structured result, then invoke `$download-authorized-papers` only for that queue and only through the user's authorized visible browser session. The CLI does not operate the browser. Never request, inspect, copy, or log passwords, cookies, tokens, CAPTCHA contents, or session material. Stop the affected queue on login repair, CAPTCHA, 403, or 429 while allowing unrelated papers to continue.
 

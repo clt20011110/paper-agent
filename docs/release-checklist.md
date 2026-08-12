@@ -28,6 +28,13 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent --version)
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-evaluator promote --help)
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-evaluator attest --help)
+(cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-rationale derive-examples --help)
+(cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-rationale freeze-worklist --help)
+(cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-rationale import-worklist --help)
+(cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-parity freeze-workload --help)
+(cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-parity run --help)
+(cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-tuning select --help)
+(cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-release build-evidence --help)
 (cd /tmp && /tmp/paper-agent-wheel/bin/paper-agent stage2-release assemble --help)
 ```
 
@@ -48,10 +55,12 @@ uv pip install --offline --no-deps --python /tmp/paper-agent-wheel/bin/python di
   key，实际交给 loader 时以 `no active key` fail closed，不能把 fixture trust 当生产默认值。
   隔离环境的普通 `paper-agent doctor` 必须返回成功，且 `stage2_model_locks=pass`；不允许仅接受
   非零退出码后跳过该检查。实际把 config 和 skill 从该路径复制到临时目标，确认无需源码 checkout。
-- [ ] CLI contract 回归必须覆盖 `stage2-evaluator promote/attest` 与 `stage2-release assemble` 的完整
+- [ ] CLI contract 回归必须覆盖 `stage2-evaluator promote/attest`、`stage2-rationale derive-examples/freeze-worklist/import-worklist`、
+  `stage2-parity freeze-workload/run`、`stage2-tuning select`、`stage2-release build-evidence/assemble` 的完整
   required options、结构化状态、existing-output 拒绝和 global `--dry-run`。dry-run 不得读取 evaluator
   private labels/submissions/key、消费 promotion marker 或创建 attestation/release output；assembly
-  dry-run 必须执行与真实组装相同的 gate/trust/path 验证。
+  dry-run 必须执行与真实组装相同的 gate/trust/path 验证。parity/tuning/evidence dry-run 必须验证全部
+  input hash、配置和精确 record 数量，同时零写入。
 - [ ] 告警契约回归覆盖 Stage 2 的 15%/30%、0.5%、28 GiB 边界、resume 等价和 report Codex
   budget exhaustion；Stage 4b 全量 prompt 超限必须 dispatch=0，正常路径必须 dispatch=1，且并发、
   resume、timeout 或 uncertain outcome 不得产生第二次调用。search audit 只保留 allowlist

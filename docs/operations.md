@@ -98,6 +98,7 @@ paper-agent --dry-run stage2-release assemble \
   --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
   --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --output /absolute/path/to/release-bundle/stage2-release.json
 ```
 
@@ -106,6 +107,15 @@ root 外，output 必须不存在。assembly dry-run 重算全部 public gates�
 output；成功后只移除 `--dry-run` 执行真实组装。private labels、raw submissions、私钥和 marker state
 不能进入 bundle。组装后的生产加载才使用 `PAPER_AGENT_STAGE2_HIDDEN_TRUST`；它不替代 evaluator
 或 assembler 的显式 `--trust-manifest`。
+
+组装前的 public-gate 工件必须是原始 no-replace outputs：rationale 依次使用
+`stage2-rationale derive-examples`、`freeze-worklist` 与人工完成后的 `import-worklist`；
+`stage2-parity freeze-workload/run` 固定并运行
+10,000-pair 数值 parity；`stage2-tuning select` 选择完整 3×3 的实测 batch/concurrency winner；最后
+`stage2-release build-evidence` 绑定 gold、structured replay、rationale、10 个 parity artifacts、
+benchmark（恰好六次 records）和 soak，带 hidden attestation 时才形成 final evidence。任何正式命令都先
+用全局 `--dry-run` 完整验证且不写文件；输出已存在即停止。人工标签、真实本地模型测量和 sealed hidden
+promotion 均不可由此绕过。
 
 ## 运行、观察和恢复
 

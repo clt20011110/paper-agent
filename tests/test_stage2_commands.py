@@ -614,6 +614,7 @@ def test_measure_stage2_dry_run_validates_release_workload_and_macos_observation
         release_hash="release-hash",
         omlx_base_url="http://127.0.0.1:8000",
         api_key_env=None,
+        reranker_fallback=None,
     )
 
     result = measure_stage2_benchmark(

@@ -48,6 +48,7 @@ from .stage2_evaluation import (
     SoakManifest,
     SoakRunRecord,
 )
+from .stage2_fallback import LocalCalibratedRerankerFallback
 from .stage2_pipeline import (
     ERROR_RATE_ALARM,
     MEMORY_WATERMARK_ALARM,
@@ -126,6 +127,7 @@ BENCHMARK_EXECUTION_FIELDS = frozenset({
     "service_request_failure_rate",
     "reranker_batch_call_count",
     "reranker_fallback_count",
+    "reranker_fallback_trace",
     "reranker_fallback_measurement_available",
     "adjudicator_call_count",
     "backend_failed_call_count",
@@ -596,6 +598,10 @@ class _MeasuredReranker:
     def backend_name(self) -> str:
         return self.backend.backend_name
 
+    @property
+    def is_local(self) -> bool:
+        return getattr(self.backend, "is_local", False)
+
     def rerank(self, query: str, documents: Sequence[RerankInput]) -> tuple[RerankScore, ...]:
         started = self.clock()
         failed = False
@@ -752,7 +758,9 @@ class Stage2BenchmarkRunner:
     rss_scope: str = "runner_process_high_water_rss"
     rss_sample_interval_seconds: float = 0.25
     memory_pressure_sampler: PressureSampler | None = None
+    reranker_fallback: LocalCalibratedRerankerFallback | None = None
     _transport_probe: _MeasuredOmlxTransport | None = field(default=None, repr=False)
+    _fallback_transport_probe: _MeasuredOmlxTransport | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if (
@@ -779,6 +787,8 @@ class Stage2BenchmarkRunner:
         rss_scope: str = "runner_process_high_water_rss",
         rss_sample_interval_seconds: float = 0.25,
         memory_pressure_sampler: PressureSampler | None = None,
+        reranker_fallback: Any | None = None,
+        fallback_transport: OmlxTransport | None = None,
     ) -> Stage2BenchmarkRunner:
         """Bind the measured runner to the concrete oMLX production backends."""
 
@@ -800,6 +810,24 @@ class Stage2BenchmarkRunner:
             max_context_window=profile.adjudicator_max_context_window,
             max_output_tokens=profile.adjudicator_max_output_tokens,
         )
+        fallback_probe: _MeasuredOmlxTransport | None = None
+        fallback: LocalCalibratedRerankerFallback | None = None
+        if reranker_fallback is not None:
+            fallback_probe = _MeasuredOmlxTransport(
+                fallback_transport or transport,
+                clock,
+            )
+            fallback = LocalCalibratedRerankerFallback(
+                OmlxRerankBackend(
+                    reranker_fallback.model_lock.model_id,
+                    fallback_probe,
+                    document_batch_size=profile.document_batch_size,
+                    max_in_flight=profile.reranker_max_in_flight,
+                ),
+                reranker_fallback.model_lock_hash,
+                reranker_fallback.calibration,
+                reranker_fallback.release_binding,
+            )
         return cls(
             database=database,
             profile=profile,
@@ -813,7 +841,9 @@ class Stage2BenchmarkRunner:
             rss_scope=rss_scope,
             rss_sample_interval_seconds=rss_sample_interval_seconds,
             memory_pressure_sampler=memory_pressure_sampler,
+            reranker_fallback=fallback,
             _transport_probe=probe,
+            _fallback_transport_probe=fallback_probe,
         )
 
     def run(
@@ -832,13 +862,29 @@ class Stage2BenchmarkRunner:
 
         rss = _PeakRss(self.rss_sampler, self.memory_pressure_sampler)
         reranker = _MeasuredReranker(self.reranker, self.clock)
+        fallback_reranker = (
+            _MeasuredReranker(self.reranker_fallback.backend, self.clock)
+            if self.reranker_fallback is not None
+            else None
+        )
         adjudicator = _MeasuredAdjudicator(self.adjudicator, self.clock)
+        measured_fallback = (
+            LocalCalibratedRerankerFallback(
+                fallback_reranker,
+                self.reranker_fallback.model_lock_hash,
+                self.reranker_fallback.calibration,
+                self.reranker_fallback.release_binding,
+            )
+            if fallback_reranker is not None and self.reranker_fallback is not None
+            else None
+        )
         pipeline = _BenchmarkPipeline(
             self.database,
             reranker,
             adjudicator,
             self.profile,
             forced_qwen_pair_ids=spec.forced_qwen_pair_ids,
+            reranker_fallback=measured_fallback,
         )
 
         warm = warmup_paper or self._default_warmup_paper(ordered_papers)
@@ -848,14 +894,19 @@ class Stage2BenchmarkRunner:
             adjudicator,
             self.profile,
             forced_qwen_pair_ids=frozenset({warm.paper_id}),
+            reranker_fallback=measured_fallback,
         ).run(f"{run_id}--warmup", (warm,))
         if warmup.reranked_count != 1 or warmup.qwen_count != 1:
             raise RuntimeError("benchmark warm-up did not execute both Stage 2 models")
         reranker.reset()
+        if fallback_reranker is not None:
+            fallback_reranker.reset()
         adjudicator.reset()
         rss.reset()
         if self._transport_probe is not None:
             self._transport_probe.reset()
+        if self._fallback_transport_probe is not None:
+            self._fallback_transport_probe.reset()
 
         rss_start = rss.observe()
         started = self.clock()
@@ -872,13 +923,28 @@ class Stage2BenchmarkRunner:
         if duration == 0:
             raise RuntimeError("benchmark clock produced a zero-duration measurement")
 
-        first_run_call_count = reranker.call_count + adjudicator.call_count
-        first_run_pair_attempt_count = reranker.pair_attempt_count + adjudicator.call_count
+        fallback_call_count = fallback_reranker.call_count if fallback_reranker is not None else 0
+        fallback_pair_attempt_count = (
+            fallback_reranker.pair_attempt_count if fallback_reranker is not None else 0
+        )
+        fallback_failed_call_count = (
+            fallback_reranker.failed_call_count if fallback_reranker is not None else 0
+        )
+        first_run_call_count = reranker.call_count + fallback_call_count + adjudicator.call_count
+        first_run_pair_attempt_count = reranker.pair_attempt_count + fallback_pair_attempt_count + adjudicator.call_count
         first_reranker_call_count = reranker.call_count
         first_adjudicator_call_count = adjudicator.call_count
-        first_backend_failed_call_count = reranker.failed_call_count + adjudicator.failed_call_count
+        first_backend_failed_call_count = reranker.failed_call_count + fallback_failed_call_count + adjudicator.failed_call_count
         first_reranker_batch_sizes = tuple(reranker.batch_sizes)
-        service_requests = tuple(self._transport_probe.requests) if self._transport_probe is not None else ()
+        primary_service_requests = (
+            tuple(self._transport_probe.requests) if self._transport_probe is not None else ()
+        )
+        fallback_service_requests = (
+            tuple(self._fallback_transport_probe.requests)
+            if self._fallback_transport_probe is not None
+            else ()
+        )
+        service_requests = primary_service_requests + fallback_service_requests
         if first_run_call_count < 1 or first_run_pair_attempt_count < 1:
             raise RuntimeError("benchmark did not execute a model request")
         resume_call_count = 0
@@ -886,17 +952,23 @@ class Stage2BenchmarkRunner:
         resumed_pair_ids: tuple[str, ...] = ()
         resume_service_requests: tuple[_ServiceRequest, ...] = ()
         if verify_resume:
-            calls_before_resume = reranker.call_count + adjudicator.call_count
+            calls_before_resume = reranker.call_count + (fallback_reranker.call_count if fallback_reranker is not None else 0) + adjudicator.call_count
             resumed = pipeline.run(run_id, ordered_papers)
-            resume_call_count = reranker.call_count + adjudicator.call_count - calls_before_resume
+            resume_call_count = reranker.call_count + (fallback_reranker.call_count if fallback_reranker is not None else 0) + adjudicator.call_count - calls_before_resume
             resumed_count = sum(item.resumed for item in resumed.decisions)
             resumed_pair_ids = tuple(sorted(
                 item.paper_id for item in resumed.decisions if item.resumed
             ))
             if self._transport_probe is not None:
                 resume_service_requests = tuple(
-                    self._transport_probe.requests[len(service_requests):]
+                    self._transport_probe.requests[len(primary_service_requests):]
                 )
+                if self._fallback_transport_probe is not None:
+                    resume_service_requests += tuple(
+                        self._fallback_transport_probe.requests[
+                            len(fallback_service_requests):
+                        ]
+                    )
 
         durations = (
             tuple(item.duration_seconds for item in service_requests)
@@ -948,11 +1020,6 @@ class Stage2BenchmarkRunner:
         )
         input_tokens = sum(item.input_tokens for item in spec.cases)
         input_hash = benchmark_workload_hash(spec.cases, ordered_papers)
-        initial_rerank_requests = sum(
-            ceil(size / self.profile.document_batch_size) for size in first_reranker_batch_sizes
-        )
-        rerank_service_requests = sum(item.path == "/v1/rerank" for item in service_requests)
-        fallback_count = max(0, rerank_service_requests - initial_rerank_requests) if service_requests else 0
         observed_components = ["rules"]
         if first_reranker_call_count:
             observed_components.append("reranker")
@@ -1060,7 +1127,25 @@ class Stage2BenchmarkRunner:
             "service_failed_request_count": sum(item.failed for item in service_requests) if service_requests else None,
             "service_request_failure_rate": service_request_failure_rate,
             "reranker_batch_call_count": first_reranker_call_count,
-            "reranker_fallback_count": fallback_count if service_requests else None,
+            "reranker_fallback_count": fallback_call_count,
+            "reranker_fallback_trace": (
+                [
+                    {
+                        "model_lock_hash": self.reranker_fallback.model_lock_hash,
+                        "pair_ids": list(pair_ids),
+                        "duration_seconds": duration_seconds,
+                        "failed": failed,
+                    }
+                    for pair_ids, duration_seconds, failed in zip(
+                        fallback_reranker.pair_ids[:fallback_call_count],
+                        fallback_reranker.call_durations[:fallback_call_count],
+                        fallback_reranker.call_failures[:fallback_call_count],
+                        strict=True,
+                    )
+                ]
+                if fallback_reranker is not None and self.reranker_fallback is not None
+                else []
+            ),
             "reranker_fallback_measurement_available": bool(service_requests),
             "adjudicator_call_count": first_adjudicator_call_count,
             "backend_failed_call_count": first_backend_failed_call_count,

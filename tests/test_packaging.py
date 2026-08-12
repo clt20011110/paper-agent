@@ -23,6 +23,7 @@ from paper_agent.resources import (
     release_asset_root,
     stage2_model_lock_paths,
 )
+from paper_agent.schema import schema_directory
 from paper_agent.storage import Database
 from paper_agent.stage2_hidden_attestation import (
     HiddenPromotionAttestationError,
@@ -95,6 +96,15 @@ def test_release_assets_use_one_versioned_source_and_wheel_layout() -> None:
 
     assert release_asset_root() == ROOT
     assert all(path.is_file() for path in stage2_model_lock_paths())
+    for path in (
+        release_asset_root() / "configs/stage2/challengers.json",
+        release_asset_root() / "configs/stage2/models/bge-reranker-v2-m3-mlx-bf16.lock.json",
+        schema_directory() / "stage2-parity-workload.schema.json",
+        schema_directory() / "stage2-parity-oracle-trust.schema.json",
+        schema_directory() / "stage2-tuning-selection-input.schema.json",
+        schema_directory() / "stage2-tuning-winner.schema.json",
+    ):
+        assert path.is_file()
     trust_example = (
         release_asset_root() / "configs/stage2/hidden-evaluator-trust.example.json"
     )

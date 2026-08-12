@@ -571,6 +571,26 @@ def measure_stage2_benchmark(
         release.omlx_base_url,
         api_key=api_key,
     )
+    fallback_transport = None
+    if release.reranker_fallback is not None:
+        fallback_key = (
+            os.environ.get(release.reranker_fallback.api_key_env)
+            if release.reranker_fallback.api_key_env
+            else None
+        )
+        if release.reranker_fallback.api_key_env and not fallback_key:
+            raise ValueError(
+                "measured Stage 2 benchmark requires fallback environment variable "
+                f"{release.reranker_fallback.api_key_env}"
+            )
+        fallback_transport = (
+            local_transport
+            if release.reranker_fallback.omlx_base_url == release.omlx_base_url
+            else UrlLibOmlxTransport(
+                release.reranker_fallback.omlx_base_url,
+                api_key=fallback_key,
+            )
+        )
     schema = json.loads(
         (schema_directory() / release.profile.schema_version).read_text(encoding="utf-8")
     )
@@ -589,6 +609,8 @@ def measure_stage2_benchmark(
             rss_scope=observer.rss_scope,
             rss_sample_interval_seconds=sample_interval_seconds,
             memory_pressure_sampler=observer.memory_pressure_critical,
+            reranker_fallback=release.reranker_fallback,
+            fallback_transport=fallback_transport,
         )
         runner.validate(spec, papers)
         if dry_run:

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
 from paper_agent import cli
+from test_stage2_rationale_workflow import _derived_source_inputs
 
 
 def _examples_document() -> dict[str, object]:
@@ -114,3 +116,47 @@ def test_rationale_cli_rejects_unfilled_human_labels(
             "--worklist", str(worklist_path),
             "--records-output", str(tmp_path / "records.json"),
         ])
+
+
+def test_rationale_cli_derives_bound_examples_without_writing_in_dry_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger, candidate, papers, metadata = _derived_source_inputs()
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text("candidate-bytes", encoding="utf-8")
+    candidate_sha = sha256(candidate_path.read_bytes()).hexdigest()
+    ledger["candidate"]["bundle_sha256"] = candidate_sha
+    papers_path = tmp_path / "papers.json"
+    papers_path.write_text(json.dumps(papers, sort_keys=True), encoding="utf-8")
+    papers_sha = sha256(papers_path.read_bytes()).hexdigest()
+    metadata["benchmark_papers_sha256"] = papers_sha
+    metadata_path = tmp_path / "queries.json"
+    metadata_path.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+    ledger["benchmark_papers_sha256"] = papers_sha
+    ledger["query_metadata_sha256"] = sha256(metadata_path.read_bytes()).hexdigest()
+    ledger_path = tmp_path / "ledger.json"
+    ledger_path.write_text(json.dumps(ledger, sort_keys=True), encoding="utf-8")
+    output = tmp_path / "derived.json"
+    monkeypatch.setattr(cli, "load_stage2_benchmark_candidate", lambda _path: candidate)
+    args = [
+        "stage2-rationale", "derive-examples",
+        "--stage2-candidate", str(candidate_path),
+        "--benchmark-papers", str(papers_path),
+        "--query-metadata", str(metadata_path),
+        "--adjudication-ledger", str(ledger_path),
+        "--output", str(output),
+    ]
+
+    assert cli.main(["--dry-run", *args]) == 0
+    dry = json.loads(capsys.readouterr().out)
+    assert dry["example_count"] == 100
+    assert dry["written"] is False
+    assert not output.exists()
+
+    assert cli.main(args) == 0
+    written = json.loads(capsys.readouterr().out)
+    assert written["written"] is True
+    output_document = json.loads(output.read_text(encoding="utf-8"))
+    assert output_document["kind"] == "stage2_rationale_audit_derived_examples"

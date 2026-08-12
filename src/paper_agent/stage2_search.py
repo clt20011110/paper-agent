@@ -36,6 +36,8 @@ from .stage2_evaluation import (
     pair_universe_hash,
     phase3_release_gate,
 )
+from .stage2_fallback import FallbackReleaseBinding, LocalCalibratedRerankerFallback
+from .stage2_hidden_attestation import HIDDEN_PROMOTION_GATE_POLICY_HASH
 from .stage2_hidden_attestation import (
     HiddenEvaluatorTrust,
     HiddenPromotionBindings,
@@ -90,12 +92,25 @@ class Stage2ReleaseError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class ReleasedRerankerFallback:
+    """A separately calibrated, independently released local backup reranker."""
+
+    model_lock: ModelLock
+    model_lock_hash: str
+    calibration: PathCalibration
+    omlx_base_url: str
+    api_key_env: str | None
+    release_binding: FallbackReleaseBinding
+
+
+@dataclass(frozen=True, slots=True)
 class ReleasedStage2:
     profile_name: str
     profile: Stage2Profile
     release_hash: str
     omlx_base_url: str
     api_key_env: str | None = None
+    reranker_fallback: ReleasedRerankerFallback | None = None
 
     def screener(
         self,
@@ -130,8 +145,35 @@ class ReleasedStage2:
                 max_output_tokens=self.profile.adjudicator_max_output_tokens,
             ),
             self.profile,
+            reranker_fallback=self._reranker_fallback(local_transport, values),
         )
         return Stage2SearchScreener(database, pipeline, campaign_id)
+
+    def _reranker_fallback(
+        self,
+        primary_transport: OmlxTransport,
+        environment: Mapping[str, str],
+    ) -> LocalCalibratedRerankerFallback | None:
+        fallback = self.reranker_fallback
+        if fallback is None:
+            return None
+        transport = primary_transport
+        if fallback.omlx_base_url != self.omlx_base_url:
+            transport = UrlLibOmlxTransport(
+                fallback.omlx_base_url,
+                api_key=environment.get(fallback.api_key_env) if fallback.api_key_env else None,
+            )
+        return LocalCalibratedRerankerFallback(
+            OmlxRerankBackend(
+                fallback.model_lock.model_id,
+                transport,
+                document_batch_size=self.profile.document_batch_size,
+                max_in_flight=self.profile.reranker_max_in_flight,
+            ),
+            fallback.model_lock_hash,
+            fallback.calibration,
+            fallback.release_binding,
+        )
 
 
 def stage2_base_profile(
@@ -409,7 +451,12 @@ def _load_stage2_bundle(
     if "thresholds" in document:
         raise Stage2ReleaseError("legacy raw-score thresholds are forbidden in production releases")
     expected_fields = _RELEASE_FIELDS if released else _BENCHMARK_CANDIDATE_FIELDS
-    _exact_fields(document, expected_fields, "Stage 2 bundle")
+    _exact_optional_fields(
+        document,
+        expected_fields,
+        frozenset({"reranker_fallback"}),
+        "Stage 2 bundle",
+    )
     expected_schema_version = "3" if released else "2"
     if document.get("schema_version") != expected_schema_version:
         raise Stage2ReleaseError(
@@ -515,12 +562,31 @@ def _load_stage2_bundle(
             parity_oracle_trust,
         )
 
+    fallback = _load_released_reranker_fallback(
+        path,
+        document.get("reranker_fallback"),
+        primary_profile=profile,
+        primary_evaluation_manifest_hash=(
+            _sha256_text(gate_document, "evaluation_manifest_hash")
+            if gate_document is not None
+            else None
+        ),
+        primary_release_evidence_hash=(
+            _sha256_text(_object(gate_document, "evidence"), "sha256")
+            if gate_document is not None
+            else None
+        ),
+        hidden_trust=hidden_trust,
+        parity_oracle_trust=parity_oracle_trust,
+    )
+
     return ReleasedStage2(
         profile_name,
         profile,
         sha256(release_bytes).hexdigest(),
         base_profile.omlx_base_url,
         base_profile.api_key_env,
+        fallback,
     )
 
 
@@ -558,6 +624,130 @@ def _release_gate(
         raise Stage2ReleaseError(
             f"Stage 2 release evidence verification failed: {error}"
         ) from error
+
+
+def _load_released_reranker_fallback(
+    release_path: Path,
+    document: Any,
+    *,
+    primary_profile: Stage2Profile,
+    primary_evaluation_manifest_hash: str | None,
+    primary_release_evidence_hash: str | None,
+    hidden_trust: HiddenEvaluatorTrust | None,
+    parity_oracle_trust: ParityOracleTrust | None,
+) -> ReleasedRerankerFallback | None:
+    if document is None:
+        return None
+    if not isinstance(document, Mapping):
+        raise Stage2ReleaseError("Stage 2 reranker_fallback must be an object")
+    _exact_fields(
+        document,
+        frozenset({"candidate", "release_evidence", "runtime", "release_binding"}),
+        "Stage 2 reranker fallback",
+    )
+    candidate_path, _, candidate_bytes = _artifact(
+        release_path, _object(document, "candidate")
+    )
+    backup = _load_stage2_benchmark_candidate_bytes(candidate_path, candidate_bytes)
+    if backup.reranker_fallback is not None:
+        raise Stage2ReleaseError("Stage 2 reranker fallback candidates cannot nest fallbacks")
+    if backup.profile.reranker_lock_hash == primary_profile.reranker_lock_hash:
+        raise Stage2ReleaseError("Stage 2 reranker fallback must use a distinct model lock")
+    runtime = _object(document, "runtime")
+    _exact_fields(
+        runtime,
+        frozenset({"omlx_base_url", "api_key_env"}),
+        "Stage 2 reranker fallback runtime",
+    )
+    endpoint = _text(runtime, "omlx_base_url")
+    _require_loopback(endpoint)
+    api_key_env = runtime["api_key_env"]
+    if api_key_env is not None and (
+        not isinstance(api_key_env, str) or not api_key_env
+    ):
+        raise Stage2ReleaseError("Stage 2 fallback api_key_env must be a non-empty string or null")
+    binding_document = _object(document, "release_binding")
+    _exact_fields(
+        binding_document,
+        frozenset({
+            "primary_release_evidence_hash",
+            "backup_release_evidence_hash",
+            "evaluation_manifest_hash",
+            "gate_policy_hash",
+        }),
+        "Stage 2 reranker fallback release binding",
+    )
+    binding = FallbackReleaseBinding(
+        _sha256_text(binding_document, "primary_release_evidence_hash"),
+        _sha256_text(binding_document, "backup_release_evidence_hash"),
+        _sha256_text(binding_document, "evaluation_manifest_hash"),
+        _sha256_text(binding_document, "gate_policy_hash"),
+    )
+    if binding.gate_policy_hash != HIDDEN_PROMOTION_GATE_POLICY_HASH:
+        raise Stage2ReleaseError("Stage 2 fallback does not use the frozen promotion gate policy")
+    backup_evidence_path, backup_evidence_hash, backup_evidence_bytes = _artifact(
+        release_path, _object(document, "release_evidence")
+    )
+    if backup_evidence_hash != binding.backup_release_evidence_hash:
+        raise Stage2ReleaseError("Stage 2 fallback backup release evidence does not match its binding")
+    reranker = backup.profile.reranker_calibration
+    if reranker is None or backup.profile.reranker_lock_hash is None:
+        raise Stage2ReleaseError("Stage 2 fallback candidate is missing reranker calibration")
+    if primary_evaluation_manifest_hash is None:
+        return ReleasedRerankerFallback(
+            _model_lock_from_profile_candidate(candidate_path, candidate_bytes),
+            backup.profile.reranker_lock_hash,
+            reranker,
+            endpoint,
+            api_key_env,
+            binding,
+        )
+    if (
+        hidden_trust is None
+        or parity_oracle_trust is None
+        or primary_release_evidence_hash is None
+    ):
+        raise Stage2ReleaseError("Stage 2 fallback requires verified primary release evidence")
+    if binding.primary_release_evidence_hash != primary_release_evidence_hash:
+        raise Stage2ReleaseError("Stage 2 fallback primary release evidence does not match the release")
+    if binding.evaluation_manifest_hash != primary_evaluation_manifest_hash:
+        raise Stage2ReleaseError("Stage 2 fallback evaluation manifest does not match the primary release")
+    try:
+        backup_index = load_stage2_release_evidence_index_bytes(
+            backup_evidence_path,
+            backup_evidence_bytes,
+        )
+        backup_gate = verify_stage2_release_evidence_index(
+            backup_index,
+            candidate_id=backup.profile_name,
+            evaluation_manifest_hash=binding.evaluation_manifest_hash,
+            profile=backup.profile,
+            hidden_trust=hidden_trust,
+            oracle_trust=parity_oracle_trust,
+        )
+    except (OSError, ValueError) as error:
+        raise Stage2ReleaseError(
+            f"Stage 2 fallback release evidence verification failed: {error}"
+        ) from error
+    if not backup_gate.gate.passed:
+        raise Stage2ReleaseError("Stage 2 fallback release gates did not pass")
+    return ReleasedRerankerFallback(
+        _model_lock_from_profile_candidate(candidate_path, candidate_bytes),
+        backup.profile.reranker_lock_hash,
+        reranker,
+        endpoint,
+        api_key_env,
+        binding,
+    )
+
+
+def _model_lock_from_profile_candidate(candidate_path: Path, candidate_bytes: bytes) -> ModelLock:
+    candidate = _json_object_bytes(candidate_bytes, "Stage 2 fallback candidate")
+    _, _, lock_bytes = _artifact(candidate_path, _object(candidate, "reranker_lock"))
+    try:
+        return ModelLock(**_json_object_bytes(lock_bytes, "Stage 2 fallback model lock"))
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise Stage2ReleaseError(f"Stage 2 fallback model lock is invalid: {error}") from error
 
 
 def verify_stage2_release_evidence(
@@ -908,6 +1098,19 @@ def _exact_fields(document: Mapping[str, Any], expected: frozenset[str], label: 
     if set(document) != expected:
         missing = sorted(expected - set(document))
         extra = sorted(set(document) - expected)
+        raise Stage2ReleaseError(f"{label} fields are not exact; missing={missing}, extra={extra}")
+
+
+def _exact_optional_fields(
+    document: Mapping[str, Any],
+    required: frozenset[str],
+    optional: frozenset[str],
+    label: str,
+) -> None:
+    actual = set(document)
+    if not required <= actual or not actual <= required | optional:
+        missing = sorted(required - actual)
+        extra = sorted(actual - required - optional)
         raise Stage2ReleaseError(f"{label} fields are not exact; missing={missing}, extra={extra}")
 
 

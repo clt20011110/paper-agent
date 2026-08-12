@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 
 from .canonical import content_hash
 from .schema import validate
+from .stage2_benchmark_inputs import benchmark_corpus_hash, benchmark_papers_from_document
 from .stage2_evaluation import (
     RationaleAuditCase,
     RationaleAuditManifest,
@@ -52,6 +53,285 @@ SEVERE_FABRICATION_RUBRIC = {
 
 EVIDENCE_SUPPORT_RUBRIC_HASH = content_hash(EVIDENCE_SUPPORT_RUBRIC)
 SEVERE_FABRICATION_RUBRIC_HASH = content_hash(SEVERE_FABRICATION_RUBRIC)
+
+
+_SOURCE_LEDGER_FIELDS = frozenset({
+    "schema_version", "kind", "candidate", "benchmark_papers_sha256",
+    "corpus_hash", "query_metadata_sha256", "records",
+})
+_SOURCE_CANDIDATE_FIELDS = frozenset({
+    "candidate_id", "bundle_sha256", "release_hash", "adjudicator_model_id",
+    "adjudicator_model_lock_hash", "prompt_version", "response_schema",
+})
+_QUERY_METADATA_FIELDS = frozenset({
+    "schema_version", "kind", "benchmark_papers_sha256", "primary_languages",
+    "assignments",
+})
+_QUERY_ASSIGNMENT_FIELDS = frozenset({
+    "paper_id", "language", "topic", "query_version", "query",
+})
+_LEDGER_RECORD_FIELDS = frozenset({
+    "paper_id", "decision", "score", "rationale", "evidence_fields",
+})
+_DERIVED_DOCUMENT_FIELDS = frozenset({
+    "schema_version", "kind", "corpus_hash", "model_lock_hash",
+    "candidate_bundle_sha256", "source_ledger_sha256", "query_metadata_sha256",
+    "examples",
+})
+
+
+def derive_rationale_audit_examples(
+    source_ledger: object,
+    *,
+    source_ledger_sha256: str,
+    candidate: Any,
+    candidate_bundle_sha256: str,
+    benchmark_papers_document: object,
+    benchmark_papers_sha256: str,
+    query_metadata: object,
+    query_metadata_sha256: str,
+) -> dict[str, Any]:
+    """Deterministically select review cases from a bound Qwen response ledger.
+
+    The ledger is deliberately a strict, text-bearing artifact: the model's
+    rationale is copied verbatim, while the reviewer evidence is rendered only
+    from the separately frozen benchmark paper fields named by the ledger.
+    """
+
+    validate(source_ledger, "stage2-rationale-source-ledger.schema.json")
+    validate(query_metadata, "stage2-rationale-query-metadata.schema.json")
+    validate(benchmark_papers_document, "stage2-benchmark-papers.schema.json")
+    if not isinstance(source_ledger, Mapping) or not isinstance(query_metadata, Mapping):
+        raise ValueError("rationale source inputs must be JSON objects")
+    if set(source_ledger) != _SOURCE_LEDGER_FIELDS:
+        raise ValueError("rationale source ledger has an unsupported shape")
+    if set(query_metadata) != _QUERY_METADATA_FIELDS:
+        raise ValueError("rationale query metadata has an unsupported shape")
+    if source_ledger["benchmark_papers_sha256"] != benchmark_papers_sha256:
+        raise ValueError("rationale source ledger does not bind the benchmark papers bytes")
+    if source_ledger["query_metadata_sha256"] != query_metadata_sha256:
+        raise ValueError("rationale source ledger does not bind the query metadata bytes")
+    if query_metadata["benchmark_papers_sha256"] != benchmark_papers_sha256:
+        raise ValueError("rationale query metadata does not bind the benchmark papers bytes")
+
+    papers = benchmark_papers_from_document(benchmark_papers_document)
+    corpus_hash = benchmark_corpus_hash(papers)
+    if source_ledger["corpus_hash"] != corpus_hash:
+        raise ValueError("rationale source ledger corpus hash does not match benchmark papers")
+    _validate_candidate_binding(source_ledger["candidate"], candidate, candidate_bundle_sha256)
+
+    papers_by_id = {paper.paper_id: paper for paper in papers}
+    if len(papers_by_id) != len(papers):
+        raise ValueError("benchmark papers must have unique paper_id values")
+    assignments = _query_assignments(query_metadata, papers_by_id)
+    source_records = _ledger_records(source_ledger, assignments, papers_by_id)
+    examples: list[dict[str, Any]] = []
+    for language in query_metadata["primary_languages"]:
+        for stratum, decision in (
+            (RationaleStratum.RELEVANT, "relevant"),
+            (RationaleStratum.BOUNDARY, "needs_review"),
+        ):
+            candidates = sorted(
+                (
+                    record for record in source_records
+                    if record["decision"] == decision
+                    and assignments[record["paper_id"]]["language"] == language
+                ),
+                key=lambda record: (record["paper_id"], record["rationale"]),
+            )
+            if len(candidates) < 25:
+                raise ValueError(
+                    f"rationale source ledger needs at least 25 {stratum.value} "
+                    f"records for primary language {language}"
+                )
+            for record in candidates[:25]:
+                paper = papers_by_id[record["paper_id"]]
+                examples.append({
+                    "pair_id": record["paper_id"],
+                    "stratum": stratum.value,
+                    "language": language,
+                    "rationale_artifact_hash": source_ledger_sha256,
+                    "evidence": _render_evidence(paper, record["evidence_fields"]),
+                    "rationale": record["rationale"],
+                })
+
+    document = {
+        "schema_version": "2",
+        "kind": "stage2_rationale_audit_derived_examples",
+        "corpus_hash": corpus_hash,
+        "model_lock_hash": source_ledger["candidate"]["adjudicator_model_lock_hash"],
+        "candidate_bundle_sha256": candidate_bundle_sha256,
+        "source_ledger_sha256": source_ledger_sha256,
+        "query_metadata_sha256": query_metadata_sha256,
+        "examples": examples,
+    }
+    validate(document, "stage2-rationale-derived-examples.schema.json")
+    return document
+
+
+def qwen_adjudication_ledger_document(
+    decisions: Sequence[Any],
+    *,
+    candidate: Any,
+    candidate_bundle_sha256: str,
+    benchmark_papers_document: object,
+    benchmark_papers_sha256: str,
+    query_metadata_sha256: str,
+) -> dict[str, Any]:
+    """Freeze actual Qwen ``Stage2Decision`` outputs as a source ledger.
+
+    This is the production boundary for rationale text.  It accepts the typed
+    decisions emitted by ``Stage2Pipeline`` rather than author-supplied
+    rationale dictionaries, and refuses non-Qwen or incomplete outcomes.
+    """
+
+    validate(benchmark_papers_document, "stage2-benchmark-papers.schema.json")
+    papers = benchmark_papers_from_document(benchmark_papers_document)
+    paper_ids = {paper.paper_id for paper in papers}
+    profile = candidate.profile
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for decision in decisions:
+        paper_id = getattr(decision, "paper_id", None)
+        route = getattr(getattr(decision, "route", None), "value", None)
+        score = getattr(decision, "adjudicator_score", None)
+        rationale = getattr(decision, "rationale", None)
+        evidence_fields = getattr(decision, "evidence_fields", None)
+        if (
+            getattr(decision, "adjudicated", None) is not True
+            or paper_id not in paper_ids
+            or paper_id in seen
+            or route not in {"relevant", "irrelevant", "needs_review"}
+            or type(score) not in {int, float}
+            or not isinstance(rationale, str)
+            or not rationale.strip()
+            or not isinstance(evidence_fields, tuple)
+        ):
+            raise ValueError("rationale ledger requires complete Qwen Stage2Decision outputs")
+        seen.add(paper_id)
+        records.append({
+            "paper_id": paper_id,
+            "decision": route,
+            "score": float(score),
+            "rationale": rationale,
+            "evidence_fields": list(evidence_fields),
+        })
+    if len(records) < 100:
+        raise ValueError("rationale ledger requires at least 100 Qwen decisions")
+    document = {
+        "schema_version": "1",
+        "kind": "stage2_qwen_adjudication_ledger",
+        "candidate": {
+            "candidate_id": candidate.profile_name,
+            "bundle_sha256": candidate_bundle_sha256,
+            "release_hash": candidate.release_hash,
+            "adjudicator_model_id": profile.adjudicator_model_id,
+            "adjudicator_model_lock_hash": profile.adjudicator_lock_hash,
+            "prompt_version": profile.prompt_version,
+            "response_schema": profile.schema_version,
+        },
+        "benchmark_papers_sha256": benchmark_papers_sha256,
+        "corpus_hash": benchmark_corpus_hash(papers),
+        "query_metadata_sha256": query_metadata_sha256,
+        "records": records,
+    }
+    validate(document, "stage2-rationale-source-ledger.schema.json")
+    return document
+
+
+def write_qwen_adjudication_ledger_no_replace(path: Path, document: Mapping[str, Any]) -> None:
+    """Publish typed Qwen outcomes as the immutable rationale source artifact."""
+
+    validate(document, "stage2-rationale-source-ledger.schema.json")
+    _write_json_no_replace(path, document)
+
+
+def write_derived_rationale_examples_no_replace(path: Path, document: Mapping[str, Any]) -> None:
+    """Write a schema-validated deterministic rationale source without replacement."""
+
+    validate(document, "stage2-rationale-derived-examples.schema.json")
+    _write_json_no_replace(path, document)
+
+
+def _validate_candidate_binding(
+    binding: object, candidate: Any, candidate_bundle_sha256: str
+) -> None:
+    if not isinstance(binding, Mapping) or set(binding) != _SOURCE_CANDIDATE_FIELDS:
+        raise ValueError("rationale source ledger candidate binding has an unsupported shape")
+    profile = candidate.profile
+    expected = {
+        "candidate_id": candidate.profile_name,
+        "bundle_sha256": candidate_bundle_sha256,
+        "release_hash": candidate.release_hash,
+        "adjudicator_model_id": profile.adjudicator_model_id,
+        "adjudicator_model_lock_hash": profile.adjudicator_lock_hash,
+        "prompt_version": profile.prompt_version,
+        "response_schema": profile.schema_version,
+    }
+    if binding != expected:
+        raise ValueError("rationale source ledger is not bound to the frozen Stage 2 candidate")
+
+
+def _query_assignments(
+    metadata: Mapping[str, Any], papers_by_id: Mapping[str, Any]
+) -> Mapping[str, Mapping[str, Any]]:
+    assignments = metadata["assignments"]
+    if not isinstance(assignments, list):
+        raise ValueError("rationale query metadata assignments must be a list")
+    by_paper: dict[str, Mapping[str, Any]] = {}
+    for assignment in assignments:
+        if not isinstance(assignment, Mapping) or set(assignment) != _QUERY_ASSIGNMENT_FIELDS:
+            raise ValueError("rationale query metadata assignment has an unsupported shape")
+        paper_id = assignment["paper_id"]
+        if paper_id in by_paper or paper_id not in papers_by_id:
+            raise ValueError("rationale query metadata must assign each benchmark paper at most once")
+        by_paper[paper_id] = assignment
+    primary_languages = metadata["primary_languages"]
+    if not isinstance(primary_languages, list) or len(primary_languages) < 2:
+        raise ValueError("rationale query metadata needs at least two primary languages")
+    return by_paper
+
+
+def _ledger_records(
+    ledger: Mapping[str, Any],
+    assignments: Mapping[str, Mapping[str, Any]],
+    papers_by_id: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    records = ledger["records"]
+    if not isinstance(records, list):
+        raise ValueError("rationale source ledger records must be a list")
+    by_paper: dict[str, Mapping[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, Mapping) or set(record) != _LEDGER_RECORD_FIELDS:
+            raise ValueError("rationale source ledger record has an unsupported shape")
+        paper_id = record["paper_id"]
+        if paper_id in by_paper or paper_id not in papers_by_id or paper_id not in assignments:
+            raise ValueError("rationale source ledger records need one bound paper and query assignment")
+        by_paper[paper_id] = record
+    return tuple(by_paper.values())
+
+
+def _render_evidence(paper: Any, evidence_fields: object) -> str:
+    if not isinstance(evidence_fields, list) or not evidence_fields:
+        raise ValueError("rationale source ledger evidence_fields must be a non-empty list")
+    fields = tuple(evidence_fields)
+    if len(set(fields)) != len(fields) or any(field not in {"title", "abstract", "keywords"} for field in fields):
+        raise ValueError("rationale source ledger evidence_fields are invalid")
+    parts: list[str] = []
+    for field in fields:
+        if field == "title":
+            if not paper.title:
+                raise ValueError("rationale source ledger requested an empty title")
+            parts.append(f"title: {paper.title}")
+        elif field == "abstract":
+            if not paper.abstract or not paper.abstract.strip():
+                raise ValueError("rationale source ledger requested a missing abstract")
+            parts.append(f"abstract: {paper.abstract}")
+        else:
+            if not paper.keywords:
+                raise ValueError("rationale source ledger requested missing keywords")
+            parts.append("keywords: " + ", ".join(paper.keywords))
+    return "\n".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,14 +384,22 @@ def rationale_audit_examples_from_document(
 ) -> tuple[tuple[RationaleAuditExample, ...], str, str]:
     """Load the explicit, already-selected examples used to freeze an audit."""
 
-    if not isinstance(document, Mapping) or set(document) != {
+    if isinstance(document, Mapping) and document.get("kind") == "stage2_rationale_audit_derived_examples":
+        validate(document, "stage2-rationale-derived-examples.schema.json")
+        if set(document) != _DERIVED_DOCUMENT_FIELDS or document.get("schema_version") != "2":
+            raise ValueError("rationale audit derived examples have an unsupported shape")
+        examples_document = document
+    else:
+        examples_document = document
+    if not isinstance(examples_document, Mapping) or set(examples_document) not in ({
         "schema_version", "kind", "corpus_hash", "model_lock_hash", "examples",
-    }:
+    }, _DERIVED_DOCUMENT_FIELDS):
         raise ValueError("rationale audit examples have an unsupported shape")
     if (
-        document["schema_version"] != "1"
-        or document["kind"] != "stage2_rationale_audit_examples"
-        or not isinstance(document["examples"], list)
+        (examples_document["schema_version"] == "1" and examples_document["kind"] != "stage2_rationale_audit_examples")
+        or (examples_document["schema_version"] == "2" and examples_document["kind"] != "stage2_rationale_audit_derived_examples")
+        or examples_document["schema_version"] not in {"1", "2"}
+        or not isinstance(examples_document["examples"], list)
     ):
         raise ValueError("not a Stage 2 rationale audit examples document")
     examples: list[RationaleAuditExample] = []
@@ -119,9 +407,14 @@ def rationale_audit_examples_from_document(
         "pair_id", "stratum", "language", "rationale_artifact_hash",
         "evidence", "rationale",
     }
-    for row in document["examples"]:
+    for row in examples_document["examples"]:
         if not isinstance(row, Mapping) or set(row) != required:
             raise ValueError("rationale audit example has an unsupported shape")
+        if (
+            examples_document["schema_version"] == "2"
+            and row["rationale_artifact_hash"] != examples_document["source_ledger_sha256"]
+        ):
+            raise ValueError("derived rationale example is not bound to its source ledger")
         examples.append(RationaleAuditExample(
             pair_id=row["pair_id"],
             stratum=RationaleStratum(row["stratum"]),
@@ -130,7 +423,7 @@ def rationale_audit_examples_from_document(
             evidence=row["evidence"],
             rationale=row["rationale"],
         ))
-    return tuple(examples), document["corpus_hash"], document["model_lock_hash"]
+    return tuple(examples), examples_document["corpus_hash"], examples_document["model_lock_hash"]
 
 
 def rationale_audit_manifest_from_document(document: object) -> RationaleAuditManifest:

@@ -52,16 +52,31 @@ class LocalRerankerBackend(RerankerBackend, Protocol):
 
 @dataclass(frozen=True, slots=True)
 class FallbackReleaseBinding:
-    """Evidence that primary and backup passed the identical quality gate."""
+    """Independent release evidence evaluated under one frozen gate policy."""
 
-    primary_release_gate_hash: str
-    backup_release_gate_hash: str
+    primary_release_evidence_hash: str
+    backup_release_evidence_hash: str
+    evaluation_manifest_hash: str
+    gate_policy_hash: str
 
     def __post_init__(self) -> None:
-        if not self.primary_release_gate_hash or not self.backup_release_gate_hash:
-            raise ValueError("fallback release-gate hashes are required")
-        if self.primary_release_gate_hash != self.backup_release_gate_hash:
-            raise ValueError("primary and backup must pass the same release gate")
+        if not all((
+            self.primary_release_evidence_hash,
+            self.backup_release_evidence_hash,
+            self.evaluation_manifest_hash,
+            self.gate_policy_hash,
+        )):
+            raise ValueError("fallback release evidence and gate policy hashes are required")
+        if self.primary_release_evidence_hash == self.backup_release_evidence_hash:
+            raise ValueError("primary and backup require independent release evidence")
+
+    def document(self) -> dict[str, str]:
+        return {
+            "primary_release_evidence_hash": self.primary_release_evidence_hash,
+            "backup_release_evidence_hash": self.backup_release_evidence_hash,
+            "evaluation_manifest_hash": self.evaluation_manifest_hash,
+            "gate_policy_hash": self.gate_policy_hash,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,10 +104,8 @@ class LocalCalibratedRerankerFallback:
         primary_model_lock_hash: str | None,
         primary_release_gate_hash: str | None,
     ) -> None:
-        """Fail closed unless this released backup is bound to the current primary."""
-        if not primary_model_lock_hash or not primary_release_gate_hash:
-            raise ValueError("fallback requires a released, model-locked primary")
+        """Fail closed unless the backup remains model-distinct from its primary."""
+        if not primary_model_lock_hash:
+            raise ValueError("fallback requires a model-locked primary")
         if self.model_lock_hash == primary_model_lock_hash:
             raise ValueError("fallback must be a distinct local reranker model")
-        if self.release_binding.primary_release_gate_hash != primary_release_gate_hash:
-            raise ValueError("fallback release binding does not match the primary gate")

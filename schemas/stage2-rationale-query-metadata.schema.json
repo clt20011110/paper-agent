@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-rationale-query-metadata.schema.json",
+  "title": "Frozen Stage 2 rationale query metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "benchmark_papers_sha256", "primary_languages", "assignments"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "kind": {"const": "stage2_rationale_query_metadata"},
+    "benchmark_papers_sha256": {"$ref": "#/$defs/sha256"},
+    "primary_languages": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "assignments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/assignment"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paper_id", "language", "topic", "query_version", "query"],
+      "properties": {
+        "paper_id": {"type": "string", "minLength": 1},
+        "language": {"type": "string", "minLength": 1},
+        "topic": {"type": "string", "minLength": 1},
+        "query_version": {"type": "string", "minLength": 1},
+        "query": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

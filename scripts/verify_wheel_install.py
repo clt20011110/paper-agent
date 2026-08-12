@@ -46,6 +46,17 @@ def main() -> None:
         text=True,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
+    for arguments in (
+        ("stage2-rationale", "derive-examples", "--help"),
+        ("stage2-rationale", "freeze-worklist", "--help"),
+        ("stage2-rationale", "import-worklist", "--help"),
+        ("stage2-parity", "freeze-workload", "--help"),
+        ("stage2-parity", "run", "--help"),
+        ("stage2-tuning", "select", "--help"),
+        ("stage2-release", "build-evidence", "--help"),
+        ("stage2-release", "assemble", "--help"),
+    ):
+        assert subprocess.run([str(console), *arguments], check=False).returncode == 0
     diagnosis = json.loads(completed.stdout)
     catalog = load_catalog()
     manifest_root = manifest_directory().resolve()
@@ -81,7 +92,14 @@ def main() -> None:
     assert len(catalog.providers) == 25
     assert len(catalog.venues) == 20
     assert batch.entries[0].external_id == "10.1000/wheel-check"
-    assert len(tuple(schema_directory().glob("*.json"))) >= 19
+    schemas = schema_directory()
+    for name in (
+        "stage2-parity-workload.schema.json",
+        "stage2-parity-oracle-trust.schema.json",
+        "stage2-tuning-selection-input.schema.json",
+        "stage2-tuning-winner.schema.json",
+    ):
+        assert (schemas / name).is_file()
     assert len(tuple(prompt_directory().glob("*.md"))) >= 7
     assert (registry_directory() / "analysis-normalization-v1.yaml").is_file()
     assert audit_manifest_path().is_file()
@@ -97,6 +115,11 @@ def main() -> None:
     configs = example_config_paths()
     assert all(path.is_file() for path in locks)
     assert all(path.is_file() for path in configs)
+    for path in (
+        assets / "configs/stage2/challengers.json",
+        assets / "configs/stage2/models/bge-reranker-v2-m3-mlx-bf16.lock.json",
+    ):
+        assert path.is_file()
     assert public_oa_terms_path().is_file()
     skill = paper_agent_skill_directory()
     assert (skill / "SKILL.md").is_file()

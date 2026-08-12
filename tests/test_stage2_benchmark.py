@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 from threading import Lock
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
 
-from paper_agent.stage2_backends import OmlxResponse, ThresholdArtifact
+from paper_agent.stage2_backends import ModelLock, OmlxResponse, ThresholdArtifact
 from paper_agent.stage2_benchmark import (
     BenchmarkExecutionRecord,
     BenchmarkRunSpec,
@@ -16,11 +17,20 @@ from paper_agent.stage2_benchmark import (
     Stage2BenchmarkRunner,
     benchmark_alarm_codes,
 )
-from paper_agent.stage2_evaluation import BenchmarkEnvironment, PerformanceCase
+from paper_agent.stage2_evaluation import (
+    BenchmarkEnvironment,
+    CalibrationPath,
+    PathCalibrator,
+    PerformanceCase,
+    ThresholdArtifact as ProbabilityThresholdArtifact,
+    _hash,
+)
+from paper_agent.stage2_fallback import FallbackReleaseBinding
 from paper_agent.stage2_pipeline import (
     ADJUDICATOR_SHARE_ALARM,
     ERROR_RATE_ALARM,
     MEMORY_WATERMARK_ALARM,
+    PathCalibration,
     Stage2Paper,
     Stage2Profile,
 )
@@ -82,6 +92,15 @@ class FakeOmlxTransport:
             "model": payload["model"],
             "choices": [{"message": {"content": content}}],
         }).encode())
+
+
+class PrimaryUnavailableTransport(FakeOmlxTransport):
+    def request(self, path: str, payload: Mapping[str, Any]) -> OmlxResponse:
+        if path == "/v1/rerank":
+            with self.lock:
+                self.requests.append((path, payload))
+            return OmlxResponse(503, b'{"error":"service unavailable"}')
+        return super().request(path, payload)
 
 
 def _profile(document_batch_size: int = 16) -> Stage2Profile:
@@ -165,6 +184,62 @@ def _runner(
     return database, runner
 
 
+def _fallback_release(profile: Stage2Profile):
+    pair_ids = ("p-gray", "p-high", "p-low", "p-missing")
+    calibrator = PathCalibrator(
+        1,
+        CalibrationPath.RERANKER,
+        1.0,
+        0.0,
+        "dev",
+        "gold",
+        "c" * 64,
+        "labels",
+        _hash(list(pair_ids)),
+        4,
+        pair_ids,
+    )
+    return SimpleNamespace(
+        model_lock=ModelLock(
+            1,
+            "omlx_rerank",
+            "backup-reranker",
+            "backup/repo",
+            "revision",
+            None,
+            None,
+            "bf16",
+            "none",
+            "Apache-2.0",
+            4_000_000_000,
+            "0.5.7",
+            "0.27.0",
+            {"model.safetensors": "1" * 64},
+        ),
+        model_lock_hash="c" * 64,
+        calibration=PathCalibration(
+            calibrator,
+            ProbabilityThresholdArtifact(
+                1,
+                CalibrationPath.RERANKER,
+                0.25,
+                0.75,
+                calibrator.hash(),
+                "c" * 64,
+                "dev",
+                "labels",
+                profile.base_runtime_config_hash,
+            ),
+        ),
+        release_binding=FallbackReleaseBinding(
+            "1" * 64,
+            "2" * 64,
+            "3" * 64,
+            "4" * 64,
+        ),
+    )
+
+
 def test_performance_runner_executes_omlx_pipeline_and_writes_canonical_measurements(tmp_path) -> None:
     transport = FakeOmlxTransport()
     database, runner = _runner(tmp_path, transport)
@@ -223,6 +298,51 @@ def test_performance_runner_executes_omlx_pipeline_and_writes_canonical_measurem
         "SELECT reason FROM filter_decisions WHERE run_id = 'performance-fixture' AND paper_id = 'p-gray'"
     ).fetchone()[0])
     assert gray_reason["reason_code"].startswith("performance_manifest_forced_qwen:")
+    database.close()
+
+
+def test_benchmark_records_only_real_backup_model_calls_as_fallback(tmp_path) -> None:
+    primary = PrimaryUnavailableTransport()
+    backup = FakeOmlxTransport()
+    database = Database(tmp_path / "backup-benchmark.sqlite3")
+    database.migrate()
+    profile = replace(
+        _profile(),
+        reranker_lock_hash="a" * 64,
+        release_gate_hash="release-gate",
+    )
+    schema = json.loads(Path("schemas/filter-decision.schema.json").read_text())
+    runner = Stage2BenchmarkRunner.from_omlx(
+        database=database,
+        profile=profile,
+        transport=primary,
+        fallback_transport=backup,
+        reranker_fallback=_fallback_release(profile),
+        schema=schema,
+        environment=_environment(),
+        release_hash="release-fixture-hash",
+        clock=StepClock(),
+        rss_sampler=lambda: 2 * 1024 ** 3,
+        rss_scope="fixture_constant_rss",
+    )
+    spec = BenchmarkRunSpec.fixture(
+        kind="performance",
+        scenario="normal",
+        cases=_cases(),
+        stage2_config_hash=profile.base_runtime_config_hash,
+        forced_qwen_pair_ids=("p-gray", "p-missing"),
+    )
+
+    record = runner.run(spec, _papers(), run_id="backup-model-fixture").document()
+
+    assert record["reranker_fallback_count"] == 1
+    fallback_trace = record["reranker_fallback_trace"]
+    assert fallback_trace[0]["model_lock_hash"] == "c" * 64
+    assert fallback_trace[0]["pair_ids"] == ["p-gray", "p-high", "p-low", "p-missing"]
+    assert fallback_trace[0]["duration_seconds"] > 0
+    assert fallback_trace[0]["failed"] is False
+    assert record["needs_review_pair_ids"] == []
+    assert {payload["model"] for path, payload in backup.requests if path == "/v1/rerank"} == {"backup-reranker"}
     database.close()
 
 
@@ -390,7 +510,8 @@ def test_omlx_transport_probe_measures_memory_batch_downgrades_and_oom(tmp_path)
     record = runner.run(spec, papers, run_id="fallback-fixture").document()
 
     assert record["reranker_fallback_measurement_available"] is True
-    assert record["reranker_fallback_count"] == 2
+    assert record["reranker_fallback_count"] == 0
+    assert record["reranker_fallback_trace"] == []
     assert record["service_request_count"] == 4
     assert record["service_failed_request_count"] == 1
     assert record["service_request_failure_rate"] == pytest.approx(

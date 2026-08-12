@@ -79,7 +79,11 @@ from .report_input_service import ReportInputRequest, ReportInputService
 from .report_plan import ReportPlanBundle
 from .repository import PaperRepository
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
-from .stage2_search import Stage2ReleaseError, load_stage2_release
+from .stage2_search import (
+    Stage2ReleaseError,
+    load_stage2_benchmark_candidate,
+    load_stage2_release,
+)
 from .stage2_annotation_artifacts import (
     STAGE2_ANNOTATION_RUBRIC_HASH,
     assemble_annotation_ledger,
@@ -106,6 +110,7 @@ from .stage2_promotion_artifacts import (
     validate_promotion_candidate_bundles,
 )
 from .stage2_rationale_workflow import (
+    derive_rationale_audit_examples,
     freeze_rationale_audit,
     import_completed_rationale_audit,
     load_rationale_audit_manifest,
@@ -113,6 +118,7 @@ from .stage2_rationale_workflow import (
     rationale_audit_examples_from_document,
     rationale_audit_records_document,
     write_frozen_rationale_audit,
+    write_derived_rationale_examples_no_replace,
     write_rationale_records_no_replace,
 )
 from .stage2_release_assembly import (
@@ -444,6 +450,15 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     rationale_freeze.add_argument("--reviewer-id", required=True)
     rationale_freeze.add_argument("--manifest-output", required=True, type=Path)
     rationale_freeze.add_argument("--worklist-output", required=True, type=Path)
+    rationale_derive = stage2_rationale_commands.add_parser(
+        "derive-examples",
+        help="derive auditable rationale examples from a bound frozen Qwen ledger",
+    )
+    rationale_derive.add_argument("--stage2-candidate", required=True, type=Path)
+    rationale_derive.add_argument("--benchmark-papers", required=True, type=Path)
+    rationale_derive.add_argument("--query-metadata", required=True, type=Path)
+    rationale_derive.add_argument("--adjudication-ledger", required=True, type=Path)
+    rationale_derive.add_argument("--output", required=True, type=Path)
     rationale_import = stage2_rationale_commands.add_parser(
         "import-worklist",
         help="validate explicit human booleans and emit raw rationale audit records",
@@ -994,6 +1009,11 @@ def main(
         ))
     if (
         args.command == "stage2-rationale"
+        and args.stage2_rationale_command == "derive-examples"
+    ):
+        return _finish(args, _stage2_rationale_derive(args))
+    if (
+        args.command == "stage2-rationale"
         and args.stage2_rationale_command == "freeze-worklist"
     ):
         return _finish(args, _stage2_rationale_freeze(args))
@@ -1467,6 +1487,39 @@ def _stage2_rationale_freeze(args: argparse.Namespace) -> dict[str, Any]:
         "row_count": len(frozen.manifest.cases),
         "status": "validated" if args.dry_run else "complete",
         "worklist_output": str(args.worklist_output),
+        "written": not args.dry_run,
+    }
+
+
+def _stage2_rationale_derive(args: argparse.Namespace) -> dict[str, Any]:
+    if args.output.exists():
+        raise FileExistsError(f"Stage 2 rationale examples output already exists: {args.output}")
+    candidate_bytes = args.stage2_candidate.read_bytes()
+    benchmark_papers_bytes = args.benchmark_papers.read_bytes()
+    query_metadata_bytes = args.query_metadata.read_bytes()
+    ledger_bytes = args.adjudication_ledger.read_bytes()
+    candidate = load_stage2_benchmark_candidate(args.stage2_candidate)
+    document = derive_rationale_audit_examples(
+        json.loads(ledger_bytes),
+        source_ledger_sha256=sha256(ledger_bytes).hexdigest(),
+        candidate=candidate,
+        candidate_bundle_sha256=sha256(candidate_bytes).hexdigest(),
+        benchmark_papers_document=json.loads(benchmark_papers_bytes),
+        benchmark_papers_sha256=sha256(benchmark_papers_bytes).hexdigest(),
+        query_metadata=json.loads(query_metadata_bytes),
+        query_metadata_sha256=sha256(query_metadata_bytes).hexdigest(),
+    )
+    if not args.dry_run:
+        write_derived_rationale_examples_no_replace(args.output, document)
+    return {
+        "command": "stage2-rationale.derive-examples",
+        "dry_run": args.dry_run,
+        "candidate_id": candidate.profile_name,
+        "corpus_hash": document["corpus_hash"],
+        "example_count": len(document["examples"]),
+        "output": str(args.output),
+        "source_ledger_sha256": document["source_ledger_sha256"],
+        "status": "validated" if args.dry_run else "complete",
         "written": not args.dry_run,
     }
 

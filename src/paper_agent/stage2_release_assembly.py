@@ -22,6 +22,7 @@ from .stage2_search import (
     Stage2ReleaseError,
     _load_deployment_hidden_trust,
     _load_deployment_parity_oracle_trust,
+    _load_released_reranker_fallback,
     _load_stage2_benchmark_candidate_bytes,
     verify_stage2_release_evidence_index,
 )
@@ -183,6 +184,15 @@ def _verify_stage2_release_assembly(
             ) from error
 
         evidence_sha256 = sha256(evidence_bytes).hexdigest()
+        _load_released_reranker_fallback(
+            candidate_path,
+            candidate_document.get("reranker_fallback"),
+            primary_profile=candidate.profile,
+            primary_evaluation_manifest_hash=index.evaluation_manifest_hash,
+            primary_release_evidence_hash=evidence_sha256,
+            hidden_trust=hidden_trust,
+            parity_oracle_trust=oracle_trust,
+        )
         release_gate = {
             "candidate_id": candidate.profile_name,
             "evaluation_manifest_hash": index.evaluation_manifest_hash,

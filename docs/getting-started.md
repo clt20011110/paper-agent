@@ -158,6 +158,7 @@ paper-agent --dry-run stage2-evaluator promote \
   --evaluator-key-id evaluator-key-2026-08 \
   --issued-at 2026-08-11T08:00:00Z \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --signing-key-file /secure/evaluator/hidden-promotion-key.pem \
   --output /secure/transfer/hidden-promotion-attestation.json
 ```
@@ -181,12 +182,23 @@ paper-agent --dry-run stage2-release assemble \
   --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
   --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --output /absolute/path/to/release-bundle/stage2-release.json
 ```
 
 dry-run 重算相同 public gates、验证 hidden attestation 与路径边界，但不写 output；成功后只移除
 `--dry-run` 执行一次真实 assembly。output 已存在时不会覆盖。private labels、raw submissions、
 私钥和 marker state 永远不能进入 release bundle。
+
+在 assembly 前，按冻结顺序准备 public evidence：`stage2-rationale derive-examples` 从绑定 Qwen ledger
+导出例子，`freeze-worklist` 冻结 100 条人工 rationale worklist，再由人工完成后执行 `import-worklist`；
+`stage2-parity freeze-workload` 与
+`stage2-parity run` 产出 10,000-pair FP32/BF16 parity 工件；`stage2-tuning select --input <frozen-grid.json>
+--output <winner.json>` 只接受完整 3×3、每配置 3 次 normal 和 3 次 stress 的实际 records，以及候选无关
+selection input 或 soak。最后用 `stage2-release build-evidence` 绑定这些原始工件、structured replay、
+benchmark（恰好 6 个 record）与 soak。每个命令先加全局 `--dry-run`，它必须完整校验且零写入；正式执行
+拒绝覆盖输出。rationale 的人工标注、真实 oMLX 运行和 sealed hidden promotion 都是独立生产门禁，不能由
+fixture 或 dry-run 代替。用各子命令的 `--help` 获取当前完整参数合同。
 
 生产 release 使用 schema v3，并在加载时重算公共 gate evidence、验证 hidden evaluator 的
 Ed25519 promotion attestation。先将版本化 asset root 内的

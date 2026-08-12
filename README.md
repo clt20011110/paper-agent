@@ -240,6 +240,7 @@ paper-agent --dry-run stage2-evaluator promote \
   --evaluator-key-id evaluator-key-2026-08 \
   --issued-at 2026-08-11T08:00:00Z \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --signing-key-file /secure/evaluator/hidden-promotion-key.pem \
   --output /secure/transfer/hidden-promotion-attestation.json
 ```
@@ -251,6 +252,20 @@ dry-run 不读取 private labels、submission 或私钥，不消费 marker，也
 `0600`、不超过 16 KiB 的 canonical unencrypted Ed25519 PKCS#8 PEM。当前 CLI 不直接支持 HSM
 或 secret-manager signing API。
 
+Stage 2 的公共证据也必须按固定顺序产生：先用 `stage2-rationale derive-examples` 从绑定的 Qwen
+ledger 导出可审计例子，再以 `freeze-worklist` 冻结人工 rationale 审阅清单、在人工填写后用
+`import-worklist` 导入；随后以同一候选和 workload 运行
+`stage2-parity freeze-workload`、`stage2-parity run`，再以完整 3×3 normal/stress 实测输入运行
+`stage2-tuning select`。这些命令及 `stage2-replay`、`benchmark-stage2` 的正式运行会调用本地模型；
+人工标注、真实模型和 hidden promotion 未完成时不得声明 release gate 通过。所有写入型命令先以全局
+`--dry-run` 执行完整校验且零写入，正式运行拒绝覆盖已有工件。
+
+`stage2-release build-evidence` 只接受 bundle 内所有原始 public gate 工件：gold、structured replay
+manifest/records/papers、rationale manifest/worklist/records、10 个 parity 引用、benchmark manifest/papers
+和恰好 6 个 record、soak manifest/papers/record；带 `--hidden-attestation` 才构造 final evidence，否则是
+public-promotion evidence。始终先运行 `paper-agent stage2-release build-evidence --help` 取得当前完整
+参数合同，不要手写或替换 evidence index。
+
 release builder 将 public-safe attestation 放入 evidence index 后，先 dry-run，再用同一参数组装：
 
 ```sh
@@ -258,6 +273,7 @@ paper-agent --dry-run stage2-release assemble \
   --candidate /absolute/path/to/release-bundle/stage2-candidate-v2.json \
   --evidence /absolute/path/to/release-bundle/stage2-release-evidence.json \
   --trust-manifest /secure/deployment/hidden-evaluator-trust.json \
+  --parity-oracle-trust /secure/deployment/parity-oracle-trust.json \
   --output /absolute/path/to/release-bundle/stage2-release.json
 ```
 
