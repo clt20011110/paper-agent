@@ -68,7 +68,7 @@ def test_production_schema_keeps_rationale_last_for_omlx_grammar() -> None:
 
 def test_omlx_rerank_batches_documents_and_never_sends_unsupported_limits() -> None:
     transport = FakeTransport([
-        _response({"results": [{"index": 1, "relevance_score": -2.0}, {"index": 0, "relevance_score": 4.0}]})
+        _response({"model": "BAAI/bge-reranker-v2-m3", "results": [{"index": 1, "relevance_score": -2.0}, {"index": 0, "relevance_score": 4.0}]})
     ])
     backend = OmlxRerankBackend("BAAI/bge-reranker-v2-m3", transport, document_batch_size=16)
 
@@ -91,9 +91,9 @@ def test_omlx_rerank_batches_documents_and_never_sends_unsupported_limits() -> N
 
 def test_omlx_rerank_rejects_incomplete_result_indexes() -> None:
     transport = FakeTransport([
-        _response({"results": [{"index": 0, "relevance_score": 0.1}]}),
-        _response({"results": []}),
-        _response({"results": []}),
+        _response({"model": "model", "results": [{"index": 0, "relevance_score": 0.1}]}),
+        _response({"model": "model", "results": []}),
+        _response({"model": "model", "results": []}),
     ])
     backend = OmlxRerankBackend("model", transport)
 
@@ -113,6 +113,7 @@ def test_omlx_rerank_downgrades_64_to_32_to_16_and_isolates_one_failure() -> Non
             if len(documents) > 16 or "bad" in documents:
                 return _response({"error": "capacity"}, status=503)
             return _response({
+                "model": "model",
                 "results": [
                     {"index": index, "relevance_score": float(index)}
                     for index in range(len(documents))
@@ -134,6 +135,30 @@ def test_omlx_rerank_downgrades_64_to_32_to_16_and_isolates_one_failure() -> Non
     assert {score.paper_id for score in raised.value.scores} == {
         f"paper-{index:02d}" for index in range(1, 64)
     }
+
+
+@pytest.mark.parametrize("model", [None, "other-model"])
+def test_omlx_rerank_rejects_missing_or_wrong_response_model(model: object) -> None:
+    response: dict[str, object] = {
+        "results": [{"index": 0, "relevance_score": 0.1}],
+    }
+    if model is not None:
+        response["model"] = model
+    backend = OmlxRerankBackend("model", FakeTransport([_response(response)]))
+
+    with pytest.raises(RerankBatchError):
+        backend.rerank("q", [RerankInput("p1", "one")])
+
+
+@pytest.mark.parametrize("score", [True, float("nan"), float("inf"), float("-inf")])
+def test_omlx_rerank_rejects_non_finite_or_boolean_relevance_scores(score: object) -> None:
+    backend = OmlxRerankBackend("model", FakeTransport([_response({
+        "model": "model",
+        "results": [{"index": 0, "relevance_score": score}],
+    })]))
+
+    with pytest.raises(RerankBatchError):
+        backend.rerank("q", [RerankInput("p1", "one")])
 
 
 def test_omlx_chat_uses_fixed_generation_and_structured_output_contract() -> None:

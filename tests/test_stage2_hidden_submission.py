@@ -49,7 +49,7 @@ class FakeTransport:
                 return OmlxResponse(503, b'{"error":"busy"}')
             documents = payload["documents"]
             assert isinstance(documents, list)
-            return OmlxResponse(200, json.dumps({"results": [
+            return OmlxResponse(200, json.dumps({"model": payload["model"], "results": [
                 {"index": index, "relevance_score": self.rerank_score}
                 for index in range(len(documents))
             ]}).encode())

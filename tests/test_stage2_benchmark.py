@@ -62,7 +62,7 @@ class FakeOmlxTransport:
                 title = document.splitlines()[0].removeprefix("Title: ")
                 score = -2.0 if title == "p-low" else 0.5 if title == "p-gray" else 3.0
                 scores.append({"index": index, "relevance_score": score})
-            return OmlxResponse(200, json.dumps({"results": scores}).encode())
+            return OmlxResponse(200, json.dumps({"model": payload["model"], "results": scores}).encode())
         assert path == "/v1/chat/completions"
         prompt = payload["messages"][-1]["content"]
         paper_id = prompt.split("Paper ID: ", 1)[1].splitlines()[0]

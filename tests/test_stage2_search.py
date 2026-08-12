@@ -362,7 +362,7 @@ class LocalOmlxFixture:
         self.paths.append(path)
         assert payload["model"] == "bge-reranker-v2-m3"
         scores = [0.7 if "Relevant" in document else 0.3 for document in payload["documents"]]
-        body = {"results": [{"index": index, "relevance_score": score} for index, score in enumerate(scores)]}
+        body = {"model": payload["model"], "results": [{"index": index, "relevance_score": score} for index, score in enumerate(scores)]}
         return OmlxResponse(200, json.dumps(body).encode())
 
 
@@ -374,6 +374,7 @@ class AdjudicatingOmlxFixture:
         self.paths.append(path)
         if path == "/v1/rerank":
             body = {
+                "model": payload["model"],
                 "results": [
                     {"index": index, "relevance_score": 0.5}
                     for index, _ in enumerate(payload["documents"])

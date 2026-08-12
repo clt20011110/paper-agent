@@ -37,7 +37,7 @@ class FakeTransport:
         if path == "/v1/rerank":
             documents = payload["documents"]
             assert isinstance(documents, list)
-            return OmlxResponse(200, json.dumps({"results": [
+            return OmlxResponse(200, json.dumps({"model": payload["model"], "results": [
                 {"index": index, "relevance_score": index / 10} for index in range(len(documents))
             ]}).encode())
         if self.fail_qwen:

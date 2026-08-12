@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 import json
+import math
 from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as validate_json_schema
 from pathlib import Path
@@ -245,14 +246,26 @@ class OmlxRerankBackend:
         response = self.transport.request("/v1/rerank", payload)
         if response.status_code != 200:
             raise Stage2BackendError(f"oMLX rerank returned HTTP {response.status_code}")
-        results = response.json().get("results")
+        response_document = response.json()
+        if response_document.get("model") != self.model:
+            raise Stage2BackendError(
+                "oMLX rerank response model does not match the frozen reranker"
+            )
+        results = response_document.get("results")
         if not isinstance(results, list) or len(results) != len(documents):
             raise Stage2BackendError("oMLX rerank response has an invalid result count")
         by_index: dict[int, float] = {}
         for result in results:
-            if not isinstance(result, dict) or not isinstance(result.get("index"), int) or not isinstance(result.get("relevance_score"), (int, float)):
+            relevance_score = result.get("relevance_score") if isinstance(result, dict) else None
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get("index"), int)
+                or isinstance(relevance_score, bool)
+                or not isinstance(relevance_score, (int, float))
+                or not math.isfinite(relevance_score)
+            ):
                 raise Stage2BackendError("oMLX rerank response has an invalid result")
-            by_index[result["index"]] = float(result["relevance_score"])
+            by_index[result["index"]] = float(relevance_score)
         if set(by_index) != set(range(len(documents))):
             raise Stage2BackendError("oMLX rerank response indexes do not match documents")
         return tuple(RerankScore(item.paper_id, by_index[index]) for index, item in enumerate(documents))
