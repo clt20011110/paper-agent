@@ -22,6 +22,7 @@ ROOT = Path(__file__).parents[1]
 
 
 PRIMARY = {
+    "aistats": "pmlr",
     "neurips": "neurips_proceedings",
     "icml": "pmlr",
     "iclr": "openreview",
@@ -45,6 +46,7 @@ PRIMARY = {
 }
 
 FALLBACKS = {
+    "aistats": ["openreview", "crossref", "dblp", "semantic_scholar", "openalex"],
     "neurips": ["openreview", "crossref", "dblp", "semantic_scholar", "openalex"],
     "icml": ["openreview", "crossref", "dblp", "semantic_scholar", "openalex"],
     "iclr": ["arxiv", "dblp", "semantic_scholar", "openalex"],
@@ -168,7 +170,7 @@ def test_built_in_manifests_are_schema_valid_and_unique() -> None:
     assert set(catalog.venues) == set(PRIMARY)
     assert set(catalog.acceptances) == set(PRIMARY)
     assert len(catalog.providers) == 25
-    assert len({acceptance["fixture_path"] for acceptance in catalog.acceptances.values()}) == 20
+    assert len({acceptance["fixture_path"] for acceptance in catalog.acceptances.values()}) == 21
     for path in (ROOT / "providers").glob("*.yaml"):
         validate(catalog.providers[path.stem], "provider-manifest.schema.json")
     for path in (ROOT / "venues").glob("*.yaml"):

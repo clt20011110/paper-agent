@@ -153,3 +153,24 @@ def test_unknown_venue_is_rejected_before_work_starts() -> None:
             catalog=_catalog(),
             adapter_factory=lambda _: _Adapter(),
         )
+
+
+def test_year_before_venue_launch_is_not_applicable_and_does_not_call_adapter() -> None:
+    catalog = _catalog()
+    catalog.venues["example"]["date_range"] = {
+        "start": "2024-01-01",
+        "end": "2025-12-31",
+    }
+
+    result = collect_stage1_metadata(
+        Stage1Request(("example",), 2023, 2024),
+        catalog=catalog,
+        adapter_factory=lambda _: _Adapter(),
+    )
+
+    assert result.complete
+    assert [unit.status for unit in result.receipt.units] == [
+        "not_applicable",
+        "complete",
+    ]
+    assert len(result.records) == 2

@@ -347,8 +347,14 @@ def _neurips(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -
 def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> VenueOperationResult:
     provider = "pmlr"
     _require_operation(provider, operation, {"resolve_volume", "discover"})
-    if str(parameters.get("series") or "").casefold() != "icml":
-        raise ValueError("pmlr conference discovery requires series=ICML")
+    series = str(parameters.get("series") or "").upper()
+    series_names = {
+        "ICML": r"(?:ICML|International Conference on Machine Learning)",
+        "AISTATS": r"(?:AISTATS|Artificial Intelligence and Statistics)",
+        "UAI": r"(?:UAI|Uncertainty in Artificial Intelligence)",
+    }
+    if series not in series_names:
+        raise ValueError("pmlr conference discovery requires series=ICML, AISTATS, or UAI")
     year = _year(parameters)
     if operation == "resolve_volume":
         url = "https://proceedings.mlr.press/"
@@ -358,16 +364,24 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
         for item in _nodes(root, "li"):
             text = " ".join(item.text.split())
             anchor = next((value for value in _nodes(item, "a") if re.fullmatch(r"/?v\d+/?", value.attributes.get("href", ""))), None)
-            main_volume = re.search(
-                rf"\bProceedings of (?:the \d+(?:st|nd|rd|th) )?(?:ICML|International Conference on Machine Learning),? {year}\b",
-                text,
-                re.I,
-            )
+            if series == "ICML":
+                main_pattern = (
+                    rf"\bProceedings of (?:the )?(?:\d+(?:st|nd|rd|th) )?"
+                    rf"{series_names[series]},? {year}\b"
+                )
+            else:
+                main_pattern = (
+                    rf"\b(?:Proceedings of (?:the |The )?(?:\d+(?:st|nd|rd|th) )?)?"
+                    rf"{series_names[series]}(?: Proceedings)?,? {year}\b"
+                )
+            main_volume = re.search(main_pattern, text, re.I)
             if anchor and main_volume:
                 matches.append(_absolute(url, anchor.attributes["href"]).rstrip("/") + "/")
         matches = list(dict.fromkeys(matches))
         if len(matches) != 1:
-            raise ProviderRequestError(f"pmlr: expected one official ICML {year} volume, found {len(matches)}")
+            raise ProviderRequestError(
+                f"pmlr: expected one official {series} {year} volume, found {len(matches)}"
+            )
         return VenueOperationResult({"official_url": matches[0], "api_version": "pmlr-html-v1"}, (response.body,))
 
     volume = str(parameters.get("volume_id") or "")
@@ -378,7 +392,8 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
     root = _html(response.body, provider)
     publication_date = _pmlr_publication_date(root, year)
     entries: list[dict[str, Any]] = []
-    for paper in _nodes(root, "div", "paper"):
+    paper_nodes = _nodes(root, "div", "paper")
+    for paper in paper_nodes:
         title = _first(paper, class_name="title")
         author_node = _first(paper, class_name="authors")
         anchor = next(
@@ -400,15 +415,26 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
                 "authors": _authors(author_node),
                 "publication_date": publication_date,
                 "year": year,
-                "venue": f"ICML {year}",
+                "venue": f"{series} {year}",
                 "landing_url": landing,
+                "pdf_url": landing.removesuffix(".html") + ".pdf",
+                "publication_version": "published",
+                "host_type": "official",
+                "access_basis": "public_read_only",
                 "volume": volume.removeprefix("v"),
             }
         )
     if not entries:
         raise ProviderRequestError("pmlr: official volume contained no papers")
     selected, cursor = _filtered_page(entries, parameters)
-    return VenueOperationResult({"entries": selected, "next_cursor": cursor, "census": _census(entries)}, (response.body,))
+    return VenueOperationResult(
+        {
+            "entries": selected,
+            "next_cursor": cursor,
+            "census": _census(entries, raw_records=len(paper_nodes)),
+        },
+        (response.body,),
+    )
 
 
 def _pmlr_publication_date(root: _HTMLNode, year: int) -> str:

@@ -247,7 +247,11 @@ def collect_stage1_metadata(
         for record in completed[key][0]
     )
     metadata_bytes = b"".join(canonical_json(dict(record)) + b"\n" for record in records)
-    status = "complete" if all(unit.status == "complete" for unit in ordered_units) else "incomplete"
+    status = (
+        "complete"
+        if all(unit.status in {"complete", "not_applicable"} for unit in ordered_units)
+        else "incomplete"
+    )
     receipt = Stage1CompletenessReceipt(
         schema_version="1",
         interface_version=STAGE1_INTERFACE_VERSION,
@@ -318,6 +322,30 @@ def _collect_unit(
     run_id: str,
 ) -> tuple[tuple[Mapping[str, Any], ...], Stage1UnitReceipt]:
     venue = catalog.venue(venue_id)
+    date_range = venue.get("date_range")
+    if isinstance(date_range, Mapping):
+        start_year = int(str(date_range["start"])[:4])
+        end_year = int(str(date_range["end"])[:4])
+        if year < start_year or year > end_year:
+            return (), Stage1UnitReceipt(
+                venue_id=venue_id,
+                venue_name=str(venue["name"]),
+                venue_type=str(venue["venue_type"]),
+                provider=str(venue["primary_provider"]),
+                year=year,
+                status="not_applicable",
+                pages_fetched=0,
+                terminal_cursor_reached=True,
+                returned_records=0,
+                unique_records=0,
+                expected_total=0,
+                parser_raw_records=0,
+                parser_rejected_records=0,
+                field_coverage={field: 0 for field in _OUTPUT_FIELDS},
+                reasons=(
+                    f"venue date_range is {date_range['start']} through {date_range['end']}",
+                ),
+            )
     descriptor = catalog.runtime_venue(venue_id)
     descriptor = VenueDescriptor(
         descriptor.schema_version,
