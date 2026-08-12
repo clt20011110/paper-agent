@@ -42,6 +42,10 @@ from .stage2_hidden_attestation import (
     load_hidden_evaluator_trust,
     verify_hidden_promotion_attestation,
 )
+from .stage2_parity_oracle_trust import (
+    ParityOracleTrust,
+    load_parity_oracle_trust,
+)
 from .stage2_public_gates import verify_public_stage2_gates
 from .stage2_release_evidence import (
     Stage2ReleaseEvidenceIndex,
@@ -319,13 +323,15 @@ def load_stage2_release(
     plan: Mapping[str, Any],
     *,
     hidden_trust_path: Path | None = None,
+    parity_oracle_trust_path: Path | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> ReleasedStage2:
-    """Load a v3 release and bind independent public/hidden evidence to its profile.
+    """Load a v3 release and bind independent public/hidden trust to its profile.
 
-    The hidden evaluator trust root is deployment-controlled: it is supplied as
-    an explicit path or through ``PAPER_AGENT_STAGE2_HIDDEN_TRUST``.  A release
-    bundle cannot select its own trust root.
+    Trust roots are deployment-controlled: they are supplied as explicit paths
+    or through ``PAPER_AGENT_STAGE2_HIDDEN_TRUST`` and
+    ``PAPER_AGENT_STAGE2_PARITY_ORACLE_TRUST``.  A release bundle cannot select
+    its own trust roots.
     """
 
     values = environment if environment is not None else os.environ
@@ -334,13 +340,28 @@ def load_stage2_release(
         configured_path = values.get("PAPER_AGENT_STAGE2_HIDDEN_TRUST")
         if configured_path:
             trust_path = Path(configured_path)
-    return _load_stage2_bundle(path, plan, hidden_trust_path=trust_path)
+    oracle_trust_path = parity_oracle_trust_path
+    if oracle_trust_path is None:
+        configured_path = values.get("PAPER_AGENT_STAGE2_PARITY_ORACLE_TRUST")
+        if configured_path:
+            oracle_trust_path = Path(configured_path)
+    return _load_stage2_bundle(
+        path,
+        plan,
+        hidden_trust_path=trust_path,
+        parity_oracle_trust_path=oracle_trust_path,
+    )
 
 
 def load_stage2_benchmark_candidate(path: Path) -> ReleasedStage2:
     """Load frozen models, calibrations, thresholds, and runtime before throughput gates."""
 
-    return _load_stage2_bundle(path, None, hidden_trust_path=None)
+    return _load_stage2_bundle(
+        path,
+        None,
+        hidden_trust_path=None,
+        parity_oracle_trust_path=None,
+    )
 
 
 def _load_stage2_benchmark_candidate_bytes(
@@ -353,6 +374,7 @@ def _load_stage2_benchmark_candidate_bytes(
         path,
         None,
         hidden_trust_path=None,
+        parity_oracle_trust_path=None,
         bundle_bytes=payload,
     )
 
@@ -362,6 +384,7 @@ def _load_stage2_bundle(
     plan: Mapping[str, Any] | None,
     *,
     hidden_trust_path: Path | None,
+    parity_oracle_trust_path: Path | None,
     bundle_bytes: bytes | None = None,
 ) -> ReleasedStage2:
     released = plan is not None
@@ -394,6 +417,7 @@ def _load_stage2_bundle(
             f"schema_version {expected_schema_version}"
         )
     hidden_trust: HiddenEvaluatorTrust | None = None
+    parity_oracle_trust: ParityOracleTrust | None = None
     if released:
         if hidden_trust_path is None:
             raise Stage2ReleaseError(
@@ -402,6 +426,16 @@ def _load_stage2_bundle(
             )
         hidden_trust = _load_deployment_hidden_trust(
             hidden_trust_path,
+            bundle_root=bundle_root,
+        )
+        if parity_oracle_trust_path is None:
+            raise Stage2ReleaseError(
+                "Stage 2 release requires a deployment-controlled parity oracle "
+                "trust manifest (parity_oracle_trust_path or "
+                "PAPER_AGENT_STAGE2_PARITY_ORACLE_TRUST)"
+            )
+        parity_oracle_trust = _load_deployment_parity_oracle_trust(
+            parity_oracle_trust_path,
             bundle_root=bundle_root,
         )
     profile_name = _text(document, "profile")
@@ -471,13 +505,14 @@ def _load_stage2_bundle(
         if profile.config_hash != plan["filter"]["config_hash"]:
             raise Stage2ReleaseError("Stage 2 release configuration does not match QueryPlan")
     if gate_document is not None:
-        assert hidden_trust is not None
+        assert hidden_trust is not None and parity_oracle_trust is not None
         _release_gate(
             path,
             gate_document,
             profile_name,
             profile,
             hidden_trust,
+            parity_oracle_trust,
         )
 
     return ReleasedStage2(
@@ -495,6 +530,7 @@ def _release_gate(
     profile_name: str,
     profile: Stage2Profile,
     hidden_trust: HiddenEvaluatorTrust,
+    oracle_trust: ParityOracleTrust,
 ) -> ReleaseGateResult:
     _exact_fields(document, _RELEASE_GATE_FIELDS, "Stage 2 release gate")
     candidate_id = _text(document, "candidate_id")
@@ -514,6 +550,7 @@ def _release_gate(
             evaluation_manifest_hash=evaluation_manifest_hash,
             profile=profile,
             hidden_trust=hidden_trust,
+            oracle_trust=oracle_trust,
         )
     except Stage2ReleaseError:
         raise
@@ -530,6 +567,7 @@ def verify_stage2_release_evidence(
     evaluation_manifest_hash: str,
     profile: Stage2Profile,
     hidden_trust_path: Path,
+    parity_oracle_trust_path: Path,
 ) -> ReleaseGateResult:
     """Verify a single evidence-index snapshot for one frozen Stage 2 profile.
 
@@ -551,6 +589,10 @@ def verify_stage2_release_evidence(
             hidden_trust_path,
             bundle_root=resolved_evidence_path.parent,
         )
+        oracle_trust = _load_deployment_parity_oracle_trust(
+            parity_oracle_trust_path,
+            bundle_root=resolved_evidence_path.parent,
+        )
     except Stage2ReleaseError:
         raise
     except (OSError, ValueError) as error:
@@ -563,6 +605,7 @@ def verify_stage2_release_evidence(
         evaluation_manifest_hash=evaluation_manifest_hash,
         profile=profile,
         hidden_trust=hidden_trust,
+        oracle_trust=oracle_trust,
     )
 
 
@@ -573,6 +616,7 @@ def verify_stage2_release_evidence_index(
     evaluation_manifest_hash: str,
     profile: Stage2Profile,
     hidden_trust: HiddenEvaluatorTrust,
+    oracle_trust: ParityOracleTrust,
 ) -> ReleaseGateResult:
     """Verify an already captured evidence index and trust manifest."""
 
@@ -601,6 +645,7 @@ def verify_stage2_release_evidence_index(
         public_evidence = verify_public_stage2_gates(
             index,
             profile=replace(profile, release_gate_hash=None),
+            oracle_trust=oracle_trust,
         )
         if not public_evidence.passed:
             failures = [
@@ -696,6 +741,35 @@ def _load_deployment_hidden_trust(
     except (OSError, ValueError) as error:
         raise Stage2ReleaseError(
             f"Stage 2 hidden evaluator trust manifest is invalid: {error}"
+        ) from error
+
+
+def _load_deployment_parity_oracle_trust(
+    path: Path,
+    *,
+    bundle_root: Path,
+) -> ParityOracleTrust:
+    lexical_path = path.absolute()
+    try:
+        parent_resolved_lexical_path = path.parent.resolve(strict=True) / path.name
+        resolved_path = path.resolve(strict=True)
+    except OSError as error:
+        raise Stage2ReleaseError(
+            f"Stage 2 parity oracle trust manifest cannot be resolved: {error}"
+        ) from error
+    if (
+        lexical_path.is_relative_to(bundle_root)
+        or parent_resolved_lexical_path.is_relative_to(bundle_root)
+        or resolved_path.is_relative_to(bundle_root)
+    ):
+        raise Stage2ReleaseError(
+            "Stage 2 parity oracle trust manifest must stay outside the release bundle"
+        )
+    try:
+        return load_parity_oracle_trust(resolved_path)
+    except (OSError, ValueError) as error:
+        raise Stage2ReleaseError(
+            f"Stage 2 parity oracle trust manifest is invalid: {error}"
         ) from error
 
 

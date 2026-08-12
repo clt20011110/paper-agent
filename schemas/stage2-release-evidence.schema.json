@@ -18,7 +18,7 @@
     "public_gates"
   ],
   "properties": {
-    "schema_version": {"const": "1"},
+    "schema_version": {"const": "2"},
     "evidence_type": {"enum": ["stage2_release_evidence", "stage2_public_promotion_evidence"]},
     "candidate_id": {"type": "string", "minLength": 1},
     "evaluation_manifest_hash": {"$ref": "#/$defs/sha256"},
@@ -38,10 +38,29 @@
         "parity": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["manifest", "scores"],
+          "required": [
+            "manifest",
+            "workload",
+            "selection_receipt",
+            "scores",
+            "oracle_model_lock",
+            "candidate_model_lock",
+            "oracle_calibrator",
+            "candidate_calibrator",
+            "oracle_threshold",
+            "candidate_threshold"
+          ],
           "properties": {
             "manifest": {"$ref": "#/$defs/artifactRef"},
-            "scores": {"$ref": "#/$defs/artifactRef"}
+            "workload": {"$ref": "#/$defs/artifactRef"},
+            "selection_receipt": {"$ref": "#/$defs/artifactRef"},
+            "scores": {"$ref": "#/$defs/artifactRef"},
+            "oracle_model_lock": {"$ref": "#/$defs/artifactRef"},
+            "candidate_model_lock": {"$ref": "#/$defs/artifactRef"},
+            "oracle_calibrator": {"$ref": "#/$defs/artifactRef"},
+            "candidate_calibrator": {"$ref": "#/$defs/artifactRef"},
+            "oracle_threshold": {"$ref": "#/$defs/artifactRef"},
+            "candidate_threshold": {"$ref": "#/$defs/artifactRef"}
           }
         },
         "benchmark": {

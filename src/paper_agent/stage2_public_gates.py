@@ -21,11 +21,13 @@ from .stage2_benchmark_inputs import (
     benchmark_corpus_hash,
     benchmark_papers_from_document,
 )
+from .stage2_backends import ModelLock
 from .stage2_evaluation import (
     GateResult,
     GoldManifest,
     ParityManifest,
     ParityScore,
+    PathCalibrator,
     PerformanceCase,
     PerformanceRoutingManifest,
     PerformanceRunRecord,
@@ -46,10 +48,13 @@ from .stage2_evaluation import (
     rationale_audit_gate,
     soak_gate,
     structured_replay_gate,
+    ThresholdArtifact,
 )
+from .stage2_parity_oracle_trust import ParityOracleTrust
 from .stage2_release_evidence import (
     ArtifactRef,
     GateEvidenceRefs,
+    ParityEvidenceRefs,
     Stage2EvidenceError,
     Stage2ReleaseEvidenceIndex,
 )
@@ -110,6 +115,7 @@ def verify_public_stage2_gates(
     index: Stage2ReleaseEvidenceIndex,
     *,
     profile: Stage2Profile,
+    oracle_trust: ParityOracleTrust,
 ) -> VerifiedPublicStage2Evidence:
     """Recompute every non-hidden Stage 2 gate against one released profile."""
 
@@ -117,7 +123,7 @@ def verify_public_stage2_gates(
     gold = gold_manifest_from_document(index.gold_manifest.read_json(index.bundle_root))
     structured = _verify_structured_replay(index, profile)
     rationale = _verify_rationale(index)
-    parity = _verify_parity(index, gold)
+    parity = _verify_parity(index, gold, profile, oracle_trust)
     benchmark, throughput = _verify_benchmark(index, profile)
     soak = _verify_soak(index, profile)
     return VerifiedPublicStage2Evidence(
@@ -270,51 +276,128 @@ def _verify_rationale(index: Stage2ReleaseEvidenceIndex) -> VerifiedPublicGate:
 def _verify_parity(
     index: Stage2ReleaseEvidenceIndex,
     gold: GoldManifest,
+    profile: Stage2Profile,
+    oracle_trust: ParityOracleTrust,
 ) -> VerifiedPublicGate:
+    from .stage2_parity import (
+        PREPROCESS_CONTRACT,
+        WINDOW_SELECTOR,
+        parity_workload_from_document,
+    )
+
     refs = index.public_gates["parity"]
+    if not isinstance(refs, ParityEvidenceRefs):
+        raise Stage2EvidenceError("parity evidence references are invalid")
     manifest_document = refs.manifest.read_json(index.bundle_root)
     validate(manifest_document, "stage2-parity-manifest.schema.json")
     manifest = ParityManifest(
         version=manifest_document["version"],
         pair_ids=tuple(manifest_document["pair_ids"]),
+        workload_hash=manifest_document["workload_hash"],
+        selection_receipt_hash=manifest_document["selection_receipt_hash"],
+        pair_universe_hash=manifest_document["pair_universe_hash"],
+        query_assignment_hash=manifest_document["query_assignment_hash"],
         corpus_hash=manifest_document["corpus_hash"],
         tokenizer_hash=manifest_document["tokenizer_hash"],
         preprocess_hash=manifest_document["preprocess_hash"],
         oracle_model_lock_hash=manifest_document["oracle_model_lock_hash"],
         candidate_model_lock_hash=manifest_document["candidate_model_lock_hash"],
+        oracle_calibrator_hash=manifest_document["oracle_calibrator_hash"],
+        candidate_calibrator_hash=manifest_document["candidate_calibrator_hash"],
         oracle_threshold_artifact_hash=manifest_document["oracle_threshold_artifact_hash"],
         candidate_threshold_artifact_hash=manifest_document["candidate_threshold_artifact_hash"],
+        gold_manifest_hash=manifest_document["gold_manifest_hash"],
         dev_manifest_hash=manifest_document["dev_manifest_hash"],
+        dev_label_hash=manifest_document["dev_label_hash"],
+        calibration_pair_ids_hash=manifest_document["calibration_pair_ids_hash"],
         window_selector_hash=manifest_document["window_selector_hash"],
-        oracle_low=manifest_document["oracle_low"],
-        oracle_high=manifest_document["oracle_high"],
-        candidate_low=manifest_document["candidate_low"],
-        candidate_high=manifest_document["candidate_high"],
         low_window_pair_ids=frozenset(manifest_document["low_window_pair_ids"]),
         high_window_pair_ids=frozenset(manifest_document["high_window_pair_ids"]),
-        low_window_definition=manifest_document["low_window_definition"],
-        high_window_definition=manifest_document["high_window_definition"],
     )
-    if manifest.candidate_model_lock_hash != index.model_lock_hashes["reranker"]:
-        raise Stage2EvidenceError("parity candidate model does not match released reranker")
-    if manifest.candidate_threshold_artifact_hash != index.threshold_hashes["reranker"]:
-        raise Stage2EvidenceError("parity candidate threshold does not match release evidence")
-    if manifest.dev_manifest_hash != gold.dev_hash():
-        raise Stage2EvidenceError("parity DEV manifest does not match the release gold manifest")
-    scores_document = _one_document(index, refs)
+    workload = parity_workload_from_document(
+        _mapping_document(refs.workload.read_json(index.bundle_root), "parity workload")
+    )
+    selection_receipt = _mapping_document(
+        refs.selection_receipt.read_json(index.bundle_root),
+        "parity selection receipt",
+    )
+    oracle_lock = ModelLock(**_mapping_document(
+        refs.oracle_model_lock.read_json(index.bundle_root), "parity oracle model lock"
+    ))
+    candidate_lock = ModelLock(**_mapping_document(
+        refs.candidate_model_lock.read_json(index.bundle_root), "parity candidate model lock"
+    ))
+    oracle_calibrator = PathCalibrator(**_mapping_document(
+        refs.oracle_calibrator.read_json(index.bundle_root), "parity oracle calibrator"
+    ))
+    candidate_calibrator = PathCalibrator(**_mapping_document(
+        refs.candidate_calibrator.read_json(index.bundle_root), "parity candidate calibrator"
+    ))
+    oracle_threshold = ThresholdArtifact(**_mapping_document(
+        refs.oracle_threshold.read_json(index.bundle_root), "parity oracle threshold"
+    ))
+    candidate_threshold = ThresholdArtifact(**_mapping_document(
+        refs.candidate_threshold.read_json(index.bundle_root), "parity candidate threshold"
+    ))
+    _verify_parity_models(
+        index,
+        profile,
+        oracle_trust,
+        refs,
+        manifest,
+        oracle_lock,
+        candidate_lock,
+        content_hash(PREPROCESS_CONTRACT),
+    )
+    _verify_parity_calibration(
+        index,
+        profile,
+        oracle_trust,
+        refs,
+        manifest,
+        oracle_calibrator,
+        candidate_calibrator,
+        oracle_threshold,
+        candidate_threshold,
+    )
+    _verify_parity_workload(
+        manifest,
+        workload,
+        selection_receipt,
+        gold,
+        content_hash(WINDOW_SELECTOR),
+    )
+    scores_document = refs.scores.read_json(index.bundle_root)
     validate(scores_document, "stage2-parity-scores.schema.json")
+    expected_score_bindings = {
+        "manifest_hash": manifest.hash(),
+        "workload_hash": manifest.workload_hash,
+        "oracle_model_lock_hash": manifest.oracle_model_lock_hash,
+        "candidate_model_lock_hash": manifest.candidate_model_lock_hash,
+        "score_count": 10_000,
+        "failure_count": 0,
+    }
+    if any(scores_document[field] != value for field, value in expected_score_bindings.items()):
+        raise Stage2EvidenceError("parity scores do not match their manifest and workload")
     scores = tuple(
         ParityScore(
             item["pair_id"],
-            item["manifest_hash"],
             item["oracle_score"],
             item["candidate_score"],
         )
         for item in scores_document["scores"]
     )
-    result = parity_gate(manifest, scores)
+    _verify_parity_windows(manifest, scores, oracle_calibrator, oracle_threshold)
+    result = parity_gate(
+        manifest,
+        scores,
+        oracle_calibrator,
+        oracle_threshold,
+        candidate_calibrator,
+        candidate_threshold,
+    )
     return VerifiedPublicGate(
-        _evidence_hash(refs),
+        _parity_evidence_hash(refs),
         result.manifest_hash,
         result.gate,
         {
@@ -326,6 +409,175 @@ def _verify_parity(
             "score_count": len(scores),
         },
     )
+
+
+def _verify_parity_models(
+    index: Stage2ReleaseEvidenceIndex,
+    profile: Stage2Profile,
+    trust: ParityOracleTrust,
+    refs: ParityEvidenceRefs,
+    manifest: ParityManifest,
+    oracle: ModelLock,
+    candidate: ModelLock,
+    expected_preprocess: str,
+) -> None:
+    expected_oracle_hash = trust.official_oracle_model_lock_hash
+    expected_candidate_hash = index.model_lock_hashes["reranker"]
+    if (
+        refs.oracle_model_lock.sha256 != expected_oracle_hash
+        or manifest.oracle_model_lock_hash != expected_oracle_hash
+    ):
+        raise Stage2EvidenceError("parity oracle model is not deployment-trusted")
+    if (
+        refs.candidate_model_lock.sha256 != expected_candidate_hash
+        or manifest.candidate_model_lock_hash != expected_candidate_hash
+        or profile.reranker_lock_hash != expected_candidate_hash
+        or profile.reranker_model_id != candidate.model_id
+        or profile.reranker_revision
+        != (candidate.conversion_revision or candidate.source_revision)
+    ):
+        raise Stage2EvidenceError("parity candidate model does not match the released reranker")
+    if expected_oracle_hash == expected_candidate_hash:
+        raise Stage2EvidenceError("parity rejects oracle self-comparison")
+    if (
+        oracle.backend != "omlx_rerank"
+        or oracle.conversion_repo is not None
+        or oracle.format != "safetensors-fp32"
+        or oracle.quantization != "none"
+    ):
+        raise Stage2EvidenceError("parity oracle must be the official FP32 reranker")
+    if (
+        candidate.backend != "omlx_rerank"
+        or candidate.conversion_repo is None
+        or candidate.format != "safetensors-bf16"
+        or candidate.quantization != "none"
+    ):
+        raise Stage2EvidenceError("parity candidate must be the audited BF16 conversion")
+    if (oracle.source_repo, oracle.source_revision) != (
+        candidate.source_repo,
+        candidate.source_revision,
+    ):
+        raise Stage2EvidenceError("parity models do not share the same upstream revision")
+    oracle_tokenizer = oracle.file_hashes.get("tokenizer.json")
+    candidate_tokenizer = candidate.file_hashes.get("tokenizer.json")
+    if (
+        oracle_tokenizer != trust.tokenizer_hash
+        or candidate_tokenizer != trust.tokenizer_hash
+        or manifest.tokenizer_hash != trust.tokenizer_hash
+    ):
+        raise Stage2EvidenceError("parity models do not share the trusted tokenizer")
+    oracle_weights = sorted(
+        digest for name, digest in oracle.file_hashes.items() if name.endswith(".safetensors")
+    )
+    candidate_weights = sorted(
+        digest for name, digest in candidate.file_hashes.items() if name.endswith(".safetensors")
+    )
+    if not oracle_weights or not candidate_weights or oracle_weights == candidate_weights:
+        raise Stage2EvidenceError("parity rejects missing or identical model weights")
+    if trust.preprocess_hash != expected_preprocess or manifest.preprocess_hash != expected_preprocess:
+        raise Stage2EvidenceError("parity preprocessing does not match the trusted contract")
+
+
+def _verify_parity_calibration(
+    index: Stage2ReleaseEvidenceIndex,
+    profile: Stage2Profile,
+    trust: ParityOracleTrust,
+    refs: ParityEvidenceRefs,
+    manifest: ParityManifest,
+    oracle_calibrator: PathCalibrator,
+    candidate_calibrator: PathCalibrator,
+    oracle_threshold: ThresholdArtifact,
+    candidate_threshold: ThresholdArtifact,
+) -> None:
+    candidate_binding = profile.reranker_calibration
+    if candidate_binding is None:
+        raise Stage2EvidenceError("parity candidate requires released reranker calibration")
+    oracle_calibrator_hash = oracle_calibrator.hash()
+    candidate_calibrator_hash = candidate_calibrator.hash()
+    oracle_threshold_hash = oracle_threshold.hash()
+    candidate_threshold_hash = candidate_threshold.hash()
+    if (
+        oracle_calibrator_hash != trust.oracle_calibrator_hash
+        or oracle_threshold_hash != trust.oracle_threshold_artifact_hash
+        or manifest.oracle_calibrator_hash != trust.oracle_calibrator_hash
+        or manifest.oracle_threshold_artifact_hash
+        != trust.oracle_threshold_artifact_hash
+    ):
+        raise Stage2EvidenceError("parity oracle calibration is not deployment-trusted")
+    if (
+        candidate_calibrator_hash != index.calibrator_hashes["reranker"]
+        or candidate_threshold_hash != index.threshold_hashes["reranker"]
+        or manifest.candidate_calibrator_hash != candidate_calibrator_hash
+        or manifest.candidate_threshold_artifact_hash != candidate_threshold_hash
+        or candidate_binding.calibrator.hash() != candidate_calibrator_hash
+        or candidate_binding.threshold.hash() != candidate_threshold_hash
+    ):
+        raise Stage2EvidenceError("parity candidate calibration does not match the released profile")
+    if (
+        oracle_calibrator.model_lock_hash != refs.oracle_model_lock.sha256
+        or oracle_threshold.model_lock_hash != refs.oracle_model_lock.sha256
+        or candidate_calibrator.model_lock_hash != refs.candidate_model_lock.sha256
+        or candidate_threshold.model_lock_hash != refs.candidate_model_lock.sha256
+        or candidate_threshold.stage2_config_hash != index.stage2_config_hash
+    ):
+        raise Stage2EvidenceError("parity calibration model or config binding is invalid")
+
+
+def _verify_parity_workload(
+    manifest: ParityManifest,
+    workload: Any,
+    receipt: Mapping[str, Any],
+    gold: GoldManifest,
+    expected_selector_hash: str,
+) -> None:
+    pair_ids = tuple(pair.pair_id for pair in workload.pairs)
+    if (
+        tuple(manifest.pair_ids) != pair_ids
+        or manifest.workload_hash != workload.hash()
+        or manifest.query_assignment_hash != workload.query_assignment_hash()
+        or manifest.corpus_hash != workload.corpus_hash()
+        or manifest.gold_manifest_hash != gold.hash()
+        or manifest.dev_manifest_hash != gold.dev_hash()
+        or manifest.window_selector_hash != expected_selector_hash
+    ):
+        raise Stage2EvidenceError("parity workload or release provenance does not match its manifest")
+    if manifest.selection_receipt_hash != content_hash(receipt):
+        raise Stage2EvidenceError("parity selection receipt hash does not match its manifest")
+    parity_receipt = receipt.get("parity")
+    paper_ids = sorted(pair.paper_id for pair in workload.pairs)
+    if (
+        not isinstance(parity_receipt, Mapping)
+        or parity_receipt.get("paper_count") != 10_000
+        or parity_receipt.get("paper_ids") != paper_ids
+        or parity_receipt.get("papers_corpus_hash") != workload.corpus_hash()
+    ):
+        raise Stage2EvidenceError("parity receipt does not exactly bind the 10,000-paper workload")
+
+
+def _verify_parity_windows(
+    manifest: ParityManifest,
+    scores: Sequence[ParityScore],
+    oracle_calibrator: PathCalibrator,
+    oracle_threshold: ThresholdArtifact,
+) -> None:
+    by_id = {item.pair_id: item for item in scores}
+    if len(by_id) != 10_000 or set(by_id) != set(manifest.pair_ids):
+        raise Stage2EvidenceError("parity scores do not exactly cover the 10,000-pair workload")
+
+    def window(threshold: float) -> frozenset[str]:
+        return frozenset(pair_id for _, pair_id in sorted(
+            (
+                abs(oracle_calibrator.predict(score.oracle_score) - threshold),
+                pair_id,
+            )
+            for pair_id, score in by_id.items()
+        )[:200])
+
+    if (
+        manifest.low_window_pair_ids != window(oracle_threshold.low)
+        or manifest.high_window_pair_ids != window(oracle_threshold.high)
+    ):
+        raise Stage2EvidenceError("parity threshold windows do not match the trusted selector")
 
 
 def _verify_benchmark(
@@ -858,6 +1110,27 @@ def _evidence_hash(refs: GateEvidenceRefs) -> str:
         "papers": refs.papers.sha256 if refs.papers is not None else None,
         "records": [item.sha256 for item in refs.records],
     })
+
+
+def _parity_evidence_hash(refs: ParityEvidenceRefs) -> str:
+    return content_hash({
+        "candidate_calibrator": refs.candidate_calibrator.sha256,
+        "candidate_model_lock": refs.candidate_model_lock.sha256,
+        "candidate_threshold": refs.candidate_threshold.sha256,
+        "manifest": refs.manifest.sha256,
+        "oracle_calibrator": refs.oracle_calibrator.sha256,
+        "oracle_model_lock": refs.oracle_model_lock.sha256,
+        "oracle_threshold": refs.oracle_threshold.sha256,
+        "scores": refs.scores.sha256,
+        "selection_receipt": refs.selection_receipt.sha256,
+        "workload": refs.workload.sha256,
+    })
+
+
+def _mapping_document(value: Any, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, dict):
+        raise Stage2EvidenceError(f"{label} must be a JSON object")
+    return value
 
 
 def _execution_document(

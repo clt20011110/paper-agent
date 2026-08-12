@@ -73,6 +73,34 @@ class GateEvidenceRefs:
 
 
 @dataclass(frozen=True, slots=True)
+class ParityEvidenceRefs:
+    manifest: ArtifactRef
+    workload: ArtifactRef
+    selection_receipt: ArtifactRef
+    scores: ArtifactRef
+    oracle_model_lock: ArtifactRef
+    candidate_model_lock: ArtifactRef
+    oracle_calibrator: ArtifactRef
+    candidate_calibrator: ArtifactRef
+    oracle_threshold: ArtifactRef
+    candidate_threshold: ArtifactRef
+
+    def all_refs(self) -> tuple[ArtifactRef, ...]:
+        return (
+            self.manifest,
+            self.workload,
+            self.selection_receipt,
+            self.scores,
+            self.oracle_model_lock,
+            self.candidate_model_lock,
+            self.oracle_calibrator,
+            self.candidate_calibrator,
+            self.oracle_threshold,
+            self.candidate_threshold,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Stage2ReleaseEvidenceIndex:
     """Hash-bound inputs only; gate outcomes still require recomputation/signature."""
 
@@ -85,7 +113,7 @@ class Stage2ReleaseEvidenceIndex:
     threshold_hashes: Mapping[str, str]
     gold_manifest: ArtifactRef
     hidden_attestation: ArtifactRef | None
-    public_gates: Mapping[str, GateEvidenceRefs]
+    public_gates: Mapping[str, GateEvidenceRefs | ParityEvidenceRefs]
 
     @property
     def bundle_root(self) -> Path:
@@ -113,7 +141,21 @@ def load_stage2_release_evidence_index_bytes(
     gates = {
         "structured_replay": _single_records(public["structured_replay"], "records"),
         "rationale": _single_records(public["rationale"], "records"),
-        "parity": _single_records(public["parity"], "scores"),
+        "parity": ParityEvidenceRefs(**{
+            name: ArtifactRef.from_document(public["parity"][name])
+            for name in (
+                "manifest",
+                "workload",
+                "selection_receipt",
+                "scores",
+                "oracle_model_lock",
+                "candidate_model_lock",
+                "oracle_calibrator",
+                "candidate_calibrator",
+                "oracle_threshold",
+                "candidate_threshold",
+            )
+        }),
         "benchmark": GateEvidenceRefs(
             ArtifactRef.from_document(public["benchmark"]["manifest"]),
             tuple(
@@ -171,10 +213,13 @@ def _verify_all_refs(index: Stage2ReleaseEvidenceIndex) -> None:
     if index.hidden_attestation is not None:
         refs.append(index.hidden_attestation)
     for gate in index.public_gates.values():
-        refs.append(gate.manifest)
-        refs.extend(gate.records)
-        if gate.papers is not None:
-            refs.append(gate.papers)
+        if isinstance(gate, ParityEvidenceRefs):
+            refs.extend(gate.all_refs())
+        else:
+            refs.append(gate.manifest)
+            refs.extend(gate.records)
+            if gate.papers is not None:
+                refs.append(gate.papers)
     for ref in refs:
         ref.read_bytes(index.bundle_root)
 

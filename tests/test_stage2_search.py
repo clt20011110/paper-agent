@@ -60,6 +60,9 @@ def load_stage2_release(path: Path, plan: dict):
         path,
         plan,
         hidden_trust_path=path.parent.parent / f"{path.parent.name}-test-hidden-evaluator-trust.json",
+        parity_oracle_trust_path=(
+            path.parent.parent / f"{path.parent.name}-test-parity-oracle-trust.json"
+        ),
     )
 
 
@@ -70,13 +73,19 @@ def _fast_release_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
         "_load_deployment_hidden_trust",
         lambda _path, *, bundle_root: object(),
     )
+    monkeypatch.setattr(
+        stage2_search,
+        "_load_deployment_parity_oracle_trust",
+        lambda _path, *, bundle_root: object(),
+    )
 
     def verified_gate(
         _release_path: Path,
         document: dict,
         _profile_name: str,
         _profile: Stage2Profile,
-        _trust_path: Path,
+        _hidden_trust: object,
+        _oracle_trust: object,
     ):
         return phase3_release_gate(
             candidate_id=document["candidate_id"],
@@ -416,6 +425,63 @@ def test_benchmark_candidate_loads_before_throughput_release_gate_exists(
     ]
     assert candidate.profile.reranker_calibration is not None
     assert candidate.profile.adjudicator_calibration is not None
+
+
+def test_release_requires_deployment_controlled_parity_oracle_trust(tmp_path) -> None:
+    release_path, plan = _release_bundle(tmp_path)
+
+    with pytest.raises(Stage2ReleaseError, match="deployment-controlled parity oracle"):
+        _load_stage2_release(
+            release_path,
+            plan,
+            hidden_trust_path=tmp_path.parent / "hidden-trust.json",
+            environment={},
+        )
+
+
+def test_release_reads_parity_oracle_trust_path_from_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_path, plan = _release_bundle(tmp_path)
+    oracle_path = tmp_path.parent / "parity-oracle-trust.json"
+    loaded: list[Path] = []
+
+    def load_oracle(path: Path, *, bundle_root: Path) -> object:
+        loaded.append(path)
+        return object()
+
+    monkeypatch.setattr(
+        stage2_search,
+        "_load_deployment_parity_oracle_trust",
+        load_oracle,
+    )
+
+    _load_stage2_release(
+        release_path,
+        plan,
+        hidden_trust_path=tmp_path.parent / "hidden-trust.json",
+        environment={"PAPER_AGENT_STAGE2_PARITY_ORACLE_TRUST": str(oracle_path)},
+    )
+
+    assert loaded == [oracle_path]
+
+
+def test_parity_oracle_trust_cannot_come_from_release_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.undo()
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    bundled_trust = bundle_root / "parity-oracle-trust.json"
+    bundled_trust.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(Stage2ReleaseError, match="must stay outside"):
+        stage2_search._load_deployment_parity_oracle_trust(
+            bundled_trust,
+            bundle_root=bundle_root.resolve(),
+        )
 
 
 def test_released_stage2_screens_database_papers_and_persists_decisions(tmp_path) -> None:

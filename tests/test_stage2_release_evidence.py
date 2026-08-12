@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from base64 import b64encode
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,12 +15,15 @@ from paper_agent.stage2_benchmark_inputs import (
     benchmark_corpus_hash,
     benchmark_papers_from_document,
 )
+from paper_agent.stage2_backends import ModelLock
 from paper_agent.stage2_evaluation import (
+    CalibrationPath,
     GoldManifest,
     GoldPair,
     GoldSplit,
     ParityManifest,
     ParityScore,
+    PathCalibrator,
     PerformanceCase,
     PerformanceRoutingManifest,
     RationaleAuditCase,
@@ -32,11 +35,21 @@ from paper_agent.stage2_evaluation import (
     Stage2Decision,
     StructuredReplayManifest,
     StructuredReplayRecord,
+    ThresholdArtifact,
     pair_universe_hash,
     write_gold_manifest,
 )
+from paper_agent.stage2_parity import (
+    PREPROCESS_CONTRACT,
+    WINDOW_SELECTOR,
+    freeze_parity_workload,
+)
+from paper_agent.stage2_parity_oracle_trust import (
+    ParityOracleTrust,
+    parity_oracle_trust_from_document,
+)
 from paper_agent.stage2_public_gates import verify_public_stage2_gates
-from paper_agent.stage2_pipeline import Stage2Profile
+from paper_agent.stage2_pipeline import PathCalibration, Stage2Paper, Stage2Profile
 from paper_agent.stage2_prompt_contract import (
     adjudication_messages,
     estimate_omlx_chat_input_token_proxy,
@@ -83,12 +96,92 @@ def _gold_manifest() -> GoldManifest:
     return GoldManifest(1, "corpus-v1", tuple(pairs), ("en", "zh"))
 
 
+def _reranker_lock(role: str) -> ModelLock:
+    oracle = role == "oracle"
+    return ModelLock(
+        lock_version=1,
+        backend="omlx_rerank",
+        model_id=f"{role}-bge-reranker-v2-m3",
+        source_repo="BAAI/bge-reranker-v2-m3",
+        source_revision="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+        conversion_repo=None if oracle else "soichisumi/bge-reranker-v2-m3-mlx",
+        conversion_revision=(
+            None if oracle else "b4577f49e18adb53ed9e557192094f69f3dc2c1c"
+        ),
+        format="safetensors-fp32" if oracle else "safetensors-bf16",
+        quantization="none",
+        license="apache-2.0",
+        parameter_count=567_755_777,
+        omlx_version="0.5.7",
+        mlx_version="0.32.0",
+        file_hashes={
+            "model.safetensors": ("1" if oracle else "2") * 64,
+            "tokenizer.json": "6" * 64,
+        },
+    )
+
+
+def _path_calibration(
+    path: CalibrationPath,
+    *,
+    model_lock_hash: str,
+    gold: GoldManifest,
+    stage2_config_hash: str,
+    slope: float,
+    intercept: float,
+) -> PathCalibration:
+    pair_ids = tuple(pair.pair_id for pair in gold.pairs[:2])
+    dev_label_hash = "7" * 64
+    calibrator = PathCalibrator(
+        1,
+        path,
+        slope,
+        intercept,
+        gold.dev_hash(),
+        gold.hash(),
+        model_lock_hash,
+        dev_label_hash,
+        content_hash(sorted(pair_ids)),
+        len(pair_ids),
+        pair_ids,
+    )
+    threshold = ThresholdArtifact(
+        1,
+        path,
+        0.2,
+        0.8,
+        calibrator.hash(),
+        model_lock_hash,
+        gold.dev_hash(),
+        dev_label_hash,
+        stage2_config_hash,
+    )
+    return PathCalibration(calibrator, threshold)
+
+
+def _base_profile(candidate_lock_hash: str, qwen_lock_hash: str) -> Stage2Profile:
+    return Stage2Profile(
+        query="frozen query",
+        query_version="query-v1",
+        thresholds=None,
+        reranker_model_id="candidate-bge-reranker-v2-m3",
+        reranker_revision="b4577f49e18adb53ed9e557192094f69f3dc2c1c",
+        adjudicator_model_id="qwen",
+        adjudicator_revision="revision-1",
+        screening_scope_hash="5" * 64,
+        reranker_lock_hash=candidate_lock_hash,
+        adjudicator_lock_hash=qwen_lock_hash,
+    )
+
+
 def _attestation(
     *,
     candidate_id: str,
     evaluation_manifest_hash: str,
     stage2_config_hash: str,
     hashes: dict[str, str],
+    calibrator_hashes: dict[str, str] | None = None,
+    threshold_hashes: dict[str, str] | None = None,
     gold: GoldManifest | None = None,
 ) -> dict:
     universe_hashes = {
@@ -109,8 +202,8 @@ def _attestation(
         "evaluation_run_id": "promotion-1",
         "stage2_config_hash": stage2_config_hash,
         "model_lock_hashes": hashes,
-        "calibrator_hashes": hashes,
-        "threshold_hashes": hashes,
+        "calibrator_hashes": calibrator_hashes or hashes,
+        "threshold_hashes": threshold_hashes or hashes,
         "hidden_pair_universe_hashes": universe_hashes,
         "hidden_split_pair_counts": {
             "hidden_hard": 150,
@@ -142,8 +235,57 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
     gold_path = tmp_path / "gold.json"
     write_gold_manifest(gold_path, gold)
     gold_ref = {"path": gold_path.name, "sha256": sha256(gold_path.read_bytes()).hexdigest()}
-    hashes = {"reranker": HASH, "qwen": "b" * 64}
-    stage2_config_hash = "d" * 64
+    oracle_lock = _reranker_lock("oracle")
+    candidate_lock = _reranker_lock("candidate")
+    oracle_lock_ref = _write(tmp_path / "oracle-model-lock.json", oracle_lock.document())
+    candidate_lock_ref = _write(tmp_path / "candidate-model-lock.json", candidate_lock.document())
+    hashes = {"reranker": candidate_lock_ref["sha256"], "qwen": "b" * 64}
+    base_profile = _base_profile(hashes["reranker"], hashes["qwen"])
+    stage2_config_hash = base_profile.base_runtime_config_hash
+    oracle_calibration = _path_calibration(
+        CalibrationPath.RERANKER,
+        model_lock_hash=oracle_lock_ref["sha256"],
+        gold=gold,
+        stage2_config_hash=stage2_config_hash,
+        slope=1.0,
+        intercept=0.0,
+    )
+    candidate_calibration = _path_calibration(
+        CalibrationPath.RERANKER,
+        model_lock_hash=candidate_lock_ref["sha256"],
+        gold=gold,
+        stage2_config_hash=stage2_config_hash,
+        slope=0.5,
+        intercept=-0.5,
+    )
+    qwen_calibration = _path_calibration(
+        CalibrationPath.QWEN,
+        model_lock_hash=hashes["qwen"],
+        gold=gold,
+        stage2_config_hash=stage2_config_hash,
+        slope=1.0,
+        intercept=0.0,
+    )
+    oracle_calibrator_ref = _write(
+        tmp_path / "oracle-calibrator.json", oracle_calibration.calibrator.document()
+    )
+    candidate_calibrator_ref = _write(
+        tmp_path / "candidate-calibrator.json", candidate_calibration.calibrator.document()
+    )
+    oracle_threshold_ref = _write(
+        tmp_path / "oracle-threshold.json", oracle_calibration.threshold.document()
+    )
+    candidate_threshold_ref = _write(
+        tmp_path / "candidate-threshold.json", candidate_calibration.threshold.document()
+    )
+    calibrator_hashes = {
+        "reranker": candidate_calibration.calibrator.hash(),
+        "qwen": qwen_calibration.calibrator.hash(),
+    }
+    threshold_hashes = {
+        "reranker": candidate_calibration.threshold.hash(),
+        "qwen": qwen_calibration.threshold.hash(),
+    }
     attestation_ref = _write(
         tmp_path / "attestation.json",
         _attestation(
@@ -151,6 +293,8 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
             evaluation_manifest_hash=gold.hash(),
             stage2_config_hash=stage2_config_hash,
             hashes=hashes,
+            calibrator_hashes=calibrator_hashes,
+            threshold_hashes=threshold_hashes,
             gold=gold,
         ),
     )
@@ -162,6 +306,8 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
             "rationale-manifest",
             "rationale-records",
             "parity-manifest",
+            "parity-workload",
+            "parity-selection-receipt",
             "parity-scores",
             "benchmark-manifest",
             "benchmark-papers",
@@ -175,14 +321,14 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
         for index in range(6)
     ]
     document = {
-        "schema_version": "1",
+        "schema_version": "2",
         "evidence_type": "stage2_release_evidence",
         "candidate_id": "candidate-1",
         "evaluation_manifest_hash": gold.hash(),
         "stage2_config_hash": stage2_config_hash,
         "model_lock_hashes": hashes,
-        "calibrator_hashes": hashes,
-        "threshold_hashes": hashes,
+        "calibrator_hashes": calibrator_hashes,
+        "threshold_hashes": threshold_hashes,
         "gold_manifest": gold_ref,
         "hidden_attestation": attestation_ref,
         "public_gates": {
@@ -196,7 +342,15 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
             },
             "parity": {
                 "manifest": refs["parity-manifest"],
+                "workload": refs["parity-workload"],
+                "selection_receipt": refs["parity-selection-receipt"],
                 "scores": refs["parity-scores"],
+                "oracle_model_lock": oracle_lock_ref,
+                "candidate_model_lock": candidate_lock_ref,
+                "oracle_calibrator": oracle_calibrator_ref,
+                "candidate_calibrator": candidate_calibrator_ref,
+                "oracle_threshold": oracle_threshold_ref,
+                "candidate_threshold": candidate_threshold_ref,
             },
             "benchmark": {
                 "manifest": refs["benchmark-manifest"],
@@ -516,39 +670,101 @@ def _install_public_gate_evidence(
         }),
     }
 
-    parity_ids = [f"parity-{index}" for index in range(10_000)]
-    parity_manifest = ParityManifest(
-        1,
-        tuple(parity_ids),
-        "c" * 64,
-        "d" * 64,
-        "e" * 64,
-        "f" * 64,
-        model_hashes["reranker"],
-        "1" * 64,
-        threshold_hashes["reranker"],
-        gold.dev_hash(),
-        "2" * 64,
-        0.2,
-        0.8,
-        0.2,
-        0.8,
-        frozenset(parity_ids[:100]),
-        frozenset(parity_ids[-100:]),
-        "closest to oracle low threshold",
-        "closest to oracle high threshold",
+    parity_refs = index_document["public_gates"]["parity"]
+    parity_workload = freeze_parity_workload(
+        tuple(
+            Stage2Paper(
+                f"parity-paper-{index:05d}",
+                f"Parity paper {index}",
+                f"Abstract {index}",
+                ("molecule",),
+            )
+            for index in range(10_000)
+        ),
+        topic="molecular_generation",
+        language="en",
+        query_version="molecular-generation-v1",
+        query="molecular generation",
     )
-    parity_scores = [
-        ParityScore(pair_id, parity_manifest.hash(), index / 10_000, index / 10_000).document()
+    parity_ids = tuple(pair.pair_id for pair in parity_workload.pairs)
+    selection_receipt = {
+        "schema_version": 1,
+        "parity": {
+            "paper_count": 10_000,
+            "paper_ids": sorted(pair.paper_id for pair in parity_workload.pairs),
+            "papers_corpus_hash": parity_workload.corpus_hash(),
+        },
+    }
+    oracle_calibrator = PathCalibrator(**json.loads(
+        (tmp_path / parity_refs["oracle_calibrator"]["path"]).read_text()
+    ))
+    oracle_threshold = ThresholdArtifact(**json.loads(
+        (tmp_path / parity_refs["oracle_threshold"]["path"]).read_text()
+    ))
+    candidate_calibrator = profile.reranker_calibration.calibrator
+    candidate_threshold = profile.reranker_calibration.threshold
+    parity_scores = tuple(
+        ParityScore(pair_id, (index - 5_000) / 1_000, 2 * ((index - 5_000) / 1_000) + 1)
         for index, pair_id in enumerate(parity_ids)
-    ]
+    )
+    by_id = {item.pair_id: item for item in parity_scores}
+
+    def parity_window(threshold: float) -> frozenset[str]:
+        return frozenset(pair_id for _, pair_id in sorted(
+            (
+                abs(oracle_calibrator.predict(item.oracle_score) - threshold),
+                pair_id,
+            )
+            for pair_id, item in by_id.items()
+        )[:200])
+
+    parity_manifest = ParityManifest(
+        version=2,
+        pair_ids=parity_ids,
+        workload_hash=parity_workload.hash(),
+        selection_receipt_hash=content_hash(selection_receipt),
+        pair_universe_hash=pair_universe_hash(parity_ids),
+        query_assignment_hash=parity_workload.query_assignment_hash(),
+        corpus_hash=parity_workload.corpus_hash(),
+        tokenizer_hash="6" * 64,
+        preprocess_hash=content_hash(PREPROCESS_CONTRACT),
+        oracle_model_lock_hash=parity_refs["oracle_model_lock"]["sha256"],
+        candidate_model_lock_hash=parity_refs["candidate_model_lock"]["sha256"],
+        oracle_calibrator_hash=oracle_calibrator.hash(),
+        candidate_calibrator_hash=candidate_calibrator.hash(),
+        oracle_threshold_artifact_hash=oracle_threshold.hash(),
+        candidate_threshold_artifact_hash=candidate_threshold.hash(),
+        gold_manifest_hash=gold.hash(),
+        dev_manifest_hash=gold.dev_hash(),
+        dev_label_hash=oracle_calibrator.dev_label_hash,
+        calibration_pair_ids_hash=oracle_calibrator.calibration_pair_ids_hash,
+        window_selector_hash=content_hash(WINDOW_SELECTOR),
+        low_window_pair_ids=parity_window(oracle_threshold.low),
+        high_window_pair_ids=parity_window(oracle_threshold.high),
+    )
     index_document["public_gates"]["parity"] = {
         "manifest": _write(tmp_path / "parity-manifest.json", parity_manifest.document()),
+        "workload": _write(tmp_path / "parity-workload.json", parity_workload.document()),
+        "selection_receipt": _write(
+            tmp_path / "parity-selection-receipt.json", selection_receipt
+        ),
         "scores": _write(tmp_path / "parity-scores.json", {
-            "schema_version": "1",
+            "schema_version": "2",
             "kind": "stage2_parity_scores",
-            "scores": parity_scores,
+            "manifest_hash": parity_manifest.hash(),
+            "workload_hash": parity_manifest.workload_hash,
+            "oracle_model_lock_hash": parity_manifest.oracle_model_lock_hash,
+            "candidate_model_lock_hash": parity_manifest.candidate_model_lock_hash,
+            "score_count": 10_000,
+            "failure_count": 0,
+            "scores": [item.document() for item in parity_scores],
         }),
+        "oracle_model_lock": parity_refs["oracle_model_lock"],
+        "candidate_model_lock": parity_refs["candidate_model_lock"],
+        "oracle_calibrator": parity_refs["oracle_calibrator"],
+        "candidate_calibrator": parity_refs["candidate_calibrator"],
+        "oracle_threshold": parity_refs["oracle_threshold"],
+        "candidate_threshold": parity_refs["candidate_threshold"],
     }
 
     performance_ids = [f"performance-{index}" for index in range(1_000)]
@@ -644,29 +860,57 @@ def _benchmark_input_tokens(profile: Stage2Profile, paper: Stage2Paper) -> int:
     ))
 
 
-def _public_profile() -> SimpleNamespace:
-    return SimpleNamespace(
-        query="frozen query",
-        query_version="query-v1",
-        base_runtime_config_hash="d" * 64,
-        full_profile_hash="2" * 64,
-        prompt_hash="3" * 64,
-        schema_hash="4" * 64,
-        reranker_lock_hash=HASH,
-        adjudicator_lock_hash="b" * 64,
-        reranker_calibration=SimpleNamespace(
-            calibrator=SimpleNamespace(hash=lambda: HASH),
-            threshold=SimpleNamespace(hash=lambda: HASH),
-        ),
-        adjudicator_calibration=SimpleNamespace(
-            calibrator=SimpleNamespace(hash=lambda: "b" * 64),
-            threshold=SimpleNamespace(hash=lambda: "b" * 64),
-        ),
-        reranker_model_id="reranker",
-        reranker_revision="revision-1",
-        adjudicator_model_id="qwen",
-        adjudicator_revision="revision-1",
+def _public_profile(tmp_path: Path, document: dict) -> Stage2Profile:
+    parity = document["public_gates"]["parity"]
+    candidate_calibrator = PathCalibrator(**json.loads(
+        (tmp_path / parity["candidate_calibrator"]["path"]).read_text()
+    ))
+    candidate_threshold = ThresholdArtifact(**json.loads(
+        (tmp_path / parity["candidate_threshold"]["path"]).read_text()
+    ))
+    base = _base_profile(
+        document["model_lock_hashes"]["reranker"],
+        document["model_lock_hashes"]["qwen"],
     )
+    qwen = _path_calibration(
+        CalibrationPath.QWEN,
+        model_lock_hash=document["model_lock_hashes"]["qwen"],
+        gold=_gold_manifest(),
+        stage2_config_hash=base.base_runtime_config_hash,
+        slope=1.0,
+        intercept=0.0,
+    )
+    return replace(
+        base,
+        reranker_calibration=PathCalibration(
+            candidate_calibrator,
+            candidate_threshold,
+        ),
+        adjudicator_calibration=qwen,
+    )
+
+
+def _oracle_trust(tmp_path: Path, document: dict) -> ParityOracleTrust:
+    parity = document["public_gates"]["parity"]
+    oracle_lock = json.loads(
+        (tmp_path / parity["oracle_model_lock"]["path"]).read_text()
+    )
+    oracle_calibrator = PathCalibrator(**json.loads(
+        (tmp_path / parity["oracle_calibrator"]["path"]).read_text()
+    ))
+    oracle_threshold = ThresholdArtifact(**json.loads(
+        (tmp_path / parity["oracle_threshold"]["path"]).read_text()
+    ))
+    return parity_oracle_trust_from_document({
+        "schema_version": "1",
+        "trust_manifest_type": "stage2-parity-oracle",
+        "trust_manifest_id": "official-bge-reranker-v2-m3-fp32-v1",
+        "official_oracle_model_lock_hash": parity["oracle_model_lock"]["sha256"],
+        "oracle_calibrator_hash": oracle_calibrator.hash(),
+        "oracle_threshold_artifact_hash": oracle_threshold.hash(),
+        "tokenizer_hash": oracle_lock["file_hashes"]["tokenizer.json"],
+        "preprocess_hash": content_hash(PREPROCESS_CONTRACT),
+    })
 
 
 def test_release_evidence_index_verifies_every_bound_file(tmp_path: Path) -> None:
@@ -794,11 +1038,12 @@ def test_hidden_attestation_schema_forbids_private_evaluator_content() -> None:
 
 def test_public_stage2_gates_are_recomputed_from_raw_evidence(tmp_path: Path) -> None:
     path, document = _index(tmp_path)
-    profile = _public_profile()
+    profile = _public_profile(tmp_path, document)
     _install_public_gate_evidence(tmp_path, path, document, profile=profile)
 
     result = verify_public_stage2_gates(
         load_stage2_release_evidence_index(path), profile=profile,
+        oracle_trust=_oracle_trust(tmp_path, document),
     )
 
     assert result.passed
@@ -814,9 +1059,56 @@ def test_public_stage2_gates_are_recomputed_from_raw_evidence(tmp_path: Path) ->
     assert result.gates["soak"].metrics["request_count"] == 10_000
 
 
+def test_public_verifier_rejects_untrusted_parity_oracle(tmp_path: Path) -> None:
+    path, document = _index(tmp_path)
+    profile = _public_profile(tmp_path, document)
+    trust = replace(
+        _oracle_trust(tmp_path, document),
+        official_oracle_model_lock_hash="f" * 64,
+    )
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
+
+    with pytest.raises(Stage2EvidenceError, match="not deployment-trusted"):
+        verify_public_stage2_gates(
+            load_stage2_release_evidence_index(path),
+            profile=profile,
+            oracle_trust=trust,
+        )
+
+
+def test_public_verifier_recomputes_parity_threshold_windows(tmp_path: Path) -> None:
+    path, document = _index(tmp_path)
+    profile = _public_profile(tmp_path, document)
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
+    manifest_path = tmp_path / "parity-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    outside = next(
+        pair_id
+        for pair_id in manifest["pair_ids"]
+        if pair_id not in manifest["low_window_pair_ids"]
+    )
+    manifest["low_window_pair_ids"][0] = outside
+    manifest["low_window_pair_ids"].sort()
+    document["public_gates"]["parity"]["manifest"] = _write(
+        manifest_path, manifest
+    )
+    scores_path = tmp_path / "parity-scores.json"
+    scores = json.loads(scores_path.read_text())
+    scores["manifest_hash"] = content_hash(manifest)
+    document["public_gates"]["parity"]["scores"] = _write(scores_path, scores)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(Stage2EvidenceError, match="windows do not match"):
+        verify_public_stage2_gates(
+            load_stage2_release_evidence_index(path),
+            profile=profile,
+            oracle_trust=_oracle_trust(tmp_path, document),
+        )
+
+
 def test_public_verifier_recomputes_benchmark_prompt_token_bounds(tmp_path: Path) -> None:
     path, document = _index(tmp_path)
-    profile = _public_profile()
+    profile = _public_profile(tmp_path, document)
     _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     manifest_path = tmp_path / "benchmark-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -829,6 +1121,7 @@ def test_public_verifier_recomputes_benchmark_prompt_token_bounds(tmp_path: Path
     with pytest.raises(Stage2EvidenceError, match="input_tokens do not match"):
         verify_public_stage2_gates(
             load_stage2_release_evidence_index(path), profile=profile,
+            oracle_trust=_oracle_trust(tmp_path, document),
         )
 
 
@@ -837,7 +1130,7 @@ def test_public_verifier_binds_execution_profile_hashes(
     tmp_path: Path, field: str,
 ) -> None:
     path, document = _index(tmp_path)
-    profile = _public_profile()
+    profile = _public_profile(tmp_path, document)
     _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     record_path = tmp_path / document["public_gates"]["benchmark"]["records"][0]["path"]
     record = json.loads(record_path.read_bytes())
@@ -850,12 +1143,13 @@ def test_public_verifier_binds_execution_profile_hashes(
     with pytest.raises(Stage2EvidenceError, match=f"execution {field}"):
         verify_public_stage2_gates(
             load_stage2_release_evidence_index(path), profile=profile,
+            oracle_trust=_oracle_trust(tmp_path, document),
         )
 
 
 def test_public_verifier_binds_execution_model_identity(tmp_path: Path) -> None:
     path, document = _index(tmp_path)
-    profile = _public_profile()
+    profile = _public_profile(tmp_path, document)
     _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     record_path = tmp_path / document["public_gates"]["benchmark"]["records"][0]["path"]
     record = json.loads(record_path.read_bytes())
@@ -868,6 +1162,7 @@ def test_public_verifier_binds_execution_model_identity(tmp_path: Path) -> None:
     with pytest.raises(Stage2EvidenceError, match="execution model_releases"):
         verify_public_stage2_gates(
             load_stage2_release_evidence_index(path), profile=profile,
+            oracle_trust=_oracle_trust(tmp_path, document),
         )
 
 
@@ -875,7 +1170,7 @@ def test_public_stage2_gates_ignore_hash_valid_but_failing_rationale_claims(
     tmp_path: Path,
 ) -> None:
     path, document = _index(tmp_path)
-    profile = _public_profile()
+    profile = _public_profile(tmp_path, document)
     _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     records_path = tmp_path / "rationale-records.json"
     records = json.loads(records_path.read_text(encoding="utf-8"))
@@ -886,6 +1181,7 @@ def test_public_stage2_gates_ignore_hash_valid_but_failing_rationale_claims(
 
     result = verify_public_stage2_gates(
         load_stage2_release_evidence_index(path), profile=profile,
+        oracle_trust=_oracle_trust(tmp_path, document),
     )
 
     assert not result.passed
@@ -898,7 +1194,7 @@ def test_public_stage2_gates_reject_rewritten_benchmark_memory_summary(
     tmp_path: Path,
 ) -> None:
     path, document = _index(tmp_path)
-    profile = _public_profile()
+    profile = _public_profile(tmp_path, document)
     _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     record_ref = document["public_gates"]["benchmark"]["records"][0]
     record_path = tmp_path / record_ref["path"]
@@ -913,6 +1209,7 @@ def test_public_stage2_gates_reject_rewritten_benchmark_memory_summary(
     with pytest.raises(Stage2EvidenceError, match="memory summaries do not match"):
         verify_public_stage2_gates(
             load_stage2_release_evidence_index(path), profile=profile,
+            oracle_trust=_oracle_trust(tmp_path, document),
         )
 
 
@@ -920,7 +1217,7 @@ def test_public_stage2_gates_require_chat_trace_for_every_qwen_route(
     tmp_path: Path,
 ) -> None:
     path, document = _index(tmp_path)
-    profile = _public_profile()
+    profile = _public_profile(tmp_path, document)
     _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     record_ref = document["public_gates"]["benchmark"]["records"][0]
     record_path = tmp_path / record_ref["path"]
@@ -945,12 +1242,13 @@ def test_public_stage2_gates_require_chat_trace_for_every_qwen_route(
     with pytest.raises(Stage2EvidenceError, match="model-call routing"):
         verify_public_stage2_gates(
             load_stage2_release_evidence_index(path), profile=profile,
+            oracle_trust=_oracle_trust(tmp_path, document),
         )
 
 
 def test_public_stage2_gates_require_real_boolean_primitives(tmp_path: Path) -> None:
     path, document = _index(tmp_path)
-    profile = _public_profile()
+    profile = _public_profile(tmp_path, document)
     _install_public_gate_evidence(tmp_path, path, document, profile=profile)
     record_ref = document["public_gates"]["benchmark"]["records"][0]
     record_path = tmp_path / record_ref["path"]
@@ -965,4 +1263,5 @@ def test_public_stage2_gates_require_real_boolean_primitives(tmp_path: Path) -> 
     with pytest.raises(Stage2EvidenceError, match="JSON booleans"):
         verify_public_stage2_gates(
             load_stage2_release_evidence_index(path), profile=profile,
+            oracle_trust=_oracle_trust(tmp_path, document),
         )
