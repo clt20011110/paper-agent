@@ -2146,6 +2146,8 @@ def parity_gate(
             or threshold.dev_label_hash != manifest.dev_label_hash
         ):
             raise ValueError("parity calibration does not share frozen DEV provenance")
+    if oracle_calibrator.calibration_pair_ids != candidate_calibrator.calibration_pair_ids:
+        raise ValueError("parity calibrators must use the same DEV pair universe")
     by_id = {item.pair_id: item for item in scores}
     if len(by_id) != len(scores) or set(by_id) != set(manifest.pair_ids):
         raise ValueError("parity scores must exactly cover the frozen pair universe")
