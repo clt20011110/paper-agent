@@ -74,6 +74,21 @@
       "parser_rejected_records": 0,
       "explicit_non_paper_exclusions": 30,
       "note": "Official ACL Anthology badges were reconciled for main, long/short, industry, demo, and tutorial volumes; Student Research Workshop and co-located workshop volumes are outside the declared track scope."
+    },
+    {
+      "venue_id": "coling",
+      "provider": "acl_anthology",
+      "status": "complete",
+      "run_id": "1faa3f62-02c0-5127-bf02-51c5594e72b1",
+      "metadata_sha256": "b3b4a263bf12b3b9645043128106cfa932f1ac3ed9234ead75c07834f3802895",
+      "total_unique_records": 4483,
+      "annual_counts": {"2016": 408, "2017": 0, "2018": 371, "2019": 0, "2020": 657, "2021": 0, "2022": 632, "2023": 0, "2024": 1567, "2025": 848},
+      "not_applicable_years": [2017, 2019, 2021, 2023],
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "explicit_non_paper_exclusions": 16,
+      "note": "The official COLING venue index defines membership. The 2024 LREC-COLING joint main and tutorial volumes are included; all official badge counts reconcile with pinned ACL XML after frontmatter exclusion."
     }
   ],
   "known_limits": [

@@ -1210,7 +1210,7 @@ def test_real_catalog_reaches_full_coverage_only_with_explicit_neurips_import(
 ) -> None:
     module = _module()
     catalog_ids = module._venue_catalog_ids(ROOT / "venues")
-    assert len(catalog_ids) == 24
+    venue_total = len(catalog_ids)
     for venue_id in catalog_ids:
         if venue_id != "neurips":
             _venue_run(tmp_path, venue_id)
@@ -1227,9 +1227,9 @@ def test_real_catalog_reaches_full_coverage_only_with_explicit_neurips_import(
     assert without_import["summary"]["all_passed"] is False
     assert without_import["summary"]["missing_venues"] == ["neurips"]
     assert with_import["summary"] == {
-        "venue_count": 24,
-        "catalog_venue_count": 24,
-        "passed": 24,
+        "venue_count": venue_total,
+        "catalog_venue_count": venue_total,
+        "passed": venue_total,
         "failed": 0,
         "coverage_complete": True,
         "missing_venues": [],

@@ -646,7 +646,7 @@ def _acl_index_volumes(
         track = _acl_track(volume_id, venue_slug, anchor.text)
         if track not in allowed_tracks:
             continue
-        count_match = re.search(r"\b(\d[\d,]*)\s+papers\b", item.text, re.I)
+        count_match = re.search(r"\b(\d[\d,]*)\s+papers?\b", item.text, re.I)
         if count_match is None:
             raise ProviderRequestError(f"acl_anthology: {volume_id} has no official paper count")
         volumes.append((volume_id, int(count_match.group(1).replace(",", "")), track))
@@ -682,6 +682,8 @@ def _acl_track(volume_id: str, venue_slug: str, title: str = "") -> str:
     if "short paper" in normalized_title:
         return "short"
     if re.fullmatch(r"[a-z]\d{2}-1", lower):
+        return "main"
+    if re.fullmatch(r"\d{4}\.[a-z0-9-]+-1", lower):
         return "main"
     if re.fullmatch(r"[a-z]\d{2}-2", lower):
         return "tutorials"

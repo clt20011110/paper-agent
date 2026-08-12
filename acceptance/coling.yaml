@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: coling
+primary_provider: acl_anthology
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-coling.json
+fixture_sha256: 4cd879b6e90043a19b0a9824f7fb0ba498a03fe35ef31878a7c93089a303fc0d
+expected_stable_ids: [2024.lrec-main.1]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-coling-index.html, sha256: 7c0a867d8f9ae1950ddf4494671aafc301e2c5fbf233b2fc5f5e6b75f526667a, content_type: text/html, url_contains: "https://aclanthology.org/venues/coling/"}
+  - {path: tests/fixtures/providers/http-venue-coling.xml, sha256: dc742814df2f1d1721910c28d0b09067b120558c0678086c014d8f94e1fb4077, content_type: application/xml, url_contains: "/data/xml/2024.lrec.xml"}
+transport_expected_stable_ids: [2024.lrec-main.1, 2024.lrec-main.2, 2024.lrec-tutorials.1]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
+fallbacks: [{provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
