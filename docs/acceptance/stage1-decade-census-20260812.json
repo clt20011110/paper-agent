@@ -258,6 +258,22 @@
       "parser_rejected_records": 0
     },
     {
+      "venue_id": "colt",
+      "provider": "pmlr",
+      "authority": "official",
+      "status": "complete",
+      "run_id": "fb697fff-6ea5-5f9b-8419-4d987cc1525d",
+      "metadata_sha256": "bff8ffc9b7429fb4fa57c8dd9e12351ceddd0798d8883ed1f18241e98ddc8bf7",
+      "total_unique_records": 1309,
+      "annual_counts": {"2016": 69, "2017": 75, "2018": 93, "2019": 126, "2020": 125, "2021": 140, "2022": 162, "2023": 169, "2024": 169, "2025": 181},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "explicit_non_paper_exclusions": 10,
+      "direct_pdf_records": 1309,
+      "note": "Every official PMLR COLT volume contains one named Preface. A descriptor-level title exclusion removes exactly one frontmatter record per year and the parser census reconciles all 10 exclusions. The first live run exposed the distinct bare 'COLT 2019' index label; official volume resolution now covers all three historical label forms and the full decade rerun completed."
+    },
+    {
       "venue_id": "jmlr",
       "provider": "jmlr_official",
       "authority": "official",

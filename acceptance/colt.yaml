@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: colt
+primary_provider: pmlr
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-colt.json
+fixture_sha256: 03d9f1f80bf45d442c630a012e95b33ff3036ae1e06ec70ab34a2e213bbf82db
+expected_stable_ids: [colt-2024-0001]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-colt.html, sha256: 521f7ad84c81246ea351369d7bbdf2fe50e451fbc60c9dc1babbcc6b07f44218, content_type: text/html, url_contains: "https://proceedings.mlr.press/v247/"}
+  - {path: tests/fixtures/providers/http-venue-colt-index.html, sha256: c2835c0966f00bf3aae4c4aa5914edd0ff56760c8a39aa850a0ec0487b3b2fe6, content_type: text/html, url_contains: "https://proceedings.mlr.press/"}
+transport_expected_stable_ids: [v247/example24a, v247/example24b]
+required_fields: [stable_id, metadata, date_filter]
+required_capabilities: [stable_id, metadata, date_filter]
+fallbacks: [{provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

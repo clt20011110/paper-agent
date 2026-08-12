@@ -1,0 +1,12 @@
+schema_version: "1"
+venue_id: colt
+name: Conference on Learning Theory
+venue_type: conference
+primary_provider: pmlr
+provider_params:
+  series: COLT
+  volume_resolution: official_link
+  exclude_title_patterns: ["\\bPreface\\b"]
+official_url: https://learningtheory.org/
+proceedings_url: https://proceedings.mlr.press/
+date_range: {start: 2016-01-01, end: 2025-12-31}

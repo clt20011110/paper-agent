@@ -365,6 +365,49 @@ def test_pmlr_resolves_exact_icml_volume_then_maps_volume_page_without_pdf_fetch
     ]
 
 
+def test_pmlr_colt_excludes_declared_preface_and_reconciles_census() -> None:
+    index = b"""<html><body><ul><li><a href='v247'><b>Volume 247</b></a>
+    Proceedings of COLT 2024</li></ul></body></html>"""
+    volume = b"""<html><head><meta name='description' content='Held in Edmonton on 30 June 2024.'></head><body>
+    <div class='paper'><p class='title'>Conference on Learning Theory 2024: Preface</p><p class='authors'>Chairs</p><a href='/v247/preface.html'>abs</a></div>
+    <div class='paper'><p class='title'>A Research Paper</p><p class='authors'>Ada Lovelace</p><a href='/v247/paper.html'>abs</a></div>
+    </body></html>"""
+
+    class Response:
+        content_type = "text/html"
+
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
+    def fetch(url: str, api_version: str, policy_provider: str | None = None):
+        return Response(volume if "/v247/" in url else index)
+
+    resolved = execute_venue_operation(
+        "pmlr", "resolve_volume", {"series": "COLT", "year": 2024}, fetch
+    )
+    assert resolved.payload["official_url"] == "https://proceedings.mlr.press/v247/"
+    result = execute_venue_operation(
+        "pmlr",
+        "discover",
+        {
+            "series": "COLT",
+            "year": 2024,
+            "volume_id": "v247",
+            "date_from": "2024-01-01",
+            "date_to": "2024-12-31",
+            "exclude_title_patterns": [r"\bPreface\b"],
+        },
+        fetch,
+    )
+    assert [entry["external_id"] for entry in result.payload["entries"]] == ["v247/paper"]
+    assert result.payload["census"] == {
+        "expected_total": 1,
+        "parser_raw_records": 2,
+        "parser_rejected_records": 0,
+        "parser_excluded_records": 1,
+    }
+
+
 def test_uai_legacy_auai_page_transcodes_and_maps_official_pdf() -> None:
     html = """<!doctype html><html><body><table>
     <tr><td><b>ID: 7</b><a href='proceedings/papers/7.pdf'>pdf</a></td>

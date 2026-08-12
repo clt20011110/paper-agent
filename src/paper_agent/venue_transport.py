@@ -529,9 +529,12 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
         "ICML": r"(?:ICML|International Conference on Machine Learning)",
         "AISTATS": r"(?:AISTATS|Artificial Intelligence and Statistics)",
         "UAI": r"(?:UAI|Uncertainty in Artificial Intelligence)",
+        "COLT": r"(?:COLT|Conference on Learning Theory)",
     }
     if series not in series_names:
-        raise ValueError("pmlr conference discovery requires series=ICML, AISTATS, or UAI")
+        raise ValueError(
+            "pmlr conference discovery requires series=ICML, AISTATS, UAI, or COLT"
+        )
     year = _year(parameters)
     if operation == "discover" and series == "UAI" and year <= 2018:
         return _uai_auai(year, parameters, fetch)
@@ -546,7 +549,12 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
             if series == "ICML":
                 main_pattern = (
                     rf"(?:\bProceedings of (?:the )?(?:\d+(?:st|nd|rd|th) )?"
-                    rf"{series_names[series]},? {year}|\bICML {year} Proceedings)\s*$"
+                    rf"{series_names[series]},? {year}|\b{series} {year} Proceedings)\s*$"
+                )
+            elif series == "COLT":
+                main_pattern = (
+                    rf"\b(?:Proceedings of (?:the )?)?{series_names[series]}"
+                    rf"\s+{year}(?:\s+Proceedings)?\s*$"
                 )
             else:
                 main_pattern = (
@@ -605,12 +613,24 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
         )
     if not entries:
         raise ProviderRequestError("pmlr: official volume contained no papers")
-    selected, cursor = _filtered_page(entries, parameters)
+    exclusions = tuple(str(value) for value in parameters.get("exclude_title_patterns", ()))
+    included = [
+        entry
+        for entry in entries
+        if not any(re.search(pattern, str(entry["title"]), re.I) for pattern in exclusions)
+    ]
+    selected, cursor = _filtered_page(included, parameters)
+    rejected = len(paper_nodes) - len(entries)
     return VenueOperationResult(
         {
             "entries": selected,
             "next_cursor": cursor,
-            "census": _census(entries, raw_records=len(paper_nodes)),
+            "census": {
+                "expected_total": len(included),
+                "parser_raw_records": len(paper_nodes),
+                "parser_rejected_records": rejected,
+                "parser_excluded_records": len(entries) - len(included),
+            },
         },
         (response.body,),
     )
