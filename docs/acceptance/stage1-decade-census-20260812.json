@@ -89,6 +89,32 @@
       "parser_rejected_records": 0,
       "explicit_non_paper_exclusions": 16,
       "note": "The official COLING venue index defines membership. The 2024 LREC-COLING joint main and tutorial volumes are included; all official badge counts reconcile with pinned ACL XML after frontmatter exclusion."
+    },
+    {
+      "venue_id": "cvpr",
+      "provider": "cvf_open_access",
+      "status": "complete",
+      "run_id": "dc7dba60-6013-589f-9b2b-b5f64caf7c78",
+      "metadata_sha256": "f0d1aa475bb74e21de1c1ac619f0de2ab7473d112b93028ae48e681853600438",
+      "total_unique_records": 16839,
+      "annual_counts": {"2016": 643, "2017": 783, "2018": 979, "2019": 1294, "2020": 1466, "2021": 1660, "2022": 2074, "2023": 2353, "2024": 2716, "2025": 2871},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "note": "CVF's legacy day=all query is broken for 2018-2020; the adapter now follows the official per-day menu and merges stable IDs before census reconciliation."
+    },
+    {
+      "venue_id": "iccv",
+      "provider": "cvf_open_access",
+      "status": "complete",
+      "run_id": "a3c675ed-de66-5a52-85a3-61e6c3f7b91d",
+      "metadata_sha256": "eaf72bfd9c7cedbb248325e63c64ced4ad6c60bf94c01e6a4f17ab04f33f1f7c",
+      "total_unique_records": 8165,
+      "annual_counts": {"2016": 0, "2017": 621, "2018": 0, "2019": 1075, "2020": 0, "2021": 1612, "2022": 0, "2023": 2156, "2024": 0, "2025": 2701},
+      "not_applicable_years": [2016, 2018, 2020, 2022, 2024],
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0
     }
   ],
   "known_limits": [

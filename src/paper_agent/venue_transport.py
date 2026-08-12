@@ -782,7 +782,40 @@ def _cvf(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
             raise ValueError("CVF workshop discovery requires workshop_slug")
         url = f"https://openaccess.thecvf.com/{series}{year}_workshops/{slug}"
     response = fetch(url, "cvf-open-access-html-v1")
-    root = _html(response.body, provider)
+    bodies = [response.body]
+    entries = _cvf_entries(response.body, url, series, year)
+    if track == "main" and not entries:
+        menu_url = f"https://openaccess.thecvf.com/{series}{year}.py"
+        menu_response = fetch(menu_url, "cvf-open-access-day-menu-html-v1")
+        bodies.append(menu_response.body)
+        menu_root = _html(menu_response.body, provider)
+        day_urls = list(
+            dict.fromkeys(
+                _absolute(menu_url, anchor.attributes["href"])
+                for anchor in _nodes(menu_root, "a")
+                if re.fullmatch(
+                    rf"{series}{year}\.py\?day=\d{{4}}-\d{{2}}-\d{{2}}",
+                    anchor.attributes.get("href", ""),
+                )
+            )
+        )
+        for day_url in day_urls:
+            day_response = fetch(day_url, "cvf-open-access-day-html-v1")
+            bodies.append(day_response.body)
+            entries.extend(_cvf_entries(day_response.body, day_url, series, year))
+        entries = list({entry["external_id"]: entry for entry in entries}.values())
+    if not entries:
+        raise ProviderRequestError("cvf_open_access: official page contained no papers")
+    selected, cursor = _filtered_page(entries, parameters)
+    return VenueOperationResult(
+        {track: selected, "next_cursor": cursor, "census": _census(entries)},
+        tuple(bodies),
+    )
+
+
+def _cvf_entries(body: bytes, url: str, series: str, year: int) -> list[dict[str, Any]]:
+    provider = "cvf_open_access"
+    root = _html(body, provider)
     entries: list[dict[str, Any]] = []
     for parent in _walk(root):
         for index, node in enumerate(parent.children):
@@ -812,10 +845,7 @@ def _cvf(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
                     "landing_url": landing,
                 }
             )
-    if not entries:
-        raise ProviderRequestError("cvf_open_access: official page contained no papers")
-    selected, cursor = _filtered_page(entries, parameters)
-    return VenueOperationResult({track: selected, "next_cursor": cursor, "census": _census(entries)}, (response.body,))
+    return entries
 
 
 def _cvf_publication_date(bibtex: str, year: int) -> str:

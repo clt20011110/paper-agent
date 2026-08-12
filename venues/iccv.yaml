@@ -3,5 +3,11 @@ venue_id: iccv
 name: IEEE/CVF International Conference on Computer Vision
 venue_type: conference
 primary_provider: cvf_open_access
-provider_params: {series: ICCV, track: main, proceedings_only: true, exclude_workshops: true}
+provider_params:
+  series: ICCV
+  track: main
+  proceedings_only: true
+  exclude_workshops: true
+  held_years: [2017, 2019, 2021, 2023, 2025]
 official_url: https://iccv.thecvf.com/
+date_range: {start: 2016-01-01, end: 2025-12-31}

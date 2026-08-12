@@ -274,6 +274,30 @@ def test_cvf_main_route_preserves_track_and_month_resolution() -> None:
     assert batch.entries[0].metadata["cvf_track"] == "main"
 
 
+def test_cvf_falls_back_to_official_day_pages_when_legacy_all_query_is_broken() -> None:
+    transport, opener = _transport({
+        "CVPR2018?day=all": ("http-venue-cvf-empty.html", "text/html"),
+        "CVPR2018.py?day=2018-06-19": ("http-venue-cvf.html", "text/html"),
+        "CVPR2018.py?day=2018-06-20": ("http-venue-cvf.html", "text/html"),
+        "CVPR2018.py": ("http-venue-cvf-menu.html", "text/html"),
+    })
+    descriptor = VenueDescriptor(
+        1,
+        "cvpr",
+        "cvf_open_access",
+        "cvf_open_access",
+        {"series": "CVPR", "track": "main", "proceedings_only": True, "exclude_workshops": True},
+    )
+
+    batch = create_builtin("cvf_open_access", transport).discover(
+        descriptor, CrawlWindow(year=2018)
+    )
+
+    assert len(batch.entries) == 2
+    assert len(opener.calls) == 4
+    assert any("CVPR2018.py?day=2018-06-19" in call[0].full_url for call in opener.calls)
+
+
 def test_ijcai_uses_details_links_and_never_pdf_links() -> None:
     transport, opener = _transport({
         "www.ijcai.org/proceedings/2024/": ("http-venue-ijcai.html", "text/html"),
