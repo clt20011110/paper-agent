@@ -23,12 +23,15 @@ def release_bundle(release_template: V3Bundle, tmp_path: Path) -> V3Bundle:
     root = tmp_path / "bundle"
     shutil.copytree(release_template.root, root)
     trust_path = tmp_path / "deployment-hidden-evaluator-trust.json"
+    parity_trust_path = tmp_path / "deployment-parity-oracle-trust.json"
     shutil.copy2(release_template.trust_path, trust_path)
+    shutil.copy2(release_template.parity_trust_path, parity_trust_path)
     return replace(
         release_template,
         root=root,
         release_path=root / release_template.release_path.name,
         trust_path=trust_path,
+        parity_trust_path=parity_trust_path,
         plan=deepcopy(release_template.plan),
     )
 
@@ -43,6 +46,8 @@ def _arguments(bundle: V3Bundle, output: Path) -> list[str]:
         str(bundle.root / "stage2-release-evidence.json"),
         "--trust-manifest",
         str(bundle.trust_path),
+        "--parity-oracle-trust",
+        str(bundle.parity_trust_path),
         "--output",
         str(output),
     ]
@@ -60,7 +65,13 @@ def test_stage2_release_assemble_help_lists_required_inputs(
 
     assert stopped.value.code == 0
     help_text = capsys.readouterr().out
-    for option in ("--candidate", "--evidence", "--trust-manifest", "--output"):
+    for option in (
+        "--candidate",
+        "--evidence",
+        "--trust-manifest",
+        "--parity-oracle-trust",
+        "--output",
+    ):
         assert option in help_text
 
 

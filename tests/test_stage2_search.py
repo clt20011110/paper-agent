@@ -100,8 +100,16 @@ def _fast_release_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(stage2_search, "_release_gate", verified_gate)
 
 
-def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") -> tuple[Path, dict]:
-    reranker = load_model_lock(ROOT / "configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json")
+def _release_bundle(
+    tmp_path: Path,
+    *,
+    base_url: str = "http://127.0.0.1:8000",
+    reranker_lock_source: Path | None = None,
+) -> tuple[Path, dict]:
+    reranker = load_model_lock(
+        reranker_lock_source
+        or ROOT / "configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json"
+    )
     adjudicator = load_model_lock(ROOT / "configs/stage2/models/qwen3.5-9b-8bit.lock.json")
     reranker_path = tmp_path / "reranker.lock.json"
     adjudicator_path = tmp_path / "adjudicator.lock.json"
@@ -364,13 +372,25 @@ def _approved_plan_with_screening_change(
 
 
 class LocalOmlxFixture:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        model_id: str = "bge-reranker-v2-m3",
+        *,
+        relevant_score: float = 0.7,
+        irrelevant_score: float = 0.3,
+    ) -> None:
         self.paths: list[str] = []
+        self.model_id = model_id
+        self.relevant_score = relevant_score
+        self.irrelevant_score = irrelevant_score
 
     def request(self, path, payload):
         self.paths.append(path)
-        assert payload["model"] == "bge-reranker-v2-m3"
-        scores = [0.7 if "Relevant" in document else 0.3 for document in payload["documents"]]
+        assert payload["model"] == self.model_id
+        scores = [
+            self.relevant_score if "Relevant" in document else self.irrelevant_score
+            for document in payload["documents"]
+        ]
         body = {"model": payload["model"], "results": [{"index": index, "relevance_score": score} for index, score in enumerate(scores)]}
         return OmlxResponse(200, json.dumps(body).encode())
 

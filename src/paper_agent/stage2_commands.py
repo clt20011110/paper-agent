@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .canonical import content_hash
 from .schema import schema_directory
-from .stage2_backends import ModelLock, OmlxTransport, UrlLibOmlxTransport
+from .stage2_backends import ModelLock, OmlxRerankBackend, OmlxTransport, UrlLibOmlxTransport
 from .stage2_benchmark import (
     BenchmarkRunSpec,
     MacOSMemoryObserver,
@@ -66,6 +66,15 @@ from .stage2_promotion_artifacts import (
     promotion_submission_document,
 )
 from .stage2_sampling import load_private_corpus_snapshot
+from .stage2_parity import (
+    build_parity_evidence,
+    freeze_parity_workload,
+    parity_workload_from_document,
+    preflight_parity_evidence,
+    validate_parity_workload_receipt,
+    write_parity_evidence_artifacts,
+    write_parity_workload,
+)
 from .stage2_structured_replay import (
     StructuredReplayRunner,
     freeze_structured_replay_manifest,
@@ -661,6 +670,155 @@ def _object(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected a JSON object: {path}")
     return value
+
+
+def freeze_stage2_parity_workload(
+    *,
+    papers_path: Path,
+    selection_receipt_path: Path,
+    topic: str,
+    language: str,
+    query_version: str,
+    query: str,
+    output_path: Path,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Freeze the exact 10,000 query-document pairs used for parity."""
+    papers = _benchmark_papers(papers_path)
+    workload = freeze_parity_workload(
+        papers, topic=topic, language=language, query_version=query_version, query=query
+    )
+    receipt = _object(selection_receipt_path)
+    # This shared validation prevents a frozen workload from drifting from its
+    # selected 10k corpus.
+    validate_parity_workload_receipt(workload, receipt)
+    if dry_run:
+        return {
+            "command": "stage2-parity.freeze-workload",
+            "output": str(output_path),
+            "pair_count": len(workload.pairs),
+            "status": "validated",
+            "workload_hash": workload.hash(),
+            "written": False,
+        }
+    write_parity_workload(workload, output_path=output_path)
+    return {
+        "command": "stage2-parity.freeze-workload",
+        "output": str(output_path),
+        "output_sha256": sha256(output_path.read_bytes()).hexdigest(),
+        "pair_count": len(workload.pairs),
+        "status": "complete",
+        "workload_hash": workload.hash(),
+        "written": True,
+    }
+
+
+def run_stage2_parity(
+    *,
+    workload_path: Path,
+    selection_receipt_path: Path,
+    oracle_candidate_path: Path,
+    oracle_model_lock_path: Path,
+    candidate_path: Path,
+    candidate_model_lock_path: Path,
+    manifest_output_path: Path,
+    scores_output_path: Path,
+    dry_run: bool = False,
+    oracle_transport: OmlxTransport | None = None,
+    candidate_transport: OmlxTransport | None = None,
+    environment: Mapping[str, str] | None = None,
+    candidate_loader: Callable[[Path], ReleasedStage2] = load_stage2_benchmark_candidate,
+) -> dict[str, Any]:
+    """Execute the fixed parity workload using only frozen candidate settings."""
+    workload = parity_workload_from_document(_object(workload_path))
+    receipt = _object(selection_receipt_path)
+    oracle = candidate_loader(oracle_candidate_path)
+    candidate = candidate_loader(candidate_path)
+    oracle_lock, oracle_lock_hash = _model_lock_with_byte_hash(oracle_model_lock_path)
+    candidate_lock, candidate_lock_hash = _model_lock_with_byte_hash(candidate_model_lock_path)
+    receipt_hash = content_hash(receipt)
+    preflight_parity_evidence(
+        workload,
+        selection_receipt=receipt,
+        selection_receipt_hash=receipt_hash,
+        oracle=oracle,
+        candidate=candidate,
+        oracle_lock=oracle_lock,
+        candidate_lock=candidate_lock,
+        oracle_lock_hash=oracle_lock_hash,
+        candidate_lock_hash=candidate_lock_hash,
+    )
+    _validate_parity_outputs(manifest_output_path, scores_output_path)
+    if dry_run:
+        return {
+            "command": "stage2-parity.run",
+            "manifest_output": str(manifest_output_path),
+            "pair_count": len(workload.pairs),
+            "scores_output": str(scores_output_path),
+            "status": "validated",
+            "written": False,
+        }
+    values = environment if environment is not None else os.environ
+    oracle_backend = _parity_backend(oracle, oracle_transport, values)
+    candidate_backend = _parity_backend(candidate, candidate_transport, values)
+    evidence = build_parity_evidence(
+        workload,
+        selection_receipt=receipt,
+        selection_receipt_hash=receipt_hash,
+        oracle=oracle,
+        candidate=candidate,
+        oracle_lock=oracle_lock,
+        candidate_lock=candidate_lock,
+        oracle_lock_hash=oracle_lock_hash,
+        candidate_lock_hash=candidate_lock_hash,
+        oracle_reranker=oracle_backend,
+        candidate_reranker=candidate_backend,
+    )
+    write_parity_evidence_artifacts(
+        evidence, manifest_path=manifest_output_path, scores_path=scores_output_path
+    )
+    return {
+        "command": "stage2-parity.run",
+        "manifest_hash": evidence.manifest.hash(),
+        "manifest_output": str(manifest_output_path),
+        "pair_count": len(workload.pairs),
+        "scores_output": str(scores_output_path),
+        "scores_sha256": sha256(scores_output_path.read_bytes()).hexdigest(),
+        "status": "complete",
+        "written": True,
+    }
+
+
+def _model_lock_with_byte_hash(path: Path) -> tuple[ModelLock, str]:
+    payload = path.read_bytes()
+    value = json.loads(payload)
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a JSON object: {path}")
+    return ModelLock(**value), sha256(payload).hexdigest()
+
+
+def _parity_backend(
+    release: ReleasedStage2,
+    transport: OmlxTransport | None,
+    environment: Mapping[str, str],
+) -> OmlxRerankBackend:
+    api_key = environment.get(release.api_key_env) if release.api_key_env else None
+    if release.api_key_env and not api_key:
+        raise ValueError(f"parity requires environment variable {release.api_key_env}")
+    return OmlxRerankBackend(
+        release.profile.reranker_model_id,
+        transport or UrlLibOmlxTransport(release.omlx_base_url, api_key=api_key),
+        document_batch_size=release.profile.document_batch_size,
+        max_in_flight=release.profile.reranker_max_in_flight,
+    )
+
+
+def _validate_parity_outputs(manifest_path: Path, scores_path: Path) -> None:
+    if manifest_path.absolute() == scores_path.absolute():
+        raise ValueError("parity manifest and score paths must differ")
+    for path in (manifest_path, scores_path):
+        if os.path.lexists(path):
+            raise FileExistsError(f"parity output already exists: {path}")
 
 
 def _stage2_input_profile(

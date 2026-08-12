@@ -314,7 +314,9 @@ def _promote_argv(
     key_path: Path,
     output: Path,
     candidate_id: str = "candidate-1",
+    parity_trust_path: Path | None = None,
 ) -> list[str]:
+    parity_trust_path = parity_trust_path or tmp_path / "parity-oracle-trust.json"
     return [
         "stage2-evaluator", "promote",
         "--manifest", str(tmp_path / "gold-manifest.json"),
@@ -329,6 +331,7 @@ def _promote_argv(
         "--evaluator-key-id", "evaluator-1",
         "--issued-at", "2026-08-11T00:00:00Z",
         "--trust-manifest", str(trust_path),
+        "--parity-oracle-trust", str(parity_trust_path),
         "--signing-key-file", str(key_path),
         "--output", str(output),
     ]
@@ -361,7 +364,7 @@ def _patch_promote_public_preflight(
     monkeypatch.setattr(
         cli,
         "validate_promotion_public_evidence",
-        lambda _candidates, _evidence, _manifest_hash: None,
+        lambda _candidates, _evidence, _manifest_hash, *, parity_oracle_trust_path: None,
     )
 
 
@@ -446,6 +449,7 @@ def test_stage2_evaluator_promote_runs_once_and_signs_selected_public_payload(
 
     result = _stdout(capsys)
     assert len(observed) == 1
+    assert observed[0]["parity_oracle_trust_path"] == tmp_path / "parity-oracle-trust.json"
     payload = json.loads(output.read_text(encoding="utf-8"))["payload"]
     assert output.stat().st_mode & 0o777 == 0o600
     assert payload["evaluator_key_id"] == "evaluator-1"
@@ -514,7 +518,7 @@ def test_stage2_evaluator_promote_real_failed_gate_consumes_marker(
     monkeypatch.setattr(
         cli,
         "validate_promotion_public_evidence",
-        lambda _candidates, _evidence, _manifest_hash: None,
+        lambda _candidates, _evidence, _manifest_hash, *, parity_oracle_trust_path: None,
     )
     monkeypatch.setattr(
         artifacts_io, "candidate_artifacts_from_v2_bundle", lambda _path: candidate
@@ -522,7 +526,7 @@ def test_stage2_evaluator_promote_real_failed_gate_consumes_marker(
     monkeypatch.setattr(
         artifacts_io,
         "_public_release_evidence",
-        lambda *_args: {"candidate": _verified_public_gates()},
+        lambda *_args, **_kwargs: {"candidate": _verified_public_gates()},
     )
     key_path = tmp_path / "evaluator-private.pem"
     key = _write_private_key(key_path)
@@ -664,8 +668,8 @@ def test_stage2_evaluator_promote_public_preflight_validates_sampling_and_manife
     monkeypatch.setattr(
         cli,
         "validate_promotion_public_evidence",
-        lambda candidates, _evidence, manifest_hash: observed.append(
-            (set(candidates), manifest_hash, "public")
+        lambda candidates, _evidence, manifest_hash, *, parity_oracle_trust_path: observed.append(
+            (set(candidates), manifest_hash, "public", parity_oracle_trust_path)
         ),
     )
     trust_path = tmp_path / "deployment-trust.json"
@@ -680,7 +684,7 @@ def test_stage2_evaluator_promote_public_preflight_validates_sampling_and_manife
     assert observed == [
         "sampling",
         ({"candidate-1"}, "b" * 64),
-        ({"candidate-1"}, "b" * 64, "public"),
+        ({"candidate-1"}, "b" * 64, "public", tmp_path / "parity-oracle-trust.json"),
     ]
 
 

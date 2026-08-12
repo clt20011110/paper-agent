@@ -39,6 +39,7 @@ class V3Bundle:
     release_path: Path
     plan: dict
     trust_path: Path
+    parity_trust_path: Path
     wrong_trust_path: Path
     private_key: Ed25519PrivateKey
 
@@ -142,25 +143,81 @@ def _payload(
 
 
 def _build_v3_bundle(root: Path) -> V3Bundle:
-    release_path, plan = _release_bundle(root)
+    repository_root = Path(__file__).parents[1]
+    release_path, plan = _release_bundle(
+        root,
+        reranker_lock_source=(
+            repository_root
+            / "configs/stage2/models/bge-reranker-v2-m3-mlx-bf16.lock.json"
+        ),
+    )
     release = json.loads(release_path.read_text(encoding="utf-8"))
     evidence_path, evidence = public_evidence._index(root)
     gold = public_evidence._gold_manifest()
+    parity = evidence["public_gates"]["parity"]
 
-    # The compact runtime fixture starts with a synthetic gold hash.  Rebind
-    # its frozen calibration artefacts to the real, public gold manifest.
-    for name in (CalibrationPath.RERANKER.value, CalibrationPath.QWEN.value):
-        calibrator_path = root / release["calibration"][name]["calibrator"]["path"]
-        calibrator = json.loads(calibrator_path.read_text(encoding="utf-8"))
-        calibrator["gold_manifest_hash"] = gold.hash()
-        _write_json(calibrator_path, calibrator)
-        release["calibration"][name]["calibrator"] = _ref(calibrator_path)
+    oracle_lock_path = root / parity["oracle_model_lock"]["path"]
+    shutil.copy2(
+        repository_root / "configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json",
+        oracle_lock_path,
+    )
+    parity["oracle_model_lock"] = _ref(oracle_lock_path)
+    oracle_calibrator_path = root / parity["oracle_calibrator"]["path"]
+    oracle_calibrator = replace(
+        PathCalibrator(**json.loads(oracle_calibrator_path.read_text(encoding="utf-8"))),
+        model_lock_hash=parity["oracle_model_lock"]["sha256"],
+    )
+    _write_json(oracle_calibrator_path, oracle_calibrator.document())
+    parity["oracle_calibrator"] = _ref(oracle_calibrator_path)
+    oracle_threshold_path = root / parity["oracle_threshold"]["path"]
+    oracle_threshold = json.loads(oracle_threshold_path.read_text(encoding="utf-8"))
+    oracle_threshold["calibrator_hash"] = oracle_calibrator.hash()
+    oracle_threshold["model_lock_hash"] = parity["oracle_model_lock"]["sha256"]
+    _write_json(oracle_threshold_path, oracle_threshold)
+    parity["oracle_threshold"] = _ref(oracle_threshold_path)
 
-        threshold_path = root / release["calibration"][name]["threshold"]["path"]
-        threshold = json.loads(threshold_path.read_text(encoding="utf-8"))
-        threshold["calibrator_hash"] = PathCalibrator(**calibrator).hash()
-        _write_json(threshold_path, threshold)
-        release["calibration"][name]["threshold"] = _ref(threshold_path)
+    candidate_calibrator_source = root / parity["candidate_calibrator"]["path"]
+    candidate_calibrator = replace(
+        PathCalibrator(**json.loads(candidate_calibrator_source.read_text(encoding="utf-8"))),
+        model_lock_hash=release["reranker_lock"]["sha256"],
+    )
+    candidate_calibrator_path = root / release["calibration"]["reranker"]["calibrator"]["path"]
+    _write_json(candidate_calibrator_path, candidate_calibrator.document())
+    release["calibration"]["reranker"]["calibrator"] = _ref(candidate_calibrator_path)
+    candidate_threshold_source = root / parity["candidate_threshold"]["path"]
+    candidate_threshold = json.loads(candidate_threshold_source.read_text(encoding="utf-8"))
+    runtime_threshold_path = root / release["calibration"]["reranker"]["threshold"]["path"]
+    runtime_threshold = json.loads(runtime_threshold_path.read_text(encoding="utf-8"))
+    candidate_threshold["calibrator_hash"] = candidate_calibrator.hash()
+    candidate_threshold["model_lock_hash"] = release["reranker_lock"]["sha256"]
+    candidate_threshold["stage2_config_hash"] = runtime_threshold["stage2_config_hash"]
+    _write_json(runtime_threshold_path, candidate_threshold)
+    release["calibration"]["reranker"]["threshold"] = _ref(runtime_threshold_path)
+
+    qwen_name = CalibrationPath.QWEN.value
+    qwen_calibrator_path = root / release["calibration"][qwen_name]["calibrator"]["path"]
+    original_qwen = PathCalibrator(**json.loads(
+        qwen_calibrator_path.read_text(encoding="utf-8")
+    ))
+    qwen_calibrator = replace(
+        candidate_calibrator,
+        path=CalibrationPath.QWEN,
+        slope=original_qwen.slope,
+        intercept=original_qwen.intercept,
+        model_lock_hash=release["adjudicator_lock"]["sha256"],
+    )
+    _write_json(qwen_calibrator_path, qwen_calibrator.document())
+    release["calibration"][qwen_name]["calibrator"] = _ref(qwen_calibrator_path)
+    qwen_threshold_path = root / release["calibration"][qwen_name]["threshold"]["path"]
+    qwen_threshold = json.loads(qwen_threshold_path.read_text(encoding="utf-8"))
+    qwen_threshold.update({
+        "calibrator_hash": qwen_calibrator.hash(),
+        "model_lock_hash": release["adjudicator_lock"]["sha256"],
+        "dev_manifest_hash": qwen_calibrator.dev_manifest_hash,
+        "dev_label_hash": qwen_calibrator.dev_label_hash,
+    })
+    _write_json(qwen_threshold_path, qwen_threshold)
+    release["calibration"][qwen_name]["threshold"] = _ref(qwen_threshold_path)
 
     candidate_document = deepcopy(release)
     candidate_document.pop("release_gate")
@@ -168,6 +225,11 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
     candidate_path = root / "candidate.json"
     _write_json(candidate_path, candidate_document)
     candidate = load_stage2_benchmark_candidate(candidate_path)
+    parity.update({
+        "candidate_model_lock": release["reranker_lock"],
+        "candidate_calibrator": release["calibration"]["reranker"]["calibrator"],
+        "candidate_threshold": release["calibration"]["reranker"]["threshold"],
+    })
     model_lock_hashes = {
         "reranker": candidate.profile.reranker_lock_hash,
         "qwen": candidate.profile.adjudicator_lock_hash,
@@ -191,6 +253,18 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
     public_evidence._install_public_gate_evidence(
         root, evidence_path, evidence, profile=candidate.profile,
     )
+    oracle_trust = public_evidence._oracle_trust(root, evidence)
+    parity_trust_path = root / "parity-oracle-trust.json"
+    _write_json(parity_trust_path, {
+        "schema_version": "1",
+        "trust_manifest_type": "stage2-parity-oracle",
+        "trust_manifest_id": oracle_trust.trust_manifest_id,
+        "official_oracle_model_lock_hash": oracle_trust.official_oracle_model_lock_hash,
+        "oracle_calibrator_hash": oracle_trust.oracle_calibrator_hash,
+        "oracle_threshold_artifact_hash": oracle_trust.oracle_threshold_artifact_hash,
+        "tokenizer_hash": oracle_trust.tokenizer_hash,
+        "preprocess_hash": oracle_trust.preprocess_hash,
+    })
     public_index = deepcopy(evidence)
     public_index["evidence_type"] = "stage2_public_promotion_evidence"
     public_index.pop("hidden_attestation")
@@ -199,6 +273,7 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
     verified_public = public_evidence.verify_public_stage2_gates(
         public_evidence.load_stage2_release_evidence_index(public_index_path),
         profile=candidate.profile,
+        oracle_trust=oracle_trust,
     )
 
     private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
@@ -260,7 +335,15 @@ def _build_v3_bundle(root: Path) -> V3Bundle:
         "evidence": _ref(evidence_path),
     }
     _write_json(release_path, release)
-    bundle = V3Bundle(root, release_path, plan, trust_path, wrong_trust_path, private_key)
+    bundle = V3Bundle(
+        root,
+        release_path,
+        plan,
+        trust_path,
+        parity_trust_path,
+        wrong_trust_path,
+        private_key,
+    )
     return _reapprove_release(bundle)
 
 
@@ -274,14 +357,17 @@ def v3_bundle(v3_template: V3Bundle, tmp_path: Path) -> V3Bundle:
     root = tmp_path / "bundle"
     shutil.copytree(v3_template.root, root)
     trust_path = tmp_path / "deployment-hidden-evaluator-trust.json"
+    parity_trust_path = tmp_path / "deployment-parity-oracle-trust.json"
     wrong_trust_path = tmp_path / "deployment-wrong-hidden-evaluator-trust.json"
     shutil.copy2(v3_template.trust_path, trust_path)
+    shutil.copy2(v3_template.parity_trust_path, parity_trust_path)
     shutil.copy2(v3_template.wrong_trust_path, wrong_trust_path)
     return replace(
         v3_template,
         root=root,
         release_path=root / v3_template.release_path.name,
         trust_path=trust_path,
+        parity_trust_path=parity_trust_path,
         wrong_trust_path=wrong_trust_path,
         plan=deepcopy(v3_template.plan),
     )
@@ -330,6 +416,7 @@ def test_production_v3_rejects_claimed_gate_outcomes(v3_bundle: V3Bundle) -> Non
             v3_bundle.release_path,
             v3_bundle.plan,
             hidden_trust_path=v3_bundle.trust_path,
+            parity_oracle_trust_path=v3_bundle.parity_trust_path,
         )
 
 
@@ -343,6 +430,7 @@ def test_production_v3_requires_operator_controlled_trust(v3_bundle: V3Bundle) -
             v3_bundle.release_path,
             v3_bundle.plan,
             hidden_trust_path=bundled_trust,
+            parity_oracle_trust_path=v3_bundle.parity_trust_path,
         )
 
     bundled_symlink = v3_bundle.root / "deployment-trust-link.json"
@@ -352,6 +440,7 @@ def test_production_v3_requires_operator_controlled_trust(v3_bundle: V3Bundle) -
             v3_bundle.release_path,
             v3_bundle.plan,
             hidden_trust_path=bundled_symlink,
+            parity_oracle_trust_path=v3_bundle.parity_trust_path,
         )
 
     bundle_alias = v3_bundle.root.parent / "bundle-alias"
@@ -361,6 +450,7 @@ def test_production_v3_requires_operator_controlled_trust(v3_bundle: V3Bundle) -
             v3_bundle.release_path,
             v3_bundle.plan,
             hidden_trust_path=bundle_alias / bundled_symlink.name,
+            parity_oracle_trust_path=v3_bundle.parity_trust_path,
         )
 
 
@@ -384,6 +474,7 @@ def test_v3_uses_one_loaded_trust_snapshot(
         v3_bundle.release_path,
         v3_bundle.plan,
         hidden_trust_path=v3_bundle.trust_path,
+        parity_oracle_trust_path=v3_bundle.parity_trust_path,
     )
 
     assert calls == 1
@@ -413,6 +504,7 @@ def test_v3_uses_outer_hash_verified_evidence_index_snapshot(
         v3_bundle.release_path,
         v3_bundle.plan,
         hidden_trust_path=v3_bundle.trust_path,
+        parity_oracle_trust_path=v3_bundle.parity_trust_path,
     )
 
     assert calls == 1
@@ -423,8 +515,13 @@ def test_v3_release_verifies_raw_evidence_signature_then_screens(v3_bundle: V3Bu
         v3_bundle.release_path,
         v3_bundle.plan,
         hidden_trust_path=v3_bundle.trust_path,
+        parity_oracle_trust_path=v3_bundle.parity_trust_path,
     )
-    transport = LocalOmlxFixture()
+    transport = LocalOmlxFixture(
+        released.profile.reranker_model_id,
+        relevant_score=20.0,
+        irrelevant_score=-20.0,
+    )
 
     with Database(v3_bundle.root / "papers.sqlite3") as database:
         database.migrate()
@@ -447,6 +544,7 @@ def test_v3_rejects_evidence_ref_drift(v3_bundle: V3Bundle) -> None:
             v3_bundle.release_path,
             v3_bundle.plan,
             hidden_trust_path=v3_bundle.trust_path,
+            parity_oracle_trust_path=v3_bundle.parity_trust_path,
         )
 
 
@@ -467,6 +565,7 @@ def test_v3_rejects_hash_valid_recomputed_public_gate_failure(v3_bundle: V3Bundl
             v3_bundle.release_path,
             v3_bundle.plan,
             hidden_trust_path=v3_bundle.trust_path,
+            parity_oracle_trust_path=v3_bundle.parity_trust_path,
         )
 
 
@@ -504,4 +603,5 @@ def test_v3_rejects_untrusted_or_invalid_hidden_promotion(
             v3_bundle.release_path,
             v3_bundle.plan,
             hidden_trust_path=trust_path,
+            parity_oracle_trust_path=v3_bundle.parity_trust_path,
         )

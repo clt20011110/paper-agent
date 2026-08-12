@@ -238,11 +238,19 @@ def build_parity_evidence(
     oracle_reranker: RerankerBackend,
     candidate_reranker: RerankerBackend,
 ) -> ParityEvidence:
+    preflight_parity_evidence(
+        workload,
+        selection_receipt=selection_receipt,
+        selection_receipt_hash=selection_receipt_hash,
+        oracle=oracle,
+        candidate=candidate,
+        oracle_lock=oracle_lock,
+        candidate_lock=candidate_lock,
+        oracle_lock_hash=oracle_lock_hash,
+        candidate_lock_hash=candidate_lock_hash,
+    )
     oracle_binding = _binding(oracle, oracle_lock, oracle_lock_hash, "oracle")
     candidate_binding = _binding(candidate, candidate_lock, candidate_lock_hash, "candidate")
-    _validate_model_pair(oracle_lock, candidate_lock, oracle_lock_hash, candidate_lock_hash)
-    _validate_calibration_pair(oracle_binding, candidate_binding)
-    _validate_receipt(workload, selection_receipt, selection_receipt_hash)
     _validate_backends(oracle_reranker, candidate_reranker, oracle, candidate)
 
     oracle_scores = _score(workload, oracle_reranker, "oracle")
@@ -284,6 +292,45 @@ def build_parity_evidence(
     )
     evidence.result
     return evidence
+
+
+def preflight_parity_evidence(
+    workload: ParityWorkload,
+    *,
+    selection_receipt: Mapping[str, Any],
+    selection_receipt_hash: str,
+    oracle: ReleasedStage2,
+    candidate: ReleasedStage2,
+    oracle_lock: ModelLock,
+    candidate_lock: ModelLock,
+    oracle_lock_hash: str,
+    candidate_lock_hash: str,
+) -> None:
+    """Validate all offline parity bindings without invoking either model."""
+    oracle_binding = _binding(oracle, oracle_lock, oracle_lock_hash, "oracle")
+    candidate_binding = _binding(candidate, candidate_lock, candidate_lock_hash, "candidate")
+    _validate_model_pair(oracle_lock, candidate_lock, oracle_lock_hash, candidate_lock_hash)
+    _validate_calibration_pair(oracle_binding, candidate_binding)
+    _validate_receipt(workload, selection_receipt, selection_receipt_hash)
+
+
+def validate_parity_workload_receipt(
+    workload: ParityWorkload,
+    selection_receipt: Mapping[str, Any],
+) -> str:
+    """Validate a workload's receipt and return its canonical content hash."""
+    receipt_hash = content_hash(selection_receipt)
+    _validate_receipt(workload, selection_receipt, receipt_hash)
+    return receipt_hash
+
+
+def write_parity_workload(workload: ParityWorkload, *, output_path: Path) -> None:
+    """Write one immutable, schema-v2 parity workload."""
+    document = workload.document()
+    validate(document, "stage2-parity-workload.schema.json")
+    if os.path.lexists(output_path):
+        raise FileExistsError(f"parity workload output already exists: {output_path}")
+    _write_json_no_replace(output_path, document)
 
 
 def write_parity_evidence_artifacts(
@@ -334,6 +381,10 @@ def _validate_model_pair(
         raise ParityEvidenceError("parity models must share the exact upstream source revision")
     if oracle.conversion_repo is not None or candidate.conversion_repo is None:
         raise ParityEvidenceError("parity requires an official oracle and a conversion candidate")
+    if oracle.format != "safetensors-fp32" or oracle.quantization != "none":
+        raise ParityEvidenceError("parity oracle must use official FP32 weights")
+    if candidate.format != "safetensors-bf16" or candidate.quantization != "none":
+        raise ParityEvidenceError("parity candidate must use calibrated BF16 weights")
     if oracle.file_hashes.get("tokenizer.json") != candidate.file_hashes.get("tokenizer.json"):
         raise ParityEvidenceError("parity models must use the same tokenizer artifact")
     if oracle.file_hashes.get("model.safetensors") == candidate.file_hashes.get("model.safetensors"):

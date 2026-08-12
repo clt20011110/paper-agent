@@ -213,6 +213,7 @@ def test_public_promotion_verification_passes_the_candidate_profile(
     profile = object()
     candidate = SimpleNamespace(profile=profile)
     evidence = object()
+    oracle_trust = object()
     observed: list[object] = []
     monkeypatch.setattr(
         stage2_search, "load_stage2_benchmark_candidate", lambda _path: candidate,
@@ -221,22 +222,30 @@ def test_public_promotion_verification_passes_the_candidate_profile(
         stage2_search, "_validate_evidence_bindings", lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
+        stage2_search,
+        "_load_deployment_parity_oracle_trust",
+        lambda _path, *, bundle_root: oracle_trust,
+    )
+    monkeypatch.setattr(
         evidence_io, "load_stage2_release_evidence_index", lambda _path: evidence,
     )
     monkeypatch.setattr(
         public_gates,
         "verify_public_stage2_gates",
-        lambda value, *, profile: observed.extend((value, profile)) or "verified",
+        lambda value, *, profile, oracle_trust: (
+            observed.extend((value, profile, oracle_trust)) or "verified"
+        ),
     )
 
     result = artifacts_io.validate_promotion_public_evidence(
         {"candidate": tmp_path / "candidate.json"},
         {"candidate": tmp_path / "evidence.json"},
         "a" * 64,
+        parity_oracle_trust_path=tmp_path / "oracle-trust.json",
     )
 
     assert result["candidate"] == "verified"
-    assert observed == [evidence, profile]
+    assert observed == [evidence, profile, oracle_trust]
 
 
 def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_failure(
@@ -258,7 +267,7 @@ def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_fail
     monkeypatch.setattr(
         artifacts_io,
         "_public_release_evidence",
-        lambda *_args: {"candidate": _verified_public_gates()},
+        lambda *_args, **_kwargs: {"candidate": _verified_public_gates()},
     )
 
     result = run_promotion_evaluation(
@@ -271,6 +280,7 @@ def test_orchestration_returns_only_safe_hashes_and_consumes_marker_on_gate_fail
         state_root=tmp_path / "state",
         incumbent_candidate_id="candidate",
         evaluation_run_id="synthetic-run",
+        parity_oracle_trust_path=tmp_path / "oracle-trust.json",
         bootstrap_iterations=100,
     )
 
@@ -323,7 +333,7 @@ def test_orchestration_derives_the_paired_hidden_winner_not_an_operator_choice(
     monkeypatch.setattr(
         artifacts_io,
         "_public_release_evidence",
-        lambda *_args: {
+        lambda *_args, **_kwargs: {
             "incumbent": _verified_public_gates(throughput=(100, 100, 100)),
             "challenger": _verified_public_gates(throughput=(120, 120, 120)),
         },
@@ -348,6 +358,7 @@ def test_orchestration_derives_the_paired_hidden_winner_not_an_operator_choice(
         state_root=tmp_path / "state",
         incumbent_candidate_id="incumbent",
         evaluation_run_id="synthetic-run",
+        parity_oracle_trust_path=tmp_path / "oracle-trust.json",
         bootstrap_iterations=100,
     )
 

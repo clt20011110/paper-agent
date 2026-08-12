@@ -147,6 +147,8 @@ from .stage2_commands import (
     freeze_stage2_benchmark_manifests,
     freeze_stage2_dev_scores,
     measure_stage2_benchmark,
+    freeze_stage2_parity_workload,
+    run_stage2_parity,
     run_structured_replay,
 )
 from .search_audit import search_audit
@@ -472,6 +474,32 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     stage2_build_candidate.add_argument("--candidate-id", required=True)
     stage2_build_candidate.add_argument("--output-dir", required=True, type=Path)
 
+    parity = subcommands.add_parser(
+        "stage2-parity", help="freeze and execute the trusted 10,000-pair FP32/BF16 parity gate"
+    )
+    parity_commands = parity.add_subparsers(dest="stage2_parity_command", required=True)
+    parity_freeze = parity_commands.add_parser(
+        "freeze-workload", help="freeze one fixed query assignment over exactly 10,000 papers"
+    )
+    parity_freeze.add_argument("--papers", required=True, type=Path)
+    parity_freeze.add_argument("--selection-receipt", required=True, type=Path)
+    parity_freeze.add_argument("--topic", required=True)
+    parity_freeze.add_argument("--language", required=True)
+    parity_freeze.add_argument("--query-version", required=True)
+    parity_freeze.add_argument("--query", required=True)
+    parity_freeze.add_argument("--output", required=True, type=Path)
+    parity_run = parity_commands.add_parser(
+        "run", help="run the frozen workload with the official FP32 oracle and schema-v2 BF16 candidate"
+    )
+    parity_run.add_argument("--workload", required=True, type=Path)
+    parity_run.add_argument("--selection-receipt", required=True, type=Path)
+    parity_run.add_argument("--oracle-stage2-candidate", required=True, type=Path)
+    parity_run.add_argument("--oracle-model-lock", required=True, type=Path)
+    parity_run.add_argument("--stage2-candidate", required=True, type=Path)
+    parity_run.add_argument("--candidate-model-lock", required=True, type=Path)
+    parity_run.add_argument("--manifest-output", required=True, type=Path)
+    parity_run.add_argument("--scores-output", required=True, type=Path)
+
     replay = subcommands.add_parser(
         "stage2-replay",
         help="run the frozen 1,000-request structured-output gate against local oMLX",
@@ -593,6 +621,7 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     promote.add_argument("--evaluator-key-id", required=True)
     promote.add_argument("--issued-at", required=True)
     promote.add_argument("--trust-manifest", required=True, type=Path)
+    promote.add_argument("--parity-oracle-trust", required=True, type=Path)
     promote.add_argument("--signing-key-file", required=True, type=Path)
     promote.add_argument("--output", required=True, type=Path)
     promote.add_argument("--bootstrap-iterations", type=int, default=2_000)
@@ -612,6 +641,7 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     assemble.add_argument("--candidate", required=True, type=Path)
     assemble.add_argument("--evidence", required=True, type=Path)
     assemble.add_argument("--trust-manifest", required=True, type=Path)
+    assemble.add_argument("--parity-oracle-trust", required=True, type=Path)
     assemble.add_argument("--output", required=True, type=Path)
 
     report = subcommands.add_parser(
@@ -873,6 +903,29 @@ def main(
             reranker_lock_path=args.reranker_lock,
             adjudicator_lock_path=args.adjudicator_lock,
             output_path=args.output,
+            dry_run=args.dry_run,
+        ))
+    if args.command == "stage2-parity" and args.stage2_parity_command == "freeze-workload":
+        return _finish(args, freeze_stage2_parity_workload(
+            papers_path=args.papers,
+            selection_receipt_path=args.selection_receipt,
+            topic=args.topic,
+            language=args.language,
+            query_version=args.query_version,
+            query=args.query,
+            output_path=args.output,
+            dry_run=args.dry_run,
+        ))
+    if args.command == "stage2-parity" and args.stage2_parity_command == "run":
+        return _finish(args, run_stage2_parity(
+            workload_path=args.workload,
+            selection_receipt_path=args.selection_receipt,
+            oracle_candidate_path=args.oracle_stage2_candidate,
+            oracle_model_lock_path=args.oracle_model_lock,
+            candidate_path=args.stage2_candidate,
+            candidate_model_lock_path=args.candidate_model_lock,
+            manifest_output_path=args.manifest_output,
+            scores_output_path=args.scores_output,
             dry_run=args.dry_run,
         ))
     if (
@@ -1406,6 +1459,7 @@ def _stage2_release_assemble(args: argparse.Namespace) -> dict[str, Any]:
             args.evidence,
             args.trust_manifest,
             args.output,
+            parity_oracle_trust_path=args.parity_oracle_trust,
         )
     except Exception:
         # Inputs include deployment-owned trust.  Keep the console boundary
@@ -1504,7 +1558,10 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
             candidate_paths, expected_manifest_hash=manifest.hash()
         )
         validate_promotion_public_evidence(
-            candidate_paths, public_evidence_paths, manifest.hash()
+            candidate_paths,
+            public_evidence_paths,
+            manifest.hash(),
+            parity_oracle_trust_path=args.parity_oracle_trust,
         )
     except (OSError, ValueError, TypeError, KeyError):
         raise CliUsageError("Stage 2 promotion public inputs are invalid") from None
@@ -1555,6 +1612,7 @@ def _stage2_evaluator_promote(args: argparse.Namespace) -> dict[str, Any]:
                 state_root=args.state_root,
                 incumbent_candidate_id=args.incumbent_candidate_id,
                 evaluation_run_id=args.evaluation_run_id,
+                parity_oracle_trust_path=args.parity_oracle_trust,
                 bootstrap_iterations=args.bootstrap_iterations,
                 bootstrap_seed=args.bootstrap_seed,
             )
@@ -3536,6 +3594,7 @@ def _command_from_argv(argv: Sequence[str]) -> str:
         "stage2-evaluator",
         "stage2-rationale",
         "stage2-release",
+        "stage2-parity",
     } and index + 1 < len(argv):
         if argv[index + 1].startswith("-"):
             return command

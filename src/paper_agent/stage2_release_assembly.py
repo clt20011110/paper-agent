@@ -14,12 +14,14 @@ from typing import Any, Mapping
 
 from .canonical import content_hash
 from .stage2_release_evidence import (
+    ParityEvidenceRefs,
     Stage2ReleaseEvidenceIndex,
     load_stage2_release_evidence_index_bytes,
 )
 from .stage2_search import (
     Stage2ReleaseError,
     _load_deployment_hidden_trust,
+    _load_deployment_parity_oracle_trust,
     _load_stage2_benchmark_candidate_bytes,
     verify_stage2_release_evidence_index,
 )
@@ -75,6 +77,8 @@ def assemble_stage2_release(
     evidence_path: Path,
     hidden_trust_path: Path,
     output_path: Path,
+    *,
+    parity_oracle_trust_path: Path,
 ) -> AssembledStage2Release:
     """Assemble a v3 release only after every public and hidden gate passes.
 
@@ -89,6 +93,7 @@ def assemble_stage2_release(
         evidence_path,
         hidden_trust_path,
         output_path,
+        parity_oracle_trust_path=parity_oracle_trust_path,
         write_output=True,
     )
 
@@ -98,6 +103,8 @@ def validate_stage2_release_assembly(
     evidence_path: Path,
     hidden_trust_path: Path,
     output_path: Path,
+    *,
+    parity_oracle_trust_path: Path,
 ) -> AssembledStage2Release:
     """Validate a prospective v3 release without creating any output.
 
@@ -112,6 +119,7 @@ def validate_stage2_release_assembly(
         evidence_path,
         hidden_trust_path,
         output_path,
+        parity_oracle_trust_path=parity_oracle_trust_path,
         write_output=False,
     )
 
@@ -122,6 +130,7 @@ def _verify_stage2_release_assembly(
     hidden_trust_path: Path,
     output_path: Path,
     *,
+    parity_oracle_trust_path: Path,
     write_output: bool,
 ) -> AssembledStage2Release:
     try:
@@ -147,6 +156,10 @@ def _verify_stage2_release_assembly(
                 hidden_trust_path,
                 bundle_root=bundle_root,
             )
+            oracle_trust = _load_deployment_parity_oracle_trust(
+                parity_oracle_trust_path,
+                bundle_root=bundle_root,
+            )
             candidate = _load_stage2_benchmark_candidate_bytes(
                 candidate_path,
                 candidate_bytes,
@@ -162,6 +175,7 @@ def _verify_stage2_release_assembly(
                 evaluation_manifest_hash=index.evaluation_manifest_hash,
                 profile=candidate.profile,
                 hidden_trust=hidden_trust,
+                oracle_trust=oracle_trust,
             )
         except (OSError, Stage2ReleaseError, ValueError) as error:
             raise Stage2ReleaseAssemblyError(
@@ -238,10 +252,13 @@ def _require_evidence_contained(
         )
     refs = [index.gold_manifest, index.hidden_attestation]
     for gate in index.public_gates.values():
-        refs.append(gate.manifest)
-        refs.extend(gate.records)
-        if gate.papers is not None:
-            refs.append(gate.papers)
+        if isinstance(gate, ParityEvidenceRefs):
+            refs.extend(gate.all_refs())
+        else:
+            refs.append(gate.manifest)
+            refs.extend(gate.records)
+            if gate.papers is not None:
+                refs.append(gate.papers)
     for ref in refs:
         if not ref.resolve(index.bundle_root).is_relative_to(bundle_root):
             raise Stage2ReleaseAssemblyError(

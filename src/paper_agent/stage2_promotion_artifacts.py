@@ -285,6 +285,7 @@ def run_promotion_evaluation(
     state_root: Path,
     incumbent_candidate_id: str,
     evaluation_run_id: str,
+    parity_oracle_trust_path: Path,
     bootstrap_iterations: int = 2_000,
     bootstrap_seed: int = 0,
 ) -> PromotionEvaluationInputs:
@@ -297,7 +298,10 @@ def run_promotion_evaluation(
 
     manifest = load_gold_manifest(manifest_path)
     public_evidence = _public_release_evidence(
-        candidate_bundle_paths, public_evidence_paths, manifest.hash()
+        candidate_bundle_paths,
+        public_evidence_paths,
+        manifest.hash(),
+        parity_oracle_trust_path=parity_oracle_trust_path,
     )
     labels = load_private_gold_labels(private_labels_path, manifest=manifest)
     candidate_artifacts = {
@@ -422,15 +426,40 @@ def validate_promotion_public_evidence(
     candidate_bundle_paths: Mapping[str, Path],
     public_evidence_paths: Mapping[str, Path],
     manifest_hash: str,
+    *,
+    parity_oracle_trust_path: Path,
 ) -> Mapping[str, Any]:
     """Recompute every public Phase 3 gate before opening hidden inputs."""
 
     from .stage2_public_gates import verify_public_stage2_gates
     from .stage2_release_evidence import load_stage2_release_evidence_index
-    from .stage2_search import _validate_evidence_bindings, load_stage2_benchmark_candidate
+    from .stage2_search import (
+        Stage2ReleaseError,
+        _load_deployment_parity_oracle_trust,
+        _validate_evidence_bindings,
+        load_stage2_benchmark_candidate,
+    )
 
     if set(candidate_bundle_paths) != set(public_evidence_paths):
         raise PrivatePromotionArtifactError("public evidence must cover every candidate")
+    if not candidate_bundle_paths:
+        raise PrivatePromotionArtifactError("at least one candidate is required")
+    try:
+        bundle_roots = {
+            path.absolute().parent.resolve(strict=True)
+            for path in (*candidate_bundle_paths.values(), *public_evidence_paths.values())
+        }
+        oracle_trust = None
+        for bundle_root in bundle_roots:
+            oracle_trust = _load_deployment_parity_oracle_trust(
+                parity_oracle_trust_path,
+                bundle_root=bundle_root,
+            )
+    except (OSError, Stage2ReleaseError, ValueError) as error:
+        raise PrivatePromotionArtifactError(
+            f"parity oracle trust is invalid: {error}"
+        ) from error
+    assert oracle_trust is not None
     results: dict[str, Any] = {}
     for candidate_id, candidate_path in candidate_bundle_paths.items():
         candidate = load_stage2_benchmark_candidate(candidate_path)
@@ -442,7 +471,9 @@ def validate_promotion_public_evidence(
             profile=candidate.profile,
         )
         results[candidate_id] = verify_public_stage2_gates(
-            evidence, profile=candidate.profile,
+            evidence,
+            profile=candidate.profile,
+            oracle_trust=oracle_trust,
         )
     return MappingProxyType(results)
 

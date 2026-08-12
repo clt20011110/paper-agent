@@ -39,12 +39,15 @@ def assembly_bundle(assembly_template: V3Bundle, tmp_path: Path) -> V3Bundle:
     root = tmp_path / "bundle"
     shutil.copytree(assembly_template.root, root)
     trust_path = tmp_path / "deployment-hidden-evaluator-trust.json"
+    parity_trust_path = tmp_path / "deployment-parity-oracle-trust.json"
     shutil.copy2(assembly_template.trust_path, trust_path)
+    shutil.copy2(assembly_template.parity_trust_path, parity_trust_path)
     return replace(
         assembly_template,
         root=root,
         release_path=root / assembly_template.release_path.name,
         trust_path=trust_path,
+        parity_trust_path=parity_trust_path,
         plan=deepcopy(assembly_template.plan),
     )
 
@@ -61,6 +64,7 @@ def test_assemble_v3_release_from_verified_candidate_and_evidence(
         evidence_path,
         assembly_bundle.trust_path,
         output_path,
+        parity_oracle_trust_path=assembly_bundle.parity_trust_path,
     )
 
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
@@ -88,6 +92,7 @@ def test_assemble_v3_release_from_verified_candidate_and_evidence(
         output_path,
         assembly_bundle.plan,
         hidden_trust_path=assembly_bundle.trust_path,
+        parity_oracle_trust_path=assembly_bundle.parity_trust_path,
     )
     assert loaded.profile.config_hash == result.query_plan_config_hash
     assert loaded.profile.threshold_hash == result.query_plan_thresholds_hash
@@ -105,6 +110,7 @@ def test_validate_assembly_runs_all_gates_without_writing(
         evidence_path,
         assembly_bundle.trust_path,
         output_path,
+        parity_oracle_trust_path=assembly_bundle.parity_trust_path,
     )
 
     assert not output_path.exists()
@@ -113,6 +119,7 @@ def test_validate_assembly_runs_all_gates_without_writing(
         evidence_path,
         assembly_bundle.trust_path,
         output_path,
+        parity_oracle_trust_path=assembly_bundle.parity_trust_path,
     )
     assert validation.summary() == assembled.summary()
     assert sha256(output_path.read_bytes()).hexdigest() == validation.release_sha256
@@ -129,6 +136,7 @@ def test_validate_assembly_does_not_create_an_invalid_output_parent(
             assembly_bundle.root / "stage2-release-evidence.json",
             assembly_bundle.trust_path,
             missing_parent / "assembled-stage2-release.json",
+            parity_oracle_trust_path=assembly_bundle.parity_trust_path,
         )
 
     assert not missing_parent.exists()
@@ -148,6 +156,7 @@ def test_validate_assembly_fails_closed_on_untrusted_hidden_attestation(
             assembly_bundle.root / "stage2-release-evidence.json",
             assembly_bundle.trust_path,
             output_path,
+            parity_oracle_trust_path=assembly_bundle.parity_trust_path,
         )
 
     assert not output_path.exists()
@@ -155,7 +164,15 @@ def test_validate_assembly_fails_closed_on_untrusted_hidden_attestation(
 
 @pytest.mark.parametrize(
     "kind",
-    ("existing", "wrong_parent", "bundled_trust", "bundled_trust_symlink", "external_evidence"),
+    (
+        "existing",
+        "wrong_parent",
+        "bundled_trust",
+        "bundled_trust_symlink",
+        "bundled_parity_trust",
+        "bundled_parity_trust_symlink",
+        "external_evidence",
+    ),
 )
 def test_assembly_rejects_unsafe_paths_before_writing(
     assembly_bundle: V3Bundle,
@@ -165,6 +182,7 @@ def test_assembly_rejects_unsafe_paths_before_writing(
     candidate_path = assembly_bundle.root / "candidate.json"
     evidence_path = assembly_bundle.root / "stage2-release-evidence.json"
     trust_path = assembly_bundle.trust_path
+    parity_trust_path = assembly_bundle.parity_trust_path
     output_path = assembly_bundle.root / "assembled-stage2-release.json"
     if kind == "existing":
         output_path.write_text("do not replace", encoding="utf-8")
@@ -175,12 +193,23 @@ def test_assembly_rejects_unsafe_paths_before_writing(
     elif kind == "bundled_trust_symlink":
         trust_path = assembly_bundle.root / "deployment-trust-link.json"
         trust_path.symlink_to(assembly_bundle.trust_path)
+    elif kind == "bundled_parity_trust":
+        parity_trust_path = assembly_bundle.root / "parity-oracle-trust.json"
+    elif kind == "bundled_parity_trust_symlink":
+        parity_trust_path = assembly_bundle.root / "parity-trust-link.json"
+        parity_trust_path.symlink_to(assembly_bundle.parity_trust_path)
     else:
         evidence_path = tmp_path / "stage2-release-evidence.json"
         evidence_path.write_text("{}", encoding="utf-8")
 
     with pytest.raises(Stage2ReleaseAssemblyError):
-        assemble_stage2_release(candidate_path, evidence_path, trust_path, output_path)
+        assemble_stage2_release(
+            candidate_path,
+            evidence_path,
+            trust_path,
+            output_path,
+            parity_oracle_trust_path=parity_trust_path,
+        )
 
     if kind != "existing":
         assert not output_path.exists()
@@ -205,6 +234,7 @@ def test_assembly_recomputes_the_full_public_evidence_gates(
             evidence_path,
             assembly_bundle.trust_path,
             assembly_bundle.root / "assembled-stage2-release.json",
+            parity_oracle_trust_path=assembly_bundle.parity_trust_path,
         )
 
 
@@ -249,6 +279,7 @@ def test_assembly_uses_one_candidate_and_evidence_index_snapshot(
         evidence_path,
         assembly_bundle.trust_path,
         output_path,
+        parity_oracle_trust_path=assembly_bundle.parity_trust_path,
     )
 
     release = json.loads(output_path.read_text(encoding="utf-8"))
@@ -288,6 +319,7 @@ def test_assembly_exclusive_write_rejects_a_late_leaf_symlink(
             assembly_bundle.root / "stage2-release-evidence.json",
             assembly_bundle.trust_path,
             output_path,
+            parity_oracle_trust_path=assembly_bundle.parity_trust_path,
         )
 
     assert victim.read_text(encoding="utf-8") == "unchanged"
@@ -322,6 +354,7 @@ def test_assembly_writes_through_the_validated_dirfd_after_parent_swap(
         assembly_bundle.root / "stage2-release-evidence.json",
         assembly_bundle.trust_path,
         output_path,
+        parity_oracle_trust_path=assembly_bundle.parity_trust_path,
     )
 
     assert (validated_bundle / output_name).is_file()
@@ -345,6 +378,7 @@ def test_assembly_removes_its_partial_output_after_disk_failure(
             assembly_bundle.root / "stage2-release-evidence.json",
             assembly_bundle.trust_path,
             output_path,
+            parity_oracle_trust_path=assembly_bundle.parity_trust_path,
         )
 
     assert not output_path.exists()
