@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: uai
+primary_provider: pmlr
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-uai.json
+fixture_sha256: bc76d864f4c6523927f1df54fb2a88fc9f5d7943aa54c660d8ac257c2badbbea
+expected_stable_ids: [uai-2024-0001]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-uai.html, sha256: 9ac450fee2da5cf5f383d011fc0b931177bdc268d448d518a9cacd6e3cc0fd2f, content_type: text/html, url_contains: "https://proceedings.mlr.press/v244/"}
+  - {path: tests/fixtures/providers/http-venue-uai-index.html, sha256: a3a26713e385a57286f47946b82894f26829d6b2753c2b14ef448212784a5b23, content_type: text/html, url_contains: "https://proceedings.mlr.press/"}
+transport_expected_stable_ids: [v244/example24a, v244/example24b]
+required_fields: [stable_id, metadata, date_filter]
+required_capabilities: [stable_id, metadata, date_filter]
+fallbacks: [{provider: openreview, role: search}, {provider: crossref, role: metadata_enricher}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

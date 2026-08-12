@@ -24,6 +24,7 @@ ROOT = Path(__file__).parents[1]
 
 PRIMARY = {
     "aistats": "pmlr",
+    "uai": "pmlr",
     "neurips": "neurips_proceedings",
     "icml": "pmlr",
     "iclr": "openreview",
@@ -58,6 +59,7 @@ PRIMARY = {
 
 FALLBACKS = {
     "aistats": ["openreview", "crossref", "dblp", "semantic_scholar", "openalex"],
+    "uai": ["openreview", "crossref", "dblp", "semantic_scholar", "openalex"],
     "neurips": ["openreview", "crossref", "dblp", "semantic_scholar", "openalex"],
     "icml": ["openreview", "crossref", "dblp", "semantic_scholar", "openalex"],
     "iclr": ["arxiv", "dblp", "semantic_scholar", "openalex"],

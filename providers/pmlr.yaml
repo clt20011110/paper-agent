@@ -13,4 +13,9 @@ authentication: {required: false}
 rate_limit: {global_qps: 1, max_concurrency: 2, cache_ttl_seconds: 3600}
 terms: {data_use: permitted, url: https://proceedings.mlr.press/}
 independence_group: pmlr_official
-upstream_families: [pmlr]
+upstream_families: [pmlr, auai]
+upstream_policies:
+  auai_press:
+    authentication: {required: false}
+    rate_limit: {global_qps: 1, max_concurrency: 1, cache_ttl_seconds: 3600}
+    terms: {data_use: permitted, url: https://www.auai.org/}

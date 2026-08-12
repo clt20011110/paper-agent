@@ -533,6 +533,8 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
     if series not in series_names:
         raise ValueError("pmlr conference discovery requires series=ICML, AISTATS, or UAI")
     year = _year(parameters)
+    if operation == "discover" and series == "UAI" and year <= 2018:
+        return _uai_auai(year, parameters, fetch)
     if operation == "resolve_volume":
         url = "https://proceedings.mlr.press/"
         response = fetch(url, "pmlr-index-html-v1")
@@ -567,7 +569,7 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
     url = f"https://proceedings.mlr.press/{volume}/"
     response = fetch(url, "pmlr-volume-html-v1")
     root = _html(response.body, provider)
-    publication_date = _pmlr_publication_date(root, year)
+    publication_date = _pmlr_publication_date(root, year, conference_year=year)
     entries: list[dict[str, Any]] = []
     paper_nodes = _nodes(root, "div", "paper")
     for paper in paper_nodes:
@@ -614,20 +616,124 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
     )
 
 
-def _pmlr_publication_date(root: _HTMLNode, year: int) -> str:
+def _pmlr_publication_date(
+    root: _HTMLNode, year: int, *, conference_year: int | None = None
+) -> str:
     description = " ".join(
         node.attributes.get("content", "")
         for node in _nodes(root, "meta")
         if node.attributes.get("name", "").casefold() == "description"
         or node.attributes.get("property", "").casefold() in {"og:description", "twitter:description"}
     )
-    match = re.search(r"\bon\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b", description)
+    held = (
+        re.search(
+            rf"\bHeld\b.*?\bon\s+(\d{{1,2}})(?:-\d{{1,2}})?\s+([A-Za-z]+)\s+({conference_year})\b",
+            description,
+            re.I,
+        )
+        if conference_year is not None
+        else None
+    )
+    match = held or re.search(r"\bon\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b", description)
     if not match:
         return str(year)
     month = _month_number(match.group(2))
     if month is None:
         return str(year)
     return f"{int(match.group(3)):04d}-{month:02d}-{int(match.group(1)):02d}"
+
+
+def _uai_auai(
+    year: int, parameters: Mapping[str, Any], fetch: VenueFetch
+) -> VenueOperationResult:
+    if year not in {2016, 2017, 2018}:
+        raise ValueError("AUAI legacy proceedings are supported for 2016-2018")
+    path = "proceedings.php" if year == 2016 else "accepted.php"
+    url = f"https://www.auai.org/uai{year}/{path}"
+    response = fetch(url, "auai-proceedings-html-v1", "pmlr:auai_press")
+    try:
+        text = response.body.decode("utf-8")
+    except UnicodeDecodeError:
+        text = response.body.decode("latin-1")
+    root = _html(text.encode("utf-8"), "pmlr")
+    entries: list[dict[str, Any]] = []
+    raw_rows = 0
+    for row in _nodes(root, "tr"):
+        cells = [value for value in row.children if value.tag == "td"]
+        if len(cells) < 2 or "ID:" not in cells[0].text:
+            continue
+        raw_rows += 1
+        identifier = re.search(r"\bID:\s*(\d+)\b", cells[0].text)
+        pdf = next(
+            (
+                value.attributes.get("href")
+                for value in _nodes(cells[0], "a")
+                if re.search(r"/papers/\d+\.pdf$", value.attributes.get("href", ""))
+            ),
+            None,
+        )
+        title_node = _first(cells[1], "b") if year == 2016 else _first(cells[1], "h4")
+        abstract_node = next(
+            (
+                value
+                for value in _nodes(cells[1], "div")
+                if value.attributes.get("id", "").startswith("paper")
+                or (year == 2016 and not value.has_class("collapse"))
+            ),
+            None,
+        )
+        if not identifier or not pdf or title_node is None:
+            continue
+        if year == 2016:
+            author_credit = (_first(cells[1], "i") or _HTMLNode("i", {})).text
+            authors = [author_credit] if author_credit else []
+        else:
+            author_text = next(
+                (
+                    value
+                    for value in cells[1].content
+                    if isinstance(value, str) and value.strip()
+                ),
+                "",
+            )
+            separator = ";" if year == 2017 else ","
+            authors = [value.strip() for value in author_text.split(separator) if value.strip()]
+        pdf_url = _absolute(url, str(pdf)).replace("http://", "https://", 1)
+        entries.append(
+            {
+                "external_id": f"uai-{year}-{identifier[1]}",
+                "title": title_node.text,
+                "authors": authors,
+                "abstract": abstract_node.text if abstract_node else None,
+                "publication_date": f"{year:04d}",
+                "year": year,
+                "venue": f"UAI {year}",
+                "landing_url": pdf_url,
+                "pdf_url": pdf_url,
+                "publication_version": "published",
+                "host_type": "official",
+                "access_basis": "public_read_only",
+                "document_type": "proceedings-article",
+                "upstream": "auai_press",
+            }
+        )
+    if not entries:
+        raise ProviderRequestError("pmlr: AUAI official page contained no papers")
+    selected, cursor = _filtered_page(entries, parameters)
+    warnings = (
+        ["UAI 2016 official page combines author names and affiliations in one credit string."]
+        if year == 2016
+        else []
+    )
+    return VenueOperationResult(
+        {
+            "entries": selected,
+            "next_cursor": cursor,
+            "census": _census(entries, raw_records=raw_rows),
+            "warnings": warnings,
+        },
+        (response.body,),
+    )
 
 
 @register_venue_handler("acl_anthology")

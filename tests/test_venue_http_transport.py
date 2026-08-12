@@ -14,6 +14,8 @@ from paper_agent.providers.api import CrawlWindow, VenueDescriptor
 from paper_agent.providers.builtin import create_builtin
 from paper_agent.venue_transport import (
     VenueOperationResult,
+    _html,
+    _pmlr_publication_date,
     execute_venue_operation,
     venue_provider_names,
 )
@@ -360,6 +362,72 @@ def test_pmlr_resolves_exact_icml_volume_then_maps_volume_page_without_pdf_fetch
         "pmlr-index-html-v1",
         "pmlr-volume-html-v1",
     ]
+
+
+def test_uai_legacy_auai_page_transcodes_and_maps_official_pdf() -> None:
+    html = """<!doctype html><html><body><table>
+    <tr><td><b>ID: 7</b><a href='proceedings/papers/7.pdf'>pdf</a></td>
+    <td><div class='collapse'><b>Se\u00f1or Legacy Paper</b><div>Legacy abstract.</div></div>
+    <i>Ada Lovelace, Example University</i></td></tr>
+    </table></body></html>""".encode("latin-1")
+    calls: list[tuple[str, str, str | None]] = []
+
+    class LegacyResponse:
+        body = html
+        content_type = "text/html; charset=iso-8859-1"
+
+    def fetch(url: str, api_version: str, policy_provider: str | None = None):
+        calls.append((url, api_version, policy_provider))
+        return LegacyResponse()
+
+    result = execute_venue_operation(
+        "pmlr",
+        "discover",
+        {
+            "series": "UAI",
+            "year": 2016,
+            "volume_id": "v0",
+            "date_from": "2016-01-01",
+            "date_to": "2016-12-31",
+        },
+        fetch,
+    )
+
+    assert calls == [
+        (
+            "https://www.auai.org/uai2016/proceedings.php",
+            "auai-proceedings-html-v1",
+            "pmlr:auai_press",
+        )
+    ]
+    assert result.payload["entries"] == [
+        {
+            "external_id": "uai-2016-7",
+            "title": "Se\u00f1or Legacy Paper",
+            "authors": ["Ada Lovelace, Example University"],
+            "abstract": "Legacy abstract.",
+            "publication_date": "2016",
+            "year": 2016,
+            "venue": "UAI 2016",
+            "landing_url": "https://www.auai.org/uai2016/proceedings/papers/7.pdf",
+            "pdf_url": "https://www.auai.org/uai2016/proceedings/papers/7.pdf",
+            "publication_version": "published",
+            "host_type": "official",
+            "access_basis": "public_read_only",
+            "document_type": "proceedings-article",
+            "upstream": "auai_press",
+        }
+    ]
+    assert result.payload["census"]["expected_total"] == 1
+    assert result.payload["warnings"]
+
+
+def test_pmlr_uses_uai_held_year_when_volume_was_published_later() -> None:
+    root = _html(
+        b"""<html><head><meta name='description' content='Proceedings of UAI Held in Tel Aviv on 22-25 July 2019 Published on 06 August 2020.'></head></html>""",
+        "pmlr",
+    )
+    assert _pmlr_publication_date(root, 2019, conference_year=2019) == "2019-07-22"
 
 
 def test_acl_uses_frozen_official_xml_and_honors_collection_and_date_window() -> None:

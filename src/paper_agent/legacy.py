@@ -28,6 +28,7 @@ class MigrationReport:
 _VENUE_DESCRIPTORS = {
     "NeurIPS": "venues/neurips.yaml",
     "ICML": "venues/icml.yaml",
+    "UAI": "venues/uai.yaml",
     "ICLR": "venues/iclr.yaml",
     "AAAI": "venues/aaai.yaml",
     "ACL": "venues/acl.yaml",

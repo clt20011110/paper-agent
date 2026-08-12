@@ -256,6 +256,21 @@
       "all_terminal_cursors_reached": true,
       "duplicate_external_ids": 0,
       "parser_rejected_records": 0
+    },
+    {
+      "venue_id": "uai",
+      "provider": "pmlr",
+      "authority": "official",
+      "status": "complete",
+      "run_id": "ecf2e9b6-5424-53d6-af93-e7cd08a8a5e7",
+      "metadata_sha256": "3cff15d4b5f54914dc79787997a0cf1de62f4f56679bbfc1cbe505b3dcd5b39c",
+      "total_unique_records": 1644,
+      "annual_counts": {"2016": 85, "2017": 87, "2018": 104, "2019": 119, "2020": 140, "2021": 206, "2022": 230, "2023": 243, "2024": 201, "2025": 229},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "direct_pdf_records": 1644,
+      "note": "Official membership switches from AUAI Press pages in 2016-2018 to PMLR for 2019-2025. The UAI 2019 volume was published by PMLR in 2020, so the adapter uses the official conference held date for membership year while preserving the official volume provenance. The 2016 page exposes author-affiliation credits as one string; this field-quality limitation is warned separately from membership completeness."
     }
   ],
   "known_limits": [
