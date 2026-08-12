@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from jsonschema import Draft202012Validator
 
 from paper_agent.config import ConfigError, load_config
@@ -52,3 +53,13 @@ def test_legacy_and_openrouter_configs_require_migration(tmp_path: Path) -> None
     openrouter.write_text("version: 2\nprovider: openrouter\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="OpenRouter"):
         load_config(openrouter, SCHEMAS)
+
+
+def test_config_allows_bf16_reranker_format(tmp_path: Path) -> None:
+    source = Path(__file__).parents[1] / "configs" / "smoke_supported.yaml"
+    config = yaml.safe_load(source.read_text(encoding="utf-8"))
+    config["filter"]["reranker"]["format"] = "bf16"
+    path = tmp_path / "bf16.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    assert load_config(path, SCHEMAS)["filter"]["reranker"]["format"] == "bf16"

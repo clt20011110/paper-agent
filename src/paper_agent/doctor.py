@@ -693,7 +693,7 @@ class SystemDoctor:
         mismatches: list[str] = []
         expected_reranker = {
             "backend": reranker_lock.backend,
-            "model": reranker_lock.source_repo,
+            "model": reranker_lock.conversion_repo or reranker_lock.source_repo,
             "source_repo": reranker_lock.source_repo,
             "source_revision": reranker_lock.source_revision,
             "format": _config_model_format(reranker_lock),
@@ -1082,6 +1082,8 @@ def _strict_version(value: str) -> tuple[int, int, int] | None:
 def _config_model_format(lock: ModelLock) -> str:
     if lock.quantization == "none" and "fp32" in lock.format.casefold():
         return "fp32"
+    if "bf16" in lock.format.casefold():
+        return "bf16"
     if "4bit" in lock.quantization.casefold() or "4bit" in lock.format.casefold():
         return "4bit"
     return lock.format

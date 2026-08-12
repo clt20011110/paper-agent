@@ -342,6 +342,45 @@ def test_configured_model_ids_and_revisions_must_match_exact_locks(tmp_path: Pat
     assert "source_revision" in check.detail
 
 
+def test_bf16_reranker_uses_conversion_runtime_identity_and_keeps_source_provenance(
+    tmp_path: Path,
+) -> None:
+    reranker_path, adjudicator_path = _paths(tmp_path).model_lock_paths
+    reranker = json.loads(reranker_path.read_text())
+    reranker.update({
+        "model_id": "bge-reranker-v2-m3-mlx",
+        "conversion_repo": "soichisumi/bge-reranker-v2-m3-mlx",
+        "conversion_revision": "b4577f49e18adb53ed9e557192094f69f3dc2c1c",
+        "format": "mlx-bf16",
+    })
+    candidate_lock = tmp_path / "bge-reranker-v2-m3-bf16.lock.json"
+    candidate_lock.write_text(json.dumps(reranker))
+    config = {
+        "filter": {
+            "reranker": {
+                "backend": "omlx_rerank",
+                "model": "soichisumi/bge-reranker-v2-m3-mlx",
+                "source_repo": "BAAI/bge-reranker-v2-m3",
+                "source_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+                "format": "bf16",
+            },
+            "adjudicator": {
+                "backend": "omlx_chat",
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "revision": "16daa4818c54ce5f5436f929d52542eb65bbed9d",
+            },
+        },
+    }
+
+    doctor = _doctor(tmp_path, model_lock_paths=(candidate_lock, adjudicator_path))
+
+    assert doctor._model_locks(config, None).status == "pass"
+    config["filter"]["reranker"]["model"] = "BAAI/bge-reranker-v2-m3"  # type: ignore[index]
+    check = doctor._model_locks(config, None)
+    assert check.status == "blocker"
+    assert "reranker model" in check.detail
+
+
 def test_configured_roles_must_be_declared_and_required_roles_must_resolve(tmp_path: Path) -> None:
     config = {
         "sources": {
