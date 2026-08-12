@@ -518,7 +518,11 @@ def _record_document(
         "venue_id": venue_id,
         "venue_name": venue["name"],
         "venue_type": venue["venue_type"],
-        "membership_status": "official_confirmed",
+        "membership_status": (
+            "registry_confirmed"
+            if metadata.get("membership_authority") == "crossref_registry"
+            else "official_confirmed"
+        ),
         "provider": entry.provider,
         "external_id": entry.external_id,
         "title": entry.title,

@@ -4,7 +4,7 @@
   "scope": {
     "year_from": 2016,
     "year_to": 2025,
-    "claim": "official primary-source membership census",
+    "claim": "declared authoritative-source membership census (official venue containers or explicitly identified registry authority)",
     "field_completeness_claimed": false
   },
   "interface_version": "stage1-standalone-v1",
@@ -156,12 +156,27 @@
       "parser_rejected_records": 0,
       "explicit_non_paper_exclusions": 39,
       "note": "The source boundary was corrected from a mixed main/findings/workshop collection to the official ACL venue index. Included tracks are main/long/short, demo, industry, and tutorial; SRW, Findings, and co-located workshops are outside the declared ACL conference scope."
+    },
+    {
+      "venue_id": "nature_chemistry",
+      "provider": "crossref_serial",
+      "authority": "crossref_registry",
+      "status": "complete",
+      "run_id": "71e21d47-6e9f-5254-8ecc-387e61ca49bb",
+      "metadata_sha256": "4c8edbdd8eec0be3c1090d81a9fa7ddedfe1c9c3d1d8098b9cdb3ecf09d1697e",
+      "total_unique_records": 2516,
+      "annual_counts": {"2016": 270, "2017": 203, "2018": 224, "2019": 202, "2020": 217, "2021": 237, "2022": 254, "2023": 286, "2024": 291, "2025": 332},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "note": "This proves a complete Crossref DOI-registration census for ISSN 1755-4330 with type=journal-article and the exact publication-year filter. It is explicitly registry_confirmed, not claimed as a publisher issue-table census; optional abstracts remain a separate enrichment concern."
     }
   ],
   "known_limits": [
     "Counts prove membership enumeration against each official primary container; they do not prove every optional metadata field is populated.",
     "NeurIPS annual list pages do not expose abstracts or DOIs; field enrichment remains a separate acceptance gate.",
     "Raw live response bodies were held in the local run and hashed by the receipt but are not committed because the current standalone CLI does not yet persist a run-scoped artifact store.",
+    "Nature Chemistry completeness is scoped to Crossref DOI registrations for the declared serial/year/type query. It does not claim that unregistered publisher content is present or that every optional metadata field is populated.",
     "DAC and ICCAD are not yet decade-complete: 2016-2021 lack frozen official routes. Explicit terms acceptance enabled successful 2024 official membership censuses (DAC 337, ICCAD 195), while ACM metadata enrichment returned HTTP 403; those enrichment gaps are now reported separately from membership completeness."
   ]
 }

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html import unescape
 from html.parser import HTMLParser
 import json
 import re
@@ -255,6 +256,164 @@ def _census(entries: list[dict[str, Any]], *, raw_records: int | None = None) ->
         "parser_rejected_records": raw - len(entries),
         "parser_excluded_records": 0,
     }
+
+
+def _crossref_date(record: Mapping[str, Any], year: int) -> str | None:
+    """Prefer a Crossref publication date inside the requested registry year."""
+
+    candidates: list[str] = []
+    for name in ("published", "published-online", "published-print", "issued", "created"):
+        value = record.get(name)
+        if not isinstance(value, Mapping):
+            continue
+        parts = value.get("date-parts")
+        if not (
+            isinstance(parts, list)
+            and parts
+            and isinstance(parts[0], list)
+            and parts[0]
+        ):
+            continue
+        values = [int(part) for part in parts[0][:3]]
+        date = f"{values[0]:04d}"
+        if len(values) >= 2:
+            date += f"-{values[1]:02d}"
+        if len(values) >= 3:
+            date += f"-{values[2]:02d}"
+        candidates.append(date)
+    return next((value for value in candidates if value.startswith(f"{year:04d}")), None)
+
+
+def _crossref_authors(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    output = []
+    for author in value:
+        if not isinstance(author, Mapping):
+            continue
+        name = " ".join(
+            str(part).strip()
+            for part in (author.get("given"), author.get("family"))
+            if part
+        )
+        if name:
+            output.append(name)
+    return output
+
+
+def _crossref_text(value: Any) -> str | None:
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    return " ".join(unescape(re.sub(r"<[^>]+>", " ", str(value))).split()) or None
+
+
+@register_venue_handler("crossref_serial")
+def _crossref_serial(
+    operation: str, parameters: Mapping[str, Any], fetch: VenueFetch
+) -> VenueOperationResult:
+    """Enumerate one serial/year from the Crossref DOI registry."""
+
+    provider = "crossref_serial"
+    _require_operation(provider, operation, {"discover"})
+    year = _year(parameters)
+    issn = str(parameters.get("registry_issn") or "").upper()
+    declared = tuple(str(value).upper() for value in parameters.get("issns", ()))
+    if not issn or issn not in declared:
+        raise ValueError("crossref_serial requires registry_issn included in issns")
+    rows = _page_size(parameters)
+    raw_cursor = str(parameters.get("cursor") or "*")
+    if raw_cursor == "*":
+        consumed, cursor = 0, "*"
+    else:
+        try:
+            consumed_text, cursor = raw_cursor.split(":", 1)
+            consumed = int(consumed_text)
+        except (ValueError, TypeError) as error:
+            raise ValueError("crossref_serial cursor is invalid") from error
+    query: dict[str, Any] = {
+        "filter": (
+            f"from-pub-date:{year:04d}-01-01,"
+            f"until-pub-date:{year:04d}-12-31,type:journal-article"
+        ),
+        "rows": rows,
+        "cursor": cursor,
+    }
+    contact = parameters.get("mailto")
+    if contact:
+        query["mailto"] = str(contact).removeprefix("mailto:")
+    url = (
+        f"https://api.crossref.org/journals/{quote(issn, safe='')}/works?"
+        f"{urlencode(query)}"
+    )
+    response = fetch(url, "crossref-serial-rest-v1")
+    try:
+        payload = json.loads(response.body)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ProviderRequestError("crossref_serial: response is not valid JSON") from error
+    message = payload.get("message") if isinstance(payload, Mapping) else None
+    if not isinstance(message, Mapping) or not isinstance(message.get("items"), list):
+        raise ProviderRequestError("crossref_serial: response has no message.items")
+    total = int(message.get("total-results") or 0)
+    records = [item for item in message["items"] if isinstance(item, Mapping)]
+    if len(records) != len(message["items"]):
+        raise ProviderRequestError("crossref_serial: registry page contains a non-object work")
+    entries: list[dict[str, Any]] = []
+    for record in records:
+        doi = str(record.get("DOI") or "").casefold()
+        title = _crossref_text(record.get("title"))
+        publication_date = _crossref_date(record, year)
+        if not doi or not title or not publication_date:
+            raise ProviderRequestError(
+                "crossref_serial: registry work lacks DOI, title, or an in-year publication date"
+            )
+        container = _crossref_text(record.get("container-title"))
+        entries.append(
+            {
+                "external_id": doi,
+                "doi": doi,
+                "title": title,
+                "authors": _crossref_authors(record.get("author")),
+                "abstract": _crossref_text(record.get("abstract")),
+                "publication_date": publication_date,
+                "year": year,
+                "venue": container,
+                "landing_url": str(record.get("URL") or f"https://doi.org/{doi}"),
+                "volume": record.get("volume"),
+                "issue": record.get("issue"),
+                "page": record.get("page"),
+                "issns": record.get("ISSN") or [],
+                "crossref_type": record.get("type"),
+                "crossref_subtype": record.get("subtype"),
+                "publisher": record.get("publisher"),
+                "publication_version": "published",
+                "host_type": "registry",
+                "access_basis": "public_read_only",
+            }
+        )
+    consumed += len(records)
+    if consumed < total and not message.get("next-cursor"):
+        raise ProviderRequestError("crossref_serial: response ended before total-results")
+    next_cursor = (
+        f"{consumed}:{message['next-cursor']}" if consumed < total else None
+    )
+    return VenueOperationResult(
+        {
+            "entries": entries,
+            "next_cursor": next_cursor,
+            "census": {
+                "expected_total": total,
+                "parser_raw_records": total,
+                "parser_rejected_records": 0,
+                "parser_excluded_records": 0,
+            },
+            "warnings": [
+                "Membership is a Crossref DOI-registration census, not a publisher issue-table census."
+            ],
+        },
+        (response.body,),
+    )
 
 
 def _absolute(base: str, href: str) -> str:

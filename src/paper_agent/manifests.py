@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from importlib import import_module
 from pathlib import Path
 import sysconfig
 from typing import Any
@@ -118,11 +119,14 @@ def load_catalog(root: Path | None = None) -> ManifestCatalog:
         if sha256(fixture.read_bytes()).hexdigest() != acceptance["fixture_sha256"]:
             raise ManifestError(f"{venue_id}: fixture digest has drifted")
 
-    from paper_agent.providers import builtin
-
-    builtin_digest = sha256(Path(builtin.__file__).read_bytes()).hexdigest()
     for provider, manifest in providers.items():
-        if manifest["enabled"] and manifest["builtin"] and manifest["artifact_sha256"] != builtin_digest:
+        if not (manifest["enabled"] and manifest["builtin"]):
+            continue
+        module_name, _, _ = str(manifest["entry_point"]).partition(":")
+        module = import_module(module_name)
+        module_path = Path(str(module.__file__))
+        implementation_digest = sha256(module_path.read_bytes()).hexdigest()
+        if manifest["artifact_sha256"] != implementation_digest:
             raise ManifestError(f"{provider}: built-in implementation digest has drifted")
 
     return ManifestCatalog(providers=providers, venues=venues, acceptances=acceptances)

@@ -14,6 +14,7 @@ from paper_agent.providers.builtin import (
     create_builtin,
     manifest_from_document,
 )
+from paper_agent.providers.factory import create_core_provider
 from paper_agent.providers.api import CrawlWindow, VenueDescriptor
 from paper_agent.schema import validate
 
@@ -39,7 +40,7 @@ PRIMARY = {
     "tcad": "ieee_xplore",
     "nature_machine_intelligence": "springer_nature",
     "nature_synthesis": "springer_nature",
-    "nature_chemistry": "springer_nature",
+    "nature_chemistry": "crossref_serial",
     "nature_computational_science": "springer_nature",
     "nature_communications": "springer_nature",
     "nature_catalysis": "springer_nature",
@@ -67,7 +68,7 @@ FALLBACKS = {
     "tcad": ["crossref", "dblp", "semantic_scholar", "openalex"],
     "nature_machine_intelligence": ["crossref"],
     "nature_synthesis": ["crossref", "semantic_scholar", "openalex"],
-    "nature_chemistry": ["crossref", "pubmed", "europe_pmc"],
+    "nature_chemistry": ["springer_nature", "crossref", "pubmed", "europe_pmc"],
     "nature_computational_science": ["crossref"],
     "nature_communications": ["crossref", "pubmed", "europe_pmc"],
     "nature_catalysis": ["crossref", "pubmed", "europe_pmc"],
@@ -177,7 +178,7 @@ def test_built_in_manifests_are_schema_valid_and_unique() -> None:
     catalog = load_catalog(ROOT)
     assert set(catalog.venues) == set(PRIMARY)
     assert set(catalog.acceptances) == set(PRIMARY)
-    assert len(catalog.providers) == 25
+    assert len(catalog.providers) == len(list((ROOT / "providers").glob("*.yaml")))
     assert len({acceptance["fixture_path"] for acceptance in catalog.acceptances.values()}) == len(PRIMARY)
     for path in (ROOT / "providers").glob("*.yaml"):
         validate(catalog.providers[path.stem], "provider-manifest.schema.json")
@@ -242,7 +243,9 @@ def test_every_venue_acceptance_fixture_runs_through_its_declared_adapter() -> N
         start = acceptance["test_window"]["start"]
         end = acceptance["test_window"]["end"]
         window = CrawlWindow(date_from=start, date_to=end, year=int(start[:4]))
-        batch = create_builtin(descriptor.provider, transport).discover(
+        batch = create_core_provider(
+            descriptor.provider, transport, catalog.provider(descriptor.provider)
+        ).discover(
             descriptor,
             window,
         )
@@ -252,7 +255,9 @@ def test_every_venue_acceptance_fixture_runs_through_its_declared_adapter() -> N
         assert [entry.external_id for entry in batch.entries] == acceptance["expected_stable_ids"]
         assert batch.next_cursor == f"{venue_id}:page-2"
         for entry in batch.entries:
-            assert entry.metadata["official_membership"] is True
+            assert entry.metadata["official_membership"] is (
+                catalog.provider(provider)["authority"] == "official"
+            )
             assert entry.metadata["venue_id"] == venue_id
             assert entry.title
             if "abstract" in acceptance["required_fields"]:
@@ -267,7 +272,9 @@ def test_every_venue_acceptance_fixture_runs_through_its_declared_adapter() -> N
         assert discover_call[2]["date_to"] == end
         assert discover_call[2]["year"] == int(start[:4])
 
-        final_page = create_builtin(descriptor.provider, transport).discover(
+        final_page = create_core_provider(
+            descriptor.provider, transport, catalog.provider(descriptor.provider)
+        ).discover(
             descriptor,
             window,
             batch.next_cursor,
@@ -297,7 +304,9 @@ def test_every_venue_acceptance_runs_through_its_native_http_transport() -> None
         end = acceptance["test_window"]["end"]
         year = int(start[:4])
 
-        batch = create_builtin(descriptor.provider, transport, provider_manifest).discover(
+        batch = create_core_provider(
+            descriptor.provider, transport, provider_document
+        ).discover(
             descriptor,
             CrawlWindow(date_from=start, date_to=end, year=year),
         )
@@ -307,7 +316,9 @@ def test_every_venue_acceptance_runs_through_its_native_http_transport() -> None
         assert opener.used == {route["url_contains"] for route in routes}
         assert batch.raw_response_artifact_hash
         for entry in batch.entries:
-            assert entry.metadata["official_membership"] is True
+            assert entry.metadata["official_membership"] is (
+                provider_document["authority"] == "official"
+            )
             assert entry.metadata["venue_id"] == venue_id
             for contract in set(acceptance["required_fields"]) | set(
                 acceptance["required_capabilities"]
@@ -367,7 +378,6 @@ def test_same_platform_venues_are_yaml_descriptors_not_python_registrations() ->
         ("dac", "iccad"),
         (
             "nature_machine_intelligence",
-            "nature_chemistry",
             "nature_computational_science",
             "nature_communications",
             "nature_catalysis",

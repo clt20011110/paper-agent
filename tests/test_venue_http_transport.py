@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from email.message import Message
+import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -11,11 +12,16 @@ from paper_agent.http_transport import ControlledHTTPTransport, HTTPProviderDele
 from paper_agent.provider_runtime import ProviderPolicyDenied, ProviderRequestError, ProviderRuntime, ProviderRuntimePolicy
 from paper_agent.providers.api import CrawlWindow, VenueDescriptor
 from paper_agent.providers.builtin import create_builtin
-from paper_agent.venue_transport import VenueOperationResult, venue_provider_names
+from paper_agent.venue_transport import (
+    VenueOperationResult,
+    execute_venue_operation,
+    venue_provider_names,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "providers"
 VENUE_PROVIDERS = (
+    "crossref_serial",
     "neurips_proceedings",
     "pmlr",
     "acl_anthology",
@@ -120,6 +126,82 @@ def _official_eda_routes(series: str) -> dict[int, dict[str, str]]:
 
 def test_venue_handler_registry_covers_every_conference_primary_provider() -> None:
     assert venue_provider_names() == tuple(sorted(VENUE_PROVIDERS))
+
+
+def test_crossref_serial_cursor_tracks_consumed_total_and_stops_exactly() -> None:
+    pages = [
+        {
+            "message": {
+                "total-results": 2,
+                "next-cursor": "registry-cursor-2",
+                "items": [
+                    {
+                        "DOI": "10.1000/first",
+                        "title": ["First registry work"],
+                        "published": {"date-parts": [[2024, 1, 2]]},
+                        "container-title": ["Fixture Journal"],
+                        "type": "journal-article",
+                    }
+                ],
+            }
+        },
+        {
+            "message": {
+                "total-results": 2,
+                "next-cursor": "registry-cursor-3",
+                "items": [
+                    {
+                        "DOI": "10.1000/second",
+                        "title": ["Second registry work"],
+                        "published-online": {"date-parts": [[2024, 12, 31]]},
+                        "container-title": ["Fixture Journal"],
+                        "type": "journal-article",
+                    }
+                ],
+            }
+        },
+    ]
+    urls: list[str] = []
+
+    class Body:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.body = json.dumps(payload).encode()
+            self.content_type = "application/json"
+
+    def fetch(url: str, api_version: str, policy_provider: str | None = None):
+        urls.append(url)
+        assert api_version == "crossref-serial-rest-v1"
+        assert policy_provider is None
+        return Body(pages[len(urls) - 1])
+
+    parameters = {
+        "year": 2024,
+        "registry_issn": "1234-5678",
+        "issns": ["1234-5678"],
+        "page_size": 1,
+    }
+    first = execute_venue_operation("crossref_serial", "discover", parameters, fetch)
+    second = execute_venue_operation(
+        "crossref_serial",
+        "discover",
+        {**parameters, "cursor": first.payload["next_cursor"]},
+        fetch,
+    )
+
+    assert first.payload["next_cursor"] == "1:registry-cursor-2"
+    assert second.payload["next_cursor"] is None
+    assert [page.payload["entries"][0]["external_id"] for page in (first, second)] == [
+        "10.1000/first",
+        "10.1000/second",
+    ]
+    assert "cursor=%2A" in urls[0]
+    assert "cursor=registry-cursor-2" in urls[1]
+    assert first.payload["census"] == second.payload["census"] == {
+        "expected_total": 2,
+        "parser_raw_records": 2,
+        "parser_rejected_records": 0,
+        "parser_excluded_records": 0,
+    }
 
 
 def test_neurips_uses_year_page_maps_official_ids_and_paginates_cached_html() -> None:

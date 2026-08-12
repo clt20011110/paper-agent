@@ -60,6 +60,7 @@ from .query_plan import (
 from .processing import ArtifactProcessingPolicy, ProcessingGate
 from .providers.builtin import manifest_from_document
 from .providers.builtin import create_builtin
+from .providers.factory import create_core_provider
 from .providers.plugins import (
     PluginAllowlistEntry,
     PluginRegistry,
@@ -3760,8 +3761,13 @@ def _stage1_live_adapter(
         timeout_seconds=30,
         runtime=runtime,
     )
+    catalog = load_catalog()
     return CensusCapturingAdapter(
-        create_builtin(descriptor.provider, unit_transport),
+        create_core_provider(
+            descriptor.provider,
+            unit_transport,
+            catalog.provider(descriptor.provider),
+        ),
         unit_transport,
     )
 
