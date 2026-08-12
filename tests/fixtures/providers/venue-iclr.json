@@ -1,30 +1,16 @@
 {
   "fixture_venue_id": "iclr",
-  "notes": [
-    {
-      "id": "iclr-2024-openreview-0001",
-      "content": {
-        "title": {"value": "ICLR 2024 Acceptance Fixture"},
-        "authors": {"value": ["Ada Lovelace", "Grace Hopper"]},
-        "abstract": {"value": "Deterministic accepted OpenReview evidence."},
-        "venueid": {"value": "ICLR.cc/2024/Conference"},
-        "venue": {"value": "ICLR 2024 Conference"}
-      },
-      "venue": "ICLR 2024 Conference",
-      "venue_id": "iclr",
-      "published": "2024-05-07"
-    },
-    {
-      "id": "iclr-2024-rejected-0001",
-      "content": {
-        "title": {"value": "Rejected control record"},
-        "decision": {"value": "Reject"}
-      },
-      "decision": "Reject",
-      "venue_id": "iclr",
-      "published": "2024-05-07"
-    }
-  ],
-  "next_cursor": "iclr:page-2",
-  "raw_response_artifact_hash": "fixture-iclr-2024"
+  "entries": [{
+    "external_id": "conf/iclr/Test24",
+    "venue_id": "iclr",
+    "title": "ICLR 2024 DBLP TOC Fixture",
+    "authors": ["Ada Lovelace", "Grace Hopper"],
+    "publication_date": "2024-01-01",
+    "year": 2024,
+    "venue": "ICLR",
+    "landing_url": "https://openreview.net/forum?id=fixture",
+    "dblp_key": "conf/iclr/Test24",
+    "upstream": "dblp"
+  }],
+  "next_cursor": "iclr:page-2"
 }

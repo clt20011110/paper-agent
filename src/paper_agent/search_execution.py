@@ -24,7 +24,8 @@ from .approved_snapshot import (
 from .provider_runtime import ProviderRuntime, ProviderRuntimePolicy, policy_from_manifest
 from .provider_response_artifacts import ProviderResponseArtifactService
 from .providers.api import CrawlWindow, SeedInput, VenueDescriptor
-from .providers.builtin import create_builtin, manifest_from_document
+from .providers.builtin import manifest_from_document
+from .providers.factory import create_core_provider
 from .providers.plugins import (
     IsolatedProviderClient,
     PluginAllowlistEntry,
@@ -270,7 +271,7 @@ def execute_search_plan(
         name = str(provider["provider"])
         manifest = manifest_from_document(installed.provider(name))
         clients[name] = (
-            create_builtin(name, transport, manifest)
+            create_core_provider(name, transport, installed.provider(name))
             if manifest.builtin
             else IsolatedProviderClient(
                 plugin_registry,

@@ -1,0 +1,8 @@
+<bht key="db/conf/iclr/iclr2024.bht" title="ICLR 2024">
+  <dblpcites><r><inproceedings key="conf/iclr/Test24">
+    <author>Ada Lovelace</author><author>Grace Hopper</author>
+    <title>ICLR 2024 DBLP TOC Fixture.</title><year>2024</year><booktitle>ICLR</booktitle>
+    <ee type="oa">https://openreview.net/forum?id=fixture</ee>
+    <url>db/conf/iclr/iclr2024.html#Test24</url>
+  </inproceedings></r></dblpcites>
+</bht>

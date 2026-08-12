@@ -30,7 +30,7 @@ PRIMARY = {
     "corl": "pmlr",
     "neurips": "neurips_proceedings",
     "icml": "pmlr",
-    "iclr": "openreview",
+    "iclr": "dblp_toc",
     "aaai": "aaai_ojs",
     "acl": "acl_anthology",
     "cvpr": "cvf_open_access",
@@ -39,8 +39,8 @@ PRIMARY = {
     "coling": "acl_anthology",
     "iccv": "cvf_open_access",
     "ijcai": "ijcai_proceedings",
-    "dac": "eda_proceedings",
-    "iccad": "eda_proceedings",
+    "dac": "dblp_toc",
+    "iccad": "dblp_toc",
     "tcad": "crossref_serial",
     "nature_machine_intelligence": "crossref_serial",
     "nature_synthesis": "crossref_serial",
@@ -68,7 +68,7 @@ FALLBACKS = {
     "corl": ["crossref", "dblp", "semantic_scholar", "openalex"],
     "neurips": ["openreview", "crossref", "dblp", "semantic_scholar", "openalex"],
     "icml": ["openreview", "crossref", "dblp", "semantic_scholar", "openalex"],
-    "iclr": ["arxiv", "dblp", "semantic_scholar", "openalex"],
+    "iclr": ["openreview", "arxiv", "semantic_scholar", "openalex"],
     "aaai": ["crossref", "dblp", "semantic_scholar", "openalex"],
     "acl": ["crossref", "dblp", "semantic_scholar", "openalex"],
     "cvpr": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
@@ -364,31 +364,17 @@ def test_platform_native_acceptance_shapes_select_only_expected_records() -> Non
         ).discover(descriptor, CrawlWindow(year=int(acceptance["test_window"]["start"][:4])))
         assert batch.entries[0].metadata[key] == value
 
-    for venue_id in ("dac", "iccad"):
+    for venue_id in ("iclr", "dac", "iccad"):
         acceptance = catalog.acceptance(venue_id)
         payload = json.loads((ROOT / acceptance["fixture_path"]).read_text())
         descriptor = catalog.runtime_venue(venue_id)
-        batch = create_builtin(
+        batch = create_core_provider(
             descriptor.provider,
             FixtureTransport({f"{descriptor.provider}:discover:first": payload}),
+            catalog.provider(descriptor.provider),
         ).discover(descriptor, CrawlWindow(year=2024))
-        assert [entry.metadata["upstream"] for entry in batch.entries] == ["ieee_xplore", "acm_dl"]
-
-    iclr = catalog.acceptance("iclr")
-    payload = json.loads((ROOT / iclr["fixture_path"]).read_text())
-    descriptor = catalog.runtime_venue("iclr")
-    transport = FixtureTransport(
-        {
-            "openreview:resolve_invitation:first": {
-                "invitation": "ICLR.cc/2024/Conference/-/Decision",
-                "api_version": "v2",
-                "accepted_venue_ids": ["ICLR.cc/2024/Conference"],
-            },
-            "openreview:discover:first": payload,
-        }
-    )
-    batch = create_builtin("openreview", transport).discover(descriptor, CrawlWindow(year=2024))
-    assert [entry.external_id for entry in batch.entries] == ["iclr-2024-openreview-0001"]
+        assert [entry.metadata["upstream"] for entry in batch.entries] == ["dblp"]
+        assert batch.entries[0].external_id == f"conf/{venue_id}/Test24"
 
 
 def test_same_platform_venues_are_yaml_descriptors_not_python_registrations() -> None:
@@ -455,7 +441,7 @@ def test_frozen_journal_identifiers_and_venue_constraints() -> None:
         assert journal["slug"] == slug
         assert journal["issns"] == issns
         assert catalog.runtime_venue(venue_id).parameters == catalog.venue(venue_id)["provider_params"]
-    assert catalog.venue("iclr")["provider_params"]["accepted_decision_required"]
+    assert catalog.venue("iclr")["provider_params"]["toc_series"] == "iclr"
     acl_parameters = catalog.venue("acl")["provider_params"]
     assert "collections" not in acl_parameters
     assert acl_parameters["tracks"] == [
@@ -468,5 +454,5 @@ def test_frozen_journal_identifiers_and_venue_constraints() -> None:
     assert catalog.venue("cvpr")["provider_params"]["exclude_workshops"]
     assert catalog.venue("iccv")["provider_params"]["exclude_workshops"]
     for venue_id in ("dac", "iccad"):
-        assert catalog.venue(venue_id)["provider_params"]["deduplicate_by"] == "doi"
+        assert catalog.venue(venue_id)["provider_params"]["toc_series"] == venue_id
     assert catalog.venue("tcad")["provider_params"]["registry_issn"] == "0278-0070"

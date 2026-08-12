@@ -2,38 +2,8 @@ schema_version: "1"
 venue_id: dac
 name: Design Automation Conference
 venue_type: conference
-primary_provider: eda_proceedings
-provider_params:
-  series: DAC
-  sources: [ieee_xplore, acm_dl]
-  upstreams: [ieee_xplore, acm_dl]
-  resolve_platforms_by_year: true
-  deduplicate_by: doi
-  metadata_resolution_required: false
-  official_routes_by_year:
-    2022:
-      route_kind: ieee_xplore_publication
-      publication_number: 11278904
-      evidence_url: https://ieeexplore.ieee.org/xpl/conhome/11278904/proceeding
-    2023:
-      route_kind: ieee_xplore_publication
-      publication_number: 10247654
-      evidence_url: https://ieeexplore.ieee.org/xpl/conhome/10247654/proceeding
-    2024:
-      route_kind: dac_linklings_html
-      url: https://61dac.conference-program.com/search-program/
-    2025:
-      route_kind: dac_linklings_html
-      url: https://62dac.conference-program.com/search-program/
-  upstream_routes_by_year:
-    2022:
-      ieee_xplore: {publication_number: 11278904, required: false}
-      acm_dl: {proceedings_doi: "10.1145/3489517", required: true}
-    2023:
-      ieee_xplore: {publication_number: 10247654, required: true}
-    2024:
-      ieee_xplore: {publication_number: 11293840, required: false}
-      acm_dl: {proceedings_doi: "10.1145/3649329", required: true}
-    2025:
-      ieee_xplore: {publication_number: 11132383, required: true}
+primary_provider: dblp_toc
+provider_params: {toc_series: dac, toc_base_urls: [https://dblp.uni-trier.de, https://dblp.org], exclude_titles: [Frontmatter]}
 official_url: https://www.dac.com/
+proceedings_url: https://dblp.org/db/conf/dac/
+date_range: {start: 2016-01-01, end: 2025-12-31}

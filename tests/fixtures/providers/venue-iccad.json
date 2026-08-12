@@ -1,35 +1,16 @@
 {
   "fixture_venue_id": "iccad",
-  "upstreams": {
-    "ieee_xplore": {
-      "entries": [
-        {
-          "stable_id": "iccad-2024-ieee-0001",
-          "title": "ICCAD 2024 IEEE Fixture",
-          "authors": ["Ada Lovelace"],
-          "abstract": "Deterministic ICCAD IEEE evidence.",
-          "doi": "10.1109/ICCAD.2024.00001",
-          "publication_date": "2024-10-27",
-          "venue": "2024 IEEE/ACM International Conference on Computer-Aided Design",
-          "venue_id": "iccad"
-        }
-      ]
-    },
-    "acm_dl": {
-      "entries": [
-        {
-          "stable_id": "iccad-2024-acm-0002",
-          "title": "ICCAD 2024 ACM Fixture",
-          "authors": ["Grace Hopper"],
-          "abstract": "Deterministic ICCAD ACM evidence.",
-          "doi": "10.1145/3676536.3677002",
-          "publication_date": "2024-10-27",
-          "venue": "2024 IEEE/ACM International Conference on Computer-Aided Design",
-          "venue_id": "iccad"
-        }
-      ]
-    }
-  },
-  "next_cursor": "iccad:page-2",
-  "raw_response_artifact_hash": "fixture-iccad-2024"
+  "entries": [{
+    "external_id": "conf/iccad/Test24",
+    "venue_id": "iccad",
+    "title": "ICCAD 2024 DBLP TOC Fixture",
+    "authors": ["Grace Hopper"],
+    "doi": "10.1145/fixture.iccad",
+    "publication_date": "2024-01-01",
+    "year": 2024,
+    "venue": "ICCAD",
+    "landing_url": "https://doi.org/10.1145/fixture.iccad",
+    "upstream": "dblp"
+  }],
+  "next_cursor": "iccad:page-2"
 }

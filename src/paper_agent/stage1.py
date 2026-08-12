@@ -520,7 +520,8 @@ def _record_document(
         "venue_type": venue["venue_type"],
         "membership_status": (
             "registry_confirmed"
-            if metadata.get("membership_authority") == "crossref_registry"
+            if metadata.get("membership_authority")
+            in {"crossref_registry", "dblp_toc"}
             else "official_confirmed"
         ),
         "provider": entry.provider,

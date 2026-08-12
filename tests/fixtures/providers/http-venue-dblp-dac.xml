@@ -1,0 +1,10 @@
+<bht key="db/conf/dac/dac2024.bht" title="DAC 2024">
+  <dblpcites><r><inproceedings key="conf/dac/Test24">
+    <author>Ada Lovelace</author><title>DAC 2024 DBLP TOC Fixture.</title>
+    <pages>1:1-1:8</pages><year>2024</year><booktitle>DAC</booktitle>
+    <ee>https://doi.org/10.1145/fixture.dac</ee><url>db/conf/dac/dac2024.html#Test24</url>
+  </inproceedings></r><r><inproceedings key="conf/dac/X24">
+    <title>Frontmatter.</title><year>2024</year><booktitle>DAC</booktitle>
+    <ee>https://dl.acm.org/action/showFmPdf?doi=10.1145%2Ffixture</ee>
+  </inproceedings></r></dblpcites>
+</bht>

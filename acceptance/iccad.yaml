@@ -1,15 +1,13 @@
 schema_version: "2"
 venue_id: iccad
-primary_provider: eda_proceedings
+primary_provider: dblp_toc
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-iccad.json
-fixture_sha256: d5902c369b202acd9a0dddbdea6ca38af3dd49c214c7a96cd6007066cf56f67e
-expected_stable_ids: [iccad-2024-ieee-0001, iccad-2024-acm-0002]
+fixture_sha256: b12bc3e3a5415524ca04b6b5f32d548069f501171301e4fff5ad52c0847d45b5
+expected_stable_ids: [conf/iccad/Test24]
 transport_fixture_routes:
-  - {path: tests/fixtures/providers/http-venue-iccad.html, sha256: ec6e4cb78c26e55e5432ff952c938bfe759aa946087fe4c337c74ae44b459ed4, content_type: text/html, url_contains: 2024.iccad.com/accepted-papers/}
-  - {path: tests/fixtures/providers/acceptance-native-iccad-ieee.json, sha256: 24ffce137ed30c3a0b5c8e38854f084c0aa63386a9ed6626d839b05517edae91, content_type: application/json, url_contains: ieeexploreapi.ieee.org/api/v1/search/articles}
-  - {path: tests/fixtures/providers/acceptance-native-iccad-acm.html, sha256: 1fdf04d02cff1ad98cef2301ea74b538961cf6cdcd558aa59d1a46c1156316d7, content_type: text/html, url_contains: dl.acm.org/doi/proceedings/10.1145/3676536}
-transport_expected_stable_ids: [ICCAD-2024-510, ICCAD-2024-511]
-required_fields: [stable_id, metadata]
-required_capabilities: [stable_id, metadata]
+  - {path: tests/fixtures/providers/http-venue-dblp-iccad.xml, sha256: a775dd40552ea62aab7749a7d8e18761a37d432764027cb4575709bace298b88, content_type: application/xml, url_contains: dblp.uni-trier.de/db/conf/iccad/iccad2024.xml}
+transport_expected_stable_ids: [conf/iccad/Test24]
+required_fields: [stable_id, metadata, date_filter]
+required_capabilities: [stable_id, metadata, date_filter]
 fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

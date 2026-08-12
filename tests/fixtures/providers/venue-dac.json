@@ -1,35 +1,16 @@
 {
   "fixture_venue_id": "dac",
-  "upstreams": {
-    "ieee_xplore": {
-      "entries": [
-        {
-          "stable_id": "dac-2024-ieee-0001",
-          "title": "DAC 2024 IEEE Fixture",
-          "authors": ["Ada Lovelace"],
-          "abstract": "Deterministic DAC IEEE evidence.",
-          "doi": "10.1109/DAC.2024.00001",
-          "publication_date": "2024-06-24",
-          "venue": "61st ACM/IEEE Design Automation Conference",
-          "venue_id": "dac"
-        }
-      ]
-    },
-    "acm_dl": {
-      "entries": [
-        {
-          "stable_id": "dac-2024-acm-0002",
-          "title": "DAC 2024 ACM Fixture",
-          "authors": ["Grace Hopper"],
-          "abstract": "Deterministic DAC ACM evidence.",
-          "doi": "10.1145/3649329.3650002",
-          "publication_date": "2024-06-24",
-          "venue": "61st ACM/IEEE Design Automation Conference",
-          "venue_id": "dac"
-        }
-      ]
-    }
-  },
-  "next_cursor": "dac:page-2",
-  "raw_response_artifact_hash": "fixture-dac-2024"
+  "entries": [{
+    "external_id": "conf/dac/Test24",
+    "venue_id": "dac",
+    "title": "DAC 2024 DBLP TOC Fixture",
+    "authors": ["Ada Lovelace"],
+    "doi": "10.1145/fixture.dac",
+    "publication_date": "2024-01-01",
+    "year": 2024,
+    "venue": "DAC",
+    "landing_url": "https://doi.org/10.1145/fixture.dac",
+    "upstream": "dblp"
+  }],
+  "next_cursor": "dac:page-2"
 }

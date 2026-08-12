@@ -24,6 +24,7 @@ from paper_agent.venue_transport import (
 FIXTURES = Path(__file__).parent / "fixtures" / "providers"
 VENUE_PROVIDERS = (
     "crossref_serial",
+    "dblp_toc",
     "neurips_proceedings",
     "pmlr",
     "jmlr_official",
@@ -129,6 +130,74 @@ def _official_eda_routes(series: str) -> dict[int, dict[str, str]]:
 
 def test_venue_handler_registry_covers_every_conference_primary_provider() -> None:
     assert venue_provider_names() == tuple(sorted(VENUE_PROVIDERS))
+
+
+def test_dblp_toc_maps_complete_year_with_doi_and_census() -> None:
+    transport, opener = _transport({
+        "dblp.org/db/conf/dac/dac2024.xml": (
+            "http-venue-dblp-dac.xml",
+            "application/xml",
+        ),
+    })
+    first = transport(
+        "dblp_toc",
+        "discover",
+        {
+            "toc_series": "dac",
+            "exclude_titles": ["Frontmatter"],
+            "venue_id": "dac",
+            "year": 2024,
+            "page_size": 1,
+        },
+    )
+
+    assert first["next_cursor"] is None
+    assert first["census"] == {
+        "expected_total": 1,
+        "parser_raw_records": 2,
+        "parser_rejected_records": 0,
+        "parser_excluded_records": 1,
+    }
+    assert first["entries"][0]["external_id"] == "conf/dac/Test24"
+    assert first["entries"][0]["doi"] == "10.1145/fixture.dac"
+    assert first["entries"][0]["authors"] == ["Ada Lovelace"]
+    assert len(opener.calls) == 1
+
+
+def test_dblp_toc_falls_back_between_approved_hosts() -> None:
+    body = (FIXTURES / "http-venue-dblp-iclr.xml").read_bytes()
+    urls: list[str] = []
+
+    class Body:
+        def __init__(self) -> None:
+            self.body = body
+
+    def fetch(url: str, api_version: str):
+        urls.append(url)
+        assert api_version == "dblp-toc-xml-v1"
+        if url.startswith("https://dblp.org/"):
+            raise OSError("fixture primary connection closed")
+        return Body()
+
+    result = execute_venue_operation(
+        "dblp_toc",
+        "discover",
+        {
+            "toc_series": "iclr",
+            "toc_base_urls": ["https://dblp.org", "https://dblp.uni-trier.de"],
+            "venue_id": "iclr",
+            "year": 2024,
+        },
+        fetch,
+    )
+
+    assert [entry["external_id"] for entry in result.payload["entries"]] == [
+        "conf/iclr/Test24"
+    ]
+    assert urls == [
+        "https://dblp.org/db/conf/iclr/iclr2024.xml",
+        "https://dblp.uni-trier.de/db/conf/iclr/iclr2024.xml",
+    ]
 
 
 def test_crossref_serial_cursor_tracks_consumed_total_and_stops_exactly() -> None:

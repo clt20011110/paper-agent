@@ -1,0 +1,7 @@
+<bht key="db/conf/iccad/iccad2024.bht" title="ICCAD 2024">
+  <dblpcites><r><inproceedings key="conf/iccad/Test24">
+    <author>Grace Hopper</author><title>ICCAD 2024 DBLP TOC Fixture.</title>
+    <pages>2:1-2:9</pages><year>2024</year><booktitle>ICCAD</booktitle>
+    <ee>https://doi.org/10.1145/fixture.iccad</ee><url>db/conf/iccad/iccad2024.html#Test24</url>
+  </inproceedings></r></dblpcites>
+</bht>

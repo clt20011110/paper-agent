@@ -63,6 +63,13 @@ Stage 1 merges the selected override over the shared provider parameters before
 creating that venue-year adapter, allowing historical API versions, invitation
 IDs, issue IDs, or official route identifiers without hard-coding venue logic.
 
+Conference descriptors may also select the manifest-driven `dblp_toc` adapter
+for a terminal proceedings-table census. The adapter accepts only approved DBLP
+hosts, records the actual host and response hash, paginates locally over one
+year snapshot, and supports a small named `exclude_titles` list for reconciled
+frontmatter such as `Foreword`. These exclusions are counted in the receipt;
+they never silently disappear.
+
 ## What `complete` means
 
 Completeness is a membership claim, not a claim that every metadata field is

@@ -313,6 +313,150 @@ def _crossref_text(value: Any) -> str | None:
     return " ".join(unescape(re.sub(r"<[^>]+>", " ", str(value))).split()) or None
 
 
+@register_venue_handler("dblp_toc")
+def _dblp_toc(
+    operation: str, parameters: Mapping[str, Any], fetch: VenueFetch
+) -> VenueOperationResult:
+    """Enumerate one frozen conference-year table of contents from DBLP.
+
+    DBLP exposes each proceedings volume as a single XML document.  Unlike
+    keyword search, that document has a terminal, auditable membership set and
+    includes stable record keys, authors, DOI/official links, and pagination.
+    """
+
+    provider = "dblp_toc"
+    _require_operation(provider, operation, {"discover"})
+    year = _year(parameters)
+    series = str(parameters.get("toc_series") or "").casefold()
+    if not re.fullmatch(r"[a-z0-9]+", series):
+        raise ValueError("dblp_toc requires a lowercase alphanumeric toc_series")
+    stem_template = str(parameters.get("toc_stem_template") or "{series}{year}")
+    try:
+        stem = stem_template.format(series=series, year=year)
+    except (KeyError, ValueError) as error:
+        raise ValueError("dblp_toc toc_stem_template is invalid") from error
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", stem):
+        raise ValueError("dblp_toc resolved an unsafe TOC stem")
+    configured_bases = parameters.get("toc_base_urls") or ("https://dblp.org",)
+    if isinstance(configured_bases, str):
+        configured_bases = (configured_bases,)
+    allowed_bases = {"https://dblp.org", "https://dblp.uni-trier.de"}
+    bases = tuple(dict.fromkeys(str(value).rstrip("/") for value in configured_bases))
+    if not bases or any(value not in allowed_bases for value in bases):
+        raise ValueError("dblp_toc toc_base_urls must contain only approved DBLP hosts")
+    response = None
+    errors: list[str] = []
+    for base in bases:
+        url = f"{base}/db/conf/{series}/{stem}.xml"
+        try:
+            response = fetch(url, "dblp-toc-xml-v1")
+            break
+        except (OSError, ProviderRequestError) as error:
+            errors.append(f"{base}: {error}")
+    if response is None:
+        raise ProviderRequestError(
+            f"dblp_toc: all approved DBLP hosts failed ({'; '.join(errors)})"
+        )
+    try:
+        root = ElementTree.fromstring(response.body)
+    except ElementTree.ParseError as error:
+        raise ProviderRequestError("dblp_toc: malformed DBLP XML") from error
+
+    records = root.findall(".//inproceedings")
+    entries: list[dict[str, Any]] = []
+    for record in records:
+        key = str(record.attrib.get("key") or "").strip()
+        title = _xml_text(record.find("./title"))
+        record_year = _xml_text(record.find("./year"))
+        if not key or not title or not record_year.isdigit():
+            continue
+        paper_year = int(record_year)
+        doi = next(
+            (
+                _normalize_doi(element.text)
+                for element in record.findall("./ee")
+                if element.text and _normalize_doi(element.text)
+            ),
+            None,
+        )
+        links = [
+            str(element.text).strip()
+            for element in record.findall("./ee")
+            if element.text and str(element.text).strip()
+        ]
+        landing = next(
+            (value for value in links if "openreview.net/forum?id=" in value),
+            next((value for value in links if value.startswith("http")), None),
+        ) or f"https://dblp.org/rec/{quote(key, safe='/')}"
+        authors = [
+            _xml_text(element)
+            for element in (*record.findall("./author"), *record.findall("./editor"))
+            if _xml_text(element)
+        ]
+        entries.append(
+            {
+                "external_id": key,
+                "title": title,
+                "authors": authors,
+                "abstract": None,
+                "doi": doi,
+                "publication_date": f"{paper_year:04d}",
+                "year": paper_year,
+                "venue": _xml_text(record.find("./booktitle")) or series.upper(),
+                "landing_url": landing,
+                "pages": _xml_text(record.find("./pages")) or None,
+                "publication_version": "published",
+                "host_type": "catalog",
+                "access_basis": "public_read_only",
+                "document_type": "proceedings-article",
+                "dblp_key": key,
+                "electronic_editions": links,
+                "upstream": "dblp",
+            }
+        )
+    if not entries:
+        raise ProviderRequestError(
+            f"dblp_toc: {series} {year} TOC contained no proceedings papers"
+        )
+    excluded_titles = {
+        re.sub(r"[.\s]+$", "", str(value)).casefold()
+        for value in parameters.get("exclude_titles", ())
+    }
+    eligible_entries = [
+        entry
+        for entry in entries
+        if re.sub(r"[.\s]+$", "", entry["title"]).casefold() not in excluded_titles
+    ]
+    selected_year = [entry for entry in eligible_entries if _in_window(entry, parameters)]
+    if not selected_year:
+        raise ProviderRequestError(f"dblp_toc: {series} TOC contained no papers for {year}")
+    selected, cursor = _page(selected_year, parameters)
+    rejected = len(records) - len(entries)
+    return VenueOperationResult(
+        {
+            "entries": selected,
+            "next_cursor": cursor,
+            "census": {
+                "expected_total": len(selected_year),
+                "parser_raw_records": len(records),
+                "parser_rejected_records": rejected,
+                "parser_excluded_records": len(entries) - len(selected_year),
+            },
+            "warnings": [
+                "Membership is the DBLP conference-track TOC census; abstracts are not supplied by DBLP."
+            ],
+        },
+        (response.body,),
+    )
+
+
+def _normalize_doi(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = re.search(r"(?:doi\.org/|doi:)?(10\.\d{4,9}/\S+)$", value.strip(), re.I)
+    return match.group(1).rstrip(".,;)").casefold() if match else None
+
+
 @register_venue_handler("crossref_serial")
 def _crossref_serial(
     operation: str, parameters: Mapping[str, Any], fetch: VenueFetch

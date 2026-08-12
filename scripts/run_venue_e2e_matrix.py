@@ -230,6 +230,18 @@ def _discovery_parameters(venue: Mapping[str, Any], descriptor: Mapping[str, Any
         "date_from": date_from, "date_to": date_to, "year": year,
         "volume": None, "issue": None, "cursor": None,
     }
+    if provider == "dblp_toc":
+        # The external core adapter freezes its exact public contract rather
+        # than the compatibility-only adapter/volume/issue keys used by the
+        # legacy VenueBuiltinAdapter.
+        discovery = {
+            **parameters,
+            "venue_id": venue["id"],
+            "date_from": date_from,
+            "date_to": date_to,
+            "year": year,
+            "cursor": None,
+        }
     responses: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     if provider == "pmlr":
         responses.append(("resolve_volume", {"series": parameters.get("series"), "year": year}, {"status": "success", "official_url": "https://proceedings.mlr.press/v235/"}))

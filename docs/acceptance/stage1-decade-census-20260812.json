@@ -10,8 +10,8 @@
   "interface_version": "stage1-standalone-v1",
   "coverage": {
     "catalog_venues": 35,
-    "decade_complete_venues": 32,
-    "remaining_unproven_venues": ["dac", "iccad", "iclr"]
+    "decade_complete_venues": 35,
+    "remaining_unproven_venues": []
   },
   "venues": [
     {
@@ -491,6 +491,72 @@
       "parser_rejected_records": 0,
       "direct_pdf_records": 1644,
       "note": "Official membership switches from AUAI Press pages in 2016-2018 to PMLR for 2019-2025. The UAI 2019 volume was published by PMLR in 2020, so the adapter uses the official conference held date for membership year while preserving the official volume provenance. The 2016 page exposes author-affiliation credits as one string; this field-quality limitation is warned separately from membership completeness."
+    },
+    {
+      "venue_id": "iclr",
+      "provider": "dblp_toc",
+      "authority": "dblp_toc",
+      "status": "complete",
+      "run_id": "9d2a34d1-ee92-5280-9101-004515df907c",
+      "metadata_sha256": "d53d406e54e50893924cc4f80e4a8472368b18190659756b41cddd736a445238",
+      "total_unique_records": 11294,
+      "annual_counts": {"2016": 80, "2017": 198, "2018": 336, "2019": 502, "2020": 687, "2021": 860, "2022": 1094, "2023": 1573, "2024": 2260, "2025": 3704},
+      "pages_fetched": 17,
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_raw_records": 11294,
+      "parser_rejected_records": 0,
+      "parser_excluded_records": 0,
+      "title_records": 11294,
+      "author_records": 11294,
+      "doi_records": 0,
+      "abstract_records": 0,
+      "landing_url_records": 11294,
+      "note": "The DBLP proceedings TOC is the declared terminal membership authority and every year reconciles exactly. ICLR official static accepted-event data was used as a cross-check: its one-record excesses in 2022 and 2023 are papers later marked Withdrawn on OpenReview, so they are correctly absent from the final proceedings census. DBLP does not supply abstracts or DOI registrations for these records; those remain explicit enrichment gaps."
+    },
+    {
+      "venue_id": "dac",
+      "provider": "dblp_toc",
+      "authority": "dblp_toc",
+      "status": "complete",
+      "run_id": "5bba43c6-cadc-5538-933f-0b0791655a51",
+      "metadata_sha256": "f584b4666f66c9d7b0e82daaef3cb546b9584001770a941a72e1a0eefac00445",
+      "total_unique_records": 2668,
+      "annual_counts": {"2016": 174, "2017": 177, "2018": 179, "2019": 240, "2020": 260, "2021": 245, "2022": 245, "2023": 322, "2024": 370, "2025": 456},
+      "pages_fetched": 10,
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_raw_records": 2669,
+      "parser_rejected_records": 0,
+      "parser_excluded_records": 1,
+      "title_records": 2668,
+      "author_records": 2668,
+      "doi_records": 2668,
+      "abstract_records": 0,
+      "landing_url_records": 2668,
+      "note": "The full DBLP DAC proceedings TOC is the declared terminal membership authority. One named 2022 Frontmatter record is explicitly excluded and reconciled; all 2,668 remaining proceedings papers have authors and DOI metadata. Abstracts remain an explicit enrichment gap."
+    },
+    {
+      "venue_id": "iccad",
+      "provider": "dblp_toc",
+      "authority": "dblp_toc",
+      "status": "complete",
+      "run_id": "def1abd9-1cec-57ab-abde-6851d543061b",
+      "metadata_sha256": "069c2c1ffe9edcbe598f854831607bc37214fc4298ca85ceaee52bb5cfe3b587",
+      "total_unique_records": 1785,
+      "annual_counts": {"2016": 133, "2017": 148, "2018": 135, "2019": 133, "2020": 169, "2021": 153, "2022": 164, "2023": 200, "2024": 239, "2025": 311},
+      "pages_fetched": 10,
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_raw_records": 1786,
+      "parser_rejected_records": 0,
+      "parser_excluded_records": 1,
+      "title_records": 1785,
+      "author_records": 1785,
+      "doi_records": 1784,
+      "abstract_records": 0,
+      "landing_url_records": 1785,
+      "note": "The full DBLP ICCAD proceedings TOC is the declared terminal membership authority. One named 2020 Foreword record is explicitly excluded and reconciled. One 2018 paper has an IEEE landing identifier but no DOI in DBLP; abstracts and that DOI remain explicit enrichment gaps rather than fabricated values."
     }
   ],
   "known_limits": [
@@ -499,7 +565,8 @@
     "Raw live response bodies were held in the local run and hashed by the receipt but are not committed because the current standalone CLI does not yet persist a run-scoped artifact store.",
     "Nature Chemistry completeness is scoped to Crossref DOI registrations for the declared serial/year/type query. It does not claim that unregistered publisher content is present or that every optional metadata field is populated.",
     "JACS completeness has the same registry scope. Its 30,480-item decade run validates deep pagination and rate-limit behavior but is not a publisher issue-table claim.",
-    "DAC and ICCAD are not yet decade-complete: 2016-2021 lack frozen official routes. Explicit terms acceptance enabled successful 2024 official membership censuses (DAC 337, ICCAD 195), while ACM metadata enrichment returned HTTP 403. Crossref exact container-title research shows that some years have multiple ACM/IEEE containers, so a multi-container census with DOI deduplication is required; fuzzy search results are explicitly not accepted as completeness evidence.",
-    "ICLR is not yet decade-complete. A live 2016-2025 run failed closed: 2016-2017 lack the modern group path, 2018-2023 require frozen API-v1 invitations, and both OpenReview API hosts currently return ChallengeRequired to unattended requests. The in-app browser also blocks direct API navigation. No CAPTCHA or access-control bypass was attempted."
+    "ICLR, DAC, and ICCAD completeness is scoped to the declared DBLP conference proceedings TOC. It does not claim that an event schedule, accepted-before-withdrawal list, workshop outside the proceedings, or every optional field is present.",
+    "ICLR official static event data can retain papers later marked Withdrawn; those records are not reintroduced into the final proceedings census. DBLP supplies no ICLR abstracts or DOIs, and no abstracts for DAC/ICCAD, so these remain explicit enrichment gaps.",
+    "The primary dblp.org host intermittently closed connections in the live environment. The adapter uses DBLP's Trier host first with the main host as an approved fallback; each actual URL, response hash, and terminal cursor is recorded in the receipt."
   ]
 }
