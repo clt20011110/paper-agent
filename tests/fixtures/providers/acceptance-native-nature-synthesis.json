@@ -1,0 +1,16 @@
+{
+  "result": [{"total": "1"}],
+  "records": [{
+    "identifier": "doi:10.1038/s44160-024-00001-1",
+    "title": "Nature Synthesis Native Fixture",
+    "doi": "10.1038/s44160-024-00001-1",
+    "creators": [{"creator": "Ada Lovelace"}],
+    "abstract": "Native publisher abstract.",
+    "publicationDate": "2024-03-18",
+    "publicationName": "Nature Synthesis",
+    "volume": "3",
+    "number": "3",
+    "contentType": "Article",
+    "url": [{"format": "html", "platform": "web", "value": "https://www.nature.com/articles/s44160-024-00001-1"}]
+  }]
+}

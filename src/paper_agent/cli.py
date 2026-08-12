@@ -3723,8 +3723,11 @@ def _stage1_collect(args: argparse.Namespace) -> dict[str, Any]:
                     "reasons": list(unit.reasons),
                 }
                 for unit in blocked.receipt.units
-                if unit.status != "complete"
+                if unit.status not in {"complete", "not_applicable"}
             ],
+            "not_applicable_units": sum(
+                unit.status == "not_applicable" for unit in blocked.receipt.units
+            ),
         }
     return {
         "command": "stage1.collect",

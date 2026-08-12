@@ -53,3 +53,7 @@ non-empty. Each venue-year receipt records pagination termination, the source
 census, parser raw/rejected counts, stable-ID duplicates, field coverage, and
 response hashes. Missing abstracts or DOIs remain null with an explicit field
 status; they are never synthesized.
+
+If a descriptor has an authoritative `date_range`, years before launch or
+after closure are recorded as `not_applicable`. They do not contact a provider
+and do not make an otherwise complete request fail.

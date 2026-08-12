@@ -1,0 +1,20 @@
+{
+  "fixture_venue_id": "nature_synthesis",
+  "entries": [
+    {
+      "stable_id": "10.1038/s44160-024-00001-1",
+      "title": "Nature Synthesis 2024 Fixture",
+      "authors": ["Ada Lovelace", "Grace Hopper"],
+      "abstract": "Deterministic Nature Synthesis evidence.",
+      "doi": "10.1038/s44160-024-00001-1",
+      "publication_date": "2024-03-18",
+      "venue": "Nature Synthesis",
+      "venue_id": "nature_synthesis",
+      "issn": "2731-0582",
+      "article_type": "article",
+      "landing_url": "https://www.nature.com/articles/s44160-024-00001-1"
+    }
+  ],
+  "next_cursor": "nature_synthesis:page-2",
+  "raw_response_artifact_hash": "fixture-nature-synthesis-2024"
+}

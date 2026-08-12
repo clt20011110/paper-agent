@@ -35,6 +35,7 @@ PRIMARY = {
     "iccad": "eda_proceedings",
     "tcad": "ieee_xplore",
     "nature_machine_intelligence": "springer_nature",
+    "nature_synthesis": "springer_nature",
     "nature_chemistry": "springer_nature",
     "nature_computational_science": "springer_nature",
     "nature_communications": "springer_nature",
@@ -59,6 +60,7 @@ FALLBACKS = {
     "iccad": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
     "tcad": ["crossref", "dblp", "semantic_scholar", "openalex"],
     "nature_machine_intelligence": ["crossref"],
+    "nature_synthesis": ["crossref", "semantic_scholar", "openalex"],
     "nature_chemistry": ["crossref", "pubmed", "europe_pmc"],
     "nature_computational_science": ["crossref"],
     "nature_communications": ["crossref", "pubmed", "europe_pmc"],
@@ -170,7 +172,7 @@ def test_built_in_manifests_are_schema_valid_and_unique() -> None:
     assert set(catalog.venues) == set(PRIMARY)
     assert set(catalog.acceptances) == set(PRIMARY)
     assert len(catalog.providers) == 25
-    assert len({acceptance["fixture_path"] for acceptance in catalog.acceptances.values()}) == 21
+    assert len({acceptance["fixture_path"] for acceptance in catalog.acceptances.values()}) == 22
     for path in (ROOT / "providers").glob("*.yaml"):
         validate(catalog.providers[path.stem], "provider-manifest.schema.json")
     for path in (ROOT / "venues").glob("*.yaml"):

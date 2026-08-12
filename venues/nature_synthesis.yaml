@@ -1,0 +1,8 @@
+schema_version: "1"
+venue_id: nature_synthesis
+name: Nature Synthesis
+venue_type: journal
+primary_provider: springer_nature
+provider_params: {journal_slug: natsynth, issns: [2731-0582], article_types: [article, review, analysis]}
+official_url: https://www.nature.com/natsynth/
+date_range: {start: 2022-01-01, end: 2025-12-31}
