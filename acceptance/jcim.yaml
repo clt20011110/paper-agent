@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: jcim
+primary_provider: crossref_serial
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-jcim.json
+fixture_sha256: 6a0537ff3f4c918346aeefe0191b1e233a141d8844700527922c96b7ca6f3ce5
+expected_stable_ids: [10.1021/acs.jcim.4c00001]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-jcim.json, sha256: 697b8859892fb57b66956c3b110dec229ade13bec1a0457aad23d681220b26f8, content_type: application/json, url_contains: api.crossref.org/journals/1549-9596/works}
+transport_expected_stable_ids: [10.1021/acs.jcim.4c00001]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
+fallbacks: [{provider: crossref, role: search}, {provider: semantic_scholar, role: search}, {provider: openalex, role: search}]
+journal: {slug: jcim, issns: [0095-2338, 1549-9596, 1549-960X], article_types: [journal-article]}

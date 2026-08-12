@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: chemical_science
+name: Chemical Science
+venue_type: journal
+primary_provider: crossref_serial
+provider_params: {journal_slug: chemical-science, registry_issn: 2041-6539, issns: [2041-6520, 2041-6539], article_types: [journal-article]}
+official_url: https://pubs.rsc.org/en/journals/journalissues/sc

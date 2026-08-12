@@ -1,0 +1,7 @@
+schema_version: "1"
+venue_id: jctc
+name: Journal of Chemical Theory and Computation
+venue_type: journal
+primary_provider: crossref_serial
+provider_params: {journal_slug: jctc, registry_issn: 1549-9618, issns: [1549-9618, 1549-9626], article_types: [journal-article]}
+official_url: https://pubs.acs.org/journal/jctcce

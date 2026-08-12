@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: acs_central_science
+primary_provider: crossref_serial
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-acs-central-science.json
+fixture_sha256: 07db485a38551f24c75284c33e041516d2da691c0ded978e9f4c521611a37de3
+expected_stable_ids: [10.1021/acscentsci.4c00001]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-acs-central-science.json, sha256: 38cc70af02b6285ce55465a731b52a3f9755a38897293c5e935db329f6b39623, content_type: application/json, url_contains: api.crossref.org/journals/2374-7943/works}
+transport_expected_stable_ids: [10.1021/acscentsci.4c00001]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
+fallbacks: [{provider: crossref, role: search}, {provider: semantic_scholar, role: search}, {provider: openalex, role: search}]
+journal: {slug: acs-central-science, issns: [2374-7943, 2374-7951], article_types: [journal-article]}
