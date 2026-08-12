@@ -118,6 +118,10 @@ from .stage2_release_assembly import (
     assemble_stage2_release,
     validate_stage2_release_assembly,
 )
+from .stage2_release_evidence_producer import (
+    build_stage2_release_evidence_index_bytes,
+    write_stage2_release_evidence_index,
+)
 from .stage2_sampling import (
     SamplingPolicy,
     build_gold_sampling,
@@ -643,6 +647,34 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     assemble.add_argument("--trust-manifest", required=True, type=Path)
     assemble.add_argument("--parity-oracle-trust", required=True, type=Path)
     assemble.add_argument("--output", required=True, type=Path)
+    evidence = stage2_release_commands.add_parser(
+        "build-evidence",
+        help="validate and write an immutable Stage 2 public or final evidence index",
+    )
+    evidence.add_argument("--candidate", required=True, type=Path)
+    evidence.add_argument("--gold-manifest", required=True, type=Path)
+    evidence.add_argument("--structured-manifest", required=True, type=Path)
+    evidence.add_argument("--structured-records", required=True, type=Path)
+    evidence.add_argument("--rationale-manifest", required=True, type=Path)
+    evidence.add_argument("--rationale-records", required=True, type=Path)
+    evidence.add_argument("--parity-manifest", required=True, type=Path)
+    evidence.add_argument("--parity-workload", required=True, type=Path)
+    evidence.add_argument("--parity-selection-receipt", required=True, type=Path)
+    evidence.add_argument("--parity-scores", required=True, type=Path)
+    evidence.add_argument("--parity-oracle-model-lock", required=True, type=Path)
+    evidence.add_argument("--parity-candidate-model-lock", required=True, type=Path)
+    evidence.add_argument("--parity-oracle-calibrator", required=True, type=Path)
+    evidence.add_argument("--parity-candidate-calibrator", required=True, type=Path)
+    evidence.add_argument("--parity-oracle-threshold", required=True, type=Path)
+    evidence.add_argument("--parity-candidate-threshold", required=True, type=Path)
+    evidence.add_argument("--benchmark-manifest", required=True, type=Path)
+    evidence.add_argument("--benchmark-papers", required=True, type=Path)
+    evidence.add_argument("--benchmark-record", action="append", default=[], type=Path)
+    evidence.add_argument("--soak-manifest", required=True, type=Path)
+    evidence.add_argument("--soak-papers", required=True, type=Path)
+    evidence.add_argument("--soak-record", required=True, type=Path)
+    evidence.add_argument("--hidden-attestation", type=Path)
+    evidence.add_argument("--output", required=True, type=Path)
 
     report = subcommands.add_parser(
         "report", help="plan, approve, run, or compare Stage 4b reports"
@@ -1015,6 +1047,8 @@ def main(
         return _finish(args, _stage2_evaluator_promote(args))
     if args.command == "stage2-release" and args.stage2_release_command == "assemble":
         return _finish(args, _stage2_release_assemble(args))
+    if args.command == "stage2-release" and args.stage2_release_command == "build-evidence":
+        return _finish(args, _stage2_release_build_evidence(args))
     if args.command == "report":
         return _finish(args, _report(args))
     if args.command == "verify-report":
@@ -1474,6 +1508,52 @@ def _stage2_release_assemble(args: argparse.Namespace) -> dict[str, Any]:
         "written": not args.dry_run,
         **result.summary(),
         "status": "validated" if args.dry_run else "complete",
+    }
+
+
+def _stage2_release_build_evidence(args: argparse.Namespace) -> dict[str, Any]:
+    if len(args.benchmark_record) != 6:
+        raise CliUsageError("stage2-release build-evidence requires exactly six --benchmark-record values")
+    values = {
+        "output_path": args.output,
+        "candidate_bundle_path": args.candidate,
+        "gold_manifest_path": args.gold_manifest,
+        "structured_manifest_path": args.structured_manifest,
+        "structured_records_path": args.structured_records,
+        "rationale_manifest_path": args.rationale_manifest,
+        "rationale_records_path": args.rationale_records,
+        "parity_manifest_path": args.parity_manifest,
+        "parity_workload_path": args.parity_workload,
+        "parity_selection_receipt_path": args.parity_selection_receipt,
+        "parity_scores_path": args.parity_scores,
+        "parity_oracle_model_lock_path": args.parity_oracle_model_lock,
+        "parity_candidate_model_lock_path": args.parity_candidate_model_lock,
+        "parity_oracle_calibrator_path": args.parity_oracle_calibrator,
+        "parity_candidate_calibrator_path": args.parity_candidate_calibrator,
+        "parity_oracle_threshold_path": args.parity_oracle_threshold,
+        "parity_candidate_threshold_path": args.parity_candidate_threshold,
+        "benchmark_manifest_path": args.benchmark_manifest,
+        "benchmark_papers_path": args.benchmark_papers,
+        "benchmark_record_paths": tuple(args.benchmark_record),
+        "soak_manifest_path": args.soak_manifest,
+        "soak_papers_path": args.soak_papers,
+        "soak_record_path": args.soak_record,
+        "hidden_attestation_path": args.hidden_attestation,
+    }
+    if args.dry_run:
+        build_stage2_release_evidence_index_bytes(**values)
+    else:
+        write_stage2_release_evidence_index(**values)
+    return {
+        "command": "stage2-release.build-evidence",
+        "dry_run": args.dry_run,
+        "evidence_type": (
+            "stage2_release_evidence" if args.hidden_attestation is not None
+            else "stage2_public_promotion_evidence"
+        ),
+        "output": str(args.output),
+        "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
     }
 
 

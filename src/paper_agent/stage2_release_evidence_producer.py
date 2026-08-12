@@ -69,6 +69,69 @@ def write_stage2_release_evidence_index(
     selects public-promotion mode.
     """
 
+    payload = build_stage2_release_evidence_index_bytes(
+        output_path=output_path,
+        candidate_bundle_path=candidate_bundle_path,
+        gold_manifest_path=gold_manifest_path,
+        structured_manifest_path=structured_manifest_path,
+        structured_records_path=structured_records_path,
+        rationale_manifest_path=rationale_manifest_path,
+        rationale_records_path=rationale_records_path,
+        parity_manifest_path=parity_manifest_path,
+        parity_workload_path=parity_workload_path,
+        parity_selection_receipt_path=parity_selection_receipt_path,
+        parity_scores_path=parity_scores_path,
+        parity_oracle_model_lock_path=parity_oracle_model_lock_path,
+        parity_candidate_model_lock_path=parity_candidate_model_lock_path,
+        parity_oracle_calibrator_path=parity_oracle_calibrator_path,
+        parity_candidate_calibrator_path=parity_candidate_calibrator_path,
+        parity_oracle_threshold_path=parity_oracle_threshold_path,
+        parity_candidate_threshold_path=parity_candidate_threshold_path,
+        benchmark_manifest_path=benchmark_manifest_path,
+        benchmark_papers_path=benchmark_papers_path,
+        benchmark_record_paths=benchmark_record_paths,
+        soak_manifest_path=soak_manifest_path,
+        soak_papers_path=soak_papers_path,
+        soak_record_path=soak_record_path,
+        hidden_attestation_path=hidden_attestation_path,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return output_path
+
+
+def build_stage2_release_evidence_index_bytes(
+    *,
+    output_path: Path,
+    candidate_bundle_path: Path,
+    gold_manifest_path: Path,
+    structured_manifest_path: Path,
+    structured_records_path: Path,
+    rationale_manifest_path: Path,
+    rationale_records_path: Path,
+    parity_manifest_path: Path,
+    parity_workload_path: Path,
+    parity_selection_receipt_path: Path,
+    parity_scores_path: Path,
+    parity_oracle_model_lock_path: Path,
+    parity_candidate_model_lock_path: Path,
+    parity_oracle_calibrator_path: Path,
+    parity_candidate_calibrator_path: Path,
+    parity_oracle_threshold_path: Path,
+    parity_candidate_threshold_path: Path,
+    benchmark_manifest_path: Path,
+    benchmark_papers_path: Path,
+    benchmark_record_paths: tuple[Path, Path, Path, Path, Path, Path],
+    soak_manifest_path: Path,
+    soak_papers_path: Path,
+    soak_record_path: Path,
+    hidden_attestation_path: Path | None = None,
+) -> bytes:
+    """Build and fully validate immutable release-evidence bytes without writing."""
+
     if os.path.lexists(output_path):
         raise FileExistsError(f"Stage 2 release evidence output already exists: {output_path}")
     release = load_stage2_benchmark_candidate(candidate_bundle_path)
@@ -141,12 +204,7 @@ def write_stage2_release_evidence_index(
         load_stage2_release_evidence_index_bytes(output_path.resolve(), payload)
     except (OSError, Stage2EvidenceError, ValueError) as error:
         raise Stage2EvidenceProducerError(f"release evidence inputs are invalid: {error}") from error
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("xb") as stream:
-        stream.write(payload)
-        stream.flush()
-        os.fsync(stream.fileno())
-    return output_path
+    return payload
 
 
 def _artifact_ref(path: Path, root: Path) -> dict[str, str]:
