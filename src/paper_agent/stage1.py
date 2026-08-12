@@ -97,6 +97,7 @@ class Stage1UnitReceipt:
     expected_total: int | None
     parser_raw_records: int | None
     parser_rejected_records: int | None
+    parser_excluded_records: int | None = None
     duplicate_external_ids: tuple[str, ...] = ()
     response_hashes: tuple[str, ...] = ()
     request_hashes: tuple[str, ...] = ()
@@ -341,6 +342,7 @@ def _collect_unit(
                 expected_total=0,
                 parser_raw_records=0,
                 parser_rejected_records=0,
+                parser_excluded_records=0,
                 field_coverage={field: 0 for field in _OUTPUT_FIELDS},
                 reasons=(
                     f"venue date_range is {date_range['start']} through {date_range['end']}",
@@ -393,16 +395,18 @@ def _collect_unit(
     expected_total = _consistent_integer(censuses, "expected_total", reasons)
     parser_raw = _consistent_integer(censuses, "parser_raw_records", reasons)
     parser_rejected = _consistent_integer(censuses, "parser_rejected_records", reasons)
+    parser_excluded = _consistent_integer(censuses, "parser_excluded_records", reasons)
     if expected_total is None:
         reasons.append("primary source did not provide an expected_total census")
     elif expected_total != len(unique):
         reasons.append(f"expected_total={expected_total}, unique_records={len(unique)}")
-    if parser_raw is None or parser_rejected is None:
-        reasons.append("primary parser did not provide raw/rejected record counts")
-    elif parser_raw - parser_rejected != expected_total:
+    if parser_raw is None or parser_rejected is None or parser_excluded is None:
+        reasons.append("primary parser did not provide raw/rejected/excluded record counts")
+    elif parser_raw - parser_rejected - parser_excluded != expected_total:
         reasons.append(
             "parser census does not reconcile: "
-            f"raw={parser_raw}, rejected={parser_rejected}, expected={expected_total}"
+            f"raw={parser_raw}, rejected={parser_rejected}, excluded={parser_excluded}, "
+            f"expected={expected_total}"
         )
     if parser_rejected:
         reasons.append(f"primary parser rejected {parser_rejected} record(s)")
@@ -450,6 +454,7 @@ def _collect_unit(
         expected_total=expected_total,
         parser_raw_records=parser_raw,
         parser_rejected_records=parser_rejected,
+        parser_excluded_records=parser_excluded,
         duplicate_external_ids=duplicates,
         response_hashes=response_hashes,
         request_hashes=request_hashes,

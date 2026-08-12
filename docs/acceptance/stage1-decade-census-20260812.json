@@ -22,6 +22,20 @@
       "parser_rejected_records": 0
     },
     {
+      "venue_id": "emnlp",
+      "provider": "acl_anthology",
+      "status": "complete",
+      "run_id": "711b00a4-6fdc-51a4-8ef7-3d767b6d3e9e",
+      "metadata_sha256": "0302a4f9340e77404bdb08e52a8a055cdadb19c6085fba80b243e00e66cc25ba",
+      "total_unique_records": 9269,
+      "annual_counts": {"2016": 270, "2017": 351, "2018": 584, "2019": 732, "2020": 787, "2021": 895, "2022": 941, "2023": 1176, "2024": 1447, "2025": 2086},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "explicit_non_paper_exclusions": 28,
+      "note": "Official ACL Anthology badges include proceedings frontmatter in some volumes; the receipt reconciles and excludes those records explicitly."
+    },
+    {
       "venue_id": "icml",
       "provider": "pmlr",
       "status": "complete",

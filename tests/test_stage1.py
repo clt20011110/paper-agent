@@ -69,6 +69,7 @@ class _Adapter:
                     "expected_total": 2,
                     "parser_raw_records": 2,
                     "parser_rejected_records": 0,
+                    "parser_excluded_records": 0,
                 }
                 if self.census
                 else {}

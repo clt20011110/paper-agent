@@ -50,7 +50,8 @@ approved response snapshots, or deterministic test adapters.
 
 Completeness is a membership claim, not a claim that every metadata field is
 non-empty. Each venue-year receipt records pagination termination, the source
-census, parser raw/rejected counts, stable-ID duplicates, field coverage, and
+census, parser raw/rejected/explicitly-excluded counts, stable-ID duplicates,
+field coverage, and
 response hashes. Missing abstracts or DOIs remain null with an explicit field
 status; they are never synthesized.
 

@@ -1,0 +1,16 @@
+{
+  "fixture_venue_id": "emnlp",
+  "entries": [{
+    "stable_id": "2024.emnlp-main.1",
+    "title": "EMNLP 2024 Fixture",
+    "authors": ["Ada Lovelace"],
+    "abstract": "Deterministic EMNLP evidence.",
+    "doi": "10.18653/v1/2024.emnlp-main.1",
+    "publication_date": "2024-11",
+    "venue": "EMNLP 2024",
+    "venue_id": "emnlp",
+    "landing_url": "https://aclanthology.org/2024.emnlp-main.1/"
+  }],
+  "next_cursor": "emnlp:page-2",
+  "raw_response_artifact_hash": "fixture-emnlp-2024"
+}

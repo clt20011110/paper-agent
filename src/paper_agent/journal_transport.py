@@ -359,6 +359,7 @@ def _census(provider: str, payload: Any) -> dict[str, int]:
         "expected_total": total,
         "parser_raw_records": total,
         "parser_rejected_records": 0,
+        "parser_excluded_records": 0,
         "page_parsed_records": parsed,
     }
 

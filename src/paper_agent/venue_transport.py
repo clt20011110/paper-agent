@@ -253,6 +253,7 @@ def _census(entries: list[dict[str, Any]], *, raw_records: int | None = None) ->
         "expected_total": len(entries),
         "parser_raw_records": raw,
         "parser_rejected_records": raw - len(entries),
+        "parser_excluded_records": 0,
     }
 
 
@@ -469,6 +470,11 @@ def _acl(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
     snapshot = str(parameters.get("snapshot_version") or "")
     if not re.fullmatch(r"[0-9a-f]{40}", snapshot):
         raise ValueError("acl_anthology requires a 40-character frozen snapshot_version")
+    venue_slug = str(parameters.get("venue_slug") or "acl").casefold()
+    if venue_slug != "acl":
+        return _acl_venue_index(
+            parameters, fetch, provider, snapshot, venue_slug, _year(parameters)
+        )
     requested = {str(value) for value in parameters.get("collections", ("main", "findings", "workshop"))}
     if not requested or not requested.issubset({"main", "findings", "workshop"}):
         raise ValueError("acl_anthology collections must contain main, findings, or workshop")
@@ -527,6 +533,150 @@ def _acl(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
     return VenueOperationResult({"entries": selected, "next_cursor": cursor, "census": _census(entries)}, tuple(bodies))
 
 
+def _acl_venue_index(
+    parameters: Mapping[str, Any],
+    fetch: VenueFetch,
+    provider: str,
+    snapshot: str,
+    venue_slug: str,
+    year: int,
+) -> VenueOperationResult:
+    if not re.fullmatch(r"[a-z0-9-]+", venue_slug):
+        raise ValueError("acl_anthology venue_slug must be lowercase alphanumeric")
+    allowed_tracks = tuple(str(value).casefold() for value in parameters.get("tracks", ("main",)))
+    if not allowed_tracks:
+        raise ValueError("acl_anthology tracks must not be empty")
+    index_url = f"https://aclanthology.org/venues/{venue_slug}/"
+    response = fetch(index_url, "acl-anthology-venue-index-html-v1")
+    volumes = _acl_index_volumes(response.body, venue_slug, year, allowed_tracks)
+    if not volumes:
+        raise ProviderRequestError(
+            f"acl_anthology: official {venue_slug} index has no selected volumes for {year}"
+        )
+    bodies = [response.body]
+    entries: list[dict[str, Any]] = []
+    expected_total = 0
+    raw_records = 0
+    excluded_records = 0
+    for volume_id, expected_count in volumes:
+        expected_total += expected_count
+        collection_id, native_volume_id = _acl_collection_volume(volume_id)
+        xml_url = (
+            f"https://raw.githubusercontent.com/acl-org/acl-anthology/{snapshot}"
+            f"/data/xml/{collection_id}.xml"
+        )
+        xml_response = fetch(xml_url, f"acl-anthology-xml-{snapshot}")
+        bodies.append(xml_response.body)
+        root = _acl_xml(xml_response.body)
+        selected_volumes = [
+            volume
+            for volume in root.findall("./volume")
+            if str(volume.attrib.get("id")) == native_volume_id
+        ]
+        if len(selected_volumes) != 1:
+            raise ProviderRequestError(
+                f"acl_anthology: pinned XML has {len(selected_volumes)} copies of {volume_id}"
+            )
+        volume = selected_volumes[0]
+        paper_count = len(volume.findall("./paper"))
+        frontmatter_count = len(volume.findall("./frontmatter"))
+        raw_records += paper_count + frontmatter_count
+        excluded_records += frontmatter_count
+        mapped = _acl_volume_entries(
+            root, (volume,), _acl_track(volume_id, venue_slug), year, snapshot
+        )
+        if len(mapped) + frontmatter_count != expected_count:
+            raise ProviderRequestError(
+                f"acl_anthology: {volume_id} badge={expected_count}, papers={len(mapped)}, "
+                f"frontmatter={frontmatter_count}"
+            )
+        entries.extend(mapped)
+    selected, cursor = _filtered_page(entries, parameters)
+    return VenueOperationResult(
+        {
+            "entries": selected,
+            "next_cursor": cursor,
+            "census": {
+                "expected_total": expected_total - excluded_records,
+                "parser_raw_records": raw_records,
+                "parser_rejected_records": raw_records - len(entries) - excluded_records,
+                "parser_excluded_records": excluded_records,
+            },
+        },
+        tuple(bodies),
+    )
+
+
+def _acl_index_volumes(
+    body: bytes, venue_slug: str, year: int, allowed_tracks: tuple[str, ...]
+) -> list[tuple[str, int]]:
+    root = _html(body, "acl_anthology")
+    event_href = f"/events/{venue_slug}-{year}/"
+    year_anchor = next(
+        (
+            node
+            for node in _nodes(root, "a")
+            if node.attributes.get("href") == event_href and node.text == str(year)
+        ),
+        None,
+    )
+    if year_anchor is None:
+        return []
+    container = next(
+        (
+            node
+            for node in _walk(root)
+            if node.has_class("row") and year_anchor in tuple(_walk(node))
+        ),
+        None,
+    )
+    if container is None:
+        raise ProviderRequestError("acl_anthology: venue index year row is malformed")
+    volumes: list[tuple[str, int]] = []
+    for item in _nodes(container, "li"):
+        anchor = next(
+            (
+                value
+                for value in _nodes(item, "a")
+                if re.fullmatch(r"/volumes/[^/]+/", value.attributes.get("href", ""))
+            ),
+            None,
+        )
+        if anchor is None:
+            continue
+        volume_id = anchor.attributes["href"].strip("/").split("/", 1)[1]
+        track = _acl_track(volume_id, venue_slug)
+        if track not in allowed_tracks:
+            continue
+        count_match = re.search(r"\b(\d[\d,]*)\s+papers\b", item.text, re.I)
+        if count_match is None:
+            raise ProviderRequestError(f"acl_anthology: {volume_id} has no official paper count")
+        volumes.append((volume_id, int(count_match.group(1).replace(",", ""))))
+    return volumes
+
+
+def _acl_collection_volume(volume_id: str) -> tuple[str, str]:
+    if re.fullmatch(r"[A-Z]\d{2}-\d+", volume_id):
+        return volume_id.split("-", 1)[0], volume_id.split("-", 1)[1]
+    if "." not in volume_id:
+        raise ProviderRequestError(f"acl_anthology: unsupported volume id {volume_id}")
+    return volume_id.rsplit("-", 1) if "-" in volume_id else (volume_id, "main")
+
+
+def _acl_track(volume_id: str, venue_slug: str) -> str:
+    lower = volume_id.casefold()
+    for track in ("main", "long", "short", "demo", "demos", "industry", "tutorial", "tutorials", "srw"):
+        if lower.endswith(f"-{track}"):
+            return track
+    if re.fullmatch(r"[a-z]\d{2}-1", lower):
+        return "main"
+    if re.fullmatch(r"[a-z]\d{2}-2", lower):
+        return "tutorials"
+    if re.fullmatch(r"[a-z]\d{2}-3", lower):
+        return "demo"
+    return venue_slug
+
+
 def _acl_xml(body: bytes) -> ElementTree.Element:
     try:
         return ElementTree.fromstring(body)
@@ -573,8 +723,14 @@ def _acl_volume_entries(
                     "year": year,
                     "venue": booktitle,
                     "landing_url": f"https://aclanthology.org/{stable}/",
+                    "pdf_url": f"https://aclanthology.org/{stable}.pdf",
+                    "publication_version": "published",
+                    "license": "CC-BY-4.0",
+                    "host_type": "official",
+                    "access_basis": "open_license",
                     "collection": collection,
                     "volume": volume_id,
+                    "pages": _xml_text(paper.find("./pages")) or None,
                     "snapshot_version": snapshot,
                 }
             )
@@ -786,6 +942,7 @@ def _openreview(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch
                 "expected_total": count,
                 "parser_raw_records": count,
                 "parser_rejected_records": 0,
+                "parser_excluded_records": 0,
             },
         },
         (response.body,),
