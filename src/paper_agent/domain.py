@@ -405,6 +405,7 @@ class SourceBatch(Model):
     error: str | None = None
     raw_response_artifact_hash: str | None = None
     request_audit: tuple[Mapping[str, Any], ...] = ()
+    census: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

@@ -59,6 +59,7 @@ from .query_plan import (
 )
 from .processing import ArtifactProcessingPolicy, ProcessingGate
 from .providers.builtin import manifest_from_document
+from .providers.builtin import create_builtin
 from .providers.plugins import (
     PluginAllowlistEntry,
     PluginRegistry,
@@ -78,6 +79,15 @@ from .report_execution_service import ReportExecutionService
 from .report_input_service import ReportInputRequest, ReportInputService
 from .report_plan import ReportPlanBundle
 from .repository import PaperRepository
+from .http_transport import ControlledHTTPTransport
+from .stage1 import (
+    CensusCapturingAdapter,
+    Stage1IncompleteError,
+    Stage1Request,
+    collect_stage1_metadata,
+    venue_catalog_document,
+    write_stage1_result,
+)
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import (
     Stage2ReleaseError,
@@ -336,6 +346,30 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     crawl.add_argument("--snapshot", action="append", default=[], metavar="PROVIDER=PATH")
     crawl.add_argument("--stage2-release", type=Path, help="passed local Stage 2 release manifest")
     crawl.add_argument("--historical-replay", action="store_true")
+    stage1 = subcommands.add_parser(
+        "stage1", help="collect complete venue metadata without Stage 2 or a QueryPlan"
+    )
+    stage1_commands = stage1.add_subparsers(dest="stage1_command", required=True)
+    stage1_list = stage1_commands.add_parser(
+        "list-venues", help="list registered venue identifiers and source boundaries"
+    )
+    stage1_list.add_argument("--type", choices=("conference", "journal", "repository"))
+    stage1_collect = stage1_commands.add_parser(
+        "collect", help="collect a venue-by-year metadata census"
+    )
+    stage1_collect.add_argument("--venue", action="append", required=True)
+    stage1_collect.add_argument("--year-from", required=True, type=int)
+    stage1_collect.add_argument("--year-to", required=True, type=int)
+    stage1_collect.add_argument("--output", required=True, type=Path)
+    stage1_collect.add_argument("--receipt", type=Path)
+    stage1_collect.add_argument("--contact")
+    stage1_collect.add_argument("--page-size", type=int, default=500)
+    stage1_collect.add_argument("--max-workers", type=int, default=4)
+    stage1_collect.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="publish records even when the receipt cannot prove completeness",
+    )
     filter_command = subcommands.add_parser(
         "filter", help="screen canonical papers with an approved local Stage 2 release"
     )
@@ -945,6 +979,16 @@ def main(
                 historical_replay=args.historical_replay,
             )
         )
+    if args.command == "stage1" and args.stage1_command == "list-venues":
+        venues = venue_catalog_document()
+        if args.type:
+            venues = [venue for venue in venues if venue["venue_type"] == args.type]
+        return _finish(
+            args,
+            {"command": "stage1.list-venues", "status": "complete", "venues": venues},
+        )
+    if args.command == "stage1" and args.stage1_command == "collect":
+        return _finish(args, _stage1_collect(args))
     if args.command == "filter":
         return _finish(args, _filter(args))
     if (
@@ -3628,6 +3672,85 @@ def _crawl(
     }
 
 
+def _stage1_collect(args: argparse.Namespace) -> dict[str, Any]:
+    contact = str(args.contact or os.environ.get("PAPER_AGENT_CONTACT") or "").strip()
+    if not contact:
+        raise ValueError("stage1 collect requires --contact or PAPER_AGENT_CONTACT")
+    catalog = load_catalog()
+    transport = ControlledHTTPTransport(contact, timeout_seconds=30)
+    request = Stage1Request(
+        venue_ids=tuple(args.venue),
+        year_from=args.year_from,
+        year_to=args.year_to,
+        page_size=args.page_size,
+        max_workers=args.max_workers,
+        strict=not args.allow_incomplete,
+    )
+    result = collect_stage1_metadata(
+        request,
+        catalog=catalog,
+        run_id=args.run_id,
+        # Each venue-year owns its audit buffer/cache while sharing the same
+        # ProviderRuntime, so source QPS/concurrency limits remain global and
+        # response-audit slicing remains thread-safe.
+        adapter_factory=lambda descriptor: _stage1_live_adapter(
+            descriptor,
+            contact=contact,
+            runtime=transport.runtime,
+        ),
+    )
+    try:
+        published = write_stage1_result(
+            result,
+            output_path=args.output,
+            receipt_path=args.receipt,
+            allow_incomplete=args.allow_incomplete,
+        )
+    except Stage1IncompleteError as error:
+        blocked = error.result
+        return {
+            "command": "stage1.collect",
+            "run_id": blocked.run_id,
+            "status": "incomplete",
+            "record_count": len(blocked.records),
+            "output": None,
+            "receipt": str(blocked.receipt_path),
+            "failed_units": [
+                {
+                    "venue_id": unit.venue_id,
+                    "year": unit.year,
+                    "status": unit.status,
+                    "reasons": list(unit.reasons),
+                }
+                for unit in blocked.receipt.units
+                if unit.status != "complete"
+            ],
+        }
+    return {
+        "command": "stage1.collect",
+        "run_id": published.run_id,
+        "status": published.status,
+        "record_count": len(published.records),
+        "output": str(published.output_path),
+        "receipt": str(published.receipt_path),
+        "metadata_sha256": published.receipt.metadata_sha256,
+    }
+
+
+def _stage1_live_adapter(
+    descriptor: Any, *, contact: str, runtime: Any
+) -> CensusCapturingAdapter:
+    unit_transport = ControlledHTTPTransport(
+        contact,
+        timeout_seconds=30,
+        runtime=runtime,
+    )
+    return CensusCapturingAdapter(
+        create_builtin(descriptor.provider, unit_transport),
+        unit_transport,
+    )
+
+
 def _assert_venue_only_plan(
     plan: Mapping[str, Any],
     venue_ids: Sequence[str],
@@ -3998,7 +4121,7 @@ def _command_from_argv(argv: Sequence[str]) -> str:
 
 
 def _command_stage(command: str) -> str:
-    if command.startswith(("search", "crawl", "import-seeds", "import")):
+    if command.startswith(("stage1", "search", "crawl", "import-seeds", "import")):
         return "stage1"
     if command.startswith(("filter", "benchmark-stage2", "stage2-")):
         return "stage2"

@@ -1,9 +1,48 @@
 # Paper Agent v2 — 可执行任务规格
 
-> 状态：核心实现、20/20 venue 的受控 Stage 1→4b 流程验收，以及 Stage 2 source/evidence/release 代码链已完成；Stage 2 已冻结无标签 600-pair manifest，但人工双标、隐藏真实晋级与性能/soak 生产门禁仍未完成
+> 状态：当前最高优先级已切换为 Stage 1 十年完整性工程；既有 Stage 1→4b 功能链保留，但单记录回放不得继续作为 venue-year 全量无遗漏证据
 > 规格日期：2026-08-09
 > 实施基线：feature/crawler-adapters
 > 本文用途：后续实现、验收和回归测试的唯一任务依据
+
+## 0. 当前最高优先级：Stage 1 十年完整性与独立接口
+
+当前目标是验证并完善所有 Stage 1 爬取功能，扩充机器学习、化学和 EDA 的顶级/权威会议及期刊，并对 2016–2025 每一个 `venue × year` 建立可重复的无遗漏证据。2026 作为未闭合年度只能显式请求，不计入十年基线。
+
+Stage 1 必须提供不依赖 QueryPlan、审批、Stage 2、主题筛选、PDF 或模型调用的独立 Python API 和 CLI：
+
+~~~bash
+paper-agent stage1 list-venues
+paper-agent stage1 collect \
+  --venue neurips --venue nature_chemistry \
+  --year-from 2016 --year-to 2025 \
+  --contact operator@example.org \
+  --output stage1-metadata.jsonl
+~~~
+
+独立接口将年份范围展开成互不混淆的 `venue × year` 工作单元，可在 provider 全局限流之下批量并发。输出至少包含标题、摘要、作者、DOI、日期/年份、venue、落地页、公开 PDF URL（来源存在时）、卷期页码、关键词、官方 membership、字段状态和字段级 provenance。缺失 DOI 或摘要不得伪造，必须区分 `present`、`legitimately_absent`、`unavailable_at_primary` 与 `enrichment_failed`。
+
+“无遗漏”采用 fail-closed 定义，并与“字段全部非空”分开验收。每个 venue-year 必须生成 completeness receipt，且仅在以下条件全部成立时标为 `complete`：
+
+- 官方 proceedings/publisher 或声明的权威注册枚举源给出可审计 census；
+- 所有分页抵达 terminal cursor，无 cursor 环、超时、`PARTIAL` 或静默截断；
+- 原始候选数 = 成功解析数 + 有明细的拒绝数，且未补偿的拒绝数为零；
+- 稳定 ID 无重复，请求年份、文档类型和 venue membership 全部正确；
+- 枚举唯一记录数与官方/权威总数一致；
+- 原始响应、请求审计、query hash、response hash 和解析版本均被冻结；
+- 与 Crossref、DBLP、OpenAlex 等独立核对源的差异逐条解释，不以聚合搜索结果自动提升 official membership。
+
+默认严格模式下，任一单元无法证明完整时只发布 receipt，不发布可能缺失的 metadata 文件。`--allow-incomplete` 仅用于诊断，必须在结果和事件码中保留 `incomplete`，不能被下游当作完整全集。
+
+venue 扩展顺序冻结如下：
+
+1. 修复现有 20 个 venue 的逐年展开、全分页、解析收支和历史路由；
+2. 机器学习优先加入 AISTATS、UAI、EMNLP、NAACL、JMLR、TMLR、TPAMI；
+3. 化学优先加入 JACS、Angewandte Chemie、Chemical Science、ACS Central Science、JCIM、JCTC、Nature Synthesis；
+4. EDA 优先加入 DATE、ASP-DAC、ISPD、TODAES、TVLSI、JSSC，并补齐 DAC/ICCAD 2016–2025；
+5. 每个新增 venue 必须同时提交 descriptor、来源边界、fixture/parser 契约、异常测试和十年 live census 报告；不能只增加名称。
+
+既有 `docs/acceptance/venue-e2e-matrix-20260812.*` 仅证明 20 个 venue 的 provider-shaped 单记录功能链，不证明实时 transport 或十年全集完整。既有单行 Crossref smoke 同样不能作为总量证据。
 
 ## 1. 目标与交付边界
 

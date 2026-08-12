@@ -66,6 +66,7 @@ def execute_journal_operation(
         {
             "entries": _entries(provider, payload),
             "next_cursor": _next_cursor(provider, payload, parameters),
+            "census": _census(provider, payload),
         },
         (response.body,),
     )
@@ -99,6 +100,7 @@ class JournalHTTPTransport:
             "entries": _entries(provider, payload),
             "next_cursor": _next_cursor(provider, payload, parameters),
             "raw_response_artifact_hash": self.last_response_sha256,
+            "census": _census(provider, payload),
         }
 
     def url_for(self, provider: str, parameters: Mapping[str, Any]) -> str:
@@ -332,6 +334,33 @@ def _next_cursor(provider: str, payload: Any, parameters: Mapping[str, Any]) -> 
         total = int(result.get("opensearch:totalResults") or 0)
         return str(start + sent) if sent and start + sent < total else None
     return None
+
+
+def _census(provider: str, payload: Any) -> dict[str, int]:
+    """Return publisher-reported totals when the endpoint exposes them."""
+
+    if provider == "ieee_xplore":
+        total = int(payload.get("totalfound") or 0)
+        parsed = len(payload.get("articles", ()))
+    elif provider == "springer_nature":
+        result = next(iter(payload.get("result", ())), {})
+        total = int(result.get("total") or 0)
+        parsed = len(payload.get("records", ()))
+    elif provider == "cell_press":
+        result = payload.get("search-results", {})
+        total = int(result.get("opensearch:totalResults") or 0)
+        parsed = len(result.get("entry", ()))
+    else:
+        # The Science annual HTML route currently exposes neither a reliable
+        # total nor a terminal page token, so strict Stage 1 must leave it
+        # unproven instead of treating one non-empty page as complete.
+        return {}
+    return {
+        "expected_total": total,
+        "parser_raw_records": total,
+        "parser_rejected_records": 0,
+        "page_parsed_records": parsed,
+    }
 
 
 def _rss_entries(body: bytes) -> dict[str, list[dict[str, Any]]]:

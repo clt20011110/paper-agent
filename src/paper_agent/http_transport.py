@@ -177,6 +177,7 @@ class ControlledHTTPTransport:
     last_request_url: str | None = field(default=None, init=False)
     last_response_sha256: str | None = field(default=None, init=False)
     last_response_body: bytes | None = field(default=None, init=False, repr=False)
+    last_payload: Mapping[str, Any] | None = field(default=None, init=False, repr=False)
     request_audit: list[dict[str, Any]] = field(default_factory=list, init=False)
     request_snapshots: list[bytes] = field(default_factory=list, init=False, repr=False)
 
@@ -267,6 +268,7 @@ class ControlledHTTPTransport:
             response["status"] = "success"
         response["raw_response_artifact_hash"] = self.last_response_sha256
         response["_request_audit"] = tuple(dict(item) for item in self.request_audit[audit_start:])
+        self.last_payload = response
         return response
 
     def _operation(

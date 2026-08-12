@@ -245,6 +245,17 @@ def _filtered_page(entries: list[dict[str, Any]], parameters: Mapping[str, Any])
     return _page([entry for entry in entries if _in_window(entry, parameters)], parameters)
 
 
+def _census(entries: list[dict[str, Any]], *, raw_records: int | None = None) -> dict[str, int]:
+    """Reconcile an authoritative container before local pagination."""
+
+    raw = len(entries) if raw_records is None else raw_records
+    return {
+        "expected_total": len(entries),
+        "parser_raw_records": raw,
+        "parser_rejected_records": raw - len(entries),
+    }
+
+
 def _absolute(base: str, href: str) -> str:
     return urljoin(base, href)
 
@@ -329,7 +340,7 @@ def _neurips(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -
     if not entries:
         raise ProviderRequestError("neurips_proceedings: official page contained no conference papers")
     selected, cursor = _filtered_page(entries, parameters)
-    return VenueOperationResult({"entries": selected, "next_cursor": cursor}, (response.body,))
+    return VenueOperationResult({"entries": selected, "next_cursor": cursor, "census": _census(entries)}, (response.body,))
 
 
 @register_venue_handler("pmlr")
@@ -397,7 +408,7 @@ def _pmlr(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
     if not entries:
         raise ProviderRequestError("pmlr: official volume contained no papers")
     selected, cursor = _filtered_page(entries, parameters)
-    return VenueOperationResult({"entries": selected, "next_cursor": cursor}, (response.body,))
+    return VenueOperationResult({"entries": selected, "next_cursor": cursor, "census": _census(entries)}, (response.body,))
 
 
 def _pmlr_publication_date(root: _HTMLNode, year: int) -> str:
@@ -478,7 +489,7 @@ def _acl(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
     if not entries:
         raise ProviderRequestError("acl_anthology: pinned XML contained no matching papers")
     selected, cursor = _filtered_page(entries, parameters)
-    return VenueOperationResult({"entries": selected, "next_cursor": cursor}, tuple(bodies))
+    return VenueOperationResult({"entries": selected, "next_cursor": cursor, "census": _census(entries)}, tuple(bodies))
 
 
 def _acl_xml(body: bytes) -> ElementTree.Element:
@@ -598,7 +609,7 @@ def _cvf(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
     if not entries:
         raise ProviderRequestError("cvf_open_access: official page contained no papers")
     selected, cursor = _filtered_page(entries, parameters)
-    return VenueOperationResult({track: selected, "next_cursor": cursor}, (response.body,))
+    return VenueOperationResult({track: selected, "next_cursor": cursor, "census": _census(entries)}, (response.body,))
 
 
 def _cvf_publication_date(bibtex: str, year: int) -> str:
@@ -649,7 +660,7 @@ def _ijcai(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> 
     if not entries:
         raise ProviderRequestError("ijcai_proceedings: official page contained no papers")
     selected, cursor = _filtered_page(entries, parameters)
-    return VenueOperationResult({"entries": selected, "next_cursor": cursor}, (response.body,))
+    return VenueOperationResult({"entries": selected, "next_cursor": cursor, "census": _census(entries)}, (response.body,))
 
 
 @register_venue_handler("openreview")
@@ -732,7 +743,18 @@ def _openreview(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch
     entries = [entry for entry in entries if _in_window(entry, parameters)]
     count = int(payload.get("count") or len(notes))
     next_cursor = str(offset + len(notes)) if notes and offset + len(notes) < count else None
-    return VenueOperationResult({"notes": entries, "next_cursor": next_cursor}, (response.body,))
+    return VenueOperationResult(
+        {
+            "notes": entries,
+            "next_cursor": next_cursor,
+            "census": {
+                "expected_total": count,
+                "parser_raw_records": count,
+                "parser_rejected_records": 0,
+            },
+        },
+        (response.body,),
+    )
 
 
 def _openreview_value(value: Any) -> Any:
@@ -821,7 +843,10 @@ def _aaai(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> V
             {"id": issue_id, "articles": [article for current, article in selected if current == issue_id]}
         )
     next_cursor = str(start + len(selected)) if start + len(selected) < len(all_articles) else None
-    return VenueOperationResult({"issues": issues_payload, "next_cursor": next_cursor}, tuple(bodies))
+    return VenueOperationResult(
+        {"issues": issues_payload, "next_cursor": next_cursor, "census": _census([article for _, article in all_articles])},
+        tuple(bodies),
+    )
 
 
 def _aaai_archive(body: bytes, url: str, year: int) -> tuple[list[dict[str, str]], set[int], str | None]:
@@ -1108,6 +1133,7 @@ def _eda(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -> Ve
             "incomplete_reasons": list(dict.fromkeys(errors)),
             "warnings": list(dict.fromkeys(warnings)),
             "unavailable_upstreams": list(dict.fromkeys(unavailable_upstreams)),
+            "census": _census(resolved),
         },
         tuple(bodies),
     )
