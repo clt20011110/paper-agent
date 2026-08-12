@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-tuning-selection-input.schema.json",
+  "title": "Frozen Stage 2 tuning selection input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "candidates"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "candidates": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"$ref": "#/$defs/candidate"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "configuration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["document_batch_size", "adjudicator_concurrency"],
+      "properties": {"document_batch_size": {"enum": [16, 32, 64]}, "adjudicator_concurrency": {"enum": [4, 8, 16]}}
+    },
+    "measurement": {
+      "type": "object", "additionalProperties": false, "required": ["record"],
+      "properties": {"record": {"$ref": "#/$defs/artifact"}}
+    },
+    "selectionInput": {
+      "type": "object", "additionalProperties": false, "required": ["record", "reason"],
+      "properties": {"record": {"$ref": "#/$defs/artifact"}, "reason": {"type": "string", "minLength": 1}}
+    },
+    "candidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["configuration", "candidate", "benchmark_manifest", "normal", "stress"],
+      "properties": {
+        "configuration": {"$ref": "#/$defs/configuration"},
+        "candidate": {"$ref": "#/$defs/artifact"},
+        "benchmark_manifest": {"$ref": "#/$defs/artifact"},
+        "normal": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/measurement"}},
+        "stress": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/measurement"}},
+        "selection_input": {"$ref": "#/$defs/selectionInput"},
+        "soak_manifest": {"$ref": "#/$defs/artifact"},
+        "soak": {"$ref": "#/$defs/measurement"}
+      },
+      "oneOf": [
+        {"required": ["selection_input"]},
+        {"required": ["soak_manifest", "soak"]}
+      ]
+    }
+  }
+}

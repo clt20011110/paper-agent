@@ -220,10 +220,17 @@ def test_assembly_recomputes_the_full_public_evidence_gates(
 ) -> None:
     evidence_path = assembly_bundle.root / "stage2-release-evidence.json"
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    worklist_path = assembly_bundle.root / "rationale-worklist.json"
+    worklist = json.loads(worklist_path.read_text(encoding="utf-8"))
+    for row in worklist["rows"][:6]:
+        row["evidence_supported"] = False
+    _write_json(worklist_path, worklist)
+    evidence["public_gates"]["rationale"]["worklist"] = _ref(worklist_path)
     records_path = assembly_bundle.root / "rationale-records.json"
     records = json.loads(records_path.read_text(encoding="utf-8"))
     for record in records["records"][:6]:
         record["evidence_supported"] = False
+    records["worklist_sha256"] = evidence["public_gates"]["rationale"]["worklist"]["sha256"]
     _write_json(records_path, records)
     evidence["public_gates"]["rationale"]["records"] = _ref(records_path)
     _write_json(evidence_path, evidence)

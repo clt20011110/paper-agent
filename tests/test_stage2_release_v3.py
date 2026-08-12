@@ -551,10 +551,17 @@ def test_v3_rejects_evidence_ref_drift(v3_bundle: V3Bundle) -> None:
 def test_v3_rejects_hash_valid_recomputed_public_gate_failure(v3_bundle: V3Bundle) -> None:
     evidence_path = v3_bundle.root / "stage2-release-evidence.json"
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    worklist_path = v3_bundle.root / "rationale-worklist.json"
+    worklist = json.loads(worklist_path.read_text(encoding="utf-8"))
+    for row in worklist["rows"][:6]:
+        row["evidence_supported"] = False
+    _write_json(worklist_path, worklist)
+    evidence["public_gates"]["rationale"]["worklist"] = _ref(worklist_path)
     records_path = v3_bundle.root / "rationale-records.json"
     records = json.loads(records_path.read_text(encoding="utf-8"))
     for record in records["records"][:6]:
         record["evidence_supported"] = False
+    records["worklist_sha256"] = evidence["public_gates"]["rationale"]["worklist"]["sha256"]
     _write_json(records_path, records)
     evidence["public_gates"]["rationale"]["records"] = _ref(records_path)
     _write_json(evidence_path, evidence)

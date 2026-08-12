@@ -48,7 +48,13 @@ from paper_agent.stage2_parity_oracle_trust import (
     ParityOracleTrust,
     parity_oracle_trust_from_document,
 )
-from paper_agent.stage2_public_gates import verify_public_stage2_gates
+from paper_agent.stage2_public_gates import _verify_structured_replay, verify_public_stage2_gates
+from paper_agent.stage2_rationale_workflow import (
+    EVIDENCE_SUPPORT_RUBRIC,
+    EVIDENCE_SUPPORT_RUBRIC_HASH,
+    SEVERE_FABRICATION_RUBRIC,
+    SEVERE_FABRICATION_RUBRIC_HASH,
+)
 from paper_agent.stage2_pipeline import PathCalibration, Stage2Paper, Stage2Profile
 from paper_agent.stage2_prompt_contract import (
     adjudication_messages,
@@ -303,7 +309,9 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
         for name in (
             "structured-manifest",
             "structured-records",
+            "structured-papers",
             "rationale-manifest",
+            "rationale-worklist",
             "rationale-records",
             "parity-manifest",
             "parity-workload",
@@ -335,9 +343,11 @@ def _index(tmp_path: Path) -> tuple[Path, dict]:
             "structured_replay": {
                 "manifest": refs["structured-manifest"],
                 "records": refs["structured-records"],
+                "papers": refs["structured-papers"],
             },
             "rationale": {
                 "manifest": refs["rationale-manifest"],
+                "worklist": refs["rationale-worklist"],
                 "records": refs["rationale-records"],
             },
             "parity": {
@@ -606,7 +616,10 @@ def _install_public_gate_evidence(
     replay_manifest = StructuredReplayManifest(
         1,
         tuple(replay_ids),
-        "5" * 64,
+        content_hash({
+            "schema_version": 1,
+            "papers": _benchmark_paper_document(replay_ids, set())["papers"],
+        }),
         config_hash,
         model_hashes["qwen"],
         profile.prompt_hash,
@@ -638,6 +651,10 @@ def _install_public_gate_evidence(
             "kind": "stage2_structured_replay_records",
             "records": replay_records,
         }),
+        "papers": _write(
+            tmp_path / "structured-papers.json",
+            _benchmark_paper_document(replay_ids, set()),
+        ),
     }
 
     rationale_cases = tuple(
@@ -656,18 +673,52 @@ def _install_public_gate_evidence(
         rationale_cases,
         "9" * 64,
         model_hashes["qwen"],
-        "a" * 64,
-        "b" * 64,
+        EVIDENCE_SUPPORT_RUBRIC_HASH,
+        SEVERE_FABRICATION_RUBRIC_HASH,
     )
+    rationale_worklist = {
+        "schema_version": "1",
+        "kind": "stage2_human_rationale_audit_worklist",
+        "manifest_hash": rationale_manifest.hash(),
+        "reviewer_id": "reviewer-7",
+        "evidence_support_rubric_hash": EVIDENCE_SUPPORT_RUBRIC_HASH,
+        "severe_fabrication_rubric_hash": SEVERE_FABRICATION_RUBRIC_HASH,
+        "evidence_support_rubric": EVIDENCE_SUPPORT_RUBRIC,
+        "severe_fabrication_rubric": SEVERE_FABRICATION_RUBRIC,
+        "rows": [
+            {
+                "pair_id": item.pair_id,
+                "stratum": item.stratum.value,
+                "language": item.language,
+                "rationale_artifact_hash": item.rationale_artifact_hash,
+                "evidence": f"evidence for {item.pair_id}",
+                "rationale": f"rationale for {item.pair_id}",
+                "evidence_supported": True,
+                "severe_fabrication": False,
+                "content_hash": content_hash({
+                    "pair_id": item.pair_id,
+                    "stratum": item.stratum.value,
+                    "language": item.language,
+                    "rationale_artifact_hash": item.rationale_artifact_hash,
+                    "evidence": f"evidence for {item.pair_id}",
+                    "rationale": f"rationale for {item.pair_id}",
+                }),
+            }
+            for item in rationale_cases
+        ],
+    }
+    rationale_worklist_ref = _write(tmp_path / "rationale-worklist.json", rationale_worklist)
     rationale_records = [
         RationaleAuditRecord(item.pair_id, rationale_manifest.hash(), True, False).document()
         for item in rationale_cases
     ]
     index_document["public_gates"]["rationale"] = {
         "manifest": _write(tmp_path / "rationale-manifest.json", rationale_manifest.document()),
+        "worklist": rationale_worklist_ref,
         "records": _write(tmp_path / "rationale-records.json", {
             "schema_version": "1",
             "kind": "stage2_rationale_audit_records",
+            "worklist_sha256": rationale_worklist_ref["sha256"],
             "records": rationale_records,
         }),
     }
@@ -1064,6 +1115,24 @@ def test_public_stage2_gates_are_recomputed_from_raw_evidence(tmp_path: Path) ->
     assert result.gates["soak"].metrics["request_count"] == 10_000
 
 
+def test_structured_replay_verifier_recomputes_frozen_paper_corpus(
+    tmp_path: Path,
+) -> None:
+    path, document = _index(tmp_path)
+    profile = _public_profile(tmp_path, document)
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
+    source = tmp_path / "structured-papers.json"
+    papers = json.loads(source.read_text(encoding="utf-8"))
+    papers["papers"][0]["title"] = "rewritten after replay"
+    document["public_gates"]["structured_replay"]["papers"] = _write(source, papers)
+    path.write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(Stage2EvidenceError, match="papers do not match manifest corpus hash"):
+        _verify_structured_replay(
+            load_stage2_release_evidence_index(path), profile
+        )
+
+
 def test_public_verifier_rejects_untrusted_parity_oracle(tmp_path: Path) -> None:
     path, document = _index(tmp_path)
     profile = _public_profile(tmp_path, document)
@@ -1177,10 +1246,16 @@ def test_public_stage2_gates_ignore_hash_valid_but_failing_rationale_claims(
     path, document = _index(tmp_path)
     profile = _public_profile(tmp_path, document)
     _install_public_gate_evidence(tmp_path, path, document, profile=profile)
+    worklist_path = tmp_path / "rationale-worklist.json"
+    worklist = json.loads(worklist_path.read_text(encoding="utf-8"))
+    for item in worklist["rows"][:6]:
+        item["evidence_supported"] = False
+    document["public_gates"]["rationale"]["worklist"] = _write(worklist_path, worklist)
     records_path = tmp_path / "rationale-records.json"
     records = json.loads(records_path.read_text(encoding="utf-8"))
     for item in records["records"][:6]:
         item["evidence_supported"] = False
+    records["worklist_sha256"] = document["public_gates"]["rationale"]["worklist"]["sha256"]
     document["public_gates"]["rationale"]["records"] = _write(records_path, records)
     path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -1193,6 +1268,25 @@ def test_public_stage2_gates_ignore_hash_valid_but_failing_rationale_claims(
     assert result.gates["rationale"].gate.failures == (
         "rationale evidence support < 95%",
     )
+
+
+def test_public_stage2_gates_reject_rationale_records_not_reproducible_from_worklist(
+    tmp_path: Path,
+) -> None:
+    path, document = _index(tmp_path)
+    profile = _public_profile(tmp_path, document)
+    _install_public_gate_evidence(tmp_path, path, document, profile=profile)
+    records_path = tmp_path / "rationale-records.json"
+    records = json.loads(records_path.read_text(encoding="utf-8"))
+    records["records"][0]["evidence_supported"] = False
+    document["public_gates"]["rationale"]["records"] = _write(records_path, records)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(Stage2EvidenceError, match="do not reproduce"):
+        verify_public_stage2_gates(
+            load_stage2_release_evidence_index(path), profile=profile,
+            oracle_trust=_oracle_trust(tmp_path, document),
+        )
 
 
 def test_public_stage2_gates_reject_rewritten_benchmark_memory_summary(

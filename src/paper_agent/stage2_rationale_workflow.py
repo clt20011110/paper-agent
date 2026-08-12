@@ -202,7 +202,11 @@ def import_completed_rationale_audit(
 ) -> tuple[RationaleAuditRecord, ...]:
     """Import explicit human labels; blank or non-boolean labels are rejected."""
 
-    if worklist.get("kind") != "stage2_human_rationale_audit_worklist":
+    if set(worklist) != {
+        "schema_version", "kind", "manifest_hash", "reviewer_id",
+        "evidence_support_rubric_hash", "severe_fabrication_rubric_hash",
+        "evidence_support_rubric", "severe_fabrication_rubric", "rows",
+    } or worklist.get("schema_version") != "1" or worklist.get("kind") != "stage2_human_rationale_audit_worklist":
         raise ValueError("not a Stage 2 human rationale audit worklist")
     if not isinstance(worklist.get("reviewer_id"), str) or not worklist["reviewer_id"].strip():
         raise ValueError("rationale audit worklist reviewer_id is required")
@@ -244,12 +248,15 @@ def import_completed_rationale_audit(
 
 def rationale_audit_records_document(
     records: Sequence[RationaleAuditRecord],
+    *,
+    worklist_sha256: str,
 ) -> dict[str, Any]:
     """Return the existing ``stage2-rationale-audit-records`` schema shape."""
 
     document = {
         "schema_version": "1",
         "kind": "stage2_rationale_audit_records",
+        "worklist_sha256": worklist_sha256,
         "records": [record.document() for record in records],
     }
     validate(document, "stage2-rationale-audit-records.schema.json")
@@ -262,6 +269,7 @@ def write_rationale_audit_artifacts(
     *,
     manifest_path: Path,
     records_path: Path,
+    worklist_sha256: str,
 ) -> None:
     """Publish no-replace artifacts, with records visible before the manifest."""
 
@@ -271,7 +279,9 @@ def write_rationale_audit_artifacts(
         raise FileExistsError("rationale audit output already exists")
     manifest_document = frozen.manifest.document()
     validate(manifest_document, "stage2-rationale-audit-manifest.schema.json")
-    records_document = rationale_audit_records_document(records)
+    records_document = rationale_audit_records_document(
+        records, worklist_sha256=worklist_sha256
+    )
     _write_json_no_replace(records_path, records_document)
     _write_json_no_replace(manifest_path, manifest_document)
 
@@ -297,10 +307,14 @@ def write_frozen_rationale_audit(
 def write_rationale_records_no_replace(
     path: Path,
     records: Sequence[RationaleAuditRecord],
+    *,
+    worklist_sha256: str,
 ) -> None:
     """Publish completed human audit records without replacing prior evidence."""
 
-    _write_json_no_replace(path, rationale_audit_records_document(records))
+    _write_json_no_replace(
+        path, rationale_audit_records_document(records, worklist_sha256=worklist_sha256)
+    )
 
 
 def write_rationale_worklist_no_replace(path: Path, worklist: Mapping[str, Any]) -> None:

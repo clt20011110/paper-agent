@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-tuning-winner.schema.json",
+  "title": "Frozen Stage 2 tuning winner",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "candidate_id", "candidate", "benchmark_manifest", "document_batch_size", "adjudicator_concurrency", "throughput", "environment", "input_record_hashes", "selection_hash", "qwen_runtime_auto_increase"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "stage2_tuning_winner"},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "candidate": {"$ref": "#/$defs/artifact"}, "benchmark_manifest": {"$ref": "#/$defs/artifact"},
+    "document_batch_size": {"enum": [16, 32, 64]}, "adjudicator_concurrency": {"enum": [4, 8, 16]},
+    "throughput": {"type": "number", "exclusiveMinimum": 0},
+    "environment": {"type": "object"},
+    "input_record_hashes": {"type": "array", "minItems": 63, "maxItems": 63, "items": {"$ref": "#/$defs/sha256"}},
+    "selection_hash": {"$ref": "#/$defs/sha256"}, "qwen_runtime_auto_increase": {"const": false}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "artifact": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}}}}
+}

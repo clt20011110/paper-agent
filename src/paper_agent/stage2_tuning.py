@@ -8,11 +8,19 @@ hash of each published record and hand this module the complete 3 x 3 grid.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
 from statistics import median
-from typing import Literal, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from .canonical import content_hash
-from .stage2_evaluation import BenchmarkEnvironment, PerformanceRunRecord, SoakRunRecord
+from .schema import validate
+from .stage2_benchmark import BenchmarkExecutionRecord
+from .stage2_commands import _performance_manifest, _soak_manifest
+from .stage2_evaluation import BenchmarkEnvironment, PerformanceRunRecord, SoakRunRecord, performance_gate, soak_gate
+from .stage2_search import load_stage2_benchmark_candidate
 
 
 DOCUMENT_BATCH_SIZES = (16, 32, 64)
@@ -205,6 +213,147 @@ def select_stage2_tuning_winner(candidates: Sequence[TuningCandidate]) -> Frozen
         "input_record_hashes": list(hashes),
     })
     return FrozenTuningWinner(winner.configuration, winner.throughput, winner.environment, hashes, selection_hash)
+
+
+def build_stage2_tuning_winner_document(input_path: Path) -> dict[str, object]:
+    """Validate one frozen production grid and return its immutable winner."""
+
+    root = input_path.parent.resolve()
+    document = _json_object(input_path)
+    validate(document, "stage2-tuning-selection-input.schema.json")
+    candidates: list[TuningCandidate] = []
+    bindings: dict[TuningConfiguration, tuple[dict[str, str], dict[str, str], str]] = {}
+    for item in document["candidates"]:
+        assert isinstance(item, Mapping)
+        configuration_data = _mapping(item, "configuration")
+        configuration = TuningConfiguration(
+            int(configuration_data["document_batch_size"]),
+            int(configuration_data["adjudicator_concurrency"]),
+        )
+        candidate_ref, candidate_path = _artifact_ref(_mapping(item, "candidate"), root)
+        release = load_stage2_benchmark_candidate(candidate_path)
+        if (
+            release.profile.document_batch_size != configuration.document_batch_size
+            or release.profile.adjudicator_concurrency != configuration.adjudicator_concurrency
+        ):
+            raise Stage2TuningError("candidate runtime knobs do not match its tuning configuration")
+        manifest_ref, manifest_path = _artifact_ref(_mapping(item, "benchmark_manifest"), root)
+        manifest = _performance_manifest(_json_object(manifest_path))
+        if (
+            manifest.stage2_config_hash != release.profile.base_runtime_config_hash
+            or manifest.model_lock_hashes
+            != (release.profile.reranker_lock_hash, release.profile.adjudicator_lock_hash)
+        ):
+            raise Stage2TuningError("benchmark manifest does not bind its candidate runtime")
+        normal = _measurements(_list(item, "normal"), root, manifest)
+        stress = _measurements(_list(item, "stress"), root, manifest)
+        records = [measurement.record for measurement in (*normal, *stress)]
+        gate = performance_gate(manifest, records)
+        if not gate.passed:
+            raise Stage2TuningError("performance records do not pass the frozen benchmark gate")
+        candidate_values: dict[str, object] = {
+            "configuration": configuration,
+            "normal": tuple(PerformanceMeasurement(measurement.record_hash, measurement.record, True) for measurement in normal),
+            "stress": tuple(PerformanceMeasurement(measurement.record_hash, measurement.record, True) for measurement in stress),
+        }
+        if "selection_input" in item:
+            selection = _mapping(item, "selection_input")
+            selection_ref, selection_path = _artifact_ref(_mapping(selection, "record"), root)
+            selection_document = _json_object(selection_path)
+            if selection_document.get("candidate_independent") is not True:
+                raise Stage2TuningError("selection input must be candidate-independent")
+            candidate_values["selection_input"] = SoakSelectionInput(selection_ref["sha256"], str(selection["reason"]))
+        else:
+            _, soak_manifest_path = _artifact_ref(_mapping(item, "soak_manifest"), root)
+            soak_manifest = _soak_manifest(_json_object(soak_manifest_path))
+            soak_ref, soak_path = _artifact_ref(_mapping(_mapping(item, "soak"), "record"), root)
+            soak = BenchmarkExecutionRecord(_json_object(soak_path)).as_soak_record()
+            if soak.manifest_hash != soak_manifest.hash() or not soak_gate(soak_manifest, soak).passed:
+                raise Stage2TuningError("soak record does not pass its frozen manifest gate")
+            candidate_values["soak"] = SoakMeasurement(soak_ref["sha256"], soak, True)
+        candidates.append(TuningCandidate(**candidate_values))  # type: ignore[arg-type]
+        bindings[configuration] = (candidate_ref, manifest_ref, release.profile_name)
+    winner = select_stage2_tuning_winner(candidates)
+    candidate_ref, manifest_ref, candidate_id = bindings[winner.configuration]
+    output = {
+        "schema_version": 1,
+        "kind": "stage2_tuning_winner",
+        "candidate_id": candidate_id,
+        "candidate": candidate_ref,
+        "benchmark_manifest": manifest_ref,
+        **winner.document(),
+    }
+    validate(output, "stage2-tuning-winner.schema.json")
+    return output
+
+
+def write_stage2_tuning_winner(input_path: Path, output_path: Path) -> dict[str, object]:
+    """Build one schema-validated winner without replacing an existing artifact."""
+
+    if os.path.lexists(output_path):
+        raise FileExistsError(f"Stage 2 tuning winner output already exists: {output_path}")
+    document = build_stage2_tuning_winner_document(input_path)
+    payload = json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return document
+
+
+def _measurements(
+    values: Sequence[object], root: Path, manifest: object,
+) -> tuple[PerformanceMeasurement, ...]:
+    measurements: list[PerformanceMeasurement] = []
+    for value in values:
+        if not isinstance(value, Mapping):
+            raise Stage2TuningError("tuning measurement must be an object")
+        reference, path = _artifact_ref(_mapping(value, "record"), root)
+        record = BenchmarkExecutionRecord(_json_object(path)).as_performance_record()
+        if record.manifest_hash != manifest.hash():
+            raise Stage2TuningError("performance record does not bind its benchmark manifest")
+        measurements.append(PerformanceMeasurement(reference["sha256"], record, True))
+    return tuple(measurements)
+
+
+def _artifact_ref(value: Mapping[str, object], root: Path) -> tuple[dict[str, str], Path]:
+    path_value = value.get("path")
+    expected = value.get("sha256")
+    if not isinstance(path_value, str) or not isinstance(expected, str):
+        raise Stage2TuningError("tuning artifact reference is invalid")
+    path = (root / path_value).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise Stage2TuningError("tuning artifact must remain inside the frozen input bundle") from error
+    if not path.is_file():
+        raise Stage2TuningError(f"tuning artifact is missing: {path_value}")
+    observed = sha256(path.read_bytes()).hexdigest()
+    if observed != expected:
+        raise Stage2TuningError(f"tuning artifact hash mismatch: {path_value}")
+    return {"path": path.relative_to(root).as_posix(), "sha256": observed}, path
+
+
+def _json_object(path: Path) -> dict[str, object]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise Stage2TuningError(f"tuning JSON artifact must be an object: {path.name}")
+    return value
+
+
+def _mapping(value: Mapping[str, object], field: str) -> Mapping[str, object]:
+    item = value.get(field)
+    if not isinstance(item, Mapping):
+        raise Stage2TuningError(f"tuning input requires object {field}")
+    return item
+
+
+def _list(value: Mapping[str, object], field: str) -> Sequence[object]:
+    item = value.get(field)
+    if not isinstance(item, list):
+        raise Stage2TuningError(f"tuning input requires list {field}")
+    return item
 
 
 def _require_complete_grid(candidates: Sequence[TuningCandidate]) -> None:

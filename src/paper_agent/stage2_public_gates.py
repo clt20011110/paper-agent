@@ -33,7 +33,6 @@ from .stage2_evaluation import (
     PerformanceRunRecord,
     RationaleAuditCase,
     RationaleAuditManifest,
-    RationaleAuditRecord,
     RationaleStratum,
     ReplayError,
     SoakManifest,
@@ -57,6 +56,10 @@ from .stage2_release_evidence import (
     ParityEvidenceRefs,
     Stage2EvidenceError,
     Stage2ReleaseEvidenceIndex,
+)
+from .stage2_rationale_workflow import (
+    import_completed_rationale_audit,
+    rationale_audit_records_document,
 )
 from .stage2_pipeline import Stage2Paper, Stage2Profile
 from .stage2_prompt_contract import (
@@ -190,6 +193,31 @@ def _verify_structured_replay(
         raise Stage2EvidenceError("structured replay model does not match released Qwen")
     if manifest.prompt_hash != profile.prompt_hash or manifest.schema_hash != profile.schema_hash:
         raise Stage2EvidenceError("structured replay prompt or schema does not match the released profile")
+    if refs.papers is None:
+        raise Stage2EvidenceError("structured replay evidence is missing its public paper inputs")
+    papers_document = refs.papers.read_json(index.bundle_root)
+    validate(papers_document, "stage2-benchmark-papers.schema.json")
+    papers = benchmark_papers_from_document(papers_document)
+    if tuple(paper.paper_id for paper in papers) != manifest.pair_ids:
+        raise Stage2EvidenceError("structured replay papers do not exactly match manifest pair IDs")
+    replay_corpus_hash = content_hash({
+        "schema_version": 1,
+        "papers": [
+            {
+                "paper_id": paper.paper_id,
+                "title": paper.title,
+                "abstract": paper.abstract,
+                "keywords": list(paper.keywords),
+                "document_type": paper.document_type,
+                "possibly_truncated": paper.possibly_truncated,
+                "multi_condition_conflict": paper.multi_condition_conflict,
+                "language_anomaly": paper.language_anomaly,
+            }
+            for paper in papers
+        ],
+    })
+    if replay_corpus_hash != manifest.corpus_hash:
+        raise Stage2EvidenceError("structured replay papers do not match manifest corpus hash")
     records_document = _one_document(index, refs)
     validate(records_document, "stage2-structured-replay-records.schema.json")
     records = tuple(
@@ -234,6 +262,8 @@ def _verify_structured_replay(
 
 def _verify_rationale(index: Stage2ReleaseEvidenceIndex) -> VerifiedPublicGate:
     refs = index.public_gates["rationale"]
+    if not isinstance(refs, GateEvidenceRefs) or refs.worklist is None:
+        raise Stage2EvidenceError("rationale evidence must include a human worklist")
     manifest_document = refs.manifest.read_json(index.bundle_root)
     validate(manifest_document, "stage2-rationale-audit-manifest.schema.json")
     manifest = RationaleAuditManifest(
@@ -249,17 +279,19 @@ def _verify_rationale(index: Stage2ReleaseEvidenceIndex) -> VerifiedPublicGate:
     )
     if manifest.model_lock_hash != index.model_lock_hashes["qwen"]:
         raise Stage2EvidenceError("rationale audit model does not match released Qwen")
+    worklist_document = refs.worklist.read_json(index.bundle_root)
     records_document = _one_document(index, refs)
     validate(records_document, "stage2-rationale-audit-records.schema.json")
-    records = tuple(
-        RationaleAuditRecord(
-            item["pair_id"],
-            item["manifest_hash"],
-            item["evidence_supported"],
-            item["severe_fabrication"],
-        )
-        for item in records_document["records"]
-    )
+    if records_document["worklist_sha256"] != refs.worklist.sha256:
+        raise Stage2EvidenceError("rationale records do not bind the referenced worklist")
+    try:
+        records = import_completed_rationale_audit(worklist_document, manifest=manifest)
+    except (KeyError, TypeError, ValueError) as error:
+        raise Stage2EvidenceError(f"rationale worklist is invalid: {error}") from error
+    if records_document != rationale_audit_records_document(
+        records, worklist_sha256=refs.worklist.sha256
+    ):
+        raise Stage2EvidenceError("rationale records do not reproduce the human worklist")
     gate = rationale_audit_gate(manifest, records)
     return VerifiedPublicGate(
         _evidence_hash(refs),
@@ -1121,6 +1153,7 @@ def _evidence_hash(refs: GateEvidenceRefs) -> str:
     return content_hash({
         "manifest": refs.manifest.sha256,
         "papers": refs.papers.sha256 if refs.papers is not None else None,
+        "worklist": refs.worklist.sha256 if refs.worklist is not None else None,
         "records": [item.sha256 for item in refs.records],
     })
 

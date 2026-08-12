@@ -53,7 +53,7 @@ def _write_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: o
     write_gold_manifest(gold_path, gold)
     monkeypatch.setattr(producer, "load_stage2_benchmark_candidate", lambda _path: _candidate(gold.hash()))
     names = (
-        "structured_manifest", "structured_records", "rationale_manifest", "rationale_records",
+        "structured_manifest", "structured_records", "structured_papers", "rationale_manifest", "rationale_worklist", "rationale_records",
         "parity_manifest", "parity_workload", "parity_receipt", "parity_scores",
         "parity_oracle_lock", "parity_candidate_lock", "parity_oracle_calibrator",
         "parity_candidate_calibrator", "parity_oracle_threshold", "parity_candidate_threshold",
@@ -65,7 +65,8 @@ def _write_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: o
         "output_path": tmp_path / "stage2-release-evidence.json", "candidate_bundle_path": tmp_path / "candidate-v2.json",
         "gold_manifest_path": gold_path,
         "structured_manifest_path": paths["structured_manifest"], "structured_records_path": paths["structured_records"],
-        "rationale_manifest_path": paths["rationale_manifest"], "rationale_records_path": paths["rationale_records"],
+        "structured_papers_path": paths["structured_papers"],
+        "rationale_manifest_path": paths["rationale_manifest"], "rationale_worklist_path": paths["rationale_worklist"], "rationale_records_path": paths["rationale_records"],
         "parity_manifest_path": paths["parity_manifest"], "parity_workload_path": paths["parity_workload"],
         "parity_selection_receipt_path": paths["parity_receipt"], "parity_scores_path": paths["parity_scores"],
         "parity_oracle_model_lock_path": paths["parity_oracle_lock"], "parity_candidate_model_lock_path": paths["parity_candidate_lock"],
@@ -86,6 +87,7 @@ def test_producer_writes_public_index_with_byte_refs_and_candidate_bindings(tmp_
     assert "hidden_attestation" not in document
     assert document["candidate_id"] == "candidate-v2"
     assert document["model_lock_hashes"] == {"reranker": "e" * 64, "qwen": "f" * 64}
+    assert document["public_gates"]["structured_replay"]["papers"]["path"] == "structured_papers.json"
     assert document["public_gates"]["benchmark"]["records"][0]["sha256"] == sha256((tmp_path / "benchmark-record-0.json").read_bytes()).hexdigest()
     assert load_stage2_release_evidence_index(path).candidate_id == "candidate-v2"
 

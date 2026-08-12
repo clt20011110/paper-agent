@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from hashlib import sha256
 import json
 import os
 import re
@@ -121,6 +122,10 @@ from .stage2_release_assembly import (
 from .stage2_release_evidence_producer import (
     build_stage2_release_evidence_index_bytes,
     write_stage2_release_evidence_index,
+)
+from .stage2_tuning import (
+    build_stage2_tuning_winner_document,
+    write_stage2_tuning_winner,
 )
 from .stage2_sampling import (
     SamplingPolicy,
@@ -655,7 +660,9 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     evidence.add_argument("--gold-manifest", required=True, type=Path)
     evidence.add_argument("--structured-manifest", required=True, type=Path)
     evidence.add_argument("--structured-records", required=True, type=Path)
+    evidence.add_argument("--structured-papers", required=True, type=Path)
     evidence.add_argument("--rationale-manifest", required=True, type=Path)
+    evidence.add_argument("--rationale-worklist", required=True, type=Path)
     evidence.add_argument("--rationale-records", required=True, type=Path)
     evidence.add_argument("--parity-manifest", required=True, type=Path)
     evidence.add_argument("--parity-workload", required=True, type=Path)
@@ -675,6 +682,16 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     evidence.add_argument("--soak-record", required=True, type=Path)
     evidence.add_argument("--hidden-attestation", type=Path)
     evidence.add_argument("--output", required=True, type=Path)
+
+    stage2_tuning = subcommands.add_parser(
+        "stage2-tuning", help="select one production Stage 2 batch and concurrency configuration",
+    )
+    tuning_commands = stage2_tuning.add_subparsers(dest="stage2_tuning_command", required=True)
+    tuning_select = tuning_commands.add_parser(
+        "select", help="validate a frozen 3x3 measurement grid and write its winner",
+    )
+    tuning_select.add_argument("--input", required=True, type=Path)
+    tuning_select.add_argument("--output", required=True, type=Path)
 
     report = subcommands.add_parser(
         "report", help="plan, approve, run, or compare Stage 4b reports"
@@ -1049,6 +1066,8 @@ def main(
         return _finish(args, _stage2_release_assemble(args))
     if args.command == "stage2-release" and args.stage2_release_command == "build-evidence":
         return _finish(args, _stage2_release_build_evidence(args))
+    if args.command == "stage2-tuning" and args.stage2_tuning_command == "select":
+        return _finish(args, _stage2_tuning_select(args))
     if args.command == "report":
         return _finish(args, _report(args))
     if args.command == "verify-report":
@@ -1461,9 +1480,12 @@ def _stage2_rationale_import(args: argparse.Namespace) -> dict[str, Any]:
     worklist = load_rationale_worklist(args.worklist)
     records = import_completed_rationale_audit(worklist, manifest=manifest)
     gate = rationale_audit_gate(manifest, records)
-    document = rationale_audit_records_document(records)
+    worklist_sha256 = sha256(args.worklist.read_bytes()).hexdigest()
+    document = rationale_audit_records_document(records, worklist_sha256=worklist_sha256)
     if not args.dry_run:
-        write_rationale_records_no_replace(args.records_output, records)
+        write_rationale_records_no_replace(
+            args.records_output, records, worklist_sha256=worklist_sha256
+        )
     return {
         "command": "stage2-rationale.import-worklist",
         "dry_run": args.dry_run,
@@ -1520,7 +1542,9 @@ def _stage2_release_build_evidence(args: argparse.Namespace) -> dict[str, Any]:
         "gold_manifest_path": args.gold_manifest,
         "structured_manifest_path": args.structured_manifest,
         "structured_records_path": args.structured_records,
+        "structured_papers_path": args.structured_papers,
         "rationale_manifest_path": args.rationale_manifest,
+        "rationale_worklist_path": args.rationale_worklist,
         "rationale_records_path": args.rationale_records,
         "parity_manifest_path": args.parity_manifest,
         "parity_workload_path": args.parity_workload,
@@ -1552,6 +1576,27 @@ def _stage2_release_build_evidence(args: argparse.Namespace) -> dict[str, Any]:
             else "stage2_public_promotion_evidence"
         ),
         "output": str(args.output),
+        "status": "validated" if args.dry_run else "complete",
+        "written": not args.dry_run,
+    }
+
+
+def _stage2_tuning_select(args: argparse.Namespace) -> dict[str, Any]:
+    if args.dry_run and os.path.lexists(args.output):
+        raise FileExistsError(f"Stage 2 tuning winner output already exists: {args.output}")
+    document = (
+        build_stage2_tuning_winner_document(args.input)
+        if args.dry_run
+        else write_stage2_tuning_winner(args.input, args.output)
+    )
+    return {
+        "command": "stage2-tuning.select",
+        "dry_run": args.dry_run,
+        "document_batch_size": document["document_batch_size"],
+        "adjudicator_concurrency": document["adjudicator_concurrency"],
+        "input_record_count": len(document["input_record_hashes"]),
+        "output": str(args.output),
+        "selection_hash": document["selection_hash"],
         "status": "validated" if args.dry_run else "complete",
         "written": not args.dry_run,
     }
@@ -3675,6 +3720,7 @@ def _command_from_argv(argv: Sequence[str]) -> str:
         "stage2-rationale",
         "stage2-release",
         "stage2-parity",
+        "stage2-tuning",
     } and index + 1 < len(argv):
         if argv[index + 1].startswith("-"):
             return command

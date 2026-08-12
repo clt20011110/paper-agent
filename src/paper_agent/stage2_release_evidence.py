@@ -70,6 +70,7 @@ class GateEvidenceRefs:
     manifest: ArtifactRef
     records: tuple[ArtifactRef, ...]
     papers: ArtifactRef | None = None
+    worklist: ArtifactRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,8 +140,16 @@ def load_stage2_release_evidence_index_bytes(
     validate(document, "stage2-release-evidence.schema.json")
     public = document["public_gates"]
     gates = {
-        "structured_replay": _single_records(public["structured_replay"], "records"),
-        "rationale": _single_records(public["rationale"], "records"),
+        "structured_replay": GateEvidenceRefs(
+            ArtifactRef.from_document(public["structured_replay"]["manifest"]),
+            (ArtifactRef.from_document(public["structured_replay"]["records"]),),
+            ArtifactRef.from_document(public["structured_replay"]["papers"]),
+        ),
+        "rationale": GateEvidenceRefs(
+            ArtifactRef.from_document(public["rationale"]["manifest"]),
+            (ArtifactRef.from_document(public["rationale"]["records"]),),
+            worklist=ArtifactRef.from_document(public["rationale"]["worklist"]),
+        ),
         "parity": ParityEvidenceRefs(**{
             name: ArtifactRef.from_document(public["parity"][name])
             for name in (
@@ -220,6 +229,8 @@ def _verify_all_refs(index: Stage2ReleaseEvidenceIndex) -> None:
             refs.extend(gate.records)
             if gate.papers is not None:
                 refs.append(gate.papers)
+            if gate.worklist is not None:
+                refs.append(gate.worklist)
     for ref in refs:
         ref.read_bytes(index.bundle_root)
 

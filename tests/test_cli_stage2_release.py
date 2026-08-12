@@ -75,6 +75,16 @@ def test_stage2_release_assemble_help_lists_required_inputs(
         assert option in help_text
 
 
+def test_stage2_release_build_evidence_requires_structured_papers(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["stage2-release", "build-evidence", "--help"])
+
+    assert stopped.value.code == 0
+    assert "--structured-papers" in capsys.readouterr().out
+
+
 def test_stage2_release_assemble_writes_release_and_emits_public_summary(
     release_bundle: V3Bundle,
     capsys: pytest.CaptureFixture[str],

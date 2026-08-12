@@ -71,7 +71,7 @@ def test_import_requires_explicit_human_labels_and_emits_existing_schema(tmp_pat
         for row in frozen.worklist["rows"]
     ]
     records = import_completed_rationale_audit(completed, manifest=frozen.manifest)
-    document = rationale_audit_records_document(records)
+    document = rationale_audit_records_document(records, worklist_sha256="a" * 64)
     validate(frozen.manifest.document(), "stage2-rationale-audit-manifest.schema.json")
     validate(document, "stage2-rationale-audit-records.schema.json")
     assert rationale_audit_gate(frozen.manifest, records).passed
@@ -79,13 +79,15 @@ def test_import_requires_explicit_human_labels_and_emits_existing_schema(tmp_pat
     manifest_path = tmp_path / "rationale-manifest.json"
     records_path = tmp_path / "rationale-records.json"
     write_rationale_audit_artifacts(
-        frozen, records, manifest_path=manifest_path, records_path=records_path
+        frozen, records, manifest_path=manifest_path, records_path=records_path,
+        worklist_sha256="a" * 64,
     )
     assert json.loads(manifest_path.read_text()) == frozen.manifest.document()
     assert json.loads(records_path.read_text()) == document
     with pytest.raises(FileExistsError):
         write_rationale_audit_artifacts(
-            frozen, records, manifest_path=manifest_path, records_path=records_path
+            frozen, records, manifest_path=manifest_path, records_path=records_path,
+            worklist_sha256="a" * 64,
         )
     assert json.loads(records_path.read_text()) == document
 
