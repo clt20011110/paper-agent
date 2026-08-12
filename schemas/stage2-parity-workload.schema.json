@@ -13,7 +13,7 @@
       "type": "array", "minItems": 10000, "maxItems": 10000,
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["pair_id", "paper_id", "topic", "language", "query_version", "query", "title", "abstract", "keywords"],
+        "required": ["pair_id", "paper_id", "topic", "language", "query_version", "query", "title", "abstract", "keywords", "document_type", "possibly_truncated", "multi_condition_conflict", "language_anomaly"],
         "properties": {
           "pair_id": {"type": "string", "minLength": 1},
           "paper_id": {"type": "string", "minLength": 1},
@@ -23,7 +23,11 @@
           "query": {"type": "string", "minLength": 1},
           "title": {"type": "string", "minLength": 1},
           "abstract": {"type": ["string", "null"]},
-          "keywords": {"type": "array", "items": {"type": "string"}}
+          "keywords": {"type": "array", "items": {"type": "string"}},
+          "document_type": {"type": ["string", "null"]},
+          "possibly_truncated": {"type": "boolean"},
+          "multi_condition_conflict": {"type": "boolean"},
+          "language_anomaly": {"type": "boolean"}
         }
       }
     }

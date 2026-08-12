@@ -1,0 +1,19 @@
+{
+  "artifact_path": "/Users/chenletian/.paper-agent/evaluator/stage2/parity-workload-v2-20260812/parity-workload.json",
+  "artifact_sha256": "c8893fbca0c7c602167923336aa8d5b67344d49eabde72d21a6e2413392944b7",
+  "corpus_hash": "e6d779803faad7789582d500aad00858f1e44aeeaf9ccb4c86e6454a2fcfb002",
+  "kind": "stage2_parity_workload_freeze_receipt",
+  "language": "multilingual",
+  "pair_count": 10000,
+  "query": "scientific machine learning for discovery and design",
+  "query_assignment_hash": "96d24c54417ef04e41065cb7f5e6895fe242e485fdb99d7a30ffd69537c5e67f",
+  "query_version": "stage2-parity-mixed-v1",
+  "schema_version": 1,
+  "selection_receipt_path": "/Users/chenletian/.paper-agent/evaluator/stage2/workload-frame-v2-20260812/selection-receipt.json",
+  "selection_receipt_sha256": "f9d210a7a8e693f922ff8f8e783f31d87b4c397d46961b827bab58ded9f44aa1",
+  "source_papers_path": "/Users/chenletian/.paper-agent/evaluator/stage2/workload-frame-v2-20260812/soak-papers.json",
+  "source_papers_sha256": "4e6072630f52a6456aa304620ef38cc54eff1021777fa13c097880ab87617e68",
+  "status": "frozen",
+  "topic": "stage2-parity-mixed-scientific-ml",
+  "workload_hash": "c53fdf596018c94887ff7e91b3e5775839718c201d156164474efb3391d961b4"
+}

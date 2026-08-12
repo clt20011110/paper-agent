@@ -370,6 +370,7 @@ Stage 2 使用以下级联：
 - 官方 FP32 权重作为数值 oracle。
 - 初始 MLX BF16 候选为 soichisumi/bge-reranker-v2-m3-mlx@b4577f49e18adb53ed9e557192094f69f3dc2c1c；它属于第三方转换，必须完成供应链审计并通过 parity gate 后才能进入生产。
 - 2026-08-12 已完成该 BF16 候选的供应链/派生审计：固定官方 FP32 与第三方转换 revision，验证下载文件和 7 文件混合运行时，并使用 MLX 0.32.0 对 393 个张量、567,755,777 个元素逐项重算 FP32→BF16，结果 393/393 精确一致。可复现脚本、候选锁和公开摘要分别为 `scripts/verify_stage2_bf16_derivation.py`、`configs/stage2/models/bge-reranker-v2-m3-mlx-bf16.lock.json`、`docs/smoke/stage2-bf16-derivation-audit-20260812.json`；这只关闭供应链审计，候选仍须通过 parity 与完整 Stage 2 门禁才能晋升。
+- 2026-08-12 已将候选无关的真实 10,000 篇语料冻结为 schema-v2 parity workload；固定单一短查询、完整论文输入字段、selection receipt 和 query assignment，公开冻结回执为 `docs/smoke/stage2-parity-workload-v2-20260812.json`。该工件只锁定后续 FP32/BF16 数值比对输入，不代表 parity gate 已运行或通过。
 
 质量/速度挑战者：
 
@@ -378,6 +379,8 @@ Stage 2 使用以下级联：
 - Qwen/Qwen3-Reranker-4B。
 
 Querit-4B 截至 2026-06-20 的模型卡自报为公开模型中 MTEB Multilingual v2 reranking 平均分最高，但这不等同于本项目论文主题筛选效果。所有候选必须使用本项目隐藏金标集盲测；最终默认模型是质量门通过后吞吐最优者。
+
+候选登记表固定在 `configs/stage2/challengers.json`。revision、许可证、≤10B 参数证据或本地 backend 能力任一未核验的候选不得进入评测；登记本身永不授予生产资格。
 
 实现要求：
 

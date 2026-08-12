@@ -68,6 +68,10 @@ class ParityPair:
     title: str
     abstract: str | None
     keywords: tuple[str, ...]
+    document_type: str | None = None
+    possibly_truncated: bool = False
+    multi_condition_conflict: bool = False
+    language_anomaly: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "keywords", tuple(self.keywords))
@@ -89,6 +93,10 @@ class ParityPair:
             "title": self.title,
             "abstract": self.abstract,
             "keywords": list(self.keywords),
+            "document_type": self.document_type,
+            "possibly_truncated": self.possibly_truncated,
+            "multi_condition_conflict": self.multi_condition_conflict,
+            "language_anomaly": self.language_anomaly,
         }
 
     @property
@@ -126,7 +134,16 @@ class ParityWorkload:
 
     def corpus_hash(self) -> str:
         return benchmark_corpus_hash(tuple(
-            Stage2Paper(pair.paper_id, pair.title, pair.abstract, pair.keywords)
+            Stage2Paper(
+                pair.paper_id,
+                pair.title,
+                pair.abstract,
+                pair.keywords,
+                pair.document_type,
+                pair.possibly_truncated,
+                pair.multi_condition_conflict,
+                pair.language_anomaly,
+            )
             for pair in self.pairs
         ))
 
@@ -199,6 +216,10 @@ def parity_workload_from_document(value: Mapping[str, Any]) -> ParityWorkload:
         title=row["title"],
         abstract=row["abstract"],
         keywords=tuple(row["keywords"]),
+        document_type=row["document_type"],
+        possibly_truncated=row["possibly_truncated"],
+        multi_condition_conflict=row["multi_condition_conflict"],
+        language_anomaly=row["language_anomaly"],
     ) for row in value["pairs"]))
 
 
@@ -221,6 +242,10 @@ def freeze_parity_workload(
         title=paper.title,
         abstract=paper.abstract,
         keywords=paper.keywords,
+        document_type=paper.document_type,
+        possibly_truncated=paper.possibly_truncated,
+        multi_condition_conflict=paper.multi_condition_conflict,
+        language_anomaly=paper.language_anomaly,
     ) for paper in ordered))
 
 

@@ -10,6 +10,7 @@ import pytest
 
 from paper_agent.canonical import content_hash
 from paper_agent.stage2_backends import ModelLock, RerankBatchError, RerankInput, RerankScore
+from paper_agent.stage2_benchmark_inputs import benchmark_corpus_hash
 from paper_agent.stage2_evaluation import CalibrationPath, PathCalibrator, ThresholdArtifact
 from paper_agent.stage2_parity import (
     ParityEvidenceError,
@@ -189,6 +190,30 @@ def test_workload_binds_each_query_identity_and_exact_10k() -> None:
         parity_workload_from_document(changed)
     with pytest.raises(ValueError, match="10,000"):
         _workload(9_999)
+
+
+def test_workload_preserves_the_complete_selected_corpus_identity() -> None:
+    papers = list(_papers())
+    papers[0] = Stage2Paper(
+        papers[0].paper_id,
+        papers[0].title,
+        papers[0].abstract,
+        papers[0].keywords,
+        document_type="proceedings-article",
+        possibly_truncated=True,
+        multi_condition_conflict=True,
+        language_anomaly=True,
+    )
+    workload = freeze_parity_workload(
+        papers,
+        topic="molecular_generation",
+        language="en",
+        query_version="molecular-generation-v1",
+        query="molecular generation",
+    )
+
+    assert workload.corpus_hash() == benchmark_corpus_hash(papers)
+    assert parity_workload_from_document(workload.document()).corpus_hash() == workload.corpus_hash()
 
 
 def test_producer_runs_identical_query_documents_and_calibrated_windows(parity_run) -> None:
