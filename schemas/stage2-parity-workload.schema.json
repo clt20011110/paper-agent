@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paper-agent.dev/schemas/stage2-parity-workload.schema.json",
+  "title": "Stage 2 parity workload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "pair_count", "pairs"],
+  "properties": {
+    "schema_version": {"const": "2"},
+    "kind": {"const": "stage2_parity_workload"},
+    "pair_count": {"const": 10000},
+    "pairs": {
+      "type": "array", "minItems": 10000, "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["pair_id", "paper_id", "topic", "language", "query_version", "query", "title", "abstract", "keywords"],
+        "properties": {
+          "pair_id": {"type": "string", "minLength": 1},
+          "paper_id": {"type": "string", "minLength": 1},
+          "topic": {"type": "string", "minLength": 1},
+          "language": {"type": "string", "minLength": 1},
+          "query_version": {"type": "string", "minLength": 1},
+          "query": {"type": "string", "minLength": 1},
+          "title": {"type": "string", "minLength": 1},
+          "abstract": {"type": ["string", "null"]},
+          "keywords": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}
