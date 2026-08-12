@@ -408,6 +408,7 @@ def _execution_payload(
             "duration_seconds": 0.01,
             "document_count": min(32, len(pair_ids) - offset),
             "failed": False,
+            "resource_exhausted": False,
         }
         for offset in range(0, len(pair_ids), 32)
     ]
@@ -417,6 +418,7 @@ def _execution_payload(
             "duration_seconds": 0.01,
             "document_count": 1,
             "failed": False,
+            "resource_exhausted": False,
         }
         for _ in qwen_pair_ids
     ]
@@ -698,6 +700,9 @@ def _install_public_gate_evidence(
     oracle_calibrator = PathCalibrator(**json.loads(
         (tmp_path / parity_refs["oracle_calibrator"]["path"]).read_text()
     ))
+    oracle_lock = json.loads(
+        (tmp_path / parity_refs["oracle_model_lock"]["path"]).read_text()
+    )
     oracle_threshold = ThresholdArtifact(**json.loads(
         (tmp_path / parity_refs["oracle_threshold"]["path"]).read_text()
     ))
@@ -726,7 +731,7 @@ def _install_public_gate_evidence(
         pair_universe_hash=pair_universe_hash(parity_ids),
         query_assignment_hash=parity_workload.query_assignment_hash(),
         corpus_hash=parity_workload.corpus_hash(),
-        tokenizer_hash="6" * 64,
+        tokenizer_hash=oracle_lock["file_hashes"]["tokenizer.json"],
         preprocess_hash=content_hash(PREPROCESS_CONTRACT),
         oracle_model_lock_hash=parity_refs["oracle_model_lock"]["sha256"],
         candidate_model_lock_hash=parity_refs["candidate_model_lock"]["sha256"],

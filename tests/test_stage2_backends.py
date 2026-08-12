@@ -92,16 +92,15 @@ def test_omlx_rerank_batches_documents_and_never_sends_unsupported_limits() -> N
 def test_omlx_rerank_rejects_incomplete_result_indexes() -> None:
     transport = FakeTransport([
         _response({"model": "model", "results": [{"index": 0, "relevance_score": 0.1}]}),
-        _response({"model": "model", "results": []}),
-        _response({"model": "model", "results": []}),
     ])
     backend = OmlxRerankBackend("model", transport)
 
-    with pytest.raises(RerankBatchError, match="could not score"):
+    with pytest.raises(Stage2BackendError, match="invalid result count"):
         backend.rerank("q", [RerankInput("p1", "one"), RerankInput("p2", "two")])
+    assert len(transport.requests) == 1
 
 
-def test_omlx_rerank_downgrades_64_to_32_to_16_and_isolates_one_failure() -> None:
+def test_omlx_rerank_downgrades_64_to_32_to_16_only_for_memory_exhaustion() -> None:
     class ResourceLimitedTransport:
         def __init__(self) -> None:
             self.batch_sizes: list[int] = []
@@ -110,8 +109,8 @@ def test_omlx_rerank_downgrades_64_to_32_to_16_and_isolates_one_failure() -> Non
             documents = payload["documents"]
             assert isinstance(documents, list)
             self.batch_sizes.append(len(documents))
-            if len(documents) > 16 or "bad" in documents:
-                return _response({"error": "capacity"}, status=503)
+            if len(documents) > 16:
+                return _response({"error": "MLX out of memory"}, status=503)
             return _response({
                 "model": "model",
                 "results": [
@@ -123,18 +122,40 @@ def test_omlx_rerank_downgrades_64_to_32_to_16_and_isolates_one_failure() -> Non
     transport = ResourceLimitedTransport()
     backend = OmlxRerankBackend("model", transport, document_batch_size=64, max_in_flight=1)
     documents = [
-        RerankInput(f"paper-{index:02d}", "bad" if index == 0 else f"document-{index}")
+        RerankInput(f"paper-{index:02d}", f"document-{index}")
         for index in range(64)
     ]
+
+    scores = backend.rerank("q", documents)
+
+    assert transport.batch_sizes[:3] == [64, 32, 16]
+    assert set(transport.batch_sizes) == {64, 32, 16}
+    assert {score.paper_id for score in scores} == {
+        f"paper-{index:02d}" for index in range(64)
+    }
+
+
+def test_omlx_rerank_does_not_split_generic_http_failure() -> None:
+    transport = FakeTransport([_response({"error": "service unavailable"}, status=503)])
+    backend = OmlxRerankBackend("model", transport, document_batch_size=64, max_in_flight=1)
+    documents = [RerankInput(f"paper-{index:02d}", "document") for index in range(64)]
+
+    with pytest.raises(Stage2BackendError, match="HTTP 503"):
+        backend.rerank("q", documents)
+
+    assert len(transport.requests) == 1
+
+
+def test_omlx_rerank_marks_minimum_memory_limited_batch_as_paper_failures() -> None:
+    transport = FakeTransport([_response({"detail": "OOM"}, status=500)])
+    backend = OmlxRerankBackend("model", transport, document_batch_size=16)
+    documents = [RerankInput(f"paper-{index:02d}", "document") for index in range(16)]
 
     with pytest.raises(RerankBatchError) as raised:
         backend.rerank("q", documents)
 
-    assert transport.batch_sizes[:3] == [64, 32, 16]
-    assert raised.value.failed_paper_ids == ("paper-00",)
-    assert {score.paper_id for score in raised.value.scores} == {
-        f"paper-{index:02d}" for index in range(1, 64)
-    }
+    assert raised.value.failed_paper_ids == tuple(item.paper_id for item in documents)
+    assert len(transport.requests) == 1
 
 
 @pytest.mark.parametrize("model", [None, "other-model"])
@@ -146,8 +167,9 @@ def test_omlx_rerank_rejects_missing_or_wrong_response_model(model: object) -> N
         response["model"] = model
     backend = OmlxRerankBackend("model", FakeTransport([_response(response)]))
 
-    with pytest.raises(RerankBatchError):
+    with pytest.raises(Stage2BackendError, match="response model"):
         backend.rerank("q", [RerankInput("p1", "one")])
+    assert len(backend.transport.requests) == 1
 
 
 @pytest.mark.parametrize("score", [True, float("nan"), float("inf"), float("-inf")])
@@ -157,8 +179,9 @@ def test_omlx_rerank_rejects_non_finite_or_boolean_relevance_scores(score: objec
         "results": [{"index": 0, "relevance_score": score}],
     })]))
 
-    with pytest.raises(RerankBatchError):
+    with pytest.raises(Stage2BackendError, match="invalid result"):
         backend.rerank("q", [RerankInput("p1", "one")])
+    assert len(backend.transport.requests) == 1
 
 
 def test_omlx_chat_uses_fixed_generation_and_structured_output_contract() -> None:

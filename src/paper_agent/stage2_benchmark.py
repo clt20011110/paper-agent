@@ -38,6 +38,7 @@ from .stage2_backends import (
     RerankInput,
     RerankScore,
     RerankerBackend,
+    omlx_response_is_memory_exhaustion,
 )
 from .stage2_evaluation import (
     BenchmarkEnvironment,
@@ -459,6 +460,23 @@ class BenchmarkExecutionRecord:
     def __post_init__(self) -> None:
         if set(self.payload) != BENCHMARK_EXECUTION_FIELDS:
             raise ValueError("benchmark execution record must use the exact evidence-v1 fields")
+        service_trace = self.payload["service_request_trace"]
+        if not isinstance(service_trace, Sequence) or isinstance(service_trace, (str, bytes)):
+            raise ValueError("benchmark service request trace must be a sequence")
+        for request in service_trace:
+            if (
+                not isinstance(request, Mapping)
+                or type(request.get("resource_exhausted")) is not bool
+                or (
+                    request["resource_exhausted"]
+                    and (request.get("path") != "/v1/rerank" or request.get("failed") is not True)
+                )
+            ):
+                raise ValueError("benchmark service request resource observation is invalid")
+        if self.payload["oom"] != any(
+            request["resource_exhausted"] for request in service_trace
+        ):
+            raise ValueError("benchmark oom flag does not match service request observations")
         frozen = _freeze_json(dict(self.payload))
         assert isinstance(frozen, Mapping)
         object.__setattr__(self, "payload", frozen)
@@ -652,6 +670,7 @@ class _ServiceRequest:
     duration_seconds: float
     document_count: int
     failed: bool
+    resource_exhausted: bool
 
 
 @dataclass(slots=True)
@@ -666,19 +685,30 @@ class _MeasuredOmlxTransport:
     def request(self, path: str, payload: Mapping[str, Any]) -> OmlxResponse:
         started = self.clock()
         failed = False
+        resource_exhausted = False
         try:
             response = self.transport.request(path, payload)
             failed = response.status_code != 200
+            resource_exhausted = (
+                path == "/v1/rerank" and omlx_response_is_memory_exhaustion(response)
+            )
             return response
-        except Exception:
+        except Exception as error:
             failed = True
+            resource_exhausted = path == "/v1/rerank" and isinstance(error, MemoryError)
             raise
         finally:
             duration = max(0.0, self.clock() - started)
             documents = payload.get("documents")
             document_count = len(documents) if isinstance(documents, Sequence) else 1
             with self._lock:
-                self.requests.append(_ServiceRequest(path, duration, document_count, failed))
+                self.requests.append(_ServiceRequest(
+                    path,
+                    duration,
+                    document_count,
+                    failed,
+                    resource_exhausted,
+                ))
 
     def reset(self) -> None:
         with self._lock:
@@ -1020,6 +1050,7 @@ class Stage2BenchmarkRunner:
                     "duration_seconds": item.duration_seconds,
                     "document_count": item.document_count,
                     "failed": item.failed,
+                    "resource_exhausted": item.resource_exhausted,
                 }
                 for item in service_requests
             ],
@@ -1075,12 +1106,13 @@ class Stage2BenchmarkRunner:
                     "duration_seconds": item.duration_seconds,
                     "document_count": item.document_count,
                     "failed": item.failed,
+                    "resource_exhausted": item.resource_exhausted,
                 }
                 for item in resume_service_requests
             ],
             "resumed_pair_count": resumed_count,
             "resumed_pair_ids": list(resumed_pair_ids),
-            "oom": False,
+            "oom": any(item.resource_exhausted for item in service_requests),
             "process_crash": False,
             "memory_pressure_critical": memory_pressure_critical,
             "memory_pressure_sampled": self.memory_pressure_sampler is not None,

@@ -10,6 +10,7 @@ import pytest
 
 from paper_agent.stage2_backends import OmlxResponse, ThresholdArtifact
 from paper_agent.stage2_benchmark import (
+    BenchmarkExecutionRecord,
     BenchmarkRunSpec,
     MacOSMemoryObserver,
     Stage2BenchmarkRunner,
@@ -56,7 +57,7 @@ class FakeOmlxTransport:
         if path == "/v1/rerank":
             if self.fail_first_multi_rerank and len(payload["documents"]) > 1 and not self._multi_rerank_failed:
                 self._multi_rerank_failed = True
-                return OmlxResponse(503, b"{}")
+                return OmlxResponse(503, b'{"error":"MLX out of memory"}')
             scores = []
             for index, document in enumerate(payload["documents"]):
                 title = document.splitlines()[0].removeprefix("Title: ")
@@ -83,7 +84,7 @@ class FakeOmlxTransport:
         }).encode())
 
 
-def _profile() -> Stage2Profile:
+def _profile(document_batch_size: int = 16) -> Stage2Profile:
     return Stage2Profile(
         query="frozen benchmark topic",
         query_version="benchmark-topic-v1",
@@ -94,7 +95,7 @@ def _profile() -> Stage2Profile:
         adjudicator_revision="qwen-revision",
         screening_scope_hash="0" * 64,
         token_bucket_width=10_000,
-        document_batch_size=16,
+        document_batch_size=document_batch_size,
         reranker_max_in_flight=1,
         adjudicator_concurrency=2,
     )
@@ -125,7 +126,7 @@ def _cases() -> tuple[PerformanceCase, ...]:
     )
 
 
-def _environment() -> BenchmarkEnvironment:
+def _environment(document_batch_size: int = 16) -> BenchmarkEnvironment:
     return BenchmarkEnvironment(
         machine_model="Apple Silicon M4 Max",
         memory_gb=36,
@@ -134,7 +135,7 @@ def _environment() -> BenchmarkEnvironment:
         mlx_version="0.27.0",
         power_mode="automatic",
         background_load="isolated fixture",
-        batch_config={"document_batch_size": 16, "reranker_max_in_flight": 1, "adjudicator_concurrency": 2},
+        batch_config={"document_batch_size": document_batch_size, "reranker_max_in_flight": 1, "adjudicator_concurrency": 2},
         resident_model_instances={"fixture-reranker-lock": 1, "fixture-qwen-lock": 1},
     )
 
@@ -144,17 +145,18 @@ def _runner(
     transport: FakeOmlxTransport,
     *,
     rss_bytes: int = 2 * 1024 ** 3,
+    document_batch_size: int = 16,
 ) -> tuple[Database, Stage2BenchmarkRunner]:
     database = Database(tmp_path / "benchmark.sqlite3")
     database.migrate()
-    profile = _profile()
+    profile = _profile(document_batch_size)
     schema = json.loads(Path("schemas/filter-decision.schema.json").read_text())
     runner = Stage2BenchmarkRunner.from_omlx(
         database=database,
         profile=profile,
         transport=transport,
         schema=schema,
-        environment=_environment(),
+        environment=_environment(document_batch_size),
         release_hash="release-fixture-hash",
         clock=StepClock(),
         rss_sampler=lambda: rss_bytes,
@@ -358,32 +360,55 @@ def test_soak_fixture_uses_the_same_measured_runner_without_weakening_production
     database.close()
 
 
-def test_omlx_transport_probe_measures_reranker_batch_downgrades(tmp_path) -> None:
+def test_omlx_transport_probe_measures_memory_batch_downgrades_and_oom(tmp_path) -> None:
     transport = FakeOmlxTransport(fail_first_multi_rerank=True)
-    database, runner = _runner(tmp_path, transport)
+    database, runner = _runner(tmp_path, transport, document_batch_size=32)
+    papers = tuple(
+        Stage2Paper(f"paper-{index:02d}", f"paper-{index:02d}", "topic match")
+        for index in range(20)
+    )
+    cases = tuple(
+        PerformanceCase(
+            paper.paper_id,
+            estimate_omlx_chat_input_token_proxy(adjudication_messages(
+                query_version=runner.profile.query_version,
+                query=runner.profile.query,
+                paper=paper,
+            )),
+            False,
+        )
+        for paper in papers
+    )
     spec = BenchmarkRunSpec.fixture(
         kind="performance",
         scenario="normal",
-        cases=_cases(),
+        cases=cases,
         stage2_config_hash=runner.profile.base_runtime_config_hash,
-        forced_qwen_pair_ids=("p-gray", "p-missing"),
+        forced_qwen_pair_ids=(papers[0].paper_id,),
     )
 
-    record = runner.run(spec, _papers(), run_id="fallback-fixture").document()
+    record = runner.run(spec, papers, run_id="fallback-fixture").document()
 
     assert record["reranker_fallback_measurement_available"] is True
-    assert record["reranker_fallback_count"] == 4
-    assert record["service_request_count"] >= 5
+    assert record["reranker_fallback_count"] == 2
+    assert record["service_request_count"] == 4
     assert record["service_failed_request_count"] == 1
     assert record["service_request_failure_rate"] == pytest.approx(
         1 / record["service_request_count"]
     )
+    assert record["oom"] is True
+    assert [
+        item["resource_exhausted"] for item in record["service_request_trace"]
+    ] == [True, False, False, False]
     assert ERROR_RATE_ALARM in record["alarm_codes"]
-    assert record["request_count"] == 4
+    assert record["request_count"] == 20
     assert record["failed_request_count"] == 0
     assert record["request_failure_rate"] == 0
     assert record["service_pair_attempt_count"] > record["pair_attempt_count"]
-    assert record["latency_by_path"]["reranker"]["sample_count"] == 5
+    assert record["latency_by_path"]["reranker"]["sample_count"] == 3
+    tampered = {**record, "oom": False}
+    with pytest.raises(ValueError, match="oom flag"):
+        BenchmarkExecutionRecord(tampered)
     database.close()
 
 

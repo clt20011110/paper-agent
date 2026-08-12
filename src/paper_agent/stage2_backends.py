@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 import json
 import math
+import re
 from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as validate_json_schema
 from pathlib import Path
@@ -29,6 +30,17 @@ class Stage2BackendError(RuntimeError):
 
 class StructuredOutputError(Stage2BackendError):
     """The adjudicator response cannot safely be auto-classified."""
+
+
+class RerankerResourceError(Stage2BackendError):
+    """The reranker reported a memory-exhaustion condition."""
+
+
+_MEMORY_EXHAUSTION = re.compile(
+    r"\b(?:oom|out[ -]of[ -]memory|bad_alloc)\b|"
+    r"insufficient memory|memory pressure|memory allocation failed|failed to allocate memory",
+    re.IGNORECASE,
+)
 
 
 class CascadeRoute(StrEnum):
@@ -63,6 +75,14 @@ class OmlxResponse:
         if not isinstance(value, dict):
             raise Stage2BackendError("oMLX response must be a JSON object")
         return value
+
+
+def omlx_response_is_memory_exhaustion(response: OmlxResponse) -> bool:
+    """Return whether a failed oMLX response explicitly reports memory exhaustion."""
+
+    if response.status_code == 200:
+        return False
+    return _MEMORY_EXHAUSTION.search(response.body.decode("utf-8", errors="replace")) is not None
 
 
 class OmlxTransport(Protocol):
@@ -214,7 +234,7 @@ class OmlxRerankBackend:
     ) -> tuple[tuple[RerankScore, ...], tuple[str, ...]]:
         try:
             return self._rerank_batch(query, documents), ()
-        except Stage2BackendError:
+        except RerankerResourceError:
             next_size = 32 if len(documents) > 32 else 16 if len(documents) > 16 else None
             if next_size is not None:
                 outcomes = [
@@ -225,16 +245,7 @@ class OmlxRerankBackend:
                     tuple(score for scores, _ in outcomes for score in scores),
                     tuple(paper_id for _, paper_ids in outcomes for paper_id in paper_ids),
                 )
-            if len(documents) == 1:
-                return (), (documents[0].paper_id,)
-            outcomes = [
-                self._rerank_with_downgrade(query, (document,))
-                for document in documents
-            ]
-            return (
-                tuple(score for scores, _ in outcomes for score in scores),
-                tuple(paper_id for _, paper_ids in outcomes for paper_id in paper_ids),
-            )
+            return (), tuple(document.paper_id for document in documents)
 
     def _rerank_batch(self, query: str, documents: Sequence[RerankInput]) -> tuple[RerankScore, ...]:
         payload = {
@@ -243,8 +254,13 @@ class OmlxRerankBackend:
             "documents": [item.document for item in documents],
             "return_documents": False,
         }
-        response = self.transport.request("/v1/rerank", payload)
+        try:
+            response = self.transport.request("/v1/rerank", payload)
+        except MemoryError as error:
+            raise RerankerResourceError("oMLX rerank exhausted local memory") from error
         if response.status_code != 200:
+            if omlx_response_is_memory_exhaustion(response):
+                raise RerankerResourceError("oMLX rerank exhausted local memory")
             raise Stage2BackendError(f"oMLX rerank returned HTTP {response.status_code}")
         response_document = response.json()
         if response_document.get("model") != self.model:

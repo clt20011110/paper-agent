@@ -902,7 +902,13 @@ def _verify_service_measurements(document: Mapping[str, Any]) -> None:
     for item in trace:
         if (
             not isinstance(item, dict)
-            or set(item) != {"path", "duration_seconds", "document_count", "failed"}
+            or set(item) != {
+                "path",
+                "duration_seconds",
+                "document_count",
+                "failed",
+                "resource_exhausted",
+            }
             or item["path"] not in allowed_paths
             or isinstance(item["duration_seconds"], bool)
             or not isinstance(item["duration_seconds"], (int, float))
@@ -910,6 +916,11 @@ def _verify_service_measurements(document: Mapping[str, Any]) -> None:
             or type(item["document_count"]) is not int
             or item["document_count"] < 1
             or type(item["failed"]) is not bool
+            or type(item["resource_exhausted"]) is not bool
+            or (
+                item["resource_exhausted"]
+                and (item["path"] != "/v1/rerank" or not item["failed"])
+            )
         ):
             raise Stage2EvidenceError("benchmark service request trace is invalid")
     service_count = len(trace)
@@ -919,6 +930,8 @@ def _verify_service_measurements(document: Mapping[str, Any]) -> None:
         or document["service_failed_request_count"] != failed_count
         or document["service_pair_attempt_count"] != sum(item["document_count"] for item in trace)
         or document["latency_sample_count"] != service_count
+        or document["oom"]
+        != any(item["resource_exhausted"] for item in trace)
         or not isclose(
             document["service_request_failure_rate"],
             failed_count / service_count,
