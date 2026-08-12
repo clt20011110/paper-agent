@@ -168,8 +168,16 @@ def test_crossref_serial_cursor_tracks_consumed_total_and_stops_exactly() -> Non
             self.body = json.dumps(payload).encode()
             self.content_type = "application/json"
 
-    def fetch(url: str, api_version: str, policy_provider: str | None = None):
+    request_keys: list[str | None] = []
+
+    def fetch(
+        url: str,
+        api_version: str,
+        policy_provider: str | None = None,
+        request_key: str | None = None,
+    ):
         urls.append(url)
+        request_keys.append(request_key)
         assert api_version == "crossref-serial-rest-v1"
         assert policy_provider is None
         return Body(pages[len(urls) - 1])
@@ -196,12 +204,81 @@ def test_crossref_serial_cursor_tracks_consumed_total_and_stops_exactly() -> Non
     ]
     assert "cursor=%2A" in urls[0]
     assert "cursor=registry-cursor-2" in urls[1]
+    assert request_keys == ["offset:0", "offset:1"]
     assert first.payload["census"] == second.payload["census"] == {
         "expected_total": 2,
         "parser_raw_records": 2,
         "parser_rejected_records": 0,
         "parser_excluded_records": 0,
     }
+
+
+def test_crossref_serial_request_key_bypasses_same_url_cache() -> None:
+    payloads = [
+        {
+            "message": {
+                "total-results": 2,
+                "next-cursor": "stable-server-cursor",
+                "items": [
+                    {
+                        "DOI": "10.1000/page-one",
+                        "title": ["Page one"],
+                        "published": {"date-parts": [[2024, 1, 1]]},
+                    }
+                ],
+            }
+        },
+        {
+            "message": {
+                "total-results": 2,
+                "next-cursor": "stable-server-cursor",
+                "items": [
+                    {
+                        "DOI": "10.1000/page-two",
+                        "title": ["Page two"],
+                        "published": {"date-parts": [[2024, 2, 1]]},
+                    }
+                ],
+            }
+        },
+    ]
+
+    class AdvancingOpener:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, request, timeout):
+            assert "mailto=operator%40example.test" in request.full_url
+            payload = payloads[self.calls]
+            self.calls += 1
+            return Response(json.dumps(payload).encode(), "application/json")
+
+    opener = AdvancingOpener()
+    transport = ControlledHTTPTransport(
+        "operator@example.test",
+        opener=opener,
+        runtime=_runtime(),
+    )
+    base = {
+        "year": 2024,
+        "registry_issn": "1234-5678",
+        "issns": ["1234-5678"],
+        "page_size": 1,
+    }
+    first = transport("crossref_serial", "discover", base)
+    second = transport(
+        "crossref_serial",
+        "discover",
+        {**base, "cursor": first["next_cursor"]},
+    )
+
+    assert opener.calls == 2
+    assert first["entries"][0]["external_id"] == "10.1000/page-one"
+    assert second["entries"][0]["external_id"] == "10.1000/page-two"
+    assert first["next_cursor"] == "1:stable-server-cursor"
+    assert second["next_cursor"] is None
+    assert transport.request_audit[0]["request_key"] == "offset:0"
+    assert transport.request_audit[1]["request_key"] == "offset:1"
 
 
 def test_neurips_uses_year_page_maps_official_ids_and_paginates_cached_html() -> None:

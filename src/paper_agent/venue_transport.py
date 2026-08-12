@@ -28,7 +28,11 @@ class VenueFetchResponse(Protocol):
 
 class VenueFetch(Protocol):
     def __call__(
-        self, url: str, api_version: str, policy_provider: str | None = None
+        self,
+        url: str,
+        api_version: str,
+        policy_provider: str | None = None,
+        request_key: str | None = None,
     ) -> VenueFetchResponse: ...
 
 
@@ -347,7 +351,11 @@ def _crossref_serial(
         f"https://api.crossref.org/journals/{quote(issn, safe='')}/works?"
         f"{urlencode(query)}"
     )
-    response = fetch(url, "crossref-serial-rest-v1")
+    # Crossref deep cursors are server-side sessions: the token may remain
+    # byte-identical while each request advances the result window.  Keep the
+    # public URL unchanged but isolate transport cache/replay entries by the
+    # number of records already consumed.
+    response = fetch(url, "crossref-serial-rest-v1", None, f"offset:{consumed}")
     try:
         payload = json.loads(response.body)
     except (TypeError, json.JSONDecodeError) as error:

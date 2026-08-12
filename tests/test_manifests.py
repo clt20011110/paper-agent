@@ -41,6 +41,7 @@ PRIMARY = {
     "nature_machine_intelligence": "springer_nature",
     "nature_synthesis": "springer_nature",
     "nature_chemistry": "crossref_serial",
+    "jacs": "crossref_serial",
     "nature_computational_science": "springer_nature",
     "nature_communications": "springer_nature",
     "nature_catalysis": "springer_nature",
@@ -69,6 +70,7 @@ FALLBACKS = {
     "nature_machine_intelligence": ["crossref"],
     "nature_synthesis": ["crossref", "semantic_scholar", "openalex"],
     "nature_chemistry": ["springer_nature", "crossref", "pubmed", "europe_pmc"],
+    "jacs": ["crossref", "semantic_scholar", "openalex"],
     "nature_computational_science": ["crossref"],
     "nature_communications": ["crossref", "pubmed", "europe_pmc"],
     "nature_catalysis": ["crossref", "pubmed", "europe_pmc"],
@@ -423,6 +425,7 @@ def test_frozen_journal_identifiers_and_venue_constraints() -> None:
     expected_journals = {
         "nature_machine_intelligence": ("natmachintell", ["2522-5839"]),
         "nature_chemistry": ("nchem", ["1755-4330", "1755-4349"]),
+        "jacs": ("jacs", ["0002-7863", "1520-5126"]),
         "nature_computational_science": ("natcomputsci", ["2662-8457"]),
         "nature_communications": ("ncomms", ["2041-1723"]),
         "nature_catalysis": ("natcatal", ["2520-1158"]),

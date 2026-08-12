@@ -39,6 +39,7 @@ _VENUE_DESCRIPTORS = {
     "TCAD": "venues/tcad.yaml",
     "Nature Machine Intelligence": "venues/nature_machine_intelligence.yaml",
     "Nature Chemistry": "venues/nature_chemistry.yaml",
+    "Journal of the American Chemical Society": "venues/jacs.yaml",
     "Nature Computational Science": "venues/nature_computational_science.yaml",
     "Nature Communications": "venues/nature_communications.yaml",
     "Nature Catalysis": "venues/nature_catalysis.yaml",

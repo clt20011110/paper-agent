@@ -276,12 +276,20 @@ class ControlledHTTPTransport:
     ) -> tuple[Mapping[str, Any], tuple[bytes, ...]]:
         delegate = self._delegate_for(provider)
         if delegate is not None:
+            delegated_parameters = dict(parameters)
+            if provider == "crossref_serial" and "@" in self.contact:
+                delegated_parameters.setdefault(
+                    "mailto", self.contact.removeprefix("mailto:")
+                )
             result = delegate.execute(
                 provider,
                 operation,
-                parameters,
-                lambda url, api_version, policy_provider=None: self._fetch(
-                    policy_provider or provider, url, api_version=api_version
+                delegated_parameters,
+                lambda url, api_version, policy_provider=None, request_key=None: self._fetch(
+                    policy_provider or provider,
+                    url,
+                    api_version=api_version,
+                    request_key=request_key,
                 ),
             )
             return result.payload, result.bodies
@@ -491,13 +499,29 @@ class ControlledHTTPTransport:
             raise ProviderRequestError("openalex: citations response must be an object")
         return citations, (work_response.body, citations_response.body)
 
-    def _fetch(self, provider: str, url: str, *, api_version: str | None = None) -> CachedResponse:
+    def _fetch(
+        self,
+        provider: str,
+        url: str,
+        *,
+        api_version: str | None = None,
+        request_key: str | None = None,
+    ) -> CachedResponse:
         credentials = self._credentials(provider)
         request_url = _with_request_credentials(provider, url, credentials)
         audit_url = _redacted_url(request_url, credentials)
         self.last_request_url = audit_url
         version = api_version or _api_version(provider)
-        query_hash = sha256(audit_url.encode("utf-8")).hexdigest()
+        query_hash = sha256(
+            (
+                json.dumps(
+                    {"url": audit_url, "request_key": request_key},
+                    sort_keys=True,
+                )
+                if request_key is not None
+                else audit_url
+            ).encode("utf-8")
+        ).hexdigest()
         request_record: dict[str, Any] = {
             "replay_scope": self.replay_scope,
             "provider": provider,
@@ -508,6 +532,8 @@ class ControlledHTTPTransport:
             "requested_at": datetime.now(UTC).isoformat(),
             "status": "running",
         }
+        if request_key is not None:
+            request_record["request_key"] = request_key
         self.request_audit.append(request_record)
         assert self.runtime is not None
         try:
@@ -543,7 +569,16 @@ class ControlledHTTPTransport:
                     query_hash=runtime_query_hash,
                     cursor=request_record["cursor"],
                     api_version=version,
-                    send=lambda: self._read(request_url, provider, credentials),
+                    send=lambda: self._read(
+                        request_url,
+                        provider,
+                        credentials,
+                        cache_key=(
+                            f"{request_url}#paper-agent-request-key={request_key}"
+                            if request_key is not None
+                            else request_url
+                        ),
+                    ),
                     environment=self.environment,
                 )
         except Exception as error:
@@ -573,7 +608,14 @@ class ControlledHTTPTransport:
         self.request_snapshots.append(response.body)
         return response  # type: ignore[return-value]
 
-    def _read(self, url: str, provider: str, credentials: Mapping[str, str]) -> CachedResponse:
+    def _read(
+        self,
+        url: str,
+        provider: str,
+        credentials: Mapping[str, str],
+        *,
+        cache_key: str | None = None,
+    ) -> CachedResponse:
         headers = {
             "Accept": "application/json, application/xml;q=0.9, text/html;q=0.8",
             "Accept-Encoding": "gzip",
@@ -583,7 +625,8 @@ class ControlledHTTPTransport:
             headers["x-api-key"] = credentials["api_key"]
         if provider == "cell_press" and credentials.get("api_key"):
             headers["X-ELS-APIKey"] = credentials["api_key"]
-        cached = self._cache.get(url)
+        resolved_cache_key = cache_key or url
+        cached = self._cache.get(resolved_cache_key)
         if cached and cached.etag:
             headers["If-None-Match"] = cached.etag
         if cached and cached.last_modified:
@@ -607,7 +650,7 @@ class ControlledHTTPTransport:
             self._raise_http_error(error, _redacted_url(url, credentials))
         except URLError as error:
             raise ProviderRequestError(f"HTTP request failed for {_redacted_url(url, credentials)}: {error.reason}") from error
-        self._cache[url] = response_value
+        self._cache[resolved_cache_key] = response_value
         return response_value
 
     def _raise_http_error(self, error: HTTPError, url: str) -> None:

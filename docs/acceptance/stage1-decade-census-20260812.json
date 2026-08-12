@@ -170,6 +170,21 @@
       "duplicate_external_ids": 0,
       "parser_rejected_records": 0,
       "note": "This proves a complete Crossref DOI-registration census for ISSN 1755-4330 with type=journal-article and the exact publication-year filter. It is explicitly registry_confirmed, not claimed as a publisher issue-table census; optional abstracts remain a separate enrichment concern."
+    },
+    {
+      "venue_id": "jacs",
+      "provider": "crossref_serial",
+      "authority": "crossref_registry",
+      "status": "complete",
+      "run_id": "77570811-b102-535d-ac1f-847f66b0e701",
+      "metadata_sha256": "dafa13c3cfaa012248d9ba8ed0c378f2ffd172a0a2f49682e619cfd179178b52",
+      "total_unique_records": 30480,
+      "annual_counts": {"2016": 2605, "2017": 2838, "2018": 2693, "2019": 2713, "2020": 2614, "2021": 2546, "2022": 2728, "2023": 3130, "2024": 3783, "2025": 4830},
+      "pages_fetched": 34,
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "note": "The first large-volume run exposed that Crossref deep cursors are stateful while their token can remain byte-identical. Transport caching is now isolated by consumed offset without altering the public request URL. A conservative one-QPS single-concurrency polite-pool run then reconciled every page and DOI."
     }
   ],
   "known_limits": [
@@ -177,6 +192,7 @@
     "NeurIPS annual list pages do not expose abstracts or DOIs; field enrichment remains a separate acceptance gate.",
     "Raw live response bodies were held in the local run and hashed by the receipt but are not committed because the current standalone CLI does not yet persist a run-scoped artifact store.",
     "Nature Chemistry completeness is scoped to Crossref DOI registrations for the declared serial/year/type query. It does not claim that unregistered publisher content is present or that every optional metadata field is populated.",
+    "JACS completeness has the same registry scope. Its 30,480-item decade run validates deep pagination and rate-limit behavior but is not a publisher issue-table claim.",
     "DAC and ICCAD are not yet decade-complete: 2016-2021 lack frozen official routes. Explicit terms acceptance enabled successful 2024 official membership censuses (DAC 337, ICCAD 195), while ACM metadata enrichment returned HTTP 403; those enrichment gaps are now reported separately from membership completeness."
   ]
 }

@@ -10,7 +10,7 @@ authority: registry
 roles: [venue_primary]
 capabilities: [stable_id, metadata, abstract, date_filter]
 authentication: {required: false}
-rate_limit: {global_qps: 5, max_concurrency: 4, cache_ttl_seconds: 3600}
+rate_limit: {global_qps: 1, max_concurrency: 1, cache_ttl_seconds: 3600}
 terms: {data_use: permitted, url: https://www.crossref.org/documentation/retrieve-metadata/rest-api/}
 independence_group: crossref_registry
 upstream_families: [crossref]
