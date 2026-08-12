@@ -295,8 +295,10 @@ def _neurips(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -
     paper_lists = _nodes(root, "ul", "paper-list")
     if not paper_lists:
         raise ProviderRequestError("neurips_proceedings: official page has no paper-list")
+    raw_paper_items = 0
     for paper_list in paper_lists:
         for item in _nodes(paper_list, "li"):
+            raw_paper_items += 1
             anchor = next(
                 (
                     value
@@ -340,7 +342,14 @@ def _neurips(operation: str, parameters: Mapping[str, Any], fetch: VenueFetch) -
     if not entries:
         raise ProviderRequestError("neurips_proceedings: official page contained no conference papers")
     selected, cursor = _filtered_page(entries, parameters)
-    return VenueOperationResult({"entries": selected, "next_cursor": cursor, "census": _census(entries)}, (response.body,))
+    return VenueOperationResult(
+        {
+            "entries": selected,
+            "next_cursor": cursor,
+            "census": _census(entries, raw_records=raw_paper_items),
+        },
+        (response.body,),
+    )
 
 
 @register_venue_handler("pmlr")

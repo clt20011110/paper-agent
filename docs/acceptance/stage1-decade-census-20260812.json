@@ -1,0 +1,55 @@
+{
+  "schema_version": "1",
+  "generated_at": "2026-08-12T23:33:16+08:00",
+  "scope": {
+    "year_from": 2016,
+    "year_to": 2025,
+    "claim": "official primary-source membership census",
+    "field_completeness_claimed": false
+  },
+  "interface_version": "stage1-standalone-v1",
+  "venues": [
+    {
+      "venue_id": "aistats",
+      "provider": "pmlr",
+      "status": "complete",
+      "run_id": "1da5cfa9-1115-5105-b77a-7640794b5410",
+      "metadata_sha256": "6d933522983e10850359a860bcd1c6422966273a7630a84c902169204673110c",
+      "total_unique_records": 3903,
+      "annual_counts": {"2016": 164, "2017": 167, "2018": 216, "2019": 360, "2020": 423, "2021": 455, "2022": 492, "2023": 496, "2024": 547, "2025": 583},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0
+    },
+    {
+      "venue_id": "icml",
+      "provider": "pmlr",
+      "status": "complete",
+      "run_id": "a04c730c-e931-51bc-bae7-b632cd07f9b8",
+      "metadata_sha256": "728f0fbb09a0b089bd40608ee8e288846a2068434a019d308b05bc009e3ed4e7",
+      "total_unique_records": 13418,
+      "annual_counts": {"2016": 322, "2017": 434, "2018": 621, "2019": 773, "2020": 1084, "2021": 1183, "2022": 1233, "2023": 1828, "2024": 2610, "2025": 3330},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "note": "The initial run exposed 2016 label and 2022 workshop-volume matching defects; both were fixed and the affected 2016-2022 range was rerun successfully."
+    },
+    {
+      "venue_id": "neurips",
+      "provider": "neurips_proceedings",
+      "status": "complete",
+      "run_id": "64d84011-e840-553b-affc-3a4eeb320bbc",
+      "metadata_sha256": "61c14bca21487c94ba09bcbdee0e84e87c5e4875a64a56d7fdd4eb58bfbc7d9b",
+      "total_unique_records": 24607,
+      "annual_counts": {"2016": 569, "2017": 679, "2018": 1009, "2019": 1428, "2020": 1898, "2021": 2334, "2022": 2834, "2023": 3540, "2024": 4493, "2025": 5823},
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0
+    }
+  ],
+  "known_limits": [
+    "Counts prove membership enumeration against each official primary container; they do not prove every optional metadata field is populated.",
+    "NeurIPS annual list pages do not expose abstracts or DOIs; field enrichment remains a separate acceptance gate.",
+    "Raw live response bodies were held in the local run and hashed by the receipt but are not committed because the current standalone CLI does not yet persist a run-scoped artifact store."
+  ]
+}
