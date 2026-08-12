@@ -353,6 +353,9 @@ def test_stage2_retries_one_structured_output_failure_and_persists_telemetry(tmp
     assert summary.error_count == 0
     assert ERROR_RATE_ALARM not in summary.alarm_codes
     assert sum(request.paper_id == "gray" for request in adjudicator.requests) == 2
+    assert [request.paper_id for request in adjudicator.requests] == [
+        "gray", "missing", "gray",
+    ]
     row = database.connection.execute(
         """SELECT status, adjudicator_attempt_count, adjudicator_retry_reason,
                   adjudicator_retry_outcome, reason

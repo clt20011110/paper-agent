@@ -10,6 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Mapping, Sequence
 
+from .canonical import content_hash
 from .schema import schema_directory
 from .stage2_backends import ModelLock, OmlxTransport, UrlLibOmlxTransport
 from .stage2_benchmark import (
@@ -20,6 +21,10 @@ from .stage2_benchmark import (
 from .stage2_benchmark_inputs import (
     benchmark_corpus_hash,
     benchmark_papers_from_document,
+)
+from .stage2_benchmark_freeze import (
+    freeze_candidate_benchmark_manifests,
+    publish_candidate_benchmark_manifests,
 )
 from .stage2_evaluation import (
     BenchmarkEnvironment,
@@ -46,13 +51,20 @@ from .stage2_pipeline import (
     Stage2Paper,
     Stage2Profile,
 )
+from .stage2_hidden_submission import (
+    HiddenPromotionSubmissionRunner,
+    hidden_submission_cases,
+)
 from .stage2_search import (
     ReleasedStage2,
     load_stage2_benchmark_candidate,
     load_stage2_release,
     stage2_base_profile,
 )
-from .stage2_promotion_artifacts import load_private_gold_labels
+from .stage2_promotion_artifacts import (
+    load_private_gold_labels,
+    promotion_submission_document,
+)
 from .stage2_sampling import load_private_corpus_snapshot
 from .stage2_structured_replay import (
     StructuredReplayRunner,
@@ -196,6 +208,8 @@ def freeze_stage2_dev_scores(
         raise ValueError(
             "topic query input must exactly cover DEV topic-language combinations"
         )
+    if dict(topic_queries) != profile.evaluation_topic_query_map:
+        raise ValueError("topic query input does not match the frozen Stage 2 runtime")
     if dry_run:
         return {
             "case_count": len(cases),
@@ -233,6 +247,7 @@ def freeze_stage2_dev_scores(
         "gold_manifest_hash": artifact.gold_manifest_hash,
         "output": str(output_path),
         "output_sha256": sha256(output_path.read_bytes()).hexdigest(),
+        "qwen_retry_count": artifact.qwen_retry_count,
         "stage2_config_hash": artifact.stage2_config_hash,
         "status": "complete",
         "topic_query_count": len(artifact.topic_queries),
@@ -302,6 +317,125 @@ def build_stage2_candidate(
         "stage2_config_hash": result.release.profile.base_runtime_config_hash,
         "status": "validated" if dry_run else "complete",
         "written": not dry_run,
+    }
+
+
+def freeze_stage2_benchmark_manifests(
+    *,
+    candidate_path: Path,
+    performance_papers_path: Path,
+    soak_papers_path: Path,
+    selection_receipt_path: Path,
+    performance_output: Path,
+    soak_output: Path,
+    dry_run: bool = False,
+    candidate_loader: Callable[[Path], ReleasedStage2] = load_stage2_benchmark_candidate,
+) -> dict[str, Any]:
+    """Bind candidate-independent 1k/10k workloads to one schema-v2 candidate."""
+
+    if performance_output == soak_output:
+        raise ValueError("performance and soak manifest outputs must differ")
+    existing = next(
+        (
+            path
+            for path in (performance_output, soak_output)
+            if os.path.lexists(path)
+        ),
+        None,
+    )
+    if existing is not None:
+        raise FileExistsError(f"benchmark manifest output already exists: {existing}")
+    release = candidate_loader(candidate_path)
+    performance_papers = _benchmark_papers(performance_papers_path)
+    soak_papers = _benchmark_papers(soak_papers_path)
+    manifests = freeze_candidate_benchmark_manifests(
+        release,
+        performance_papers=performance_papers,
+        soak_papers=soak_papers,
+        selection_receipt=_object(selection_receipt_path),
+    )
+    if not dry_run:
+        publish_candidate_benchmark_manifests(
+            manifests,
+            performance_output=performance_output,
+            soak_output=soak_output,
+        )
+    return {
+        "command": "benchmark-stage2.freeze-manifests",
+        "performance_case_count": len(manifests.performance.cases),
+        "performance_manifest_hash": manifests.performance.hash(),
+        "performance_output": str(performance_output),
+        "soak_case_count": len(manifests.soak.cases),
+        "soak_manifest_hash": manifests.soak.hash(),
+        "soak_output": str(soak_output),
+        "stage2_config_hash": release.profile.base_runtime_config_hash,
+        "status": "validated" if dry_run else "complete",
+        "written": not dry_run,
+    }
+
+
+def build_hidden_promotion_submission(
+    *,
+    manifest_path: Path,
+    snapshot_path: Path,
+    candidate_path: Path,
+    output_path: Path,
+    dry_run: bool = False,
+    candidate_loader: Callable[[Path], ReleasedStage2] = load_stage2_benchmark_candidate,
+    transport: OmlxTransport | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Create three candidate predictions over the sealed hidden universe."""
+
+    if os.path.lexists(output_path):
+        raise FileExistsError(
+            f"hidden promotion submission output already exists: {output_path}"
+        )
+    manifest = load_gold_manifest(manifest_path)
+    snapshot = load_private_corpus_snapshot(snapshot_path)
+    release = candidate_loader(candidate_path)
+    cases = hidden_submission_cases(manifest, snapshot, release.profile)
+    if dry_run:
+        return {
+            "candidate_id": release.profile_name,
+            "case_count": len(cases),
+            "command": "stage2-evaluator.predict-hidden",
+            "gold_manifest_hash": manifest.hash(),
+            "output": str(output_path),
+            "run_count": 3,
+            "stage2_config_hash": release.profile.base_runtime_config_hash,
+            "status": "validated",
+            "written": False,
+        }
+    values = environment if environment is not None else os.environ
+    api_key = values.get(release.api_key_env) if release.api_key_env else None
+    if release.api_key_env and not api_key:
+        raise ValueError(
+            "hidden prediction requires environment variable "
+            f"{release.api_key_env}"
+        )
+    local_transport = transport or UrlLibOmlxTransport(
+        release.omlx_base_url,
+        api_key=api_key,
+    )
+    submission = HiddenPromotionSubmissionRunner(release, local_transport).run(
+        manifest,
+        snapshot,
+        output_path=output_path,
+    )
+    document = promotion_submission_document(submission)
+    return {
+        "candidate_id": submission.candidate_id,
+        "case_count": len(submission.runs[0]),
+        "command": "stage2-evaluator.predict-hidden",
+        "gold_manifest_hash": manifest.hash(),
+        "output": str(output_path),
+        "output_sha256": sha256(output_path.read_bytes()).hexdigest(),
+        "run_count": len(submission.runs),
+        "stage2_config_hash": release.profile.base_runtime_config_hash,
+        "status": "complete",
+        "submission_hash": content_hash(document),
+        "written": True,
     }
 
 

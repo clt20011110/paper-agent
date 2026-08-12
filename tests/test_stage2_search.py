@@ -128,6 +128,7 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
         "query": "graph learning methods",
         "query_version": "screening-query-v1",
         "screening_scope_hash": scope_hash,
+        "evaluation_topic_queries": [],
         "include_document_types": [],
         "exclude_document_types": ["editorial", "retraction"],
         "token_bucket_width": 128,
@@ -136,6 +137,7 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
         "adjudicator_concurrency": 4,
         "adjudicator_seed": 42,
         "max_context_window": 16_384,
+        "max_tokens": 256,
         "omlx_base_url": base_url,
         "api_key_env": None,
         "prompt_version": "stage2-adjudication-v1",
@@ -161,6 +163,7 @@ def _release_bundle(tmp_path: Path, *, base_url: str = "http://127.0.0.1:8000") 
         adjudicator_concurrency=runtime["adjudicator_concurrency"],
         adjudicator_seed=runtime["adjudicator_seed"],
         adjudicator_max_context_window=runtime["max_context_window"],
+        adjudicator_max_output_tokens=runtime["max_tokens"],
         omlx_base_url=runtime["omlx_base_url"],
         api_key_env=runtime["api_key_env"],
         prompt_version=runtime["prompt_version"],
@@ -387,7 +390,10 @@ class AdjudicatingOmlxFixture:
             "rationale": "The abstract addresses the query.",
             "evidence_fields": ["abstract"],
         }
-        body = {"choices": [{"message": {"content": json.dumps(decision)}}]}
+        body = {
+            "model": payload["model"],
+            "choices": [{"message": {"content": json.dumps(decision)}}],
+        }
         return OmlxResponse(200, json.dumps(body).encode())
 
 

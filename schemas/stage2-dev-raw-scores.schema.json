@@ -5,7 +5,7 @@
   "description": "Evaluator-private raw DEV scores. This artifact is calibration input and must not be included in a candidate or release bundle.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "kind", "gold_manifest_hash", "dev_manifest_hash", "private_snapshot_hash", "private_snapshot_corpus_hash", "stage2_config_hash", "model_lock_hashes", "topic_queries", "scores"],
+  "required": ["schema_version", "kind", "gold_manifest_hash", "dev_manifest_hash", "private_snapshot_hash", "private_snapshot_corpus_hash", "stage2_config_hash", "qwen_retry_count", "model_lock_hashes", "topic_queries", "scores"],
   "properties": {
     "schema_version": {"const": "1"},
     "kind": {"const": "stage2_dev_raw_scores"},
@@ -14,6 +14,7 @@
     "private_snapshot_hash": {"$ref": "#/$defs/sha256"},
     "private_snapshot_corpus_hash": {"$ref": "#/$defs/sha256"},
     "stage2_config_hash": {"$ref": "#/$defs/sha256"},
+    "qwen_retry_count": {"type": "integer", "minimum": 0, "maximum": 300},
     "model_lock_hashes": {
       "type": "object",
       "additionalProperties": false,

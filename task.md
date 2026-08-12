@@ -413,7 +413,7 @@ Querit-4B 截至 2026-06-20 的模型卡自报为公开模型中 MTEB Multilingu
 - oMLX 至少升级到 v0.5.7；当前本机 0.2.7 不满足要求。
 - 使用 OpenAI-compatible chat endpoint。
 - 请求必须设置 chat_template_kwargs.enable_thinking=false；若迁移旧配置中的 thinking=false，adapter 必须映射到该字段，不得把非标准 thinking 字段原样发送后假定生效。
-- temperature=0、固定 seed、stream=false、max_tokens=256。
+- temperature=0、固定 seed、stream=false、max_tokens=256。真实 DEV 回放确认 oMLX 0.5.7 的并发 grammar 偶发停滞不能靠放大 token 上限修复；失败项必须等当前 continuous batch 排空后单并发重试一次。
 - 每模型 max_context_window 初始固定为 16384；只有压测通过后才能提高，硬上限为 32768，不继承模型声明的超大原生上下文。
 - 使用 extra_body.structured_outputs.json 传递 logit-level JSON schema；grammar 编译失败必须以 400 fail-closed。
 - 不能只依赖可能退化为 prompt 注入的 response_format；出现 Warning header 视为结构化约束失败。
@@ -573,7 +573,8 @@ paper-agent --dry-run stage2-calibration freeze-dev-scores \
 
 dry-run 必须在零模型调用下验证 DEV universe、topic query、runtime、schema 与 lock；正式执行遇到任一路径
 缺失、非有限分数、错误 response model、schema/paper_id 错配或运行中 schema/config 漂移时不得发布半份
-artifact。raw-score artifact 留在 evaluator custody，不得引用进 candidate/release bundle。
+artifact。并发 grammar 首次失败只在整批排空后单并发重试一次，避免在同一 continuous batch 中确定性
+复现截断。raw-score artifact 留在 evaluator custody，不得引用进 candidate/release bundle。
 
 第二段只在正式人工 `private-gold-labels.json` 可用后执行。命令先验证完整 600 labels 与采样配额，再只取
 DEV 300 条拟合 reranker/Qwen 两条 `P(gold_label >= 2)` calibrator 和 recall-first threshold；candidate
@@ -593,6 +594,12 @@ paper-agent --dry-run stage2-calibration build-candidate \
 
 schema-v2 candidate 只表示 DEV 校准候选，仍须完成 structured replay、rationale、parity、hidden promotion、
 normal/stress 与 soak 后才能组装 schema-v3 production release。
+
+候选必须原样携带并 hash 绑定 DEV 使用的完整 `(topic, language) -> query` 映射。隔离 evaluator 的
+submission runner 不接收 labels，只从 manifest/private snapshot 解析 HIDDEN_HARD 与 HIDDEN_REAL 共 300
+pair，以同一映射完整运行三次；模型或 schema 技术失败只能提交 `needs_review`。candidate-independent 的
+1,000/10,000 workload receipt 则先通过 `benchmark-stage2 freeze-manifests` 绑定候选的 runtime、模型锁、
+两条 threshold 与输出 token 上限，再交给 performance/soak runner，禁止运行时重新抽 Qwen route。
 
 2026-08-12 已实现上述两段命令、无标签 raw-score schema、多 topic/language query 绑定、candidate 最后发布
 标记和离线回归测试，并以现有真实 manifest/snapshot 完成 300 DEV、12 topic-language query 的零模型调用

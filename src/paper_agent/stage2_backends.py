@@ -288,11 +288,14 @@ class OmlxChatBackend:
     schema: Mapping[str, Any]
     seed: int = 42
     max_context_window: int = 16_384
+    max_output_tokens: int = 256
     backend_name: str = field(default="omlx_chat", init=False)
 
     def __post_init__(self) -> None:
         if not 1 <= self.max_context_window <= 32_768:
             raise ValueError("max_context_window must be in 1..32768")
+        if not 1 <= self.max_output_tokens <= 1_024:
+            raise ValueError("max_output_tokens must be in 1..1024")
 
     def adjudicate(self, request: AdjudicationInput) -> AdjudicationDecision:
         if self._estimated_tokens(request.messages) > self.max_context_window:
@@ -303,7 +306,7 @@ class OmlxChatBackend:
             "temperature": 0,
             "seed": self.seed,
             "stream": False,
-            "max_tokens": 256,
+            "max_tokens": self.max_output_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
             # This is the wire representation of OpenAI SDK's
             # extra_body={"structured_outputs": {"json": schema}}.
@@ -315,10 +318,15 @@ class OmlxChatBackend:
         if response.status_code != 200:
             raise StructuredOutputError(f"oMLX chat returned HTTP {response.status_code}")
         try:
-            content = response.json()["choices"][0]["message"]["content"]
+            response_document = response.json()
+            content = response_document["choices"][0]["message"]["content"]
             value = json.loads(content)
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
             raise StructuredOutputError("oMLX chat response is not a JSON decision") from error
+        if response_document.get("model") != self.model:
+            raise StructuredOutputError(
+                "oMLX chat response model does not match the frozen adjudicator"
+            )
         if not isinstance(value, dict):
             raise StructuredOutputError("oMLX chat decision must be an object")
         try:

@@ -26,6 +26,17 @@ def _runtime() -> dict[str, object]:
         "query": "molecular generation",
         "query_version": "stage2-gold-query-v1",
         "screening_scope_hash": "0" * 64,
+        "evaluation_topic_queries": [
+            {
+                "topic": f"topic-{topic}",
+                "language": "zh" if topic % 2 == 0 else "en",
+                "query": (
+                    f"query for topic-{topic} in "
+                    f"{'zh' if topic % 2 == 0 else 'en'}"
+                ),
+            }
+            for topic in range(6)
+        ],
         "include_document_types": [],
         "exclude_document_types": ["editorial", "retraction"],
         "token_bucket_width": 128,
@@ -34,6 +45,7 @@ def _runtime() -> dict[str, object]:
         "adjudicator_concurrency": 4,
         "adjudicator_seed": 42,
         "max_context_window": 16_384,
+        "max_tokens": 256,
         "omlx_base_url": "http://127.0.0.1:8000",
         "api_key_env": None,
         "prompt_version": "stage2-adjudication-v1",
@@ -194,6 +206,29 @@ def test_build_candidate_rejects_runtime_and_snapshot_corpus_drift(tmp_path: Pat
         )
     assert not (tmp_path / "candidate-corpus-drift").exists()
     assert not (tmp_path / "candidate-runtime-drift").exists()
+
+
+def test_build_candidate_rejects_topic_query_text_drift(tmp_path: Path) -> None:
+    manifest, snapshot = _inputs()
+    labels = _labels(manifest)
+    runtime = _runtime()
+    raw_scores = _raw_scores(manifest, snapshot, labels, runtime)
+    changed_queries = dict(raw_scores.topic_queries)
+    changed_queries[next(iter(changed_queries))] = "different query"
+
+    with pytest.raises(ValueError, match="frozen Stage 2 runtime"):
+        build_stage2_candidate_bundle(
+            manifest=manifest,
+            private_labels=labels,
+            raw_scores=replace(raw_scores, topic_queries=changed_queries),
+            runtime=runtime,
+            reranker_lock_path=RERANKER_LOCK,
+            adjudicator_lock_path=ADJUDICATOR_LOCK,
+            candidate_id="crossref-dev-v1",
+            output_dir=tmp_path / "candidate-query-drift",
+        )
+
+    assert not (tmp_path / "candidate-query-drift").exists()
 
 
 def test_candidate_marker_is_absent_when_final_self_validation_fails(

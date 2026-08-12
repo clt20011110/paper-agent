@@ -147,7 +147,8 @@ paper-agent --dry-run stage2-sampling finalize-annotations \
 
 DEV 原始分数与人工标签分两段处理。第一段不读取任何标签，按冻结的 `(topic, language) → query`
 映射让 BGE 和 Qwen 都精确覆盖 300 个 DEV pair；原始分数仍是 evaluator-private，不能放入 candidate
-或 release bundle：
+或 release bundle。真实执行前把本机 oMLX 的 API key 只注入 `PAPER_AGENT_OMLX_API_KEY` 环境变量，
+不要写入 runtime、日志或仓库：
 
 ```sh
 paper-agent --dry-run stage2-calibration freeze-dev-scores \
@@ -179,6 +180,31 @@ paper-agent --dry-run stage2-calibration build-candidate \
 ```
 
 schema-v2 candidate 只是 replay、性能和 hidden promotion 的候选输入，不是 production release。
+它同时固化 DEV/hidden 共用的 12 个 `(topic, language) → query`，因此后续 evaluator 不能换 query
+后继续复用同一 calibrator。
+
+先把 candidate-independent 的 1,000/10,000 篇 workload 绑定到候选；该步骤不读取标签，也不调用模型：
+
+```sh
+paper-agent --dry-run benchmark-stage2 freeze-manifests \
+  --stage2-candidate /secure/release/stage2-candidate-v2.json \
+  --performance-papers /secure/workloads/performance-papers.json \
+  --soak-papers /secure/workloads/soak-papers.json \
+  --selection-receipt /secure/workloads/selection-receipt.json \
+  --performance-output /secure/evidence/performance-manifest.json \
+  --soak-output /secure/evidence/soak-manifest.json
+```
+
+候选的 hidden 输入由隔离 evaluator 直接从 private snapshot 解析，严格运行 300 pair × 3，且命令接口
+不接受 labels；技术失败统一记录为 `needs_review`，不会伪装成 `irrelevant`：
+
+```sh
+paper-agent --dry-run stage2-evaluator predict-hidden \
+  --manifest /secure/evaluator-transfer/gold-manifest.json \
+  --private-snapshot /secure/evaluator/private-snapshot.json \
+  --stage2-candidate /secure/release/stage2-candidate-v2.json \
+  --output /secure/evaluator/candidate-submission.json
+```
 
 结构化输出专项回放直接复用冻结的 1,000 篇 workload 与 schema-v2 candidate；模型、并发、seed、
 endpoint、prompt 和 schema 均从 candidate 读取，命令不提供运行时覆盖：

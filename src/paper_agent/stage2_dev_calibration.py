@@ -21,10 +21,10 @@ from typing import Any, Mapping
 from .canonical import content_hash
 from .schema import validate
 from .stage2_backends import (
+    AdjudicationDecision,
     AdjudicationInput,
     OmlxChatBackend,
     OmlxRerankBackend,
-    OmlxResponse,
     OmlxTransport,
     RerankInput,
     StructuredOutputError,
@@ -50,6 +50,7 @@ class FrozenDevRawScoreArtifact:
     private_snapshot_corpus_hash: str
     stage2_config_hash: str
     topic_queries: Mapping[tuple[str, str], str]
+    qwen_retry_count: int = 0
 
     def __post_init__(self) -> None:
         if any(
@@ -69,6 +70,8 @@ class FrozenDevRawScoreArtifact:
         object.__setattr__(self, "topic_queries", MappingProxyType(topic_queries))
         if self.version != 1 or set(scores) != _PATHS or set(locks) != _PATHS:
             raise ValueError("DEV raw scores require exactly reranker and qwen paths")
+        if not isinstance(self.qwen_retry_count, int) or not 0 <= self.qwen_retry_count <= 300:
+            raise ValueError("DEV raw scores require qwen_retry_count in 0..300")
         if not all(_is_sha256(value) for value in (
             self.gold_manifest_hash, self.dev_manifest_hash, self.private_snapshot_hash,
             self.private_snapshot_corpus_hash, self.stage2_config_hash, *locks.values(),
@@ -92,6 +95,7 @@ class FrozenDevRawScoreArtifact:
             "private_snapshot_hash": self.private_snapshot_hash,
             "private_snapshot_corpus_hash": self.private_snapshot_corpus_hash,
             "stage2_config_hash": self.stage2_config_hash,
+            "qwen_retry_count": self.qwen_retry_count,
             "model_lock_hashes": {path.value: self.model_lock_hashes[path] for path in sorted(_PATHS, key=str)},
             "topic_queries": [
                 {"topic": topic, "language": language, "query": self.topic_queries[(topic, language)]}
@@ -144,6 +148,7 @@ class FrozenDevRawScoreArtifact:
             1, scores, {CalibrationPath(path): value for path, value in locks_value.items()},
             document["gold_manifest_hash"], document["dev_manifest_hash"], document["private_snapshot_hash"],
             document["private_snapshot_corpus_hash"], document["stage2_config_hash"], topic_queries,
+            document["qwen_retry_count"],
         )
 
 
@@ -240,6 +245,13 @@ class Stage2DevRawScoreRunner:
             raise FileExistsError(f"refusing to replace DEV raw-score artifact: {output_path}")
         cases = dev_scoring_cases(manifest, snapshot)
         topic_queries = _validated_topic_queries(cases, self.topic_queries)
+        if (
+            self.profile.evaluation_topic_queries
+            and dict(topic_queries) != self.profile.evaluation_topic_query_map
+        ):
+            raise ValueError(
+                "topic_queries do not match the frozen Stage 2 runtime"
+            )
         locks = _validated_locks(self.profile, self.model_lock_hashes)
         schema, schema_hash = _load_schema(self.profile.schema_version)
         frozen_config_hash = self.profile.base_runtime_config_hash
@@ -265,19 +277,40 @@ class Stage2DevRawScoreRunner:
             raise ValueError("reranker did not return every DEV pair")
         adjudicator = OmlxChatBackend(
             self.profile.adjudicator_model_id,
-            _ExpectedModelTransport(
-                self.transport, self.profile.adjudicator_model_id
-            ),
+            self.transport,
             schema,
-            self.profile.adjudicator_seed, self.profile.adjudicator_max_context_window,
+            self.profile.adjudicator_seed,
+            self.profile.adjudicator_max_context_window,
+            self.profile.adjudicator_max_output_tokens,
+        )
+        qwen_requests = tuple(
+            _adjudication_input(
+                self.profile,
+                case.paper,
+                topic_queries[(case.topic, case.language)],
+            )
+            for case in cases
         )
         with ThreadPoolExecutor(max_workers=self.profile.adjudicator_concurrency) as executor:
-            decisions = tuple(executor.map(
-                lambda case: adjudicator.adjudicate(_adjudication_input(
-                    self.profile, case.paper, topic_queries[(case.topic, case.language)],
-                )),
-                cases,
-            ))
+            first_attempts = tuple(
+                executor.map(
+                    lambda request: _adjudication_attempt(adjudicator, request),
+                    qwen_requests,
+                )
+            )
+        # oMLX 0.5.7 can occasionally stall a grammar-constrained request when
+        # several generations share a continuous batch.  Retry only failed
+        # requests after the batch drains, one at a time; an immediate retry in
+        # the same batch deterministically repeats the truncation.
+        decisions: list[AdjudicationDecision] = []
+        qwen_retry_count = 0
+        for request, (decision, error) in zip(qwen_requests, first_attempts, strict=True):
+            if error is None:
+                assert decision is not None
+                decisions.append(decision)
+                continue
+            qwen_retry_count += 1
+            decisions.append(adjudicator.adjudicate(request))
         qwen_by_id = {decision.paper_id: decision.score for decision in decisions}
         if set(qwen_by_id) != {case.paper.paper_id for case in cases}:
             raise ValueError("Qwen did not return every DEV pair")
@@ -290,25 +323,20 @@ class Stage2DevRawScoreRunner:
             1,
             {CalibrationPath.RERANKER: reranker_by_id, CalibrationPath.QWEN: qwen_by_id},
             locks, manifest.hash(), manifest.dev_hash(), snapshot.hash(), snapshot.corpus_hash,
-            frozen_config_hash, topic_queries,
+            frozen_config_hash, topic_queries, qwen_retry_count,
         )
         if output_path is not None:
             write_frozen_dev_raw_scores(output_path, artifact)
         return artifact
 
-
-@dataclass(slots=True)
-class _ExpectedModelTransport:
-    transport: OmlxTransport
-    model_id: str
-
-    def request(self, path: str, payload: Mapping[str, Any]) -> OmlxResponse:
-        response = self.transport.request(path, payload)
-        if response.status_code == 200 and response.json().get("model") != self.model_id:
-            raise StructuredOutputError(
-                "oMLX chat response model does not match the frozen adjudicator"
-            )
-        return response
+def _adjudication_attempt(
+    adjudicator: OmlxChatBackend,
+    request: AdjudicationInput,
+) -> tuple[AdjudicationDecision | None, Exception | None]:
+    try:
+        return adjudicator.adjudicate(request), None
+    except (StructuredOutputError, TimeoutError, OSError) as error:
+        return None, error
 
 
 def _adjudication_input(profile: Stage2Profile, paper: Stage2Paper, query: str) -> AdjudicationInput:

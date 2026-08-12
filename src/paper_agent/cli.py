@@ -130,9 +130,11 @@ from .stage2_sampling import (
     write_private_sampling_annotations,
 )
 from .stage2_commands import (
+    build_hidden_promotion_submission,
     build_stage2_candidate,
     evaluate_benchmark_artifacts,
     filter_database,
+    freeze_stage2_benchmark_manifests,
     freeze_stage2_dev_scores,
     measure_stage2_benchmark,
     run_structured_replay,
@@ -492,6 +494,24 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
         help="oMLX server or worker PID to include in current RSS; repeat for every process",
     )
     measure.add_argument("--sample-interval-seconds", type=float, default=0.25)
+    freeze_benchmarks = benchmark_modes.add_parser(
+        "freeze-manifests",
+        help="bind frozen 1k/10k workloads to one schema-v2 candidate",
+    )
+    freeze_benchmarks.add_argument(
+        "--stage2-candidate", required=True, type=Path
+    )
+    freeze_benchmarks.add_argument(
+        "--performance-papers", required=True, type=Path
+    )
+    freeze_benchmarks.add_argument("--soak-papers", required=True, type=Path)
+    freeze_benchmarks.add_argument(
+        "--selection-receipt", required=True, type=Path
+    )
+    freeze_benchmarks.add_argument(
+        "--performance-output", required=True, type=Path
+    )
+    freeze_benchmarks.add_argument("--soak-output", required=True, type=Path)
 
     evaluator = subcommands.add_parser(
         "stage2-evaluator",
@@ -508,6 +528,15 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     attest.add_argument("--signing-key-file", required=True, type=Path)
     attest.add_argument("--trust-manifest", required=True, type=Path)
     attest.add_argument("--output", required=True, type=Path)
+
+    predict_hidden = evaluator_commands.add_parser(
+        "predict-hidden",
+        help="run one schema-v2 candidate three times over the sealed hidden set",
+    )
+    predict_hidden.add_argument("--manifest", required=True, type=Path)
+    predict_hidden.add_argument("--private-snapshot", required=True, type=Path)
+    predict_hidden.add_argument("--stage2-candidate", required=True, type=Path)
+    predict_hidden.add_argument("--output", required=True, type=Path)
 
     promote = evaluator_commands.add_parser(
         "promote",
@@ -837,6 +866,16 @@ def main(
             dry_run=args.dry_run,
         ))
     if args.command == "benchmark-stage2":
+        if args.benchmark_command == "freeze-manifests":
+            return _finish(args, freeze_stage2_benchmark_manifests(
+                candidate_path=args.stage2_candidate,
+                performance_papers_path=args.performance_papers,
+                soak_papers_path=args.soak_papers,
+                selection_receipt_path=args.selection_receipt,
+                performance_output=args.performance_output,
+                soak_output=args.soak_output,
+                dry_run=args.dry_run,
+            ))
         if args.benchmark_command == "measure":
             result = measure_stage2_benchmark(
                 manifest_path=args.manifest,
@@ -865,6 +904,17 @@ def main(
         return _finish(args, result)
     if args.command == "stage2-evaluator" and args.stage2_evaluator_command == "attest":
         return _finish(args, _stage2_evaluator_attest(args))
+    if (
+        args.command == "stage2-evaluator"
+        and args.stage2_evaluator_command == "predict-hidden"
+    ):
+        return _finish(args, build_hidden_promotion_submission(
+            manifest_path=args.manifest,
+            snapshot_path=args.private_snapshot,
+            candidate_path=args.stage2_candidate,
+            output_path=args.output,
+            dry_run=args.dry_run,
+        ))
     if args.command == "stage2-evaluator" and args.stage2_evaluator_command == "promote":
         return _finish(args, _stage2_evaluator_promote(args))
     if args.command == "stage2-release" and args.stage2_release_command == "assemble":

@@ -755,6 +755,7 @@ class Stage2BenchmarkRunner:
             schema,
             seed=profile.adjudicator_seed,
             max_context_window=profile.adjudicator_max_context_window,
+            max_output_tokens=profile.adjudicator_max_output_tokens,
         )
         return cls(
             database=database,
@@ -763,7 +764,7 @@ class Stage2BenchmarkRunner:
             adjudicator=adjudicator,
             environment=environment,
             release_hash=release_hash,
-            adjudicator_output_token_limit=256,
+            adjudicator_output_token_limit=profile.adjudicator_max_output_tokens,
             clock=clock,
             rss_sampler=rss_sampler,
             rss_scope=rss_scope,

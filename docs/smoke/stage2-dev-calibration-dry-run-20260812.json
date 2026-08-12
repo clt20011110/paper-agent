@@ -10,7 +10,7 @@
   "topic_query_count": 12,
   "gold_manifest_hash": "579ac1f30770066e02510885727bf818a4598d1415805bccdbda6fe3ca02381d",
   "dev_manifest_hash": "a214b4f8dc99a637eaf1ef897758694acc70957162b72c8ba07358bea46ca765",
-  "stage2_config_hash": "960f18211a05df6f4cbc902d3ead766ce63c9c0beab8b70acbdca96932756ae7",
+  "stage2_config_hash": "c368e1a94aacee0a258eec51dd2ec52c56b28574cdbf6b6be14d34a5a7d618ef",
   "inputs": {
     "gold_manifest": {
       "private_reference": "local-evaluator-transfer:stage2/crossref-real-v1-20260812/gold-manifest.json",
@@ -26,7 +26,7 @@
     },
     "runtime": {
       "path": "configs/stage2/runtime-crossref-v1.json",
-      "sha256": "211370e5447d94205632c2b9f242ee7478c4095c55c440a1e58c4e955eb95722"
+      "sha256": "57ca93bbdf4c828b6d7674dc829bb850448b701235a5bbc97ef2d7ca8f7d228f"
     },
     "reranker_lock": {
       "path": "configs/stage2/models/bge-reranker-v2-m3-fp32.lock.json",

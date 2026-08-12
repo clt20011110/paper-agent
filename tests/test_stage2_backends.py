@@ -128,8 +128,17 @@ def test_omlx_rerank_downgrades_64_to_32_to_16_and_isolates_one_failure() -> Non
 
 
 def test_omlx_chat_uses_fixed_generation_and_structured_output_contract() -> None:
-    transport = FakeTransport([_response({"choices": [{"message": {"content": json.dumps(_decision())}}]})])
-    backend = OmlxChatBackend("mlx-community/Qwen3.5-9B-8bit", transport, _schema(), seed=7)
+    transport = FakeTransport([_response({
+        "model": "mlx-community/Qwen3.5-9B-8bit",
+        "choices": [{"message": {"content": json.dumps(_decision())}}],
+    })])
+    backend = OmlxChatBackend(
+        "mlx-community/Qwen3.5-9B-8bit",
+        transport,
+        _schema(),
+        seed=7,
+        max_output_tokens=256,
+    )
 
     decision = backend.adjudicate(AdjudicationInput("paper-1", ({"role": "user", "content": "classify"},)))
 
@@ -177,7 +186,10 @@ def test_urllib_transport_adds_optional_bearer_auth_without_changing_payload(mon
 
 def test_omlx_chat_revalidates_the_exact_wire_schema() -> None:
     schema = {**_schema(), "properties": {"paper_id": {"const": "different-paper"}}}
-    backend = OmlxChatBackend("model", FakeTransport([_response({"choices": [{"message": {"content": json.dumps(_decision())}}]})]), schema)
+    backend = OmlxChatBackend("model", FakeTransport([_response({
+        "model": "model",
+        "choices": [{"message": {"content": json.dumps(_decision())}}],
+    })]), schema)
 
     with pytest.raises(StructuredOutputError, match="violates schema"):
         backend.adjudicate(AdjudicationInput("paper-1", ({"role": "user", "content": "classify"},)))
@@ -186,9 +198,11 @@ def test_omlx_chat_revalidates_the_exact_wire_schema() -> None:
 @pytest.mark.parametrize(
     ("response", "error"),
     [
-        (_response({"choices": [{"message": {"content": json.dumps(_decision())}}]}, {"Warning": "grammar skipped"}), "Warning"),
-        (_response({"choices": [{"message": {"content": json.dumps(_decision("wrong"))}}]}), "paper_id"),
-        (_response({"choices": [{"message": {"content": "not json"}}]}), "JSON decision"),
+        (_response({"model": "model", "choices": [{"message": {"content": json.dumps(_decision())}}]}, {"Warning": "grammar skipped"}), "Warning"),
+        (_response({"model": "model", "choices": [{"message": {"content": json.dumps(_decision("wrong"))}}]}), "paper_id"),
+        (_response({"model": "model", "choices": [{"message": {"content": "not json"}}]}), "JSON decision"),
+        (_response({"model": "other", "choices": [{"message": {"content": json.dumps(_decision())}}]}), "model does not match"),
+        (OmlxResponse(200, b"not-json"), "JSON decision"),
         (_response({"error": "grammar failed"}, status=400), "HTTP 400"),
     ],
 )

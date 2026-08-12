@@ -8,8 +8,16 @@
     "paper_id": {"type": "string", "minLength": 1},
     "decision": {"enum": ["relevant", "irrelevant", "needs_review"]},
     "score": {"type": "number", "minimum": 0, "maximum": 1},
-    "reason_codes": {"type": "array", "items": {"type": "string", "minLength": 1}},
-    "rationale": {"type": "string", "minLength": 1},
-    "evidence_fields": {"type": "array", "items": {"type": "string", "minLength": 1}}
+    "reason_codes": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {"type": "string", "minLength": 1, "maxLength": 48}
+    },
+    "rationale": {"type": "string", "minLength": 1, "maxLength": 200},
+    "evidence_fields": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {"type": "string", "minLength": 1, "maxLength": 32}
+    }
   }
 }

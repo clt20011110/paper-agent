@@ -124,23 +124,29 @@ class StructuredReplayRunner:
         manifest_hash = frozen.hash()
         validator = Draft202012Validator(schema)
         with ThreadPoolExecutor(max_workers=self.profile.adjudicator_concurrency) as executor:
-            records = tuple(executor.map(
-                lambda paper: self._run_one(paper, manifest_hash, schema, validator), papers,
+            first_attempts = tuple(executor.map(
+                lambda paper: self._request(paper, schema, validator), papers,
             ))
+        records = tuple(
+            self._record_after_attempts(
+                paper, manifest_hash, first, schema, validator,
+            )
+            for paper, first in zip(papers, first_attempts, strict=True)
+        )
         result = structured_replay_gate(frozen, records)
         run = StructuredReplayRun(frozen, records, result)
         if manifest_path is not None and records_path is not None:
             write_structured_replay_artifacts(run, manifest_path, records_path)
         return run
 
-    def _run_one(
+    def _record_after_attempts(
         self,
         paper: Stage2Paper,
         manifest_hash: str,
+        first: _Attempt,
         schema: Mapping[str, Any],
         validator: Draft202012Validator,
     ) -> StructuredReplayRecord:
-        first = self._request(paper, schema, validator)
         if first.valid:
             return StructuredReplayRecord(
                 paper.paper_id, manifest_hash, first.error, first.returned_pair_id,
@@ -177,7 +183,7 @@ class StructuredReplayRunner:
             "temperature": 0,
             "seed": self.profile.adjudicator_seed,
             "stream": False,
-            "max_tokens": 256,
+            "max_tokens": self.profile.adjudicator_max_output_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
             "structured_outputs": {"json": dict(schema)},
         }

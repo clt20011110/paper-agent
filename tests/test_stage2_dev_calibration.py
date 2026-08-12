@@ -20,9 +20,16 @@ from paper_agent.stage2_sampling import CorpusPaper, PrivateCorpusSnapshot
 
 
 class FakeTransport:
-    def __init__(self, fail_qwen: bool = False, wrong_model: bool = False) -> None:
+    def __init__(
+        self,
+        fail_qwen: bool = False,
+        wrong_model: bool = False,
+        wrong_model_once: bool = False,
+    ) -> None:
         self.fail_qwen = fail_qwen
         self.wrong_model = wrong_model
+        self.wrong_model_once = wrong_model_once
+        self.chat_count = 0
         self.requests: list[tuple[str, dict[str, object]]] = []
 
     def request(self, path: str, payload: dict[str, object]) -> OmlxResponse:
@@ -40,7 +47,11 @@ class FakeTransport:
         user = messages[1]
         assert isinstance(user, dict)
         pair_id = str(user["content"]).split("Paper ID: ", 1)[1].split("\n", 1)[0]
-        return OmlxResponse(200, json.dumps({"model": "wrong-model" if self.wrong_model else payload["model"], "choices": [{"message": {"content": json.dumps({
+        wrong_model = self.wrong_model or (
+            self.wrong_model_once and self.chat_count == 0
+        )
+        self.chat_count += 1
+        return OmlxResponse(200, json.dumps({"model": "wrong-model" if wrong_model else payload["model"], "choices": [{"message": {"content": json.dumps({
             "paper_id": pair_id, "decision": "relevant", "score": 0.8,
             "reason_codes": ["topic_match"], "rationale": "Directly in scope.",
             "evidence_fields": ["title", "abstract"],
@@ -135,6 +146,21 @@ def test_wrong_qwen_response_model_fails_without_publishing(tmp_path: Path) -> N
         _runner(FakeTransport(wrong_model=True)).run(manifest, snapshot, output_path=output)
 
     assert not output.exists()
+
+
+def test_qwen_retries_each_pair_at_most_once() -> None:
+    manifest, snapshot = _inputs()
+    transport = FakeTransport(wrong_model_once=True)
+
+    artifact = _runner(transport).run(manifest, snapshot)
+
+    assert artifact.qwen_retry_count == 1
+    qwen_requests = [
+        payload for path, payload in transport.requests
+        if path == "/v1/chat/completions"
+    ]
+    assert len(qwen_requests) == 301
+    assert qwen_requests[-1]["messages"] == qwen_requests[0]["messages"]
 
 
 def test_missing_topic_query_fails_before_any_model_call() -> None:

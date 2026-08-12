@@ -306,6 +306,78 @@ def test_benchmark_stage2_measure_cli_dispatches_explicit_production_inputs(
     assert json.loads(capsys.readouterr().out)["status"] == "validated"
 
 
+def test_benchmark_freeze_manifests_cli_uses_only_frozen_inputs(
+    monkeypatch, capsys,
+) -> None:
+    captured = {}
+
+    def freeze(**kwargs):
+        captured.update(kwargs)
+        return {
+            "command": "benchmark-stage2.freeze-manifests",
+            "status": "validated",
+        }
+
+    monkeypatch.setattr(cli, "freeze_stage2_benchmark_manifests", freeze)
+    exit_code = cli.main([
+        "--dry-run",
+        "benchmark-stage2",
+        "freeze-manifests",
+        "--stage2-candidate", "candidate.json",
+        "--performance-papers", "performance-papers.json",
+        "--soak-papers", "soak-papers.json",
+        "--selection-receipt", "selection-receipt.json",
+        "--performance-output", "performance-manifest.json",
+        "--soak-output", "soak-manifest.json",
+    ])
+
+    assert exit_code == 0
+    assert captured == {
+        "candidate_path": Path("candidate.json"),
+        "performance_papers_path": Path("performance-papers.json"),
+        "soak_papers_path": Path("soak-papers.json"),
+        "selection_receipt_path": Path("selection-receipt.json"),
+        "performance_output": Path("performance-manifest.json"),
+        "soak_output": Path("soak-manifest.json"),
+        "dry_run": True,
+    }
+    assert json.loads(capsys.readouterr().out)["status"] == "validated"
+
+
+def test_hidden_prediction_cli_uses_candidate_and_sealed_snapshot(
+    monkeypatch, capsys,
+) -> None:
+    captured = {}
+
+    def predict(**kwargs):
+        captured.update(kwargs)
+        return {
+            "command": "stage2-evaluator.predict-hidden",
+            "status": "validated",
+        }
+
+    monkeypatch.setattr(cli, "build_hidden_promotion_submission", predict)
+    exit_code = cli.main([
+        "--dry-run",
+        "stage2-evaluator",
+        "predict-hidden",
+        "--manifest", "gold-manifest.json",
+        "--private-snapshot", "private-snapshot.json",
+        "--stage2-candidate", "candidate.json",
+        "--output", "submission.json",
+    ])
+
+    assert exit_code == 0
+    assert captured == {
+        "manifest_path": Path("gold-manifest.json"),
+        "snapshot_path": Path("private-snapshot.json"),
+        "candidate_path": Path("candidate.json"),
+        "output_path": Path("submission.json"),
+        "dry_run": True,
+    }
+    assert json.loads(capsys.readouterr().out)["status"] == "validated"
+
+
 def test_stage2_replay_dry_run_and_measured_execution(
     tmp_path: Path,
 ) -> None:

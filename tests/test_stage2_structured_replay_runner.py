@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ class FakeTransport:
         self.respond = respond
         self.calls: dict[str, int] = {}
         self.requests: list[tuple[str, dict[str, object]]] = []
+        self.attempts: list[tuple[str, int]] = []
 
     def request(self, path: str, payload: dict[str, object]) -> OmlxResponse:
         self.requests.append((path, payload))
@@ -29,6 +31,7 @@ class FakeTransport:
         paper_id = str(user["content"]).split("Paper ID: ", 1)[1].split("\n", 1)[0]
         attempt = self.calls.get(paper_id, 0) + 1
         self.calls[paper_id] = attempt
+        self.attempts.append((paper_id, attempt))
         return self.respond(paper_id, attempt)
 
 
@@ -100,6 +103,23 @@ def test_runner_retries_one_schema_error_and_preserves_raw_leaks() -> None:
     assert first.model_retries == 1 and first.retry_error is ReplayError.NONE
     assert first.final_valid and first.final_returned_pair_id == "paper-0000"
     assert first.deterministic_repairs == 0
+
+
+def test_runner_retries_only_after_the_complete_parallel_first_round() -> None:
+    def respond(paper_id: str, attempt: int) -> OmlxResponse:
+        if paper_id == "paper-0000" and attempt == 1:
+            return OmlxResponse(200, b'{"model":"qwen","choices":[{"message":{"content":"not json"}}]}')
+        return _decision(paper_id)
+
+    transport = FakeTransport(respond)
+    run = StructuredReplayRunner(
+        replace(_profile(), adjudicator_concurrency=8), transport,
+    ).run(_papers())
+
+    retry_index = transport.attempts.index(("paper-0000", 2))
+    assert retry_index == 1_000
+    assert all(attempt == 1 for _, attempt in transport.attempts[:retry_index])
+    assert run.records[0].model_retries == 1 and run.records[0].final_valid
 
 
 def test_runner_routes_a_final_invalid_response_to_needs_review() -> None:

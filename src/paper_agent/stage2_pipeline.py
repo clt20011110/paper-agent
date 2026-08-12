@@ -41,11 +41,14 @@ from .schema import schema_directory
 from .storage import Database
 
 
-IMPLEMENTATION_VERSION = "stage2-cascade-v2"
+IMPLEMENTATION_VERSION = "stage2-cascade-v3"
 STAGE2_LEASE_OUTPUT_PREFIX = "filter-decision:"
 DEFAULT_LEASE_SECONDS = 3_600
 DEFAULT_PEER_WAIT_SECONDS = 3_900
-ADJUDICATION_SYSTEM_PROMPT = "Return only the required structured screening decision."
+ADJUDICATION_SYSTEM_PROMPT = (
+    "Return only the required structured screening decision. "
+    "Keep the rationale to one sentence of at most 20 words."
+)
 ADJUDICATION_USER_TEMPLATE = (
     "Query version: {query_version}\nQuery: {query}\nPaper ID: {paper_id}\n{document}"
 )
@@ -153,6 +156,7 @@ class Stage2Profile:
     reranker_lock_hash: str | None = None
     adjudicator_lock_hash: str | None = None
     release_gate_hash: str | None = None
+    evaluation_topic_queries: tuple[tuple[str, str, str], ...] = ()
     include_document_types: frozenset[str] = frozenset()
     exclude_document_types: frozenset[str] = frozenset({"editorial", "retraction"})
     token_bucket_width: int = 128
@@ -161,6 +165,7 @@ class Stage2Profile:
     adjudicator_concurrency: int = 4
     adjudicator_seed: int = 42
     adjudicator_max_context_window: int = 16_384
+    adjudicator_max_output_tokens: int = 256
     omlx_base_url: str = "http://127.0.0.1:8000"
     api_key_env: str | None = None
     prompt_version: str = "stage2-adjudication-v1"
@@ -182,12 +187,37 @@ class Stage2Profile:
             raise ValueError("Stage 2 screening scope hash must be a lowercase SHA-256")
         if self.include_document_types & self.exclude_document_types:
             raise ValueError("document types cannot be both included and excluded")
+        normalized_queries: list[tuple[str, str, str]] = []
+        query_keys: set[tuple[str, str]] = set()
+        for row in self.evaluation_topic_queries:
+            if (
+                not isinstance(row, tuple)
+                or len(row) != 3
+                or any(not isinstance(value, str) or not value.strip() for value in row)
+            ):
+                raise ValueError(
+                    "Stage 2 evaluation topic queries require non-empty "
+                    "(topic, language, query) rows"
+                )
+            topic, language, query = row
+            key = (topic, language)
+            if key in query_keys:
+                raise ValueError("Stage 2 evaluation topic queries contain duplicates")
+            query_keys.add(key)
+            normalized_queries.append((topic, language, query))
+        object.__setattr__(
+            self,
+            "evaluation_topic_queries",
+            tuple(sorted(normalized_queries)),
+        )
         if self.token_bucket_width < 1 or self.adjudicator_concurrency < 1:
             raise ValueError("Stage 2 bucket width and adjudicator concurrency must be positive")
         if self.document_batch_size not in {16, 32, 64} or not 1 <= self.reranker_max_in_flight <= 2:
             raise ValueError("Stage 2 reranker runtime settings are invalid")
         if not 1 <= self.adjudicator_max_context_window <= 32_768:
             raise ValueError("Stage 2 adjudicator context window is invalid")
+        if not 1 <= self.adjudicator_max_output_tokens <= 1_024:
+            raise ValueError("Stage 2 adjudicator output token limit is invalid")
         calibrations = (self.reranker_calibration, self.adjudicator_calibration)
         if self.thresholds is not None and any(calibrations):
             raise ValueError("legacy raw thresholds cannot be mixed with probability calibrations")
@@ -207,6 +237,10 @@ class Stage2Profile:
             "adjudicator": [self.adjudicator_model_id, self.adjudicator_revision],
             "reranker_lock_hash": self.reranker_lock_hash,
             "adjudicator_lock_hash": self.adjudicator_lock_hash,
+            "evaluation_topic_queries": [
+                {"topic": topic, "language": language, "query": query}
+                for topic, language, query in self.evaluation_topic_queries
+            ],
             "include_document_types": sorted(self.include_document_types),
             "exclude_document_types": sorted(self.exclude_document_types),
             "token_bucket_width": self.token_bucket_width,
@@ -215,6 +249,7 @@ class Stage2Profile:
             "adjudicator_concurrency": self.adjudicator_concurrency,
             "adjudicator_seed": self.adjudicator_seed,
             "adjudicator_max_context_window": self.adjudicator_max_context_window,
+            "adjudicator_max_output_tokens": self.adjudicator_max_output_tokens,
             "omlx_base_url": self.omlx_base_url,
             "api_key_env": self.api_key_env,
             "prompt_hash": self.prompt_hash,
@@ -275,6 +310,21 @@ class Stage2Profile:
     @property
     def production_calibrated(self) -> bool:
         return self.reranker_calibration is not None
+
+    @property
+    def evaluation_topic_query_map(self) -> dict[tuple[str, str], str]:
+        return {
+            (topic, language): query
+            for topic, language, query in self.evaluation_topic_queries
+        }
+
+    def evaluation_query(self, topic: str, language: str) -> str:
+        try:
+            return self.evaluation_topic_query_map[(topic, language)]
+        except KeyError:
+            raise ValueError(
+                f"Stage 2 has no frozen evaluation query for {topic!r}/{language!r}"
+            ) from None
 
     def assert_runtime_ready(self) -> None:
         if self.thresholds is None and self.reranker_calibration is None:
@@ -702,7 +752,32 @@ class Stage2Pipeline:
         if not requests:
             return ()
         with ThreadPoolExecutor(max_workers=self.profile.adjudicator_concurrency) as executor:
-            return tuple(executor.map(lambda item: self._adjudicate_one(*item), requests))
+            first_attempts = tuple(executor.map(
+                lambda item: self._adjudication_attempt(item[0]),
+                requests,
+            ))
+        return tuple(
+            self._adjudicate_one(*item, first_attempt=first_attempt)
+            for item, first_attempt in zip(requests, first_attempts, strict=True)
+        )
+
+    def _adjudication_attempt(
+        self,
+        paper: Stage2Paper,
+    ) -> tuple[AdjudicationDecision | None, str | None]:
+        request = AdjudicationInput(paper.paper_id, (
+            {"role": "system", "content": ADJUDICATION_SYSTEM_PROMPT},
+            {"role": "user", "content": self._adjudication_prompt(paper)},
+        ))
+        try:
+            response = self.adjudicator.adjudicate(request)
+        except StructuredOutputError:
+            return None, "adjudicator_schema_failure"
+        except _RETRYABLE_ADJUDICATOR_FAILURES:
+            return None, "adjudicator_backend_failure"
+        if not self._valid_adjudication(response, paper.paper_id):
+            return None, "adjudicator_schema_failure"
+        return response, None
 
     def _adjudicate_one(
         self,
@@ -710,43 +785,37 @@ class Stage2Pipeline:
         reranker_score: float | None,
         reranker_probability: float | None,
         route_reason: str,
+        *,
+        first_attempt: tuple[AdjudicationDecision | None, str | None],
     ) -> Stage2Decision:
         input_hash = self.input_hash(paper)
-        request = AdjudicationInput(paper.paper_id, (
-            {"role": "system", "content": ADJUDICATION_SYSTEM_PROMPT},
-            {"role": "user", "content": self._adjudication_prompt(paper)},
-        ))
-        retry_reason: str | None = None
-        for attempt_count in (1, 2):
-            try:
-                response = self.adjudicator.adjudicate(request)
-            except StructuredOutputError:
-                failure_reason = "adjudicator_schema_failure"
-            except _RETRYABLE_ADJUDICATOR_FAILURES:
-                failure_reason = "adjudicator_backend_failure"
-            else:
-                if self._valid_adjudication(response, paper.paper_id):
-                    break
-                failure_reason = "adjudicator_schema_failure"
-            if attempt_count == 1:
-                retry_reason = failure_reason
-                continue
-            return Stage2Decision(
-                paper_id=paper.paper_id,
-                status=FilterStatus.NEEDS_REVIEW,
-                reason_code=failure_reason,
-                input_hash=input_hash,
-                route=CascadeRoute.NEEDS_REVIEW,
-                reranker_score=reranker_score,
-                reranker_probability=reranker_probability,
-                adjudicator_probability=self._failure_probability(),
-                adjudicated=True,
-                adjudicator_attempt_count=attempt_count,
-                adjudicator_retry_reason=retry_reason,
-                adjudicator_retry_outcome="failed",
-            )
+        response, retry_reason = first_attempt
+        attempt_count = 1
+        retry_outcome: str | None = None
+        if response is None:
+            assert retry_reason is not None
+            attempt_count = 2
+            response, failure_reason = self._adjudication_attempt(paper)
+            if response is None:
+                assert failure_reason is not None
+                return Stage2Decision(
+                    paper_id=paper.paper_id,
+                    status=FilterStatus.NEEDS_REVIEW,
+                    reason_code=failure_reason,
+                    input_hash=input_hash,
+                    route=CascadeRoute.NEEDS_REVIEW,
+                    reranker_score=reranker_score,
+                    reranker_probability=reranker_probability,
+                    adjudicator_probability=self._failure_probability(),
+                    adjudicated=True,
+                    adjudicator_attempt_count=attempt_count,
+                    adjudicator_retry_reason=retry_reason,
+                    adjudicator_retry_outcome="failed",
+                )
+            retry_outcome = "succeeded"
+        else:
+            retry_reason = None
         structured_route = CascadeRoute(response.decision)
-        retry_outcome = "succeeded" if retry_reason is not None else None
         adjudicator_probability = None
         route = structured_route
         conflict = False

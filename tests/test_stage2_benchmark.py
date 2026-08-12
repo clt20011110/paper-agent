@@ -74,6 +74,7 @@ class FakeOmlxTransport:
                 "evidence_fields": ["title"],
             })
         return OmlxResponse(200, json.dumps({
+            "model": payload["model"],
             "choices": [{"message": {"content": content}}],
         }).encode())
 

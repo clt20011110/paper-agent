@@ -19,6 +19,7 @@ from .stage2_calibration import (
 )
 from .stage2_dev_calibration import FrozenDevRawScoreArtifact
 from .stage2_evaluation import CalibrationPath, GoldLabelStore, GoldManifest, GoldSplit
+from .stage2_pipeline import Stage2Profile
 from .stage2_search import ReleasedStage2, load_stage2_benchmark_candidate, stage2_base_profile
 
 
@@ -75,7 +76,7 @@ def build_stage2_candidate_bundle(
     _validate_raw_scores(
         raw_scores,
         manifest,
-        profile.base_runtime_config_hash,
+        profile,
         reranker_hash,
         adjudicator_hash,
     )
@@ -132,7 +133,7 @@ def build_stage2_candidate_bundle(
 def _validate_raw_scores(
     artifact: FrozenDevRawScoreArtifact,
     manifest: GoldManifest,
-    stage2_config_hash: str,
+    profile: Stage2Profile,
     reranker_lock_hash: str,
     adjudicator_lock_hash: str,
 ) -> None:
@@ -143,7 +144,7 @@ def _validate_raw_scores(
         artifact.gold_manifest_hash != manifest.hash()
         or artifact.dev_manifest_hash != manifest.dev_hash()
         or artifact.private_snapshot_corpus_hash != manifest.corpus_hash
-        or artifact.stage2_config_hash != stage2_config_hash
+        or artifact.stage2_config_hash != profile.base_runtime_config_hash
     ):
         raise ValueError("DEV raw scores do not match the manifest or Stage 2 runtime")
     expected_locks = {
@@ -161,6 +162,8 @@ def _validate_raw_scores(
     }
     if set(artifact.topic_queries) != expected_query_keys:
         raise ValueError("DEV topic queries do not exactly cover the manifest DEV split")
+    if dict(artifact.topic_queries) != profile.evaluation_topic_query_map:
+        raise ValueError("DEV topic queries do not match the frozen Stage 2 runtime")
 
 
 def _write_candidate_files(

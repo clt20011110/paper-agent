@@ -69,9 +69,10 @@ _RELEASE_FIELDS = frozenset({
 _BENCHMARK_CANDIDATE_FIELDS = _RELEASE_FIELDS - {"release_gate"}
 _RUNTIME_FIELDS = frozenset({
     "query", "query_version", "screening_scope_hash",
+    "evaluation_topic_queries",
     "include_document_types", "exclude_document_types",
     "token_bucket_width", "document_batch_size", "max_in_flight",
-    "adjudicator_concurrency", "adjudicator_seed", "max_context_window",
+    "adjudicator_concurrency", "adjudicator_seed", "max_context_window", "max_tokens",
     "omlx_base_url", "api_key_env", "prompt_version", "schema_version",
 })
 _RELEASE_GATE_FIELDS = frozenset({
@@ -122,6 +123,7 @@ class ReleasedStage2:
                 schema,
                 seed=self.profile.adjudicator_seed,
                 max_context_window=self.profile.adjudicator_max_context_window,
+                max_output_tokens=self.profile.adjudicator_max_output_tokens,
             ),
             self.profile,
         )
@@ -179,6 +181,7 @@ def stage2_base_profile(
             adjudicator_model_id=adjudicator_lock.model_id,
             adjudicator_revision=_runtime_revision(adjudicator_lock),
             screening_scope_hash=screening_scope_hash,
+            evaluation_topic_queries=_evaluation_topic_queries(runtime),
             reranker_lock_hash=reranker_lock_hash,
             adjudicator_lock_hash=adjudicator_lock_hash,
             release_gate_hash=release_gate_hash,
@@ -194,6 +197,7 @@ def stage2_base_profile(
             adjudicator_concurrency=_integer(runtime, "adjudicator_concurrency"),
             adjudicator_seed=_integer(runtime, "adjudicator_seed"),
             adjudicator_max_context_window=_integer(runtime, "max_context_window"),
+            adjudicator_max_output_tokens=_integer(runtime, "max_tokens"),
             omlx_base_url=base_url,
             api_key_env=api_key_env,
             prompt_version=prompt_version,
@@ -854,6 +858,36 @@ def _string_list(document: Mapping[str, Any], key: str) -> tuple[str, ...]:
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
         raise Stage2ReleaseError(f"Stage 2 runtime {key} must be a list of non-empty strings")
     return tuple(value)
+
+
+def _evaluation_topic_queries(
+    document: Mapping[str, Any],
+) -> tuple[tuple[str, str, str], ...]:
+    value = document.get("evaluation_topic_queries")
+    if not isinstance(value, list):
+        raise Stage2ReleaseError(
+            "Stage 2 runtime evaluation_topic_queries must be an array"
+        )
+    rows: list[tuple[str, str, str]] = []
+    keys: set[tuple[str, str]] = set()
+    expected = frozenset({"topic", "language", "query"})
+    for row in value:
+        if not isinstance(row, dict):
+            raise Stage2ReleaseError(
+                "Stage 2 runtime evaluation topic query entries must be objects"
+            )
+        _exact_fields(row, expected, "Stage 2 evaluation topic query")
+        topic = _text(row, "topic")
+        language = _text(row, "language")
+        query = _text(row, "query")
+        key = (topic, language)
+        if key in keys:
+            raise Stage2ReleaseError(
+                "Stage 2 runtime evaluation topic queries contain duplicates"
+            )
+        keys.add(key)
+        rows.append((topic, language, query))
+    return tuple(sorted(rows))
 
 
 def _strict_version(value: str) -> tuple[int, int, int]:
