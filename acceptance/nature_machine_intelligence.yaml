@@ -1,14 +1,14 @@
 schema_version: "2"
 venue_id: nature_machine_intelligence
-primary_provider: springer_nature
+primary_provider: crossref_serial
 test_window: {start: 2024-01-01, end: 2024-12-31}
 fixture_path: tests/fixtures/providers/venue-nature-machine-intelligence.json
 fixture_sha256: ecec190d93f8e9f38e5a0441debb7dbf136788c50f3f2b0159ea04473d2b3642
 expected_stable_ids: [10.1038/s42256-024-00001-1]
 transport_fixture_routes:
-  - {path: tests/fixtures/providers/springer-native.json, sha256: 1899a3e74e6426ddae253e7a46b3fcf90f5bf6b6f1d14b64a033300ad2972d47, content_type: application/json, url_contains: api.springernature.com/metadata/v1/articles}
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-nature-machine-intelligence.json, sha256: d94d91054181fd14136b556343b87ed489c5144d6689392e8dfef60782332e9c, content_type: application/json, url_contains: api.crossref.org/journals/2522-5839/works}
 transport_expected_stable_ids: [10.1038/s42256-024-00001-1]
 required_fields: [stable_id, metadata, abstract, date_filter]
 required_capabilities: [stable_id, metadata, abstract, date_filter]
-fallbacks: [{provider: crossref, role: search}]
-journal: {slug: natmachintell, issns: [2522-5839], article_types: [article, review, analysis]}
+fallbacks: [{provider: springer_nature, role: metadata_enricher}, {provider: crossref, role: search}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+journal: {slug: natmachintell, issns: [2522-5839], article_types: [journal-article]}

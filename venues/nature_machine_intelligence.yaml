@@ -2,6 +2,7 @@ schema_version: "1"
 venue_id: nature_machine_intelligence
 name: Nature Machine Intelligence
 venue_type: journal
-primary_provider: springer_nature
-provider_params: {journal_slug: natmachintell, issns: [2522-5839], article_types: [article, review, analysis]}
+primary_provider: crossref_serial
+provider_params: {journal_slug: natmachintell, registry_issn: 2522-5839, issns: [2522-5839], article_types: [journal-article]}
 official_url: https://www.nature.com/natmachintell/
+date_range: {start: 2019-01-01, end: 2025-12-31}

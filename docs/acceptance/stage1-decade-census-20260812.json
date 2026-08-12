@@ -258,6 +258,23 @@
       "parser_rejected_records": 0
     },
     {
+      "venue_id": "nature_machine_intelligence",
+      "provider": "crossref_serial",
+      "authority": "crossref_registry",
+      "status": "complete",
+      "run_id": "af58fa79-0342-5f94-91e8-2008dbcbf40a",
+      "metadata_sha256": "c22848276d2e4a1f3711e5d79d12b0668bf05fe78483f1cddedc5ac1927ff716",
+      "total_unique_records": 1161,
+      "annual_counts": {"2016": 0, "2017": 0, "2018": 0, "2019": 130, "2020": 142, "2021": 154, "2022": 167, "2023": 178, "2024": 184, "2025": 206},
+      "not_applicable_years": [2016, 2017, 2018],
+      "all_terminal_cursors_reached": true,
+      "duplicate_external_ids": 0,
+      "parser_rejected_records": 0,
+      "doi_records": 1161,
+      "abstract_records": 152,
+      "note": "Nature Machine Intelligence began in 2019. The former Springer Nature API route required an unavailable key, so primary membership now uses the Crossref serial registry for ISSN 2522-5839 and type=journal-article. This proves the declared registry census, not a publisher issue-table census; Springer Nature remains the optional official metadata enricher."
+    },
+    {
       "venue_id": "corl",
       "provider": "pmlr",
       "authority": "official",
