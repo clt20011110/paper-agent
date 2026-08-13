@@ -3,7 +3,7 @@ provider: iclr_official
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.stage1_hydration:OfficialStage1FieldHydrator
-artifact_sha256: 5b8dcf177b6ace15995c99f296fd8e701ca5dc68f1194a82de819b279314f543
+artifact_sha256: 47a0b40c479e7034b24716410c45be5089028e504dd85fec6a4df670e1d1a69d
 enabled: true
 builtin: true
 authority: official

@@ -66,7 +66,91 @@ class OfficialStage1FieldHydrator:
             return self._neurips(year, entries)
         if name == "jmlr_official_rss":
             return self._jmlr(entries)
+        if name == "acl_official_registry":
+            return self._acl(year, entries)
         raise ValueError(f"unknown Stage 1 field enrichment: {name}")
+
+    def _acl(
+        self, year: int, entries: Sequence[SourceEntry]
+    ) -> Stage1HydrationResult:
+        registry: dict[str, Mapping[str, Any]] = {}
+        hashes: list[str] = []
+        cursor = "*"
+        page_number = 0
+        while cursor:
+            response = self.transport.fetch_metadata(
+                "crossref",
+                "https://api.crossref.org/prefixes/10.18653/works?"
+                + urlencode(
+                    {
+                        "filter": (
+                            f"from-pub-date:{year}-01-01,"
+                            f"until-pub-date:{year}-12-31"
+                        ),
+                        "rows": 1000,
+                        "cursor": cursor,
+                        "select": "DOI,title,abstract,container-title",
+                    }
+                ),
+                api_version="crossref-acl-year-enrichment-v1",
+                request_key=f"{year}:{page_number}",
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            page, cursor = _acl_crossref_page(response.body)
+            registry.update(page)
+            page_number += 1
+
+        hydrated: list[SourceEntry] = []
+        for entry in entries:
+            record = registry.get(entry.external_id.casefold())
+            abstract = entry.abstract or (
+                _clean(record.get("abstract")) if record is not None else None
+            )
+            doi = entry.doi or (_clean(record.get("doi")) if record is not None else None)
+            abstract_source = "acl_anthology:pinned_xml.abstract"
+            if not abstract:
+                response = self.transport.fetch_metadata(
+                    "acl_anthology",
+                    str(entry.pdf_url),
+                    api_version="acl-official-pdf-abstract-fallback-v1",
+                    request_key=entry.external_id,
+                )
+                hashes.append(sha256(response.body).hexdigest())
+                abstract = _acl_first_page_abstract(response.body)
+                abstract_source = "acl_anthology:official_pdf.first_page_abstract"
+            if not abstract:
+                raise ProviderRequestError(
+                    f"ACL paper {entry.external_id} has no extractable official abstract"
+                )
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            provenance["abstract"] = abstract_source
+            provenance["pdf_url"] = "acl_anthology:public_pdf"
+            overrides = dict(entry.metadata.get("field_status_overrides") or {})
+            if doi:
+                provenance["doi"] = (
+                    "acl_anthology:pinned_xml.doi"
+                    if entry.doi
+                    else "crossref_registry:message.DOI"
+                )
+            else:
+                provenance["doi"] = "acl_crossref_registry:not_registered"
+                overrides["doi"] = "legitimately_absent"
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract,
+                    doi=doi,
+                    metadata={
+                        **entry.metadata,
+                        "field_status_overrides": overrides,
+                        "doi_availability": (
+                            None if doi else "not_registered_by_proceedings"
+                        ),
+                        "field_provenance": provenance,
+                    },
+                )
+            )
+        return Stage1HydrationResult(tuple(hydrated), tuple(hashes), tuple(hashes))
 
     def _jmlr(self, entries: Sequence[SourceEntry]) -> Stage1HydrationResult:
         response = self.transport.fetch_metadata(
@@ -991,6 +1075,64 @@ def _jmlr_detail(body: bytes) -> Mapping[str, str | None]:
             else None
         ),
     }
+
+
+def _acl_crossref_page(
+    body: bytes,
+) -> tuple[dict[str, Mapping[str, str | None]], str | None]:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProviderRequestError("ACL Crossref enrichment is not JSON") from error
+    message = payload.get("message") if isinstance(payload, Mapping) else None
+    items = message.get("items") if isinstance(message, Mapping) else None
+    if not isinstance(items, list):
+        raise ProviderRequestError("ACL Crossref enrichment has no items list")
+    output: dict[str, Mapping[str, str | None]] = {}
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        doi = _clean(item.get("DOI"))
+        match = re.fullmatch(r"10\.18653/v1/(.+)", doi or "", re.I)
+        if match is None:
+            continue
+        output[match.group(1).casefold()] = {
+            "doi": doi.casefold() if doi else None,
+            "abstract": _clean(
+                unescape(re.sub(r"<[^>]+>", " ", str(item.get("abstract") or "")))
+            ),
+        }
+    cursor = _clean(message.get("next-cursor")) if isinstance(message, Mapping) else None
+    if len(items) < 1000:
+        cursor = None
+    return output, cursor
+
+
+def _acl_first_page_abstract(body: bytes) -> str | None:
+    if not body.startswith(b"%PDF-"):
+        raise ProviderRequestError("ACL official abstract fallback is not a PDF")
+    try:
+        from pypdf import PdfReader
+
+        text = PdfReader(BytesIO(body)).pages[0].extract_text() or ""
+    except Exception as error:
+        raise ProviderRequestError("ACL official PDF text extraction failed") from error
+    lines = [line.strip() for line in text.splitlines()]
+    start = next(
+        (index + 1 for index, line in enumerate(lines) if line.casefold() == "abstract"),
+        None,
+    )
+    if start is None:
+        return None
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if re.fullmatch(r"(?:\d+\s+)?Introduction", lines[index], re.I)
+        ),
+        None,
+    )
+    return _clean(" ".join(lines[start:end])) if end is not None else None
 
 
 def _neurips_export_records(

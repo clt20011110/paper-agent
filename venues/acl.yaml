@@ -6,6 +6,8 @@ primary_provider: acl_anthology
 provider_params:
   venue_slug: acl
   tracks: [main, long, short, demo, demos, industry, tutorial, tutorials]
+  field_enrichment: acl_official_registry
+  field_enrichment_required: true
   snapshot_version: 59602102d4cfc36e56554579e7dac2a762b56e92
 official_url: https://aclanthology.org/venues/acl/
 proceedings_url: https://aclanthology.org/venues/acl/

@@ -14,6 +14,7 @@ from paper_agent.stage1_hydration import (
     _neurips_crossref_page,
     _jmlr_rss_records,
     _jmlr_detail,
+    _acl_crossref_page,
     _virtual_openreview_id,
 )
 
@@ -162,3 +163,16 @@ def test_jmlr_detail_extracts_abstract_and_public_pdf() -> None:
         "abstract": "An & official abstract.",
         "pdf_url": "https://jmlr.org/paper.pdf",
     }
+
+
+def test_acl_crossref_page_joins_by_anthology_id() -> None:
+    body = b'''{"message":{"items":[
+      {"DOI":"10.18653/v1/2024.acl-long.475","abstract":"<jats:p>Registry abstract.</jats:p>"}
+    ],"next-cursor":"next"}}'''
+    assert _acl_crossref_page(body) == (
+        {"2024.acl-long.475": {
+            "doi": "10.18653/v1/2024.acl-long.475",
+            "abstract": "Registry abstract.",
+        }},
+        None,
+    )

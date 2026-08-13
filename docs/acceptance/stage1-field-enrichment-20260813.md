@@ -18,6 +18,8 @@ unresolved.
 | NeurIPS 2016 | NeurIPS proceedings | 569 | 569 | 569 legitimately absent | 569 | complete |
 | NeurIPS 2024 | NeurIPS proceedings | 4,493 | 4,493 | 4,493 | 4,493 | complete |
 | JMLR 2024 | JMLR volume 25 | 422 | 422 | 422 legitimately absent | 422 | complete |
+| ACL 2024 | ACL Anthology pinned XML | 984 | 984 | 984 | 984 | complete |
+| COLING/LREC-COLING 2024 | ACL Anthology pinned XML | 1,567 | 1,567 | 1,567 legitimately absent | 1,567 | complete |
 
 AAAI used Crossref year pagination for the bulk registry join and official OJS
 OAI-PMH `GetRecord` as the article-ID fallback.  OJS records 5591 and 6915 lack
@@ -64,6 +66,14 @@ Every detail page supplied an abstract and public PDF meta tag.  The journal's
 official citation metadata/BibTeX does not assign article DOI, so DOI remains
 null with `legitimately_absent/not_assigned_by_journal` provenance.
 
+ACL-family enrichment bulk-pages the `10.18653` Crossref prefix for the year
+and joins only exact Anthology IDs.  ACL 2024 recovered the one XML-missing
+abstract from its official public PDF and retained DOI for all 984 papers.
+The joint LREC-COLING 2024 proceedings has no `10.18653` registrations for its
+1,567 papers, so DOI is truthfully marked `legitimately_absent/not_registered`
+after the registry audit; all abstracts and PDFs were already present in the
+pinned official Anthology XML.
+
 Representative live artifacts were written outside the repository:
 
 - `/tmp/stage1-aaai-2020-enriched.jsonl.receipt.json`
@@ -77,6 +87,8 @@ Representative live artifacts were written outside the repository:
 - `/tmp/stage1-neurips-2016-enriched.receipt.json`
 - `/tmp/stage1-neurips-2024-enriched.receipt.json`
 - `/tmp/stage1-jmlr-2024-enriched.receipt.json`
+- `/tmp/stage1-acl-2024-enriched.receipt.json`
+- `/tmp/stage1-coling-2024-enriched.receipt.json`
 
 Automated regression command:
 

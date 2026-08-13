@@ -6,6 +6,8 @@ primary_provider: acl_anthology
 provider_params:
   venue_slug: emnlp
   tracks: [main, demo, demos, industry, tutorials]
+  field_enrichment: acl_official_registry
+  field_enrichment_required: true
   snapshot_version: 1941968b51805719b418a0b0919e335662cdd172
 official_url: https://aclanthology.org/venues/emnlp/
 proceedings_url: https://aclanthology.org/venues/emnlp/
