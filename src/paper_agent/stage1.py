@@ -512,12 +512,11 @@ def _collect_unit(
         unresolved = [
             entry.external_id
             for entry in unique.values()
-            if entry.abstract in (None, "")
-            or entry.pdf_url in (None, "")
-            or (
-                entry.doi in (None, "")
-                and dict(entry.metadata.get("field_status_overrides") or {}).get("doi")
+            if any(
+                getattr(entry, field) in (None, "")
+                and dict(entry.metadata.get("field_status_overrides") or {}).get(field)
                 != "legitimately_absent"
+                for field in ("abstract", "doi", "pdf_url")
             )
         ]
         if unresolved:

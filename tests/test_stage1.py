@@ -290,3 +290,41 @@ def test_legitimately_absent_doi_satisfies_required_hydration() -> None:
     assert result.complete
     assert result.records[0]["doi"] is None
     assert result.records[0]["field_status"]["doi"] == "legitimately_absent"
+
+
+def test_legitimately_absent_abstract_satisfies_required_hydration() -> None:
+    catalog = _catalog()
+    catalog.venues["example"]["provider_params"] = {
+        "field_enrichment": "official_example",
+        "field_enrichment_required": True,
+    }
+
+    class AbstractAbsentHydrator:
+        def hydrate(self, descriptor, year, entries):
+            return Stage1HydrationResult(
+                entries=tuple(
+                    replace(
+                        entry,
+                        abstract=None,
+                        pdf_url=f"https://example.test/{entry.external_id}.pdf",
+                        metadata={
+                            **entry.metadata,
+                            "field_status_overrides": {
+                                "abstract": "legitimately_absent"
+                            },
+                        },
+                    )
+                    for entry in entries
+                )
+            )
+
+    result = collect_stage1_metadata(
+        Stage1Request(("example",), 2024, 2024),
+        catalog=catalog,
+        adapter_factory=lambda _: _Adapter(),
+        field_hydrator=AbstractAbsentHydrator(),
+    )
+
+    assert result.complete
+    assert result.records[0]["abstract"] is None
+    assert result.records[0]["field_status"]["abstract"] == "legitimately_absent"

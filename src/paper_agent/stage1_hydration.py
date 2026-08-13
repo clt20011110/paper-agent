@@ -73,15 +73,40 @@ class OfficialStage1FieldHydrator:
         if name == "eda_scholarly_graph":
             return self._eda(entries)
         if name == "crossref_scholarly_graph":
-            return self._crossref_journal(entries)
+            return self._crossref_journal(descriptor, entries)
         raise ValueError(f"unknown Stage 1 field enrichment: {name}")
 
     def _crossref_journal(
-        self, entries: Sequence[SourceEntry]
+        self, descriptor: VenueDescriptor, entries: Sequence[SourceEntry]
     ) -> Stage1HydrationResult:
-        records, hashes = self._semantic_scholar_doi_batches(entries, "journal")
+        records, hashes = self._europe_pmc_doi_batches(entries)
+        unresolved = tuple(
+            entry
+            for entry in entries
+            if not entry.abstract
+            and not _clean(
+                (records.get(str(entry.doi or "").casefold()) or {}).get("abstract")
+            )
+        )
+        warnings: list[str] = []
+        if unresolved:
+            try:
+                fallback, fallback_hashes = self._semantic_scholar_doi_batches(
+                    unresolved, "journal"
+                )
+                hashes.extend(fallback_hashes)
+                for doi, record in fallback.items():
+                    records[doi] = {**records.get(doi, {}), **record}
+            except ProviderRequestError as error:
+                warnings.append(f"Semantic Scholar fallback unavailable: {error}")
         hydrated: list[SourceEntry] = []
         missing_abstracts: list[str] = []
+        optional_patterns = tuple(
+            str(value)
+            for value in descriptor.parameters.get(
+                "abstract_legitimately_absent_title_patterns", ()
+            )
+        )
         for entry in entries:
             record = records.get(str(entry.doi or "").casefold())
             abstract = entry.abstract or (
@@ -90,39 +115,80 @@ class OfficialStage1FieldHydrator:
             pdf_url = entry.pdf_url or (
                 _clean(record.get("pdf_url")) if record else None
             )
-            if not abstract:
+            abstract_legitimately_absent = (
+                not abstract
+                and any(re.search(pattern, entry.title, re.I) for pattern in optional_patterns)
+            )
+            if not abstract and not abstract_legitimately_absent:
                 missing_abstracts.append(entry.external_id)
             provenance = dict(entry.metadata.get("field_provenance") or {})
+            overrides = dict(entry.metadata.get("field_status_overrides") or {})
             provenance["doi"] = "crossref_registry:message.DOI"
             if abstract:
                 provenance["abstract"] = (
                     "crossref_registry:message.abstract"
                     if entry.abstract
-                    else "semantic_scholar:doi_batch.abstract"
+                    else str(record.get("abstract_source") or "semantic_scholar:doi_batch.abstract")
                 )
+            elif abstract_legitimately_absent:
+                provenance["abstract"] = "publisher_document_type:not_applicable"
+                overrides["abstract"] = "legitimately_absent"
             if pdf_url:
                 provenance["pdf_url"] = (
                     "crossref_registry:message.link"
                     if entry.pdf_url
-                    else "semantic_scholar:openAccessPdf.url"
+                    else str(record.get("pdf_source") or "semantic_scholar:openAccessPdf.url")
                 )
             hydrated.append(
                 replace(
                     entry,
                     abstract=abstract,
                     pdf_url=pdf_url,
-                    metadata={**entry.metadata, "field_provenance": provenance},
+                    metadata={
+                        **entry.metadata,
+                        "field_status_overrides": overrides,
+                        "abstract_availability": (
+                            "not_applicable_to_document_type"
+                            if abstract_legitimately_absent
+                            else None
+                        ),
+                        "field_provenance": provenance,
+                    },
                 )
             )
-        warnings = (
-            (
+        if missing_abstracts:
+            warnings.append(
                 f"journal DOI batch lacks {len(missing_abstracts)} abstract(s): "
                 f"{', '.join(missing_abstracts[:3])}"
-            ),
-        ) if missing_abstracts else ()
+            )
         return Stage1HydrationResult(
-            tuple(hydrated), tuple(hashes), tuple(hashes), warnings
+            tuple(hydrated), tuple(hashes), tuple(hashes), tuple(warnings)
         )
+
+    def _europe_pmc_doi_batches(
+        self, entries: Sequence[SourceEntry]
+    ) -> tuple[dict[str, Mapping[str, Any]], list[str]]:
+        output: dict[str, Mapping[str, Any]] = {}
+        hashes: list[str] = []
+        for page_number, chunk in enumerate(_chunks(tuple(entry for entry in entries if entry.doi), 100)):
+            query = " OR ".join(f'DOI:"{entry.doi}"' for entry in chunk)
+            response = self.transport.fetch_metadata(
+                "europe_pmc",
+                "https://www.ebi.ac.uk/europepmc/webservices/rest/search?"
+                + urlencode(
+                    {
+                        "query": query,
+                        "format": "json",
+                        "resultType": "core",
+                        "pageSize": len(chunk),
+                    }
+                ),
+                api_version="europe-pmc-journal-doi-batch-v1",
+                request_key=f"page:{page_number}:{sha256(query.encode()).hexdigest()[:16]}",
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            output.update(_europe_pmc_doi_records(response.body))
+        return output, hashes
 
     def _semantic_scholar_doi_batches(
         self, entries: Sequence[SourceEntry], scope: str
@@ -2008,6 +2074,42 @@ def _eda_semantic_scholar_batch(body: bytes) -> dict[str, Mapping[str, str | Non
             output[doi.casefold()] = {
                 "abstract": _clean(record.get("abstract")),
                 "pdf_url": pdf_url,
+            }
+    return output
+
+
+def _europe_pmc_doi_records(body: bytes) -> dict[str, Mapping[str, str | None]]:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProviderRequestError("Europe PMC DOI batch is not JSON") from error
+    result_list = payload.get("resultList") if isinstance(payload, Mapping) else None
+    results = result_list.get("result") if isinstance(result_list, Mapping) else None
+    if not isinstance(results, list):
+        raise ProviderRequestError("Europe PMC DOI batch has no result list")
+    output: dict[str, Mapping[str, str | None]] = {}
+    for record in results:
+        if not isinstance(record, Mapping):
+            continue
+        doi = _clean(record.get("doi"))
+        urls = record.get("fullTextUrlList")
+        urls = urls.get("fullTextUrl") if isinstance(urls, Mapping) else ()
+        pdf_url = next(
+            (
+                _clean(url.get("url"))
+                for url in urls
+                if isinstance(url, Mapping)
+                and url.get("documentStyle") == "pdf"
+                and url.get("availabilityCode") == "OA"
+            ),
+            None,
+        ) if isinstance(urls, list) else None
+        if doi:
+            output[doi.casefold()] = {
+                "abstract": _clean(record.get("abstractText")),
+                "pdf_url": pdf_url,
+                "abstract_source": "europe_pmc:core.abstractText",
+                "pdf_source": "europe_pmc:open_access_pdf",
             }
     return output
 

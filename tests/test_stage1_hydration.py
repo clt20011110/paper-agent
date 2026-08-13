@@ -21,6 +21,7 @@ from paper_agent.stage1_hydration import (
     _cvf_virtual_records,
     _eda_semantic_scholar_batch,
     _eda_publisher_pdf_url,
+    _europe_pmc_doi_records,
     _virtual_openreview_id,
 )
 
@@ -74,6 +75,17 @@ def test_eda_semantic_scholar_batch_joins_abstract_and_oa_pdf_by_doi() -> None:
     assert _eda_publisher_pdf_url("10.1145/123.456") == (
         "https://dl.acm.org/doi/pdf/10.1145/123.456"
     )
+
+
+def test_europe_pmc_doi_batch_extracts_abstract_and_open_pdf() -> None:
+    records = _europe_pmc_doi_records(b'''{"resultList":{"result":[{
+      "doi":"10.1021/example","abstractText":"Indexed abstract.",
+      "fullTextUrlList":{"fullTextUrl":[
+        {"availabilityCode":"S","documentStyle":"doi","url":"https://doi.org/x"},
+        {"availabilityCode":"OA","documentStyle":"pdf","url":"https://pmc/x.pdf"}
+      ]}}]}}''')
+    assert records["10.1021/example"]["abstract"] == "Indexed abstract."
+    assert records["10.1021/example"]["pdf_url"] == "https://pmc/x.pdf"
 
 
 def test_aaai_oai_page_extracts_abstract_doi_pdf_and_cursor() -> None:
