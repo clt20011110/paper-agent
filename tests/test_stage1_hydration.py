@@ -5,6 +5,7 @@ from io import BytesIO
 import tarfile
 
 from paper_agent.stage1_hydration import (
+    OfficialStage1FieldHydrator,
     _aaai_oai_page,
     _legacy_virtual_poster,
     _ijcai_detail,
@@ -22,8 +23,12 @@ from paper_agent.stage1_hydration import (
     _eda_semantic_scholar_batch,
     _eda_publisher_pdf_url,
     _europe_pmc_doi_records,
+    _journal_publisher_pdf_url,
+    _nature_article_abstract,
+    _nature_article_document_type,
     _virtual_openreview_id,
 )
+from paper_agent.domain import SourceEntry
 
 
 def test_cvf_bulk_and_detail_sources_extract_required_fields() -> None:
@@ -86,6 +91,55 @@ def test_europe_pmc_doi_batch_extracts_abstract_and_open_pdf() -> None:
       ]}}]}}''')
     assert records["10.1021/example"]["abstract"] == "Indexed abstract."
     assert records["10.1021/example"]["pdf_url"] == "https://pmc/x.pdf"
+
+
+def test_journal_arxiv_fallback_requires_exact_normalized_title() -> None:
+    class Transport:
+        def fetch_metadata(self, provider, url, **kwargs):
+            assert provider == "arxiv"
+            return type("Response", (), {"body": b'''<feed xmlns="http://www.w3.org/2005/Atom">
+              <entry><id>https://arxiv.org/abs/2401.00001v2</id>
+              <title>Auditable molecular generation</title>
+              <summary>Public preprint abstract.</summary></entry>
+              <entry><id>https://arxiv.org/abs/2401.00002</id>
+              <title>A similar but different paper</title>
+              <summary>Must not be joined.</summary></entry>
+            </feed>'''})()
+
+    entries = (
+        SourceEntry("crossref_serial", "10.1/a", "Auditable Molecular Generation"),
+        SourceEntry("crossref_serial", "10.1/b", "No Exact Match"),
+    )
+    records, hashes = OfficialStage1FieldHydrator(Transport())._arxiv_title_fallback(
+        entries, "journal"
+    )
+
+    assert set(records) == {"10.1/a"}
+    assert records["10.1/a"] == {
+        "abstract": "Public preprint abstract.",
+        "pdf_url": "https://arxiv.org/pdf/2401.00001",
+        "abstract_source": "arxiv_atom:exact_title_summary",
+        "pdf_source": "arxiv_atom:public_pdf",
+    }
+    assert len(hashes) == 1
+
+
+def test_science_registered_doi_has_canonical_publisher_pdf_route() -> None:
+    assert _journal_publisher_pdf_url("10.1126/science.example") == (
+        "https://www.science.org/doi/pdf/10.1126/science.example"
+    )
+    assert _journal_publisher_pdf_url("10.1002/anie.example") is None
+
+
+def test_nature_article_page_extracts_public_dc_description_metadata() -> None:
+    assert _nature_article_abstract(b'''<html><head>
+      <meta name="dc.description" content="Official &amp; complete abstract."/>
+      <meta name="description" content="Short teaser."/>
+    </head></html>''') == "Official & complete abstract."
+    assert _nature_article_document_type(
+        b'''<script>window.dataLayer = [{"content":{"category":{"legacy":{
+          "webtrendsContentSubGroup":"Matters Arising"}}}}];</script>'''
+    ) == "Matters Arising"
 
 
 def test_aaai_oai_page_extracts_abstract_doi_pdf_and_cursor() -> None:

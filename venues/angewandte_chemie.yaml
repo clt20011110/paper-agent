@@ -3,5 +3,15 @@ venue_id: angewandte_chemie
 name: Angewandte Chemie International Edition
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: angewandte-chemie, registry_issn: 1433-7851, issns: [1433-7851, 1521-3773], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
+provider_params:
+  journal_slug: angewandte-chemie
+  registry_issn: 1433-7851
+  issns: [1433-7851, 1521-3773]
+  article_types: [journal-article]
+  field_enrichment: crossref_scholarly_graph
+  field_enrichment_required: true
+  abstract_legitimately_absent_title_patterns:
+    - '^(?:Back Cover|Front Cover|Inside (?:Back |Front )?Cover|Outside Front Cover|Cover Picture|Frontispiece|Graphical Abstract):'
+    - '^(?:Corrigendum|Correction|Erratum|Retraction):'
+    - '^Classifieds:'
 official_url: https://onlinelibrary.wiley.com/journal/15213773

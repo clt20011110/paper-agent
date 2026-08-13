@@ -45,6 +45,7 @@ _METADATA_PROVIDERS = (
     "europe_pmc",
     "unpaywall",
     "iclr_official",
+    "nature_articles",
 )
 _S2_FIELDS = "paperId,title,abstract,authors,year,venue,externalIds,publicationDate,url"
 _RATE_LIMIT_HEADERS = frozenset(

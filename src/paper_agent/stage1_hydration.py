@@ -79,11 +79,24 @@ class OfficialStage1FieldHydrator:
     def _crossref_journal(
         self, descriptor: VenueDescriptor, entries: Sequence[SourceEntry]
     ) -> Stage1HydrationResult:
+        optional_patterns = tuple(
+            str(value)
+            for value in descriptor.parameters.get(
+                "abstract_legitimately_absent_title_patterns", ()
+            )
+        )
+        optional_document_types = {
+            str(value).casefold()
+            for value in descriptor.parameters.get(
+                "abstract_legitimately_absent_document_types", ()
+            )
+        }
         records, hashes = self._europe_pmc_doi_batches(entries)
         unresolved = tuple(
             entry
             for entry in entries
             if not entry.abstract
+            and not _matches_any(entry.title, optional_patterns)
             and not _clean(
                 (records.get(str(entry.doi or "").casefold()) or {}).get("abstract")
             )
@@ -99,14 +112,45 @@ class OfficialStage1FieldHydrator:
                     records[doi] = {**records.get(doi, {}), **record}
             except ProviderRequestError as error:
                 warnings.append(f"Semantic Scholar fallback unavailable: {error}")
-        hydrated: list[SourceEntry] = []
-        missing_abstracts: list[str] = []
-        optional_patterns = tuple(
-            str(value)
-            for value in descriptor.parameters.get(
-                "abstract_legitimately_absent_title_patterns", ()
+        unresolved = tuple(
+            entry
+            for entry in entries
+            if not entry.abstract
+            and not _matches_any(entry.title, optional_patterns)
+            and not _clean(
+                (records.get(str(entry.doi or "").casefold()) or {}).get("abstract")
             )
         )
+        if unresolved:
+            if (
+                descriptor.parameters.get("publisher_abstract_source")
+                == "nature_article_html"
+            ):
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    publisher_records = tuple(
+                        executor.map(self._nature_article_record, unresolved)
+                    )
+                for entry, record, body_hash in publisher_records:
+                    hashes.append(body_hash)
+                    doi = str(entry.doi or "").casefold()
+                    records[doi] = {**records.get(doi, {}), **record}
+            else:
+                try:
+                    arxiv_records, arxiv_hashes = self._arxiv_title_fallback(
+                        unresolved, "journal"
+                    )
+                    hashes.extend(arxiv_hashes)
+                    for external_id, record in arxiv_records.items():
+                        entry = next(
+                            value for value in unresolved
+                            if value.external_id == external_id
+                        )
+                        doi = str(entry.doi or "").casefold()
+                        records[doi] = {**records.get(doi, {}), **record}
+                except ProviderRequestError as error:
+                    warnings.append(f"arXiv fallback unavailable: {error}")
+        hydrated: list[SourceEntry] = []
+        missing_abstracts: list[str] = []
         for entry in entries:
             record = records.get(str(entry.doi or "").casefold())
             abstract = entry.abstract or (
@@ -114,10 +158,14 @@ class OfficialStage1FieldHydrator:
             )
             pdf_url = entry.pdf_url or (
                 _clean(record.get("pdf_url")) if record else None
-            )
+            ) or _journal_publisher_pdf_url(entry.doi)
             abstract_legitimately_absent = (
                 not abstract
-                and any(re.search(pattern, entry.title, re.I) for pattern in optional_patterns)
+                and (
+                    _matches_any(entry.title, optional_patterns)
+                    or str((record or {}).get("document_type") or "").casefold()
+                    in optional_document_types
+                )
             )
             if not abstract and not abstract_legitimately_absent:
                 missing_abstracts.append(entry.external_id)
@@ -134,10 +182,11 @@ class OfficialStage1FieldHydrator:
                 provenance["abstract"] = "publisher_document_type:not_applicable"
                 overrides["abstract"] = "legitimately_absent"
             if pdf_url:
+                record_pdf_source = _clean(record.get("pdf_source")) if record else None
                 provenance["pdf_url"] = (
                     "crossref_registry:message.link"
                     if entry.pdf_url
-                    else str(record.get("pdf_source") or "semantic_scholar:openAccessPdf.url")
+                    else record_pdf_source or "publisher_doi:canonical_pdf_endpoint"
                 )
             hydrated.append(
                 replace(
@@ -152,6 +201,9 @@ class OfficialStage1FieldHydrator:
                             if abstract_legitimately_absent
                             else None
                         ),
+                        "publisher_document_type": (
+                            _clean(record.get("document_type")) if record else None
+                        ),
                         "field_provenance": provenance,
                     },
                 )
@@ -163,6 +215,30 @@ class OfficialStage1FieldHydrator:
             )
         return Stage1HydrationResult(
             tuple(hydrated), tuple(hashes), tuple(hashes), tuple(warnings)
+        )
+
+    def _nature_article_record(
+        self, entry: SourceEntry
+    ) -> tuple[SourceEntry, Mapping[str, str | None], str]:
+        doi = str(entry.doi or "")
+        if not doi.casefold().startswith("10.1038/"):
+            raise ProviderRequestError(
+                f"Nature article enrichment cannot route DOI {doi or entry.external_id}"
+            )
+        response = self.transport.fetch_metadata(
+            "nature_articles",
+            f"https://www.nature.com/articles/{doi.split('/', 1)[1]}",
+            api_version="nature-article-html-metadata-v1",
+            request_key=entry.external_id,
+        )
+        return (
+            entry,
+            {
+                "abstract": _nature_article_abstract(response.body),
+                "abstract_source": "nature_article_html:dc.description",
+                "document_type": _nature_article_document_type(response.body),
+            },
+            sha256(response.body).hexdigest(),
         )
 
     def _europe_pmc_doi_batches(
@@ -223,8 +299,8 @@ class OfficialStage1FieldHydrator:
             if not _clean((records.get(str(entry.doi or "").casefold()) or {}).get("abstract"))
         )
         if missing_abstract_entries:
-            arxiv_records, arxiv_hashes = self._eda_arxiv_title_fallback(
-                missing_abstract_entries
+            arxiv_records, arxiv_hashes = self._arxiv_title_fallback(
+                missing_abstract_entries, "eda"
             )
             hashes.extend(arxiv_hashes)
             for external_id, record in arxiv_records.items():
@@ -280,8 +356,8 @@ class OfficialStage1FieldHydrator:
             tuple(hydrated), tuple(hashes), tuple(hashes), warnings
         )
 
-    def _eda_arxiv_title_fallback(
-        self, entries: Sequence[SourceEntry]
+    def _arxiv_title_fallback(
+        self, entries: Sequence[SourceEntry], scope: str
     ) -> tuple[dict[str, Mapping[str, str]], tuple[str, ...]]:
         output: dict[str, Mapping[str, str]] = {}
         hashes: list[str] = []
@@ -299,8 +375,8 @@ class OfficialStage1FieldHydrator:
                         "max_results": max(10, len(chunk) * 3),
                     }
                 ),
-                api_version="arxiv-atom-eda-title-fallback-v1",
-                request_key=sha256(query.encode()).hexdigest(),
+                api_version="arxiv-atom-title-fallback-v1",
+                request_key=f"{scope}:{sha256(query.encode()).hexdigest()}",
             )
             hashes.append(sha256(response.body).hexdigest())
             by_title = {
@@ -313,6 +389,8 @@ class OfficialStage1FieldHydrator:
                     output[entry.external_id] = {
                         "abstract": str(record["abstract"]),
                         "pdf_url": f"https://arxiv.org/pdf/{record['arxiv_id']}",
+                        "abstract_source": "arxiv_atom:exact_title_summary",
+                        "pdf_source": "arxiv_atom:public_pdf",
                     }
         return output, tuple(hashes)
 
@@ -2121,6 +2199,48 @@ def _eda_publisher_pdf_url(doi: str | None) -> str | None:
     if value.casefold().startswith("10.1145/"):
         return f"https://dl.acm.org/doi/pdf/{value}"
     return None
+
+
+def _journal_publisher_pdf_url(doi: str | None) -> str | None:
+    """Return only publisher-documented DOI-derived PDF routes.
+
+    This is a metadata link constructor, not a downloader: Stage 3 still
+    validates access and routes restricted copies through an authorized
+    browser session.
+    """
+
+    value = _clean(doi)
+    if not value:
+        return None
+    if value.casefold().startswith("10.1126/"):
+        return f"https://www.science.org/doi/pdf/{value}"
+    return None
+
+
+def _nature_article_abstract(body: bytes) -> str | None:
+    text = body.decode("utf-8", errors="replace")
+    match = re.search(
+        r'<meta\s+name=["\']dc\.description["\']\s+content=["\'](.*?)["\']\s*/?>',
+        text,
+        re.I | re.S,
+    )
+    return _clean(unescape(match.group(1))) if match is not None else None
+
+
+def _nature_article_document_type(body: bytes) -> str | None:
+    text = body.decode("utf-8", errors="replace")
+    match = re.search(r'webtrendsContentSubGroup["\']?\s*:\s*["\']([^"\']+)', text, re.I)
+    if match is None:
+        match = re.search(
+            r'<meta\s+name=["\']citation_article_type["\']\s+content=["\'](.*?)["\']',
+            text,
+            re.I | re.S,
+        )
+    return _clean(unescape(match.group(1))) if match is not None else None
+
+
+def _matches_any(value: str, patterns: Sequence[str]) -> bool:
+    return any(re.search(pattern, value, re.I) for pattern in patterns)
 
 
 def _cvf_dblp_dois(

@@ -1,0 +1,16 @@
+schema_version: "1"
+provider: nature_articles
+distribution: paper-agent
+version: 2.0.0a0
+entry_point: paper_agent.stage1_hydration:OfficialStage1FieldHydrator
+artifact_sha256: 05bc882009e76a503c40daa38597c28085b750497f59b11c532d67b7dc37b539
+enabled: true
+builtin: true
+authority: official
+roles: [metadata_enricher]
+capabilities: [metadata, abstract]
+authentication: {required: false}
+rate_limit: {global_qps: 4, max_concurrency: 4, cache_ttl_seconds: 86400}
+terms: {data_use: restricted, url: https://www.nature.com/info/tandc.html}
+independence_group: springer_nature
+upstream_families: [springer_nature]

@@ -25,6 +25,9 @@ unresolved.
 | DAC 2024 | DBLP conference TOC | 370 | 369 | 370 | 370 canonical endpoints | incomplete (1 abstract) |
 | ICCAD 2024 | DBLP conference TOC | 239 | 234 | 239 | 239 canonical endpoints | incomplete (5 abstracts) |
 | JCIM 2024 | Crossref ISSN registry | 805 | 740 + 65 legitimately absent | 805 | 805 | complete |
+| Nature Machine Intelligence 2024 | Crossref ISSN registry + Nature article metadata | 184 | 166 + 18 legitimately absent | 184 | 184 | complete |
+| Angewandte Chemie 2024 | Crossref ISSN registry | 5,170 | best live result 4,817 + 353 legitimately absent | 5,170 | 5,170 | rules verified; strict rerun incomplete after Europe PMC timeout |
+| Science 2024 | Crossref ISSN registry | 2,039 | 1,741 | 2,039 | 2,039 canonical endpoints | incomplete (298 abstracts) |
 
 AAAI used Crossref year pagination for the bulk registry join and official OJS
 OAI-PMH `GetRecord` as the article-ID fallback.  OJS records 5591 and 6915 lack
@@ -100,13 +103,35 @@ papers or inventing text.
 All 17 Crossref-journal descriptors now use the same membership-preserving DOI
 batch hydrator.  Crossref publisher PDF links are retained directly by the
 primary adapter, while Europe PMC DOI batches provide abstracts and OA mirrors
-before the rate-limited Semantic Scholar fallback is considered.  JCIM 2024
+before the rate-limited Semantic Scholar fallback is considered.  Exact-title
+arXiv matching is an optional residual batch layer; a rate-limit failure is a
+warning rather than a reason to discard already hydrated fields.  JCIM 2024
 proved 805/805 DOI and publisher PDF links plus 740 real abstracts.  The other
 65 Crossref works are issue mastheads/publication information, corrections,
 additions, editorials, or other explicitly frozen non-research document types;
 their absent abstract is `legitimately_absent/not_applicable_to_document_type`.
 The strict receipt therefore completed even while Semantic Scholar returned
 HTTP 429, without generating text for documents that have no abstract.
+
+Nature journals additionally use the public article page's `dc.description`
+metadata after the DOI batch sources.  The route is a separately registered,
+terms-gated provider with four-QPS concurrency and never fetches restricted
+article body/PDF content.  Nature Machine Intelligence 2024 completed all 184
+records: 166 public abstracts plus 18 publisher-proven absent abstracts (six
+corrections and twelve documents typed by Nature as Correspondence, Matters
+Arising, or Books & Arts), with DOI and PDF links on every record.
+
+The Angewandte Chemie 2024 live probe returned 5,170 DOI/PDF-complete records.
+Its 353 abstract-free records are exactly 300 covers/frontispieces/graphical
+abstracts, 37 corrigenda, and 16 classifieds; frozen anchored patterns mark
+only these publisher document classes as not applicable.  A subsequent strict
+rerun ended incomplete after an upstream Europe PMC read timeout, so this is
+not yet recorded as a completed strict run.  Science 2024 has
+2,039 DOI-complete records and now receives a deterministic canonical
+`science.org/doi/pdf/<doi>` link for all records, but 298 abstract-free news,
+letters, corrections, and other material remain unresolved because the
+publisher page currently presents an unattended Cloudflare challenge.  The
+receipt therefore remains incomplete rather than inventing those abstracts.
 
 Representative live artifacts were written outside the repository:
 
@@ -128,6 +153,9 @@ Representative live artifacts were written outside the repository:
 - `/tmp/stage1-dac-2024-enriched-v3.receipt.json`
 - `/tmp/stage1-iccad-2024-enriched-v3.receipt.json`
 - `/tmp/stage1-jcim-2024-epmc-v2.receipt.json`
+- `/tmp/stage1-nmi-2024-final2.receipt.json`
+- `/tmp/stage1-angew-2024.receipt.json`
+- `/tmp/stage1-science-2024.receipt.json`
 
 Automated regression command:
 
