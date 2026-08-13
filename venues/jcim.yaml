@@ -3,5 +3,5 @@ venue_id: jcim
 name: Journal of Chemical Information and Modeling
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: jcim, registry_issn: 1549-9596, issns: [0095-2338, 1549-9596, 1549-960X], article_types: [journal-article]}
+provider_params: {journal_slug: jcim, registry_issn: 1549-9596, issns: [0095-2338, 1549-9596, 1549-960X], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
 official_url: https://pubs.acs.org/journal/jcisd8

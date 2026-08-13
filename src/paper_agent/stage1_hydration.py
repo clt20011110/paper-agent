@@ -70,7 +70,185 @@ class OfficialStage1FieldHydrator:
             return self._acl(year, entries)
         if name == "cvf_official_registry":
             return self._cvf(descriptor, year, entries)
+        if name == "eda_scholarly_graph":
+            return self._eda(entries)
+        if name == "crossref_scholarly_graph":
+            return self._crossref_journal(entries)
         raise ValueError(f"unknown Stage 1 field enrichment: {name}")
+
+    def _crossref_journal(
+        self, entries: Sequence[SourceEntry]
+    ) -> Stage1HydrationResult:
+        records, hashes = self._semantic_scholar_doi_batches(entries, "journal")
+        hydrated: list[SourceEntry] = []
+        missing_abstracts: list[str] = []
+        for entry in entries:
+            record = records.get(str(entry.doi or "").casefold())
+            abstract = entry.abstract or (
+                _clean(record.get("abstract")) if record else None
+            )
+            pdf_url = entry.pdf_url or (
+                _clean(record.get("pdf_url")) if record else None
+            )
+            if not abstract:
+                missing_abstracts.append(entry.external_id)
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            provenance["doi"] = "crossref_registry:message.DOI"
+            if abstract:
+                provenance["abstract"] = (
+                    "crossref_registry:message.abstract"
+                    if entry.abstract
+                    else "semantic_scholar:doi_batch.abstract"
+                )
+            if pdf_url:
+                provenance["pdf_url"] = (
+                    "crossref_registry:message.link"
+                    if entry.pdf_url
+                    else "semantic_scholar:openAccessPdf.url"
+                )
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract,
+                    pdf_url=pdf_url,
+                    metadata={**entry.metadata, "field_provenance": provenance},
+                )
+            )
+        warnings = (
+            (
+                f"journal DOI batch lacks {len(missing_abstracts)} abstract(s): "
+                f"{', '.join(missing_abstracts[:3])}"
+            ),
+        ) if missing_abstracts else ()
+        return Stage1HydrationResult(
+            tuple(hydrated), tuple(hashes), tuple(hashes), warnings
+        )
+
+    def _semantic_scholar_doi_batches(
+        self, entries: Sequence[SourceEntry], scope: str
+    ) -> tuple[dict[str, Mapping[str, Any]], list[str]]:
+        records: dict[str, Mapping[str, Any]] = {}
+        hashes: list[str] = []
+        doi_entries = tuple(entry for entry in entries if entry.doi)
+        for page_number, chunk in enumerate(_chunks(doi_entries, 500)):
+            doi_hash = sha256(
+                "|".join(str(entry.doi) for entry in chunk).encode()
+            ).hexdigest()[:16]
+            response = self.transport.fetch_json_batch(
+                "semantic_scholar",
+                "https://api.semanticscholar.org/graph/v1/paper/batch?"
+                + urlencode(
+                    {"fields": "paperId,title,abstract,externalIds,openAccessPdf"}
+                ),
+                payload={"ids": [f"DOI:{entry.doi}" for entry in chunk]},
+                api_version="semantic-scholar-doi-batch-v1",
+                request_key=f"{scope}:page:{page_number}:{doi_hash}",
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            records.update(_eda_semantic_scholar_batch(response.body))
+        return records, hashes
+
+    def _eda(self, entries: Sequence[SourceEntry]) -> Stage1HydrationResult:
+        records, hashes = self._semantic_scholar_doi_batches(entries, "eda")
+
+        missing_abstract_entries = tuple(
+            entry
+            for entry in entries
+            if not _clean((records.get(str(entry.doi or "").casefold()) or {}).get("abstract"))
+        )
+        if missing_abstract_entries:
+            arxiv_records, arxiv_hashes = self._eda_arxiv_title_fallback(
+                missing_abstract_entries
+            )
+            hashes.extend(arxiv_hashes)
+            for external_id, record in arxiv_records.items():
+                entry = next(
+                    value for value in missing_abstract_entries
+                    if value.external_id == external_id
+                )
+                doi = str(entry.doi or "").casefold()
+                records[doi] = {**records.get(doi, {}), **record}
+
+        hydrated: list[SourceEntry] = []
+        missing: list[str] = []
+        for entry in entries:
+            record = records.get(str(entry.doi or "").casefold())
+            abstract = _clean(record.get("abstract")) if record else entry.abstract
+            pdf_url = (
+                _clean(record.get("pdf_url")) if record else None
+            ) or entry.pdf_url or _eda_publisher_pdf_url(entry.doi)
+            if not abstract or not pdf_url:
+                missing.append(entry.external_id)
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            if abstract:
+                provenance["abstract"] = (
+                    "arxiv_atom:title_matched_summary"
+                    if record and str(record.get("pdf_url") or "").startswith(
+                        "https://arxiv.org/pdf/"
+                    )
+                    else "semantic_scholar:doi_batch.abstract"
+                )
+            if pdf_url:
+                provenance["pdf_url"] = (
+                    "semantic_scholar:openAccessPdf.url"
+                    if record and record.get("pdf_url")
+                    else "acm_crossref_registered:canonical_pdf_endpoint"
+                )
+            if entry.doi:
+                provenance["doi"] = "dblp_toc:registered_doi"
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract,
+                    pdf_url=pdf_url,
+                    metadata={**entry.metadata, "field_provenance": provenance},
+                )
+            )
+        warnings = (
+            (
+                f"EDA DOI batch lacks abstract/PDF for {len(missing)} census record(s): "
+                f"{', '.join(missing[:3])}"
+            ),
+        ) if missing else ()
+        return Stage1HydrationResult(
+            tuple(hydrated), tuple(hashes), tuple(hashes), warnings
+        )
+
+    def _eda_arxiv_title_fallback(
+        self, entries: Sequence[SourceEntry]
+    ) -> tuple[dict[str, Mapping[str, str]], tuple[str, ...]]:
+        output: dict[str, Mapping[str, str]] = {}
+        hashes: list[str] = []
+        for chunk in _chunks(entries, 10):
+            query = " OR ".join(
+                f'ti:"{entry.title.replace(chr(34), "")}"' for entry in chunk
+            )
+            response = self.transport.fetch_metadata(
+                "arxiv",
+                "https://export.arxiv.org/api/query?"
+                + urlencode(
+                    {
+                        "search_query": query,
+                        "start": 0,
+                        "max_results": max(10, len(chunk) * 3),
+                    }
+                ),
+                api_version="arxiv-atom-eda-title-fallback-v1",
+                request_key=sha256(query.encode()).hexdigest(),
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            by_title = {
+                _normalize_title(str(record["title"])): record
+                for record in _arxiv_atom_records(response.body)
+            }
+            for entry in chunk:
+                record = by_title.get(_normalize_title(entry.title))
+                if record is not None:
+                    output[entry.external_id] = {
+                        "abstract": str(record["abstract"]),
+                        "pdf_url": f"https://arxiv.org/pdf/{record['arxiv_id']}",
+                    }
+        return output, tuple(hashes)
 
     def _cvf(
         self,
@@ -1809,6 +1987,38 @@ def _cvf_virtual_records(
     if not grouped:
         raise ProviderRequestError("CVF virtual export contains no paper abstracts")
     return {key: tuple(values) for key, values in grouped.items()}
+
+
+def _eda_semantic_scholar_batch(body: bytes) -> dict[str, Mapping[str, str | None]]:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProviderRequestError("EDA Semantic Scholar batch is not JSON") from error
+    if not isinstance(payload, list):
+        raise ProviderRequestError("EDA Semantic Scholar batch is not a record list")
+    output: dict[str, Mapping[str, str | None]] = {}
+    for record in payload:
+        if not isinstance(record, Mapping):
+            continue
+        external_ids = record.get("externalIds")
+        doi = _clean(external_ids.get("DOI")) if isinstance(external_ids, Mapping) else None
+        open_pdf = record.get("openAccessPdf")
+        pdf_url = _clean(open_pdf.get("url")) if isinstance(open_pdf, Mapping) else None
+        if doi:
+            output[doi.casefold()] = {
+                "abstract": _clean(record.get("abstract")),
+                "pdf_url": pdf_url,
+            }
+    return output
+
+
+def _eda_publisher_pdf_url(doi: str | None) -> str | None:
+    value = _clean(doi)
+    if not value:
+        return None
+    if value.casefold().startswith("10.1145/"):
+        return f"https://dl.acm.org/doi/pdf/{value}"
+    return None
 
 
 def _cvf_dblp_dois(

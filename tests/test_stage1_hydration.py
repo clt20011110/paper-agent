@@ -19,6 +19,8 @@ from paper_agent.stage1_hydration import (
     _cvf_dblp_dois,
     _cvf_detail,
     _cvf_virtual_records,
+    _eda_semantic_scholar_batch,
+    _eda_publisher_pdf_url,
     _virtual_openreview_id,
 )
 
@@ -53,6 +55,24 @@ def test_cvf_dblp_and_crossref_join_only_registered_conference_doi() -> None:
     ]}}'''
     assert _cvf_crossref_exact_doi(crossref, "CVPR", "Auditable Vision") == (
         "10.1109/cvpr1.2024.00001"
+    )
+
+
+def test_eda_semantic_scholar_batch_joins_abstract_and_oa_pdf_by_doi() -> None:
+    records = _eda_semantic_scholar_batch(b'''[
+      {"paperId":"p1","externalIds":{"DOI":"10.1145/123.456"},
+       "abstract":"Officially indexed abstract.",
+       "openAccessPdf":{"url":"https://arxiv.org/pdf/1234.5678"}},
+      null
+    ]''')
+    assert records == {
+        "10.1145/123.456": {
+            "abstract": "Officially indexed abstract.",
+            "pdf_url": "https://arxiv.org/pdf/1234.5678",
+        }
+    }
+    assert _eda_publisher_pdf_url("10.1145/123.456") == (
+        "https://dl.acm.org/doi/pdf/10.1145/123.456"
     )
 
 

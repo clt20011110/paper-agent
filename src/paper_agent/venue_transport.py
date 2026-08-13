@@ -521,6 +521,20 @@ def _crossref_serial(
                 "crossref_serial: registry work lacks DOI, title, or an in-year publication date"
             )
         container = _crossref_text(record.get("container-title"))
+        links = record.get("link")
+        pdf_url = next(
+            (
+                str(link.get("URL"))
+                for link in links
+                if isinstance(link, Mapping)
+                and link.get("URL")
+                and (
+                    str(link.get("content-type") or "").casefold() == "application/pdf"
+                    or "/pdf" in str(link.get("URL")).casefold()
+                )
+            ),
+            None,
+        ) if isinstance(links, list) else None
         entries.append(
             {
                 "external_id": doi,
@@ -532,6 +546,7 @@ def _crossref_serial(
                 "year": year,
                 "venue": container,
                 "landing_url": str(record.get("URL") or f"https://doi.org/{doi}"),
+                "pdf_url": pdf_url,
                 "volume": record.get("volume"),
                 "issue": record.get("issue"),
                 "page": record.get("page"),

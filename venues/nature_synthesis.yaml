@@ -3,6 +3,6 @@ venue_id: nature_synthesis
 name: Nature Synthesis
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: natsynth, registry_issn: 2731-0582, issns: [2731-0582], article_types: [journal-article]}
+provider_params: {journal_slug: natsynth, registry_issn: 2731-0582, issns: [2731-0582], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
 official_url: https://www.nature.com/natsynth/
 date_range: {start: 2022-01-01, end: 2025-12-31}

@@ -3,6 +3,6 @@ venue_id: nature_machine_intelligence
 name: Nature Machine Intelligence
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: natmachintell, registry_issn: 2522-5839, issns: [2522-5839], article_types: [journal-article]}
+provider_params: {journal_slug: natmachintell, registry_issn: 2522-5839, issns: [2522-5839], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
 official_url: https://www.nature.com/natmachintell/
 date_range: {start: 2019-01-01, end: 2025-12-31}

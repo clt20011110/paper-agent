@@ -213,6 +213,10 @@ def test_crossref_serial_cursor_tracks_consumed_total_and_stops_exactly() -> Non
                         "published": {"date-parts": [[2024, 1, 2]]},
                         "container-title": ["Fixture Journal"],
                         "type": "journal-article",
+                        "link": [{
+                            "URL": "https://publisher.example/first.pdf",
+                            "content-type": "application/pdf",
+                        }],
                     }
                 ],
             }
@@ -274,6 +278,9 @@ def test_crossref_serial_cursor_tracks_consumed_total_and_stops_exactly() -> Non
         "10.1000/first",
         "10.1000/second",
     ]
+    assert first.payload["entries"][0]["pdf_url"] == (
+        "https://publisher.example/first.pdf"
+    )
     assert "cursor=%2A" in urls[0]
     assert "cursor=registry-cursor-2" in urls[1]
     assert request_keys == ["offset:0", "offset:1"]

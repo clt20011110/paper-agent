@@ -3,5 +3,5 @@ venue_id: nature_communications
 name: Nature Communications
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: ncomms, registry_issn: 2041-1723, issns: [2041-1723], article_types: [journal-article]}
+provider_params: {journal_slug: ncomms, registry_issn: 2041-1723, issns: [2041-1723], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
 official_url: https://www.nature.com/ncomms/

@@ -22,6 +22,9 @@ unresolved.
 | COLING/LREC-COLING 2024 | ACL Anthology pinned XML | 1,567 | 1,567 | 1,567 legitimately absent | 1,567 | complete |
 | CVPR 2024 | CVF Open Access annual index | 2,716 | 2,716 | 2,715 + 1 legitimately absent | 2,716 | complete |
 | ICCV 2025 | CVF Open Access annual index | 2,701 | 2,701 | 2,700 + 1 legitimately absent | 2,701 | complete |
+| DAC 2024 | DBLP conference TOC | 370 | 369 | 370 | 370 canonical endpoints | incomplete (1 abstract) |
+| ICCAD 2024 | DBLP conference TOC | 239 | 234 | 239 | 239 canonical endpoints | incomplete (5 abstracts) |
+| JCIM 2024 | Crossref ISSN registry | 805 | blocked by current S2 429 | 805 | 805 | incomplete |
 
 AAAI used Crossref year pagination for the bulk registry join and official OJS
 OAI-PMH `GetRecord` as the article-ID fallback.  OJS records 5591 and 6915 lack
@@ -86,6 +89,20 @@ ICCV 2025 one paper (`DAViD`) with no registered proceedings DOI after that
 audit; these remain null with `legitimately_absent/not_registered` rather than
 receiving a fabricated identifier.
 
+EDA enrichment preserves the complete DBLP proceedings membership and its DOI
+registrations, then resolves abstracts and OA locations in Semantic Scholar
+batch requests of at most 500 DOI each.  Exact-title arXiv queries fill graph
+misses, and the registered ACM PDF endpoint remains available for Stage 3 even
+when no OA mirror exists.  Strict live validation intentionally remains
+incomplete for one DAC and five ICCAD abstracts rather than discarding those
+papers or inventing text.
+
+All 17 Crossref-journal descriptors now use the same membership-preserving DOI
+batch hydrator.  Crossref publisher PDF links are retained directly by the
+primary adapter.  JCIM 2024 proved 805/805 DOI and publisher PDF links; its
+abstract hydration run encountered a Semantic Scholar HTTP 429, so the strict
+receipt correctly remained incomplete and no full-coverage claim is made.
+
 Representative live artifacts were written outside the repository:
 
 - `/tmp/stage1-aaai-2020-enriched.jsonl.receipt.json`
@@ -103,6 +120,9 @@ Representative live artifacts were written outside the repository:
 - `/tmp/stage1-coling-2024-enriched.receipt.json`
 - `/tmp/stage1-cvpr-2024-enriched.receipt.json`
 - `/tmp/stage1-iccv-2025-enriched.receipt.json`
+- `/tmp/stage1-dac-2024-enriched-v3.receipt.json`
+- `/tmp/stage1-iccad-2024-enriched-v3.receipt.json`
+- `/tmp/stage1-jcim-2024-enriched.receipt.json`
 
 Automated regression command:
 

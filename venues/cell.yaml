@@ -3,5 +3,5 @@ venue_id: cell
 name: Cell
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: cell, registry_issn: 0092-8674, issns: [0092-8674], article_types: [journal-article]}
+provider_params: {journal_slug: cell, registry_issn: 0092-8674, issns: [0092-8674], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
 official_url: https://www.cell.com/cell/home

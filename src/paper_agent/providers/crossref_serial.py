@@ -114,12 +114,13 @@ def _entry(record: Mapping[str, Any]) -> SourceEntry:
         year=(int(record["year"]) if record.get("year") is not None else None),
         venue_name=(str(record["venue"]) if record.get("venue") else None),
         landing_url=(str(record["landing_url"]) if record.get("landing_url") else None),
+        pdf_url=(str(record["pdf_url"]) if record.get("pdf_url") else None),
         metadata={
             key: value
             for key, value in record.items()
             if key not in {
                 "external_id", "title", "authors", "abstract", "doi",
-                "publication_date", "year", "venue", "landing_url",
+                "publication_date", "year", "venue", "landing_url", "pdf_url",
             }
         },
     )

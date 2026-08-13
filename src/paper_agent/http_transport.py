@@ -297,6 +297,29 @@ class ControlledHTTPTransport:
             request_key=request_key,
         )
 
+    def fetch_json_batch(
+        self,
+        provider: str,
+        url: str,
+        *,
+        payload: Mapping[str, Any],
+        api_version: str,
+        request_key: str,
+    ) -> CachedResponse:
+        """POST a JSON metadata batch through the normal audited policy path."""
+
+        if provider not in self._provider_names():
+            raise ValueError(f"no public HTTP mapping for metadata provider {provider}")
+        return self._fetch(
+            provider,
+            url,
+            api_version=api_version,
+            request_key=request_key,
+            method="POST",
+            body=json.dumps(payload, sort_keys=True).encode("utf-8"),
+            extra_headers={"Content-Type": "application/json"},
+        )
+
     def fetch_form_export(
         self,
         provider: str,
@@ -590,7 +613,12 @@ class ControlledHTTPTransport:
         query_hash = sha256(
             (
                 json.dumps(
-                    {"url": audit_url, "request_key": request_key, "method": method},
+                    {
+                        "url": audit_url,
+                        "request_key": request_key,
+                        "method": method,
+                        "body_sha256": sha256(body).hexdigest() if body is not None else None,
+                    },
                     sort_keys=True,
                 )
                 if request_key is not None

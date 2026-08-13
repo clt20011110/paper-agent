@@ -3,5 +3,5 @@ venue_id: tcad
 name: IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: ieee-tcad, registry_issn: 0278-0070, issns: [0278-0070], article_types: [journal-article]}
+provider_params: {journal_slug: ieee-tcad, registry_issn: 0278-0070, issns: [0278-0070], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
 official_url: https://ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=43

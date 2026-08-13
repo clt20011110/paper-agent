@@ -3,5 +3,5 @@ venue_id: nature_chemistry
 name: Nature Chemistry
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: nchem, registry_issn: 1755-4330, issns: [1755-4330, 1755-4349], article_types: [journal-article]}
+provider_params: {journal_slug: nchem, registry_issn: 1755-4330, issns: [1755-4330, 1755-4349], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
 official_url: https://www.nature.com/nchem/

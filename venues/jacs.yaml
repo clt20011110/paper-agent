@@ -3,5 +3,5 @@ venue_id: jacs
 name: Journal of the American Chemical Society
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: jacs, registry_issn: 0002-7863, issns: [0002-7863, 1520-5126], article_types: [journal-article]}
+provider_params: {journal_slug: jacs, registry_issn: 0002-7863, issns: [0002-7863, 1520-5126], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
 official_url: https://pubs.acs.org/journal/jacsat
