@@ -10,7 +10,7 @@ authority: official
 roles: [venue_primary]
 capabilities: [stable_id, metadata]
 authentication: {required: false}
-rate_limit: {global_qps: 1, max_concurrency: 2, cache_ttl_seconds: 3600}
+rate_limit: {global_qps: 4, max_concurrency: 4, cache_ttl_seconds: 3600}
 terms: {data_use: permitted, url: https://www.ijcai.org/proceedings/}
 independence_group: ijcai_official
 upstream_families: [ijcai]

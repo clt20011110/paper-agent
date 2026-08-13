@@ -3,5 +3,9 @@ venue_id: icml
 name: International Conference on Machine Learning
 venue_type: conference
 primary_provider: pmlr
-provider_params: {series: ICML, volume_resolution: official_link}
+provider_params:
+  series: ICML
+  volume_resolution: official_link
+  field_enrichment: pmlr_official_snapshot
+  field_enrichment_required: true
 official_url: https://icml.cc/

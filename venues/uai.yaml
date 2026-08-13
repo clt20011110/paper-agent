@@ -6,6 +6,8 @@ primary_provider: pmlr
 provider_params:
   series: UAI
   volume_resolution: official_link
+  field_enrichment: pmlr_official_snapshot
+  field_enrichment_required: true
   year_overrides:
     "2016": {volume_id: v0}
     "2017": {volume_id: v0}

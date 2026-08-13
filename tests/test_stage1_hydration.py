@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import gzip
+from io import BytesIO
+import tarfile
 
 from paper_agent.stage1_hydration import (
     _aaai_oai_page,
     _legacy_virtual_poster,
+    _ijcai_detail,
+    _pmlr_frontmatter_snapshot,
     _virtual_openreview_id,
 )
 
@@ -49,3 +53,55 @@ def test_iclr_virtual_and_legacy_pages_extract_openreview_id_and_abstract() -> N
 def test_gzip_fixture_documents_aaai_missing_content_encoding_case() -> None:
     payload = b"<html><title>AAAI article</title></html>"
     assert gzip.decompress(gzip.compress(payload)) == payload
+
+
+def test_ijcai_detail_extracts_official_abstract_doi_and_pdf() -> None:
+    body = b'''<meta name="citation_pdf_url" content="https://www.ijcai.org/proceedings/2024/0001.pdf" />
+<a href="https://doi.org/10.24963/ijcai.2024/1" class="doi">DOI</a>
+<div class="col-md-12">A certified policy verification abstract.</div>'''
+
+    assert _ijcai_detail(body) == {
+        "abstract": "A certified policy verification abstract.",
+        "doi": "10.24963/ijcai.2024/1",
+        "pdf_url": "https://www.ijcai.org/proceedings/2024/0001.pdf",
+        "_source": "ijcai_official:paper_detail",
+    }
+
+
+def test_ijcai_2016_detail_extracts_legacy_official_abstract_and_pdf() -> None:
+    body = b'''<div class="content"><html><body>
+<p>Auditable Artificial Intelligence / 2<br /><i>Ada Lovelace</i></p>
+<p>A complete &amp; official legacy abstract.</p>
+<p><a href="/Proceedings/16/Papers/008.pdf">PDF</a></p>
+</body></html></div>'''
+
+    assert _ijcai_detail(body) == {
+        "abstract": "A complete & official legacy abstract.",
+        "doi": None,
+        "pdf_url": "https://www.ijcai.org/Proceedings/16/Papers/008.pdf",
+        "_source": "ijcai_official:paper_detail",
+    }
+
+
+def test_pmlr_snapshot_extracts_frontmatter_without_pdf_fetch() -> None:
+    markdown = b'''---
+id: audit24a
+title: Auditable Metadata
+abstract: A complete official abstract.
+pdf: https://raw.githubusercontent.com/mlresearch/v235/main/assets/audit24a/audit24a.pdf
+---
+'''
+    buffer = BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("v235-gh-pages/_posts/2024-07-08-audit24a.md")
+        info.size = len(markdown)
+        archive.addfile(info, BytesIO(markdown))
+
+    assert _pmlr_frontmatter_snapshot(buffer.getvalue(), "v235") == {
+        "v235/audit24a": {
+            "id": "audit24a",
+            "title": "Auditable Metadata",
+            "abstract": "A complete official abstract.",
+            "pdf": "https://raw.githubusercontent.com/mlresearch/v235/main/assets/audit24a/audit24a.pdf",
+        }
+    }

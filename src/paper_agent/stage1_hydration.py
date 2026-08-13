@@ -7,16 +7,21 @@ fields and field-level provenance.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from hashlib import sha256
+from html import unescape
 from io import BytesIO
 import json
 import re
+import tarfile
 from threading import Lock
 from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from xml.etree import ElementTree
+
+import yaml
 
 from .domain import SourceEntry
 from .provider_runtime import ProviderRequestError
@@ -53,7 +58,170 @@ class OfficialStage1FieldHydrator:
             return self._aaai(year, entries)
         if name == "iclr_official":
             return self._iclr(year, entries)
+        if name == "ijcai_official":
+            return self._ijcai(year, entries)
+        if name == "pmlr_official_snapshot":
+            return self._pmlr(entries)
         raise ValueError(f"unknown Stage 1 field enrichment: {name}")
+
+    def _pmlr(self, entries: Sequence[SourceEntry]) -> Stage1HydrationResult:
+        volumes = {
+            entry.external_id.split("/", 1)[0]
+            for entry in entries
+            if entry.external_id.startswith("v") and "/" in entry.external_id
+        }
+        records: dict[str, Mapping[str, Any]] = {}
+        hashes: list[str] = []
+        for volume in sorted(volumes):
+            response = self.transport.fetch_metadata(
+                "pmlr",
+                f"https://codeload.github.com/mlresearch/{volume}/tar.gz/refs/heads/gh-pages",
+                api_version="pmlr-official-github-frontmatter-v1",
+                request_key=volume,
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            records.update(_pmlr_frontmatter_snapshot(response.body, volume))
+
+        hydrated: list[SourceEntry] = []
+        missing: list[str] = []
+        for entry in entries:
+            record = records.get(entry.external_id)
+            abstract = _clean(record.get("abstract")) if record else entry.abstract
+            pdf_url = _clean(record.get("pdf")) if record else entry.pdf_url
+            if not abstract or not pdf_url:
+                missing.append(entry.external_id)
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            if abstract:
+                provenance["abstract"] = (
+                    "pmlr_official_github:frontmatter.abstract"
+                    if record
+                    else "pmlr_primary:legacy_abstract"
+                )
+            provenance["doi"] = "pmlr_frontmatter:not_assigned_by_venue"
+            if pdf_url:
+                provenance["pdf_url"] = (
+                    "pmlr_official_github:frontmatter.pdf"
+                    if record
+                    else "pmlr_primary:official_pdf"
+                )
+            overrides = dict(entry.metadata.get("field_status_overrides") or {})
+            overrides["doi"] = "legitimately_absent"
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract,
+                    pdf_url=pdf_url,
+                    metadata={
+                        **entry.metadata,
+                        "field_status_overrides": overrides,
+                        "doi_availability": "not_assigned_by_venue",
+                        "field_provenance": provenance,
+                    },
+                )
+            )
+        if missing:
+            raise ProviderRequestError(
+                f"PMLR official snapshot lacks abstract/PDF for {len(missing)} "
+                f"census record(s): {', '.join(missing[:3])}"
+            )
+        return Stage1HydrationResult(tuple(hydrated), tuple(hashes), tuple(hashes))
+
+    def _ijcai(
+        self, year: int, entries: Sequence[SourceEntry]
+    ) -> Stage1HydrationResult:
+        records: dict[str, Mapping[str, Any]] = {}
+        hashes: list[str] = []
+        cursor = "*" if year >= 2017 else None
+        while cursor:
+            response = self.transport.fetch_metadata(
+                "crossref",
+                "https://api.crossref.org/prefixes/10.24963/works?"
+                + urlencode(
+                    {
+                        "filter": (
+                            f"from-pub-date:{year}-01-01,"
+                            f"until-pub-date:{year}-12-31"
+                        ),
+                        "rows": 1000,
+                        "cursor": cursor,
+                        "select": "DOI,title,abstract,link,published",
+                    }
+                ),
+                api_version="crossref-ijcai-year-enrichment-v1",
+                request_key=f"{year}:{sha256(cursor.encode()).hexdigest()[:12]}",
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            page, cursor = _ijcai_crossref_page(response.body, year)
+            records.update(page)
+        missing_entries = tuple(
+            entry
+            for entry in entries
+            if entry.external_id.rsplit("-", 1)[-1] not in records
+        )
+        if year == 2016 and missing_entries:
+            # The legacy proceedings expose one official abstract page per
+            # paper. Fetch a small, policy-limited parallel window so the
+            # decade census remains practical without trusting a third-party
+            # title match or manufacturing an unregistered DOI.
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                fetched = tuple(
+                    executor.map(self._ijcai_detail_record, missing_entries)
+                )
+            for entry, fields, body_hash in fetched:
+                records[entry.external_id.rsplit("-", 1)[-1]] = fields
+                hashes.append(body_hash)
+        hydrated: list[SourceEntry] = []
+        for entry in entries:
+            paper_id = entry.external_id.rsplit("-", 1)[-1]
+            fields = records.get(paper_id)
+            if fields is None:
+                _, fields, body_hash = self._ijcai_detail_record(entry)
+                hashes.append(body_hash)
+            abstract = _clean(fields.get("abstract"))
+            doi = _clean(fields.get("doi"))
+            pdf_url = _clean(fields.get("pdf_url")) or entry.pdf_url
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            overrides = dict(entry.metadata.get("field_status_overrides") or {})
+            source = str(fields.get("_source") or "ijcai_official")
+            if abstract:
+                provenance["abstract"] = f"{source}:abstract"
+            if doi:
+                provenance["doi"] = f"{source}:doi"
+            elif year == 2016:
+                provenance["doi"] = "ijcai_2016_proceedings:not_assigned_by_venue"
+                overrides["doi"] = "legitimately_absent"
+            if pdf_url:
+                provenance["pdf_url"] = f"{source}:pdf"
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract or entry.abstract,
+                    doi=doi or entry.doi,
+                    pdf_url=pdf_url,
+                    metadata={
+                        **entry.metadata,
+                        "field_status_overrides": overrides,
+                        "doi_availability": (
+                            "not_assigned_by_venue" if year == 2016 else None
+                        ),
+                        "field_provenance": provenance,
+                    },
+                )
+            )
+        return Stage1HydrationResult(
+            tuple(hydrated), tuple(hashes), tuple(hashes)
+        )
+
+    def _ijcai_detail_record(
+        self, entry: SourceEntry
+    ) -> tuple[SourceEntry, Mapping[str, Any], str]:
+        response = self.transport.fetch_metadata(
+            "ijcai_proceedings",
+            str(entry.landing_url),
+            api_version="ijcai-paper-detail-html-v1",
+            request_key=entry.external_id,
+        )
+        return entry, _ijcai_detail(response.body), sha256(response.body).hexdigest()
 
     def _aaai(
         self, year: int, entries: Sequence[SourceEntry]
@@ -518,6 +686,48 @@ class OfficialStage1FieldHydrator:
         return output, tuple(hashes)
 
 
+def _pmlr_frontmatter_snapshot(
+    body: bytes, volume: str
+) -> dict[str, Mapping[str, Any]]:
+    output: dict[str, Mapping[str, Any]] = {}
+    try:
+        # The controlled transport transparently removes HTTP gzip framing;
+        # fixture/replay bytes may still retain it, so auto-detect both forms.
+        archive = tarfile.open(fileobj=BytesIO(body), mode="r:*")
+    except tarfile.TarError as error:
+        raise ProviderRequestError("PMLR official snapshot is not a gzip tar archive") from error
+    with archive:
+        for member in archive.getmembers():
+            if not re.search(r"/_posts/[^/]+\.md$", member.name) or not member.isfile():
+                continue
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                continue
+            try:
+                text = extracted.read().decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise ProviderRequestError(
+                    f"PMLR official frontmatter is not UTF-8: {member.name}"
+                ) from error
+            match = re.match(r"---\s*\n(.*?)\n---(?:\s*\n|$)", text, re.S)
+            if match is None:
+                continue
+            try:
+                record = yaml.safe_load(match.group(1))
+            except yaml.YAMLError as error:
+                raise ProviderRequestError(
+                    f"PMLR official frontmatter is malformed: {member.name}"
+                ) from error
+            if not isinstance(record, Mapping):
+                continue
+            identifier = _clean(record.get("id"))
+            if identifier:
+                output[f"{volume}/{identifier}"] = record
+    if not output:
+        raise ProviderRequestError("PMLR official snapshot contained no frontmatter records")
+    return output
+
+
 def _aaai_oai_page(body: bytes) -> tuple[dict[str, Mapping[str, Any]], str | None]:
     try:
         root = ElementTree.fromstring(body)
@@ -778,6 +988,100 @@ def _legacy_virtual_poster(body: bytes) -> Mapping[str, Any] | None:
     if not abstract_text:
         return None
     return {"forum_id": forum.group(1), "abstract": abstract_text}
+
+
+def _ijcai_detail(body: bytes) -> Mapping[str, str | None]:
+    text = body.decode("utf-8", errors="replace")
+    doi_match = re.search(
+        r'href=["\']https://doi\.org/(10\.24963/ijcai\.\d{4}/\d+)["\']',
+        text,
+        re.I,
+    )
+    pdf_match = re.search(
+        r'<meta\s+name=["\']citation_pdf_url["\']\s+content=["\']([^"\']+)',
+        text,
+        re.I,
+    )
+    section = re.search(
+        r'<div\s+class=["\']col-md-12["\']>\s*(.*?)\s*</div>',
+        text,
+        re.I | re.S,
+    )
+    if section is None and "/Proceedings/16/Papers/" in text:
+        paragraphs = re.findall(r"<p(?:\s[^>]*)?>(.*?)</p>", text, re.I | re.S)
+        section = next(
+            (
+                re.match(r"(?s)(.*)", paragraph)
+                for paragraph in paragraphs[1:]
+                if "/Proceedings/16/Papers/" not in paragraph
+            ),
+            None,
+        )
+    abstract = (
+        _clean(unescape(re.sub(r"<[^>]+>", " ", section.group(1))))
+        if section is not None
+        else None
+    )
+    if pdf_match is None:
+        legacy_pdf = re.search(
+            r'href=["\'](/Proceedings/16/Papers/\d+\.pdf)["\']', text, re.I
+        )
+        pdf_url = (
+            "https://www.ijcai.org" + legacy_pdf.group(1)
+            if legacy_pdf is not None
+            else None
+        )
+    else:
+        pdf_url = pdf_match.group(1)
+    return {
+        "abstract": abstract,
+        "doi": doi_match.group(1).casefold() if doi_match else None,
+        "pdf_url": pdf_url,
+        "_source": "ijcai_official:paper_detail",
+    }
+
+
+def _ijcai_crossref_page(
+    body: bytes, year: int
+) -> tuple[dict[str, Mapping[str, Any]], str | None]:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProviderRequestError("IJCAI Crossref enrichment is not JSON") from error
+    message = payload.get("message") if isinstance(payload, Mapping) else None
+    items = message.get("items") if isinstance(message, Mapping) else None
+    if not isinstance(items, list):
+        raise ProviderRequestError("IJCAI Crossref enrichment has no items list")
+    output: dict[str, Mapping[str, Any]] = {}
+    pattern = re.compile(rf"10\.24963/ijcai\.{year}/(\d+)$", re.I)
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        doi = _clean(item.get("DOI"))
+        match = pattern.fullmatch(doi or "")
+        if match is None:
+            continue
+        abstract = _clean(re.sub(r"<[^>]+>", " ", str(item.get("abstract") or "")))
+        links = item.get("link") if isinstance(item.get("link"), list) else []
+        pdf_url = next(
+            (
+                _clean(link.get("URL"))
+                for link in links
+                if isinstance(link, Mapping)
+                and str(link.get("content-type") or "").casefold() == "application/pdf"
+            ),
+            None,
+        )
+        output[match.group(1)] = {
+            "abstract": abstract,
+            "doi": doi.casefold() if doi else None,
+            "pdf_url": pdf_url,
+            "_source": "crossref_registry:ijcai",
+        }
+    cursor = _clean(message.get("next-cursor")) if isinstance(message, Mapping) else None
+    if len(items) < 1000:
+        cursor = None
+    return output, cursor
 
 
 def _unique_fuzzy_title_match(

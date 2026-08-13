@@ -12,6 +12,9 @@ unresolved.
 | ICLR 2024 | DBLP conference TOC | 2,260 | 2,260 | 2,260 legitimately absent | 2,260 | complete |
 | ICLR 2025 | DBLP conference TOC | 3,704 | 3,704 | 3,704 legitimately absent | 3,704 | complete |
 | ICLR 2017 | DBLP conference TOC | 198 | 170 proven, 28 unresolved | 198 legitimately absent | 198 canonical URLs | incomplete |
+| IJCAI 2016 | IJCAI proceedings | 651 | 651 | 651 legitimately absent | 651 | complete |
+| IJCAI 2024 | IJCAI proceedings | 1,048 | 1,048 | 1,048 | 1,048 | complete |
+| ICML 2024 | PMLR volume 235 | 2,610 | 2,610 | 2,610 legitimately absent | 2,610 | complete |
 
 AAAI used Crossref year pagination for the bulk registry join and official OJS
 OAI-PMH `GetRecord` as the article-ID fallback.  OJS records 5591 and 6915 lack
@@ -30,6 +33,19 @@ OpenReview currently returns a challenge to unattended API requests.  ICLR
 abstracts, while 28 remain unresolved.  Strict publication correctly emits an
 incomplete receipt; it does not synthesize or silently omit those papers.
 
+IJCAI 2017 onward uses one cursor-paged Crossref prefix query per year and an
+exact `10.24963/ijcai.<year>/<paper_id>` join.  The 2016 volume predates that
+DOI series, so DOI is explicitly `legitimately_absent`; all 651 abstracts and
+PDF URLs were recovered from the official legacy paper pages with a four-QPS
+policy limit.  Both live runs completed without changing primary membership.
+
+PMLR volumes use a single official `mlresearch/v<volume>` `gh-pages` archive.
+The checked-in frontmatter gives stable ID, abstract and public PDF URL for
+every paper.  ICML 2024 therefore enriched 2,610 papers using one 8-MB
+decompressed metadata archive rather than 2,610 detail-page requests.  PMLR
+frontmatter does not assign article DOI; those fields are preserved as null
+with `legitimately_absent/not_assigned_by_venue`, never synthesized.
+
 Representative live artifacts were written outside the repository:
 
 - `/tmp/stage1-aaai-2020-enriched.jsonl.receipt.json`
@@ -37,6 +53,9 @@ Representative live artifacts were written outside the repository:
 - `/tmp/stage1-iclr-2024-enriched.jsonl.receipt.json`
 - `/tmp/stage1-iclr-2025-enriched.jsonl.receipt.json`
 - `/tmp/stage1-iclr-2017-enriched.jsonl.receipt.json`
+- `/tmp/stage1-ijcai-2016-enriched.receipt.json`
+- `/tmp/stage1-ijcai-2024-enriched.jsonl.receipt.json`
+- `/tmp/stage1-icml-2024-enriched.receipt.json`
 
 Automated regression command:
 
