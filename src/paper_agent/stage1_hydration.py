@@ -68,7 +68,186 @@ class OfficialStage1FieldHydrator:
             return self._jmlr(entries)
         if name == "acl_official_registry":
             return self._acl(year, entries)
+        if name == "cvf_official_registry":
+            return self._cvf(descriptor, year, entries)
         raise ValueError(f"unknown Stage 1 field enrichment: {name}")
+
+    def _cvf(
+        self,
+        descriptor: VenueDescriptor,
+        year: int,
+        entries: Sequence[SourceEntry],
+    ) -> Stage1HydrationResult:
+        series = str(descriptor.parameters.get("series") or "").upper()
+        if series not in {"CVPR", "ICCV"}:
+            raise ValueError("CVF hydration requires series=CVPR or series=ICCV")
+        hashes: list[str] = []
+        abstracts: dict[str, tuple[Mapping[str, Any], ...]] = {}
+        if (series == "CVPR" and year >= 2023) or (series == "ICCV" and year >= 2025):
+            response = self.transport.fetch_metadata(
+                "cvf_open_access",
+                f"https://{series.casefold()}.thecvf.com/static/virtual/data/"
+                f"{series.casefold()}-{year}-orals-posters.json",
+                api_version="cvf-official-virtual-papers-json-v1",
+                request_key=f"{series}:{year}",
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            abstracts = _cvf_virtual_records(response.body)
+
+        doi_response = self.transport.fetch_metadata(
+            "dblp_toc",
+            f"https://dblp.org/db/conf/{series.casefold()}/{series.casefold()}{year}.html",
+            api_version="dblp-cvf-proceedings-html-v1",
+            request_key=f"{series}:{year}",
+        )
+        hashes.append(sha256(doi_response.body).hexdigest())
+        dois = _cvf_dblp_dois(doi_response.body)
+
+        abstract_matches: dict[str, Mapping[str, Any]] = {}
+        doi_matches: dict[str, str] = {}
+        unresolved_abstracts: list[SourceEntry] = []
+        unresolved_dois: list[SourceEntry] = []
+        abstract_records = tuple(
+            record for values in abstracts.values() for record in values
+        )
+        doi_records = tuple(record for values in dois.values() for record in values)
+        for entry in entries:
+            key = _normalize_title(entry.title)
+            candidates = abstracts.get(key, ())
+            if len(candidates) != 1 and abstract_records:
+                fuzzy = _unique_fuzzy_title_match(entry, abstract_records)
+                candidates = (fuzzy,) if fuzzy is not None else ()
+            if len(candidates) == 1:
+                abstract_matches[entry.external_id] = candidates[0]
+            elif not entry.abstract:
+                unresolved_abstracts.append(entry)
+
+            doi_candidates = {str(record["doi"]) for record in dois.get(key, ())}
+            if len(doi_candidates) != 1 and doi_records:
+                fuzzy_doi = _unique_fuzzy_title_match(
+                    entry, doi_records, require_abstract=False
+                )
+                doi_candidates = (
+                    {str(fuzzy_doi["doi"])} if fuzzy_doi is not None else set()
+                )
+            if len(doi_candidates) == 1:
+                doi_matches[entry.external_id] = next(iter(doi_candidates))
+            elif not entry.doi:
+                unresolved_dois.append(entry)
+
+        if unresolved_abstracts:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                details = tuple(executor.map(self._cvf_detail_record, unresolved_abstracts))
+            for entry, record, body_hash in details:
+                abstract_matches[entry.external_id] = record
+                hashes.append(body_hash)
+
+        if unresolved_dois:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                registry = tuple(
+                    executor.map(
+                        lambda entry: self._cvf_crossref_record(series, year, entry),
+                        unresolved_dois,
+                    )
+                )
+            for entry, doi, body_hash in registry:
+                if doi:
+                    doi_matches[entry.external_id] = doi
+                hashes.append(body_hash)
+
+        hydrated: list[SourceEntry] = []
+        missing_abstracts: list[str] = []
+        for entry in entries:
+            abstract_record = abstract_matches.get(entry.external_id)
+            abstract = (
+                _clean(abstract_record.get("abstract"))
+                if abstract_record is not None
+                else entry.abstract
+            )
+            pdf_url = (
+                _clean(abstract_record.get("pdf_url"))
+                if abstract_record is not None
+                else None
+            ) or entry.pdf_url
+            doi = doi_matches.get(entry.external_id) or entry.doi
+            if not abstract:
+                missing_abstracts.append(entry.external_id)
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            if abstract:
+                provenance["abstract"] = str(
+                    abstract_record.get("_source")
+                    if abstract_record is not None
+                    else "cvf_open_access:primary"
+                )
+            if pdf_url:
+                provenance["pdf_url"] = "cvf_open_access:public_pdf"
+            overrides = dict(entry.metadata.get("field_status_overrides") or {})
+            if doi:
+                provenance["doi"] = (
+                    "dblp_toc:registered_doi"
+                    if entry.external_id in doi_matches
+                    else "cvf_open_access:primary"
+                )
+            else:
+                provenance["doi"] = "crossref_registry:not_registered"
+                overrides["doi"] = "legitimately_absent"
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract,
+                    doi=doi,
+                    pdf_url=pdf_url,
+                    metadata={
+                        **entry.metadata,
+                        "field_status_overrides": overrides,
+                        "doi_availability": None if doi else "not_registered",
+                        "field_provenance": provenance,
+                    },
+                )
+            )
+        if missing_abstracts:
+            raise ProviderRequestError(
+                f"CVF official sources lack {len(missing_abstracts)} abstract(s): "
+                f"{', '.join(missing_abstracts[:3])}"
+            )
+        return Stage1HydrationResult(tuple(hydrated), tuple(hashes), tuple(hashes))
+
+    def _cvf_detail_record(
+        self, entry: SourceEntry
+    ) -> tuple[SourceEntry, Mapping[str, Any], str]:
+        response = self.transport.fetch_metadata(
+            "cvf_open_access",
+            str(entry.landing_url),
+            api_version="cvf-official-paper-detail-v1",
+            request_key=entry.external_id,
+        )
+        return entry, _cvf_detail(response.body), sha256(response.body).hexdigest()
+
+    def _cvf_crossref_record(
+        self, series: str, year: int, entry: SourceEntry
+    ) -> tuple[SourceEntry, str | None, str]:
+        response = self.transport.fetch_metadata(
+            "crossref",
+            "https://api.crossref.org/works?"
+            + urlencode(
+                {
+                    "filter": (
+                        f"from-pub-date:{year}-01-01,until-pub-date:{year}-12-31,"
+                        "prefix:10.1109,type:proceedings-article"
+                    ),
+                    "query.title": entry.title,
+                    "rows": 20,
+                    "select": "DOI,title,container-title",
+                }
+            ),
+            api_version="crossref-cvf-title-audit-v1",
+            request_key=entry.external_id,
+        )
+        return (
+            entry,
+            _cvf_crossref_exact_doi(response.body, series, entry.title),
+            sha256(response.body).hexdigest(),
+        )
 
     def _acl(
         self, year: int, entries: Sequence[SourceEntry]
@@ -1578,6 +1757,8 @@ def _ijcai_crossref_page(
 def _unique_fuzzy_title_match(
     entry: SourceEntry,
     records: Sequence[Mapping[str, Any]],
+    *,
+    require_abstract: bool = True,
 ) -> Mapping[str, Any] | None:
     target = _normalize_title(entry.title)
     scored = list(
@@ -1587,7 +1768,7 @@ def _unique_fuzzy_title_match(
             record,
         )
         for record in records
-        if record.get("name") and record.get("abstract")
+        if record.get("name") and (record.get("abstract") or not require_abstract)
     )
     scored.sort(key=lambda item: (item[0], item[1]))
     if not scored:
@@ -1597,6 +1778,128 @@ def _unique_fuzzy_title_match(
     if best_score >= 0.92 and best_score - second_score >= 0.02:
         return best
     return None
+
+
+def _cvf_virtual_records(
+    body: bytes,
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProviderRequestError("CVF virtual export is not JSON") from error
+    records = payload.get("results") if isinstance(payload, Mapping) else None
+    if not isinstance(records, list):
+        raise ProviderRequestError("CVF virtual export has no results list")
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        if record.get("eventtype") not in {"Poster", "Oral"}:
+            continue
+        title = _clean(record.get("name"))
+        abstract = _clean(record.get("abstract"))
+        if title and abstract:
+            grouped.setdefault(_normalize_title(title), []).append(
+                {
+                    "name": title,
+                    "abstract": abstract,
+                    "_source": "cvf_conference_virtual:annual_json.abstract",
+                }
+            )
+    if not grouped:
+        raise ProviderRequestError("CVF virtual export contains no paper abstracts")
+    return {key: tuple(values) for key, values in grouped.items()}
+
+
+def _cvf_dblp_dois(
+    body: bytes,
+) -> dict[str, tuple[Mapping[str, str], ...]]:
+    text = body.decode("utf-8", errors="replace")
+    grouped: dict[str, list[Mapping[str, str]]] = {}
+    blocks = re.findall(
+        r'<li\s+class=["\']entry inproceedings["\'].*?'
+        r'(?=<li\s+class=["\']entry inproceedings["\']|$)',
+        text,
+        re.I | re.S,
+    )
+    for block in blocks:
+        title_match = re.search(
+            r'<span\s+class=["\']title["\'][^>]*>(.*?)</span>',
+            block,
+            re.I | re.S,
+        )
+        doi_match = re.search(
+            r'https://doi\.org/(10\.1109/[^"\'<\s]+)', block, re.I
+        )
+        if title_match is None or doi_match is None:
+            continue
+        title = _clean(unescape(re.sub(r"<[^>]+>", " ", title_match.group(1))))
+        doi = doi_match.group(1).casefold().rstrip(".,;)")
+        if title:
+            grouped.setdefault(_normalize_title(title), []).append(
+                {"name": title, "doi": doi}
+            )
+    if not grouped:
+        raise ProviderRequestError("DBLP CVF proceedings page contains no article DOI")
+    return {key: tuple(values) for key, values in grouped.items()}
+
+
+def _cvf_crossref_exact_doi(body: bytes, series: str, title: str) -> str | None:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProviderRequestError("CVF Crossref title audit is not JSON") from error
+    message = payload.get("message") if isinstance(payload, Mapping) else None
+    items = message.get("items") if isinstance(message, Mapping) else None
+    if not isinstance(items, list):
+        raise ProviderRequestError("CVF Crossref title audit has no items list")
+    target = _normalize_title(title)
+    matches: set[str] = set()
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        titles = item.get("title")
+        candidate = titles[0] if isinstance(titles, list) and titles else titles
+        containers = item.get("container-title")
+        container_text = " ".join(
+            str(value) for value in containers
+        ) if isinstance(containers, list) else str(containers or "")
+        doi = _clean(item.get("DOI"))
+        if (
+            candidate
+            and _normalize_title(str(candidate)) == target
+            and re.search(rf"\b{re.escape(series)}\b", container_text, re.I)
+            and doi
+        ):
+            matches.add(doi.casefold())
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _cvf_detail(body: bytes) -> Mapping[str, str | None]:
+    text = body.decode("utf-8", errors="replace")
+    abstract = re.search(
+        r'<div\s+id=["\']abstract["\'][^>]*>(.*?)</div>', text, re.I | re.S
+    )
+    pdf = re.search(
+        r'<meta\s+name=["\']citation_pdf_url["\']\s+content=["\']([^"\']+)',
+        text,
+        re.I,
+    )
+    return {
+        "abstract": (
+            _clean(
+                re.sub(
+                    r"\s+([.,;:!?])",
+                    r"\1",
+                    unescape(re.sub(r"<[^>]+>", " ", abstract.group(1))),
+                )
+            )
+            if abstract is not None
+            else None
+        ),
+        "pdf_url": _clean(unescape(pdf.group(1))) if pdf is not None else None,
+        "_source": "cvf_open_access:paper_detail.abstract",
+    }
 
 
 def _arxiv_id(entry: SourceEntry) -> str | None:

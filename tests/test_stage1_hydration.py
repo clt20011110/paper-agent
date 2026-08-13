@@ -15,8 +15,45 @@ from paper_agent.stage1_hydration import (
     _jmlr_rss_records,
     _jmlr_detail,
     _acl_crossref_page,
+    _cvf_crossref_exact_doi,
+    _cvf_dblp_dois,
+    _cvf_detail,
+    _cvf_virtual_records,
     _virtual_openreview_id,
 )
+
+
+def test_cvf_bulk_and_detail_sources_extract_required_fields() -> None:
+    virtual = _cvf_virtual_records(b'''{"results":[
+      {"eventtype":"Poster","name":"Auditable Vision","abstract":"Bulk abstract."},
+      {"eventtype":"Workshop","name":"Excluded","abstract":"No."}
+    ]}''')
+    assert virtual["auditablevision"][0]["abstract"] == "Bulk abstract."
+
+    detail = _cvf_detail(b'''<meta name="citation_pdf_url" content="https://cvf/paper.pdf">
+      <div id="abstract">Official &amp; complete <em>abstract</em>.</div>''')
+    assert detail == {
+        "abstract": "Official & complete abstract.",
+        "pdf_url": "https://cvf/paper.pdf",
+        "_source": "cvf_open_access:paper_detail.abstract",
+    }
+
+
+def test_cvf_dblp_and_crossref_join_only_registered_conference_doi() -> None:
+    dblp = _cvf_dblp_dois(b'''<li class="entry inproceedings">
+      <a href="https://doi.org/10.1109/CVPR1.2024.00001">DOI</a>
+      <span class="title">Auditable &amp; Vision.</span></li>''')
+    assert dblp["auditablevision"][0]["doi"] == "10.1109/cvpr1.2024.00001"
+
+    crossref = b'''{"message":{"items":[
+      {"DOI":"10.1109/CVPR1.2024.00001","title":["Auditable Vision"],
+       "container-title":["2024 IEEE/CVF Conference (CVPR)"]},
+      {"DOI":"10.1109/OTHER","title":["Auditable Vision"],
+       "container-title":["Other conference"]}
+    ]}}'''
+    assert _cvf_crossref_exact_doi(crossref, "CVPR", "Auditable Vision") == (
+        "10.1109/cvpr1.2024.00001"
+    )
 
 
 def test_aaai_oai_page_extracts_abstract_doi_pdf_and_cursor() -> None:

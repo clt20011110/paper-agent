@@ -709,6 +709,10 @@ def test_cvf_main_route_preserves_track_and_month_resolution() -> None:
     assert batch.entries[0].authors == ("Ada Lovelace", "Grace Hopper")
     assert batch.entries[0].publication_date == "2024-06"
     assert batch.entries[0].metadata["cvf_track"] == "main"
+    assert batch.entries[0].pdf_url == (
+        "https://openaccess.thecvf.com/content/CVPR2024/papers/"
+        "Lovelace_Vision_Systems_CVPR_2024_paper.pdf"
+    )
 
 
 def test_cvf_falls_back_to_official_day_pages_when_legacy_all_query_is_broken() -> None:

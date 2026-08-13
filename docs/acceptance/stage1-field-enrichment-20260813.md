@@ -20,6 +20,8 @@ unresolved.
 | JMLR 2024 | JMLR volume 25 | 422 | 422 | 422 legitimately absent | 422 | complete |
 | ACL 2024 | ACL Anthology pinned XML | 984 | 984 | 984 | 984 | complete |
 | COLING/LREC-COLING 2024 | ACL Anthology pinned XML | 1,567 | 1,567 | 1,567 legitimately absent | 1,567 | complete |
+| CVPR 2024 | CVF Open Access annual index | 2,716 | 2,716 | 2,715 + 1 legitimately absent | 2,716 | complete |
+| ICCV 2025 | CVF Open Access annual index | 2,701 | 2,701 | 2,700 + 1 legitimately absent | 2,701 | complete |
 
 AAAI used Crossref year pagination for the bulk registry join and official OJS
 OAI-PMH `GetRecord` as the article-ID fallback.  OJS records 5591 and 6915 lack
@@ -74,6 +76,16 @@ The joint LREC-COLING 2024 proceedings has no `10.18653` registrations for its
 after the registry audit; all abstracts and PDFs were already present in the
 pinned official Anthology XML.
 
+CVF enrichment reads each conference's single official Open Access annual
+index for membership and public PDF URLs.  CVPR 2023 onward and ICCV 2025 use
+the conference virtual site's annual JSON for abstracts; older years use a
+four-QPS official-detail fallback.  DOI resolution uses one annual DBLP
+proceedings snapshot, exact/fuzzy-unique title joins, and a Crossref title
+audit only for residual misses.  CVPR 2024 has one paper (`SportsSloMo`) and
+ICCV 2025 one paper (`DAViD`) with no registered proceedings DOI after that
+audit; these remain null with `legitimately_absent/not_registered` rather than
+receiving a fabricated identifier.
+
 Representative live artifacts were written outside the repository:
 
 - `/tmp/stage1-aaai-2020-enriched.jsonl.receipt.json`
@@ -89,6 +101,8 @@ Representative live artifacts were written outside the repository:
 - `/tmp/stage1-jmlr-2024-enriched.receipt.json`
 - `/tmp/stage1-acl-2024-enriched.receipt.json`
 - `/tmp/stage1-coling-2024-enriched.receipt.json`
+- `/tmp/stage1-cvpr-2024-enriched.receipt.json`
+- `/tmp/stage1-iccv-2025-enriched.receipt.json`
 
 Automated regression command:
 

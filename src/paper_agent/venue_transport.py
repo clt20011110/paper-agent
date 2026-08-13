@@ -1422,6 +1422,16 @@ def _cvf_entries(body: bytes, url: str, series: str, year: int) -> list[dict[str
             ]
             publication_date = _cvf_publication_date(bibref.text if bibref else "", year)
             landing = _absolute(url, anchor.attributes["href"])
+            pdf_anchor = next(
+                (
+                    value
+                    for sibling in siblings
+                    for value in _nodes(sibling, "a")
+                    if value.text.strip().casefold() == "pdf"
+                    and value.attributes.get("href")
+                ),
+                None,
+            )
             entries.append(
                 {
                     "external_id": urlsplit(landing).path,
@@ -1431,6 +1441,11 @@ def _cvf_entries(body: bytes, url: str, series: str, year: int) -> list[dict[str
                     "year": year,
                     "venue": f"{series} {year}",
                     "landing_url": landing,
+                    "pdf_url": (
+                        _absolute(url, pdf_anchor.attributes["href"])
+                        if pdf_anchor is not None
+                        else None
+                    ),
                 }
             )
     return entries

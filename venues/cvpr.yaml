@@ -3,5 +3,5 @@ venue_id: cvpr
 name: IEEE/CVF Conference on Computer Vision and Pattern Recognition
 venue_type: conference
 primary_provider: cvf_open_access
-provider_params: {series: CVPR, track: main, proceedings_only: true, exclude_workshops: true}
+provider_params: {series: CVPR, track: main, proceedings_only: true, exclude_workshops: true, field_enrichment: cvf_official_registry, field_enrichment_required: true}
 official_url: https://cvpr.thecvf.com/
