@@ -105,6 +105,17 @@ result = collect_stage1_metadata(
 | ICCAD 2024 | 239 | 234 | 239 | 239 | incomplete；5 条受 ACM Cloudflare、Semantic Scholar 429、OpenAlex 配额影响 |
 | JCIM 2024 | 805 | 740 + 65 不适用 | 805 | 805 | complete |
 | Nature Machine Intelligence 2024 | 184 | 166 + 18 不适用 | 184 | 184 | complete |
+| Nature Biomedical Engineering 2024 | 159 | 151 + 8 不适用 | 159 | 159 | complete |
+| Nature Catalysis 2024 | 193 | 158 + 35 不适用 | 193 | 193 | complete |
+| Nature Chemistry 2024 | 291 | 279 + 12 不适用 | 291 | 291 | complete |
+| Nature Communications 2024 | 10,926 | 10,434 + 492 不适用 | 10,926 | 10,926 | complete |
+| Nature Computational Science 2024 | 167 | 151 + 16 不适用 | 167 | 167 | complete |
+| Nature Synthesis 2024 | 257 | 211 + 46 不适用 | 257 | 257 | complete |
+| ACS Central Science 2024 | 278 | 201 + 77 不适用 | 278 | 278 | complete |
+| Chemical Science 2024 | 2,091 | 1,874 + 217 不适用 | 2,091 | 2,091 | complete |
+| JCTC 2024 | 909 | 850 + 59 不适用 | 909 | 909 | complete |
+| Cell 2024 | 548 | 520 + 27 不适用，1 未解决 | 548 | 548 | incomplete |
+| TCAD 2024 | 429 | 385 + 37 不适用，7 未解决 | 429 | 429 | incomplete |
 | Angewandte Chemie 2024 | 5,170 | 4,817 + 353 不适用 | 5,170 | 5,170 | complete；Europe PMC 批次失败可恢复 |
 | COLT 2024 | 169 | 169 | 169 不分配 | 169 | complete |
 | CoRL 2024 | 264 | 264 | 264 不分配 | 264 | complete |
@@ -150,7 +161,7 @@ result = collect_stage1_metadata(
 以下 venue 已完成十年 membership，但尚无本文所需的代表年份严格字段验收记录，或尚未在统一验收表中留证：
 
 - 会议：AISTATS、COLT、CoRL、EMNLP、NAACL、UAI 的 2024 代表年份均有真实 complete receipt；AISTATS 通过 descriptor 级 detail fallback 跳过约 1 GB bulk snapshot，547 篇逐篇官方详情摘要与 primary PDF URL 全部恢复。
-- 期刊：ACS Central Science、Cell、Chemical Science、JCTC、Nature Biomedical Engineering、Nature Catalysis、Nature Chemistry、Nature Communications、Nature Computational Science、Nature Synthesis、TCAD；JACS 2024 已有代表性 receipt，但仍有 172 条摘要缺口。
+- 期刊：Cell、TCAD 已完成代表年份诊断但各有 1/7 条普通记录缺摘要；ACS Central Science、Chemical Science、JCTC、Nature Biomedical Engineering、Nature Catalysis、Nature Chemistry、Nature Communications、Nature Computational Science、Nature Synthesis、JACS 2024 已完成代表年份验收。
 
 每个 venue 至少选择一个高产年份做全量严格运行，并将记录数、摘要、DOI、PDF URL、legitimately absent 分类和 receipt hash 写入统一验收文档。
 
@@ -194,9 +205,8 @@ result = collect_stage1_metadata(
 1. 将 journal DOI batch 和 PMLR detail fallback 的成功响应持久化，减少重试成本。
 2. 在 OpenAlex 配额恢复或取得授权 Semantic Scholar/ACM 访问后关闭 ICCAD 5 个摘要缺口；DAC 已关闭。
 3. 为 Science 找可批量、可审计的官方 metadata 路径；找不到时保持 incomplete。
-4. 跑 6 个未留证会议的代表年份 strict matrix。
-5. 跑 13 个未留证期刊的代表年份 strict matrix。
-6. 扩展至 2016–2025 全字段矩阵，生成统一 JSON + Markdown 报告。
+4. 关闭 Cell 的 1 条、TCAD 的 7 条普通摘要缺口，并补齐剩余代表年份证据。
+5. 扩展至 2016–2025 全字段矩阵，生成统一 JSON + Markdown 报告。
 
 ## 7. 现有证据入口
 

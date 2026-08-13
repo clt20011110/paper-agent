@@ -3,5 +3,19 @@ venue_id: nature_chemistry
 name: Nature Chemistry
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: nchem, registry_issn: 1755-4330, issns: [1755-4330, 1755-4349], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true, publisher_abstract_source: nature_article_html}
+provider_params:
+  journal_slug: nchem
+  registry_issn: 1755-4330
+  issns: [1755-4330, 1755-4349]
+  article_types: [journal-article]
+  field_enrichment: crossref_scholarly_graph
+  field_enrichment_required: true
+  publisher_abstract_source: nature_article_html
+  abstract_legitimately_absent_title_patterns:
+    - '^(?:Author|Publisher) Correction:'
+  abstract_legitimately_absent_document_types:
+    - Matters Arising
+    - News & Views
+    - Books & Arts
+    - Correspondence
 official_url: https://www.nature.com/nchem/

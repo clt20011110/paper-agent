@@ -3,6 +3,20 @@ venue_id: nature_synthesis
 name: Nature Synthesis
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: natsynth, registry_issn: 2731-0582, issns: [2731-0582], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true, publisher_abstract_source: nature_article_html}
+provider_params:
+  journal_slug: natsynth
+  registry_issn: 2731-0582
+  issns: [2731-0582]
+  article_types: [journal-article]
+  field_enrichment: crossref_scholarly_graph
+  field_enrichment_required: true
+  publisher_abstract_source: nature_article_html
+  abstract_legitimately_absent_title_patterns:
+    - '^(?:Author|Publisher) Correction:'
+  abstract_legitimately_absent_document_types:
+    - Research Highlight
+    - Retraction
+    - News & Views
+    - Matters Arising
 official_url: https://www.nature.com/natsynth/
 date_range: {start: 2022-01-01, end: 2025-12-31}

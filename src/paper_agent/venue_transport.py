@@ -535,6 +535,14 @@ def _crossref_serial(
             ),
             None,
         ) if isinstance(links, list) else None
+        resource = record.get("resource")
+        resource_url = (
+            str(resource.get("primary", {}).get("URL"))
+            if isinstance(resource, Mapping)
+            and isinstance(resource.get("primary"), Mapping)
+            and resource.get("primary", {}).get("URL")
+            else None
+        )
         entries.append(
             {
                 "external_id": doi,
@@ -547,6 +555,8 @@ def _crossref_serial(
                 "venue": container,
                 "landing_url": str(record.get("URL") or f"https://doi.org/{doi}"),
                 "pdf_url": pdf_url,
+                "resource_url": resource_url,
+                "resource": resource,
                 "volume": record.get("volume"),
                 "issue": record.get("issue"),
                 "page": record.get("page"),

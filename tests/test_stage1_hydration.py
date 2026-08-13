@@ -27,6 +27,7 @@ from paper_agent.stage1_hydration import (
     _eda_publisher_pdf_url,
     _europe_pmc_doi_records,
     _journal_publisher_pdf_url,
+    _journal_resource_pdf_url,
     _nature_article_abstract,
     _nature_article_document_type,
     _virtual_openreview_id,
@@ -134,6 +135,17 @@ def test_europe_pmc_doi_batch_extracts_abstract_and_open_pdf() -> None:
     assert records["10.1021/example"]["pdf_url"] == "https://pmc/x.pdf"
 
 
+def test_europe_pmc_doi_batch_preserves_publisher_document_types() -> None:
+    records = _europe_pmc_doi_records(b'''{"resultList":{"result":[{
+      "doi":"10.1021/news","pubType":"News",
+      "pubTypeList":{"pubType":["News","Journal Article"]}
+    }]}}''')
+    assert records["10.1021/news"]["document_type"] == "News"
+    assert records["10.1021/news"]["document_types"] == (
+        "News", "Journal Article"
+    )
+
+
 def test_journal_arxiv_fallback_requires_exact_normalized_title() -> None:
     class Transport:
         def fetch_metadata(self, provider, url, **kwargs):
@@ -170,6 +182,24 @@ def test_science_registered_doi_has_canonical_publisher_pdf_route() -> None:
         "https://www.science.org/doi/pdf/10.1126/science.example"
     )
     assert _journal_publisher_pdf_url("10.1002/anie.example") is None
+    assert _journal_publisher_pdf_url("10.1039/d4sc01391c") == (
+        "https://pubs.rsc.org/en/content/articlepdf/2024/sc/d4sc01391c"
+    )
+    assert _journal_publisher_pdf_url("10.1039/D3SC90029K") == (
+        "https://pubs.rsc.org/en/content/articlepdf/2023/sc/d3sc90029k"
+    )
+    assert _journal_resource_pdf_url(
+        {"resource_url": "https://linkinghub.elsevier.com/retrieve/pii/S0092867424007001"},
+        "10.1016/j.cell.example",
+    ) == "https://www.cell.com/action/showPdf?pii=S0092867424007001"
+    assert _journal_resource_pdf_url(
+        {"resource_url": "https://linkinghub.elsevier.com/retrieve/pii/S1234567890"},
+        "10.1016/j.other.example",
+    ) is None
+    assert _journal_resource_pdf_url(
+        {"resource_url": "https://ieeexplore.ieee.org/document/10439997/"},
+        "10.1109/tcad.example",
+    ) == "https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=10439997"
 
 
 def test_nature_article_page_extracts_public_dc_description_metadata() -> None:

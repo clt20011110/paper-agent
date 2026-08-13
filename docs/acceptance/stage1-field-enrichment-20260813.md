@@ -25,9 +25,20 @@ unresolved.
 | DAC 2024 | DBLP conference TOC | 370 | 370 | 370 | 370 canonical endpoints | complete; one OpenAlex exact-title recovery |
 | ICCAD 2024 | DBLP conference TOC | 239 | 234 | 239 | 239 canonical endpoints | incomplete (5 abstracts; upstream limits/challenge) |
 | JCIM 2024 | Crossref ISSN registry | 805 | 740 + 65 legitimately absent | 805 | 805 | complete |
+| ACS Central Science 2024 | Crossref ISSN registry + Europe PMC document types | 278 | 201 + 77 legitimately absent | 278 | 278 | complete; News/Editorial + issue metadata |
 | Nature Machine Intelligence 2024 | Crossref ISSN registry + Nature article metadata | 184 | 166 + 18 legitimately absent | 184 | 184 | complete |
 | Nature Biotechnology 2024 | Crossref ISSN registry + Nature article metadata | 468 | 333 + 135 legitimately absent | 468 | 468 | complete; publisher document types |
-| JACS 2024 | Crossref ISSN registry | 3,783 | 3,611 | 3,783 | 3,783 | incomplete (172 abstracts) |
+| Nature Biomedical Engineering 2024 | Crossref ISSN registry + Nature article metadata | 159 | 151 + 8 legitimately absent | 159 | 159 | complete; publisher document types |
+| Nature Catalysis 2024 | Crossref ISSN registry + Nature article metadata | 193 | 158 + 35 legitimately absent | 193 | 193 | complete; publisher document types |
+| Nature Chemistry 2024 | Crossref ISSN registry + Nature article metadata | 291 | 279 + 12 legitimately absent | 291 | 291 | complete; publisher document types |
+| Nature Communications 2024 | Crossref ISSN registry + Nature article metadata | 10,926 | 10,434 + 492 legitimately absent | 10,926 | 10,926 | complete; publisher document types/title correction rule |
+| Nature Computational Science 2024 | Crossref ISSN registry + Nature article metadata | 167 | 151 + 16 legitimately absent | 167 | 167 | complete; publisher document types |
+| Nature Synthesis 2024 | Crossref ISSN registry + Nature article metadata | 257 | 211 + 46 legitimately absent | 257 | 257 | complete; publisher document types |
+| JACS 2024 | Crossref ISSN registry | 3,783 | 3,611 + 172 legitimately absent | 3,783 | 3,783 | complete; title/document-type rules |
+| Chemical Science 2024 | Crossref ISSN registry + RSC DOI PDF route | 2,091 | 1,874 + 217 legitimately absent | 2,091 | 2,091 | complete; covers/contents rules |
+| JCTC 2024 | Crossref ISSN registry | 909 | 850 + 59 legitimately absent | 909 | 909 | complete; title/document-type rules |
+| Cell 2024 | Crossref ISSN registry + Europe PMC document types | 548 | 520 + 27 legitimately absent, 1 unresolved | 548 | 548 | incomplete; one Cell research record lacks a recoverable abstract |
+| TCAD 2024 | Crossref ISSN registry + IEEE resource endpoints | 429 | 385 + 37 legitimately absent, 7 unresolved | 429 | 429 | incomplete; seven research records lack a recoverable abstract |
 | Angewandte Chemie 2024 | Crossref ISSN registry | 5,170 | 4,817 + 353 legitimately absent | 5,170 | 5,170 | complete; recovery-aware DOI batching |
 | COLT 2024 | PMLR volume | 169 | 169 | 169 legitimately absent | 169 | complete |
 | CoRL 2024 | PMLR volume | 264 | 264 | 264 legitimately absent | 264 | complete |
@@ -146,8 +157,45 @@ retain DOI and publisher PDF endpoints and are marked
 synthetic abstracts.
 
 JACS 2024 reached 3,783 DOI/PDF-complete records and 3,611 abstracts. The
-remaining 172 registrations are retained in the receipt as unresolved rather
-than classified without publisher evidence; the run is therefore incomplete.
+remaining 172 registrations are deterministically classified by anchored
+publisher-title categories: issue editorial mastheads, issue publication
+information, additions, corrections, retractions, JACS publication spotlights,
+an opinion, a welcome item, a society-anniversary item, and the two laboratory
+safety diversity items. The descriptor rules are intentionally narrow and
+preserve the exact Crossref membership set. The resulting strict receipt is
+complete, with the 172 records marked
+`legitimately_absent/not_applicable_to_document_type` and no synthetic text.
+
+ACS Central Science 2024 reached 278 DOI/PDF-complete records and 201
+abstracts. Europe PMC `pubType` evidence classified 50 News and 5 Editorial
+records as not applicable; the remaining 22 records are the exact Crossref
+issue editorial masthead/publication-information pairs. All 77 retain DOI and
+publisher PDF links, and the strict receipt is complete. Europe PMC document
+types are now preserved in the field provenance so this classification is
+reproducible rather than a title-only guess.
+
+The six additional Nature representative runs also completed strictly:
+Biomedical Engineering 159 (151 + 8 not applicable), Catalysis 193
+(158 + 35), Chemistry 291 (279 + 12), Communications 10,926 (10,434 + 492),
+Computational Science 167 (151 + 16), and Synthesis 257 (211 + 46). Each
+record retains a DOI and Nature PDF endpoint; the absent abstracts are tied to
+anchored title or publisher document-type rules.
+
+Chemical Science 2024 completed 2,091/2,091 DOI/PDF candidates and 1,874 real
+abstracts. The remaining 217 cover/contents/front-matter records are marked
+`legitimately_absent`; the RSC DOI-derived PDF candidate route is
+`https://pubs.rsc.org/en/content/articlepdf/<year>/<journal>/<doi-suffix>` and
+is explicitly a Stage 3 candidate, not proof of a successful download. JCTC
+2024 completed 909/909 DOI/PDF with 850 abstracts and 59 anchored
+issue-metadata/correction/editorial records marked not applicable.
+
+Cell 2024 now has all 548 DOI/PDF candidates. Europe PMC document types
+classify 27 errata, letters, editorials, retraction notices, and memorial
+items as not applicable; one ordinary research record remains unresolved.
+TCAD 2024 now has all 429 IEEE resource-derived PDF candidates. Exact title
+rules classify 37 index, table-of-contents, publication-information, and
+society-information records as not applicable; seven ordinary research
+records still lack a recoverable abstract, so both receipts remain incomplete.
 
 The Angewandte Chemie 2024 recovery-aware live probe returned 5,170 DOI/PDF-complete records.
 Its 353 abstract-free records are exactly 300 covers/frontispieces/graphical
@@ -189,6 +237,16 @@ Representative live artifacts were written outside the repository:
 - `/private/tmp/stage1-nature-biotechnology-2024-p1-classified.jsonl`
 - `/private/tmp/stage1-jacs-2024-p1-final.receipt.json`
 - `/private/tmp/stage1-jacs-2024-p1-final.jsonl`
+- `/private/tmp/stage1-jacs-2024-classified.receipt.json`
+- `/private/tmp/stage1-jacs-2024-classified.jsonl`
+- `/private/tmp/stage1-acs-central-science-2024-classified.receipt.json`
+- `/private/tmp/stage1-acs-central-science-2024-classified.jsonl`
+- `/private/tmp/stage1-nature-p1-2024-classified.receipt.json`
+- `/private/tmp/stage1-nature-communications-2024-classified.receipt.json`
+- `/private/tmp/stage1-chemical-science-2024-rsc.receipt.json`
+- `/private/tmp/stage1-chemical-science-2024-rsc.jsonl`
+- `/private/tmp/stage1-jctc-2024-classified.receipt.json`
+- `/private/tmp/stage1-jctc-2024-classified.jsonl`
 - `/tmp/stage1-angew-2024.receipt.json`
 - `/private/tmp/stage1-aistats-2024-p1-final.receipt.json`
 - `/private/tmp/stage1-aistats-2024-p1-final.jsonl`

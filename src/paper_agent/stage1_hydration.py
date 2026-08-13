@@ -171,15 +171,23 @@ class OfficialStage1FieldHydrator:
             abstract = entry.abstract or (
                 _clean(record.get("abstract")) if record else None
             )
-            pdf_url = entry.pdf_url or (
-                _clean(record.get("pdf_url")) if record else None
-            ) or _journal_publisher_pdf_url(entry.doi)
+            pdf_url = (
+                entry.pdf_url
+                or (_clean(record.get("pdf_url")) if record else None)
+                or _journal_resource_pdf_url(entry.metadata, entry.doi)
+                or _journal_resource_pdf_url(record, entry.doi)
+                or _journal_publisher_pdf_url(entry.doi)
+            )
             abstract_legitimately_absent = (
                 not abstract
                 and (
                     _matches_any(entry.title, optional_patterns)
                     or str((record or {}).get("document_type") or "").casefold()
                     in optional_document_types
+                    or any(
+                        str(document_type).casefold() in optional_document_types
+                        for document_type in (record or {}).get("document_types", ())
+                    )
                 )
             )
             if not abstract and not abstract_legitimately_absent:
@@ -201,7 +209,13 @@ class OfficialStage1FieldHydrator:
                 provenance["pdf_url"] = (
                     "crossref_registry:message.link"
                     if entry.pdf_url
-                    else record_pdf_source or "publisher_doi:canonical_pdf_endpoint"
+                    else record_pdf_source or (
+                        "crossref_registry:message.resource"
+                        if _journal_resource_pdf_url(entry.metadata, entry.doi) or (
+                            record and _journal_resource_pdf_url(record, entry.doi)
+                        )
+                        else "publisher_doi:canonical_pdf_endpoint"
+                    )
                 )
             hydrated.append(
                 replace(
@@ -218,6 +232,9 @@ class OfficialStage1FieldHydrator:
                         ),
                         "publisher_document_type": (
                             _clean(record.get("document_type")) if record else None
+                        ),
+                        "publisher_document_types": (
+                            list(record.get("document_types") or ()) if record else []
                         ),
                         "field_provenance": provenance,
                     },
@@ -2445,6 +2462,16 @@ def _europe_pmc_doi_records(body: bytes) -> dict[str, Mapping[str, str | None]]:
                 "pdf_url": pdf_url,
                 "abstract_source": "europe_pmc:core.abstractText",
                 "pdf_source": "europe_pmc:open_access_pdf",
+                "document_type": _clean(record.get("pubType")),
+                "document_types": tuple(
+                    str(value)
+                    for value in (
+                        (record.get("pubTypeList") or {}).get("pubType", ())
+                        if isinstance(record.get("pubTypeList"), Mapping)
+                        else ()
+                    )
+                    if _clean(value)
+                ),
             }
     return output
 
@@ -2471,6 +2498,57 @@ def _journal_publisher_pdf_url(doi: str | None) -> str | None:
         return None
     if value.casefold().startswith("10.1126/"):
         return f"https://www.science.org/doi/pdf/{value}"
+    # RSC's DOI-derived endpoint is stable across its journal family.  The
+    # first two DOI characters encode the publication year (d4 -> 2024), and
+    # the following two characters are the journal path slug (sc -> Chemical
+    # Science, for example).  This is a candidate URL only; Stage 3 still
+    # probes the endpoint and applies access/valid-PDF checks.
+    match = re.fullmatch(r"10\.1039/([cd])(\d)([a-z]{2})([a-z0-9]+)", value.casefold())
+    if match:
+        decade, year_digit, journal_slug, suffix = match.groups()
+        year = (2010 if decade == "c" else 2020) + int(year_digit)
+        return (
+            f"https://pubs.rsc.org/en/content/articlepdf/{year}/"
+            f"{journal_slug}/{value.casefold().split('/')[-1]}"
+        )
+    return None
+
+
+def _journal_resource_pdf_url(
+    record: Mapping[str, Any] | None, doi: str | None
+) -> str | None:
+    """Translate a Crossref resource primary URL into a publisher candidate.
+
+    Crossref's resource URL is commonly a landing page.  Only well-known
+    publisher shapes with a DOI/PII/document identifier are converted; an
+    arbitrary resource URL is never relabeled as a PDF.
+    """
+
+    if not isinstance(record, Mapping):
+        return None
+    resource_url = _clean(record.get("resource_url"))
+    if not resource_url:
+        resource = record.get("resource")
+        if isinstance(resource, Mapping):
+            primary = resource.get("primary")
+            if isinstance(primary, Mapping):
+                resource_url = _clean(primary.get("URL"))
+    if not resource_url:
+        return None
+    lowered = resource_url.casefold()
+    doi_value = _clean(doi)
+    if (
+        doi_value
+        and doi_value.casefold().startswith("10.1016/j.cell.")
+        and "linkinghub.elsevier.com/retrieve/pii/" in lowered
+    ):
+        pii = resource_url.rstrip("/").rsplit("/", 1)[-1]
+        if pii:
+            return f"https://www.cell.com/action/showPdf?pii={quote(pii, safe='')}"
+    if "ieeexplore.ieee.org/document/" in lowered:
+        match = re.search(r"/document/(\d+)", resource_url, re.I)
+        if match:
+            return f"https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber={match.group(1)}"
     return None
 
 

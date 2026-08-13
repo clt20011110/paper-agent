@@ -3,6 +3,15 @@ venue_id: nature_biomedical_engineering
 name: Nature Biomedical Engineering
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: natbiomedeng, registry_issn: 2157-846X, issns: [2157-846X], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true, publisher_abstract_source: nature_article_html}
+provider_params:
+  journal_slug: natbiomedeng
+  registry_issn: 2157-846X
+  issns: [2157-846X]
+  article_types: [journal-article]
+  field_enrichment: crossref_scholarly_graph
+  field_enrichment_required: true
+  publisher_abstract_source: nature_article_html
+  abstract_legitimately_absent_title_patterns:
+    - '^(?:Author|Publisher) Correction:'
 official_url: https://www.nature.com/natbiomedeng/
 date_range: {start: 2017-01-01, end: 2025-12-31}

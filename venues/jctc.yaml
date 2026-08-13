@@ -3,5 +3,21 @@ venue_id: jctc
 name: Journal of Chemical Theory and Computation
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: jctc, registry_issn: 1549-9618, issns: [1549-9618, 1549-9626], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
+provider_params:
+  journal_slug: jctc
+  registry_issn: 1549-9618
+  issns: [1549-9618, 1549-9626]
+  article_types: [journal-article]
+  field_enrichment: crossref_scholarly_graph
+  field_enrichment_required: true
+  abstract_legitimately_absent_title_patterns:
+    - '^Issue Editorial Masthead$'
+    - '^Issue Publication Information$'
+    - '^Correction to '
+    - '^Editorial:'
+    - '^Introduction to Computational and Theoretical Studies '
+    - '^JCTC Early Career Board Selects$'
+    - '^JCTC Inaugural 2024 Early Career Advisory Board$'
+    - '^The Beginnings of JCTC$'
+    - '^The Next Twenty Years of the Journal of Chemical Theory and Computation$'
 official_url: https://pubs.acs.org/journal/jctcce

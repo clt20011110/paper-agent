@@ -1,7 +1,7 @@
 # Stage 1 当前进展与未完成工作
 
 更新日期：2026-08-14  
-代码基线：`6d7eef1 feat(stage1): harden recoverable metadata enrichment`  
+代码基线：`feature/crawler-adapters`（2026-08-14 Stage 1 enrichment 更新）
 范围：Stage 1 独立接口、2016–2025 venue membership census，以及标题、作者、摘要、DOI、PDF URL 的字段补全。
 
 ## 结论先行
@@ -11,8 +11,8 @@ Stage 1 已经具备可独立运行和审计的生产骨架，但还没有达到
 - **论文集合（membership）已闭合**：目录中的 35 个 venue、2016–2025 全部适用年份均完成 terminal cursor、稳定 ID 去重和 parser 收支校验；共 374,784 条唯一记录。
 - **独立接口已完成**：可以输入一个或多个 venue、起止年份，输出 JSONL metadata 和 receipt；默认 fail-closed，不会把缺字段的结果误标为 complete。
 - **可扩展架构已完成**：venue descriptor、provider manifest、primary census 和 enrichment provider 已解耦；新增同类来源主要通过 YAML descriptor 扩展。
-- **代表年份字段验收大部分已完成**：会议类已有多组真实 complete receipt；部分 EDA、期刊和历史 ICLR/Science/JACS 仍有明确缺口。
-- **无人值守回归已通过**：完整 pytest 回归通过；最近一次变更已推送到 `origin/feature/crawler-adapters`。
+- **代表年份字段验收大部分已完成**：会议类已有多组真实 complete receipt；部分 EDA、期刊和历史 ICLR/Science 仍有明确缺口。
+- **无人值守回归已通过**：完整 pytest 回归通过；本次更新随当前分支提交发布。
 
 因此，当前可以把 Stage 1 当作“可用的独立 metadata census 接口”使用；不能把整个十年字段矩阵宣称为已完成。
 
@@ -108,6 +108,17 @@ PMLR 已支持 bulk frontmatter 失败时的逐篇官方 detail fallback；期�
 | JCIM 2024 | 805 | 740 + 65 不适用 | 805 | 805 | complete |
 | Nature Machine Intelligence 2024 | 184 | 166 + 18 不适用 | 184 | 184 | complete |
 | Nature Biotechnology 2024 | 468 | 333 + 135 不适用 | 468 | 468 | complete |
+| ACS Central Science 2024 | 278 | 201 + 77 不适用 | 278 | 278 | complete |
+| Nature Biomedical Engineering 2024 | 159 | 151 + 8 不适用 | 159 | 159 | complete |
+| Nature Catalysis 2024 | 193 | 158 + 35 不适用 | 193 | 193 | complete |
+| Nature Chemistry 2024 | 291 | 279 + 12 不适用 | 291 | 291 | complete |
+| Nature Communications 2024 | 10,926 | 10,434 + 492 不适用 | 10,926 | 10,926 | complete |
+| Nature Computational Science 2024 | 167 | 151 + 16 不适用 | 167 | 167 | complete |
+| Nature Synthesis 2024 | 257 | 211 + 46 不适用 | 257 | 257 | complete |
+| Chemical Science 2024 | 2,091 | 1,874 + 217 不适用 | 2,091 | 2,091 | complete |
+| JCTC 2024 | 909 | 850 + 59 不适用 | 909 | 909 | complete |
+| Cell 2024 | 548 | 520 + 27 不适用，1 未解决 | 548 | 548 | incomplete |
+| TCAD 2024 | 429 | 385 + 37 不适用，7 未解决 | 429 | 429 | incomplete |
 | Angewandte Chemie 2024 | 5,170 | 4,817 + 353 不适用 | 5,170 | 5,170 | complete |
 | COLT 2024 | 169 | 169 | 依法未分配 | 169 | complete |
 | CoRL 2024 | 264 | 264 | 依法未分配 | 264 | complete |
@@ -127,7 +138,6 @@ PMLR 已支持 bulk frontmatter 失败时的逐篇官方 detail fallback；期�
 | ICLR 2017 | 198 条 membership/PDF 已确认 | 28 条摘要 | 无现代年度 bulk JSON；无人值守 OpenReview 返回 challenge | 保持 `incomplete`；寻找可审计官方 metadata/export，不绕过 challenge |
 | ICCAD 2024 | 239 条 DOI/PDF 已确认 | 5 条摘要 | ACM Cloudflare、Semantic Scholar 429、OpenAlex 公共配额耗尽 | 配额恢复或取得合规的官方批量来源后逐条补齐 |
 | Science 2024 | 2,039 条 DOI/PDF 已确认 | 298 条摘要 | publisher 页面出现无人值守 Cloudflare challenge | 优先寻找 AAAS 官方 metadata/export；不逐篇绕过挑战 |
-| JACS 2024 | 3,783 条 DOI/PDF 已确认 | 172 条摘要 | 当前批量来源没有返回；尚无逐条“无摘要”证据 | 保持 `incomplete`，取得 publisher document type/abstract 证据后再分类 |
 
 ICLR 2017 的官方 OpenReview 页面在已登录浏览器中可见，并不等于无人值守 Stage 1 receipt 已完成；人工可见结果尚未作为自动化字段快照接入，因此不能把这 28 条直接标成 complete。
 
@@ -135,10 +145,10 @@ ICLR 2017 的官方 OpenReview 页面在已登录浏览器中可见，并不等�
 
 以下 venue 已完成十年 membership，但尚未完成本文要求的代表年份严格字段验收，或尚有代表年份缺少统一 receipt 留证：
 
-- ACS Central Science、Cell、Chemical Science、JCTC、Nature Biomedical Engineering、Nature Catalysis、Nature Chemistry、Nature Communications、Nature Computational Science、Nature Synthesis、TCAD。
-- JACS 2024 已有代表年份 receipt，但仍需先关闭上表的 172 条摘要缺口。
+- Cell、TCAD：PDF 候选已经分别达到 548/548、429/429；Cell 仍有 1 条、TCAD 仍有 7 条普通记录缺摘要。
+- ACS Central Science、Chemical Science、JCTC、Nature Biomedical Engineering、Nature Catalysis、Nature Chemistry、Nature Communications、Nature Computational Science、Nature Synthesis 和 JACS 2024 代表年份均已通过；非研究/期刊元数据类条目被可审计规则标记为摘要不适用。
 
-每个 venue 至少需要一个高产年份的全量 strict run，并将记录数、摘要、DOI、PDF、legitimately absent 分类、receipt hash 写入统一验收矩阵。
+每个 venue 至少需要一个高产年份的全量 strict run，并将记录数、摘要、DOI、PDF、legitimately absent 分类、receipt hash 写入统一验收矩阵；Cell/TCAD 的 2024 代表年份已跑过，但仍保持 incomplete。
 
 ### P2：2016–2025 全字段矩阵
 
@@ -172,6 +182,9 @@ ICLR 2017 的官方 OpenReview 页面在已登录浏览器中可见，并不等�
 - ICLR 2017 receipt：`/private/tmp/stage1-iclr-2017-reprobe.receipt.json`
 - Nature Biotechnology receipt：`/private/tmp/stage1-nature-biotechnology-2024-p1-classified.receipt.json`
 - JACS receipt：`/private/tmp/stage1-jacs-2024-p1-final.receipt.json`
+- JACS classified receipt：`/private/tmp/stage1-jacs-2024-classified.receipt.json`
+- ACS Central Science receipt：`/private/tmp/stage1-acs-central-science-2024-classified.receipt.json`
+- Cell/TCAD receipt：`/private/tmp/stage1-cell-tcad-2024-classified2.receipt.json`
 - AISTATS receipt：`/private/tmp/stage1-aistats-2024-p1-final.receipt.json`
 
 `/private/tmp` 中的 receipt 是本机运行产物，不随 Git 提交；提交到仓库的 acceptance 文档记录了其摘要、状态和限制。
@@ -181,10 +194,9 @@ ICLR 2017 的官方 OpenReview 页面在已登录浏览器中可见，并不等�
 1. 在 OpenAlex 配额恢复或取得合规的 Semantic Scholar/ACM 访问后，关闭 ICCAD 5 条摘要缺口。
 2. 为 ICLR 2017 取得官方、可复现的批量 metadata/export；若只能浏览器人工访问，先设计带 hash 和 source URL 的显式 evidence snapshot，不得隐式混入 strict receipt。
 3. 为 Science 找 AAAS 可批量审计的官方 metadata 路径。
-4. 关闭 JACS 172 条摘要缺口，或逐条取得 publisher document type 证据后分类。
-5. 完成剩余期刊代表年份 strict matrix。
-6. 扩展至全部 2016–2025 字段矩阵，生成统一 JSON/Markdown 报告。
-7. 只有上述适用单元全部通过，才勾选 `task.md` 中的“EDA 与 Crossref 期刊字段补全”十年完成项。
+4. 关闭 Cell 的 1 条、TCAD 的 7 条普通摘要缺口，并核实 RSC/Cell/IEEE 候选 PDF 在 Stage 3 的实际可访问性。
+5. 扩展至全部 2016–2025 字段矩阵，生成统一 JSON/Markdown 报告。
+6. 只有上述适用单元全部通过，才勾选 `task.md` 中的“EDA 与 Crossref 期刊字段补全”十年完成项。
 
 ## 7. 运行与验收命令
 

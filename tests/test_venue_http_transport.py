@@ -217,6 +217,7 @@ def test_crossref_serial_cursor_tracks_consumed_total_and_stops_exactly() -> Non
                             "URL": "https://publisher.example/first.pdf",
                             "content-type": "application/pdf",
                         }],
+                        "resource": {"primary": {"URL": "https://publisher.example/first"}},
                     }
                 ],
             }
@@ -280,6 +281,9 @@ def test_crossref_serial_cursor_tracks_consumed_total_and_stops_exactly() -> Non
     ]
     assert first.payload["entries"][0]["pdf_url"] == (
         "https://publisher.example/first.pdf"
+    )
+    assert first.payload["entries"][0]["resource_url"] == (
+        "https://publisher.example/first"
     )
     assert "cursor=%2A" in urls[0]
     assert "cursor=registry-cursor-2" in urls[1]

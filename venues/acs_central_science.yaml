@@ -3,5 +3,17 @@ venue_id: acs_central_science
 name: ACS Central Science
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: acs-central-science, registry_issn: 2374-7943, issns: [2374-7943, 2374-7951], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
+provider_params:
+  journal_slug: acs-central-science
+  registry_issn: 2374-7943
+  issns: [2374-7943, 2374-7951]
+  article_types: [journal-article]
+  field_enrichment: crossref_scholarly_graph
+  field_enrichment_required: true
+  abstract_legitimately_absent_title_patterns:
+    - '^Issue Editorial Masthead$'
+    - '^Issue Publication Information$'
+  abstract_legitimately_absent_document_types:
+    - 'news'
+    - 'editorial'
 official_url: https://pubs.acs.org/journal/acscii
