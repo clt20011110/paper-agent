@@ -64,7 +64,70 @@ class OfficialStage1FieldHydrator:
             return self._pmlr(entries)
         if name == "neurips_official_export":
             return self._neurips(year, entries)
+        if name == "jmlr_official_rss":
+            return self._jmlr(entries)
         raise ValueError(f"unknown Stage 1 field enrichment: {name}")
+
+    def _jmlr(self, entries: Sequence[SourceEntry]) -> Stage1HydrationResult:
+        response = self.transport.fetch_metadata(
+            "jmlr_official",
+            "https://www.jmlr.org/jmlr.xml",
+            api_version="jmlr-official-rss-v1",
+            request_key="all",
+        )
+        records = _jmlr_rss_records(response.body)
+        hashes = [sha256(response.body).hexdigest()]
+        unresolved = tuple(entry for entry in entries if entry.external_id not in records)
+        if unresolved:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                fetched = tuple(executor.map(self._jmlr_detail_record, unresolved))
+            for entry, record, body_hash in fetched:
+                records[entry.external_id] = record
+                hashes.append(body_hash)
+        hydrated: list[SourceEntry] = []
+        missing: list[str] = []
+        for entry in entries:
+            record = records.get(entry.external_id)
+            abstract = _clean(record.get("abstract")) if record else None
+            if not abstract:
+                missing.append(entry.external_id)
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            if abstract:
+                provenance["abstract"] = "jmlr_rss:item.description"
+            provenance["doi"] = "jmlr_bibliography:not_assigned_by_journal"
+            provenance["pdf_url"] = "jmlr_rss:item.pdf"
+            overrides = dict(entry.metadata.get("field_status_overrides") or {})
+            overrides["doi"] = "legitimately_absent"
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract,
+                    pdf_url=_clean(record.get("pdf_url")) if record else entry.pdf_url,
+                    metadata={
+                        **entry.metadata,
+                        "field_status_overrides": overrides,
+                        "doi_availability": "not_assigned_by_journal",
+                        "field_provenance": provenance,
+                    },
+                )
+            )
+        if missing:
+            raise ProviderRequestError(
+                f"JMLR official RSS lacks {len(missing)} census abstract(s): "
+                f"{', '.join(missing[:3])}"
+            )
+        return Stage1HydrationResult(tuple(hydrated), tuple(hashes), tuple(hashes))
+
+    def _jmlr_detail_record(
+        self, entry: SourceEntry
+    ) -> tuple[SourceEntry, Mapping[str, Any], str]:
+        response = self.transport.fetch_metadata(
+            "jmlr_official",
+            str(entry.landing_url),
+            api_version="jmlr-official-paper-detail-v1",
+            request_key=entry.external_id,
+        )
+        return entry, _jmlr_detail(response.body), sha256(response.body).hexdigest()
 
     def _neurips(
         self, year: int, entries: Sequence[SourceEntry]
@@ -881,6 +944,53 @@ def _pmlr_frontmatter_snapshot(
     if not output:
         raise ProviderRequestError("PMLR official snapshot contained no frontmatter records")
     return output
+
+
+def _jmlr_rss_records(body: bytes) -> dict[str, Mapping[str, str | None]]:
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as error:
+        raise ProviderRequestError("JMLR official RSS is malformed XML") from error
+    output: dict[str, Mapping[str, str | None]] = {}
+    for item in root.findall("./channel/item"):
+        link = _clean(item.findtext("./link"))
+        match = re.search(r"/papers/(v\d+)/([^/]+)\.html$", link or "", re.I)
+        if match is None:
+            continue
+        identifier = f"{match.group(1).casefold()}/{match.group(2)}"
+        output[identifier] = {
+            "abstract": _clean(item.findtext("./description")),
+            "pdf_url": (_clean(item.findtext("./pdf")) or "").replace(
+                "http://", "https://", 1
+            ) or None,
+        }
+    if not output:
+        raise ProviderRequestError("JMLR official RSS contains no papers")
+    return output
+
+
+def _jmlr_detail(body: bytes) -> Mapping[str, str | None]:
+    text = body.decode("utf-8", errors="replace")
+    abstract = re.search(
+        r'<p\s+class=["\']abstract["\'][^>]*>(.*?)</p>', text, re.I | re.S
+    )
+    pdf = re.search(
+        r'<meta\s+name=["\']citation_pdf_url["\']\s+content=["\']([^"\']+)',
+        text,
+        re.I,
+    )
+    return {
+        "abstract": (
+            _clean(unescape(re.sub(r"<[^>]+>", "", abstract.group(1))))
+            if abstract is not None
+            else None
+        ),
+        "pdf_url": (
+            pdf.group(1).replace("http://", "https://", 1)
+            if pdf is not None
+            else None
+        ),
+    }
 
 
 def _neurips_export_records(

@@ -12,6 +12,8 @@ from paper_agent.stage1_hydration import (
     _neurips_export_records,
     _neurips_detail_abstract,
     _neurips_crossref_page,
+    _jmlr_rss_records,
+    _jmlr_detail,
     _virtual_openreview_id,
 )
 
@@ -136,3 +138,27 @@ def test_neurips_crossref_page_filters_exact_proceedings_container() -> None:
     assert _neurips_crossref_page(
         body, "Advances in Neural Information Processing Systems 37"
     ) == ({"auditablepaper": "10.52202/079017-0001"}, None)
+
+
+def test_jmlr_rss_extracts_abstract_and_public_pdf() -> None:
+    body = b'''<rss><channel><item>
+      <link>http://jmlr.org/papers/v25/24-0001.html</link>
+      <pdf>http://jmlr.org/papers/volume25/24-0001/24-0001.pdf</pdf>
+      <description>Official journal abstract.</description>
+    </item></channel></rss>'''
+
+    assert _jmlr_rss_records(body) == {
+        "v25/24-0001": {
+            "abstract": "Official journal abstract.",
+            "pdf_url": "https://jmlr.org/papers/volume25/24-0001/24-0001.pdf",
+        }
+    }
+
+
+def test_jmlr_detail_extracts_abstract_and_public_pdf() -> None:
+    body = b'''<meta name="citation_pdf_url" content="http://jmlr.org/paper.pdf">
+      <h3>Abstract</h3><p class="abstract">An &amp; official <em>abstract</em>.</p>'''
+    assert _jmlr_detail(body) == {
+        "abstract": "An & official abstract.",
+        "pdf_url": "https://jmlr.org/paper.pdf",
+    }

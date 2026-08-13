@@ -17,6 +17,7 @@ unresolved.
 | ICML 2024 | PMLR volume 235 | 2,610 | 2,610 | 2,610 legitimately absent | 2,610 | complete |
 | NeurIPS 2016 | NeurIPS proceedings | 569 | 569 | 569 legitimately absent | 569 | complete |
 | NeurIPS 2024 | NeurIPS proceedings | 4,493 | 4,493 | 4,493 | 4,493 | complete |
+| JMLR 2024 | JMLR volume 25 | 422 | 422 | 422 legitimately absent | 422 | complete |
 
 AAAI used Crossref year pagination for the bulk registry join and official OJS
 OAI-PMH `GetRecord` as the article-ID fallback.  OJS records 5591 and 6915 lack
@@ -56,6 +57,13 @@ prefix pages and exact proceedings-container/title joins, with one official
 `citation_doi` fallback for a registry title variant.  All 4,493 records retain
 the public proceedings PDF URL.
 
+JMLR's public RSS only covers the current volume, so it is not treated as a
+historical snapshot.  The 2024 acceptance run joined any RSS records and then
+fetched the 422 official article detail pages with a four-QPS policy limit.
+Every detail page supplied an abstract and public PDF meta tag.  The journal's
+official citation metadata/BibTeX does not assign article DOI, so DOI remains
+null with `legitimately_absent/not_assigned_by_journal` provenance.
+
 Representative live artifacts were written outside the repository:
 
 - `/tmp/stage1-aaai-2020-enriched.jsonl.receipt.json`
@@ -68,6 +76,7 @@ Representative live artifacts were written outside the repository:
 - `/tmp/stage1-icml-2024-enriched.receipt.json`
 - `/tmp/stage1-neurips-2016-enriched.receipt.json`
 - `/tmp/stage1-neurips-2024-enriched.receipt.json`
+- `/tmp/stage1-jmlr-2024-enriched.receipt.json`
 
 Automated regression command:
 
