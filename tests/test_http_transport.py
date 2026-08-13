@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from email.message import Message
+import gzip
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
@@ -59,6 +60,19 @@ def test_crossref_request_sets_contact_timeout_and_response_artifact() -> None:
     assert payload["status"] == "success"
     assert payload["provider_status"] == "ok"
     assert len(payload["raw_response_artifact_hash"]) == 64
+
+
+def test_transport_decompresses_gzip_magic_without_content_encoding() -> None:
+    body = b'{"message":{"items":[]}}'
+
+    def opener(request, timeout):
+        return Response(gzip.compress(body), {"Content-Type": "application/json"})
+
+    payload = ControlledHTTPTransport(
+        "https://example.test/contact", opener=opener
+    )("crossref", "search", {"query": "example", "page_size": 1})
+
+    assert payload["message"]["items"] == []
 
 
 def test_request_audit_collects_only_allowlisted_rate_limit_headers() -> None:

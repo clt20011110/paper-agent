@@ -863,6 +863,9 @@ def test_aaai_traverses_archive_and_issue_then_paginates_articles_from_cache() -
     assert first.next_cursor == "1" and second.next_cursor is None
     assert first.entries[0].external_id == "31001"
     assert first.entries[0].publication_date == "2024-03-24"
+    assert first.entries[0].pdf_url == (
+        "https://ojs.aaai.org/index.php/AAAI/article/download/31001/33001"
+    )
     assert first.entries[0].metadata["ojs_issue_id"] == "701"
     assert first.entries[0].metadata["volume"] == "38"
     assert first.entries[0].metadata["issue"] == "1"

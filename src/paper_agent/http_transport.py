@@ -43,6 +43,7 @@ _METADATA_PROVIDERS = (
     "pubmed",
     "europe_pmc",
     "unpaywall",
+    "iclr_official",
 )
 _S2_FIELDS = "paperId,title,abstract,authors,year,venue,externalIds,publicationDate,url"
 _RATE_LIMIT_HEADERS = frozenset(
@@ -270,6 +271,30 @@ class ControlledHTTPTransport:
         response["_request_audit"] = tuple(dict(item) for item in self.request_audit[audit_start:])
         self.last_payload = response
         return response
+
+    def fetch_metadata(
+        self,
+        provider: str,
+        url: str,
+        *,
+        api_version: str,
+        request_key: str | None = None,
+    ) -> CachedResponse:
+        """Fetch one policy-controlled metadata resource for a composite provider.
+
+        This public wrapper is intentionally bytes-only.  Composite Stage 1
+        enrichers parse official XML/JSON while retaining the same runtime
+        policy, rate limiting, caching, replay, and request audit as adapters.
+        """
+
+        if provider not in self._provider_names():
+            raise ValueError(f"no public HTTP mapping for metadata provider {provider}")
+        return self._fetch(
+            provider,
+            url,
+            api_version=api_version,
+            request_key=request_key,
+        )
 
     def _operation(
         self, provider: str, operation: str, parameters: Mapping[str, Any]
@@ -635,7 +660,11 @@ class ControlledHTTPTransport:
         try:
             with self.opener(request, timeout=self.timeout_seconds) as response:
                 body = response.read()
-                if response.headers.get("Content-Encoding", "").casefold() == "gzip":
+                content_encoding = response.headers.get("Content-Encoding", "").casefold()
+                # Some OJS/CDN responses omit Content-Encoding even though the
+                # body is still gzip-framed.  Magic-byte detection keeps the
+                # metadata parser deterministic without weakening URL policy.
+                if content_encoding == "gzip" or body.startswith(b"\x1f\x8b"):
                     body = gzip.decompress(body)
                 response_value = CachedResponse(
                     body,

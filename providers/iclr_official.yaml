@@ -1,0 +1,16 @@
+schema_version: "1"
+provider: iclr_official
+distribution: paper-agent
+version: 2.0.0a0
+entry_point: paper_agent.stage1_hydration:OfficialStage1FieldHydrator
+artifact_sha256: 5789e27e06e41e50e374e59a865b8d3a6d49b6f7c57b3ff2283fc00edf25023c
+enabled: true
+builtin: true
+authority: official
+roles: [metadata_enricher, oa_resolver]
+capabilities: [metadata, abstract, oa_locations, bulk_snapshot]
+authentication: {required: false}
+rate_limit: {global_qps: 2, max_concurrency: 4, cache_ttl_seconds: 86400}
+terms: {data_use: permitted, url: https://iclr.cc/FAQ/Proceedings}
+independence_group: iclr_official
+upstream_families: [iclr]

@@ -1821,6 +1821,15 @@ def _aaai_issue(body: bytes, url: str, issue_record: Mapping[str, str], year: in
         match = re.search(r"/article/view/(\d+)", urlsplit(landing).path)
         if not match:
             continue
+        pdf_anchor = next(
+            (
+                value
+                for value in _nodes(summary, "a")
+                if value.has_class("pdf")
+                or "/article/download/" in value.attributes.get("href", "")
+            ),
+            None,
+        )
         articles.append(
             {
                 "external_id": match.group(1),
@@ -1830,6 +1839,11 @@ def _aaai_issue(body: bytes, url: str, issue_record: Mapping[str, str], year: in
                 "year": year,
                 "venue": f"AAAI {year}",
                 "landing_url": landing,
+                "pdf_url": (
+                    _absolute(url, pdf_anchor.attributes["href"])
+                    if pdf_anchor is not None and pdf_anchor.attributes.get("href")
+                    else None
+                ),
                 "volume": issue_record.get("volume"),
                 "issue": issue_record.get("issue") or issue_id,
             }

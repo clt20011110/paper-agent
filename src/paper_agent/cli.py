@@ -89,6 +89,7 @@ from .stage1 import (
     venue_catalog_document,
     write_stage1_result,
 )
+from .stage1_hydration import OfficialStage1FieldHydrator
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import (
     Stage2ReleaseError,
@@ -3711,6 +3712,7 @@ def _stage1_collect(args: argparse.Namespace) -> dict[str, Any]:
             contact=contact,
             runtime=transport.runtime,
         ),
+        field_hydrator=OfficialStage1FieldHydrator(transport),
     )
     try:
         published = write_stage1_result(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from paper_agent.domain import EnvelopeStatus, SourceBatch, SourceEntry
 from paper_agent.manifests import ManifestCatalog
 from paper_agent.providers.api import VenueDescriptor
 from paper_agent.stage1 import (
+    Stage1HydrationResult,
     Stage1IncompleteError,
     Stage1Request,
     collect_stage1_metadata,
@@ -229,3 +231,62 @@ def test_year_specific_provider_parameters_override_descriptor_defaults() -> Non
     )
 
     assert result.complete
+
+
+def test_required_field_hydration_cannot_change_membership_and_marks_failure() -> None:
+    catalog = _catalog()
+    catalog.venues["example"]["provider_params"] = {
+        "field_enrichment": "official_example",
+        "field_enrichment_required": True,
+    }
+
+    class InvalidHydrator:
+        def hydrate(self, descriptor, year, entries):
+            return Stage1HydrationResult(entries=(entries[0],))
+
+    result = collect_stage1_metadata(
+        Stage1Request(("example",), 2024, 2024),
+        catalog=catalog,
+        adapter_factory=lambda _: _Adapter(),
+        field_hydrator=InvalidHydrator(),
+    )
+
+    assert not result.complete
+    assert result.receipt.units[0].unique_records == 2
+    assert "required field enrichment official_example failed" in result.receipt.units[0].reasons
+
+
+def test_legitimately_absent_doi_satisfies_required_hydration() -> None:
+    catalog = _catalog()
+    catalog.venues["example"]["provider_params"] = {
+        "field_enrichment": "official_example",
+        "field_enrichment_required": True,
+    }
+
+    class DoiAbsentHydrator:
+        def hydrate(self, descriptor, year, entries):
+            return Stage1HydrationResult(
+                entries=tuple(
+                    replace(
+                        entry,
+                        doi=None,
+                        pdf_url=f"https://example.test/{entry.external_id}.pdf",
+                        metadata={
+                            **entry.metadata,
+                            "field_status_overrides": {"doi": "legitimately_absent"},
+                        },
+                    )
+                    for entry in entries
+                )
+            )
+
+    result = collect_stage1_metadata(
+        Stage1Request(("example",), 2024, 2024),
+        catalog=catalog,
+        adapter_factory=lambda _: _Adapter(),
+        field_hydrator=DoiAbsentHydrator(),
+    )
+
+    assert result.complete
+    assert result.records[0]["doi"] is None
+    assert result.records[0]["field_status"]["doi"] == "legitimately_absent"

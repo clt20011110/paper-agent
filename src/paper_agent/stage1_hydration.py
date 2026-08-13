@@ -1,0 +1,828 @@
+"""Official field hydration for the standalone Stage 1 membership census.
+
+Hydrators never discover papers.  They receive an already reconciled primary
+membership set and may only return those exact external IDs with additional
+fields and field-level provenance.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
+from hashlib import sha256
+from io import BytesIO
+import json
+import re
+from threading import Lock
+from typing import Any, Mapping, Sequence
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
+from xml.etree import ElementTree
+
+from .domain import SourceEntry
+from .provider_runtime import ProviderRequestError
+from .providers.api import VenueDescriptor
+from .stage1 import Stage1HydrationResult
+
+
+_OAI_NS = {
+    "oai": "http://www.openarchives.org/OAI/2.0/",
+    "dc": "http://purl.org/dc/elements/1.1/",
+}
+_ATOM = "{http://www.w3.org/2005/Atom}"
+
+
+@dataclass(slots=True)
+class OfficialStage1FieldHydrator:
+    """Dispatch manifest-selected official enrichment without changing census."""
+
+    transport: Any
+    _aaai_records: dict[str, Mapping[str, Any]] | None = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _aaai_warnings: tuple[str, ...] = field(default=(), init=False, repr=False)
+    _aaai_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+
+    def hydrate(
+        self,
+        descriptor: VenueDescriptor,
+        year: int,
+        entries: Sequence[SourceEntry],
+    ) -> Stage1HydrationResult:
+        name = str(descriptor.parameters.get("field_enrichment") or "")
+        if name == "aaai_oai":
+            return self._aaai(year, entries)
+        if name == "iclr_official":
+            return self._iclr(year, entries)
+        raise ValueError(f"unknown Stage 1 field enrichment: {name}")
+
+    def _aaai(
+        self, year: int, entries: Sequence[SourceEntry]
+    ) -> Stage1HydrationResult:
+        records, oai_hashes = self._aaai_records_for(year, entries)
+        hydrated: list[SourceEntry] = []
+        missing: list[str] = []
+        extra_hashes: list[str] = []
+        for entry in entries:
+            record = records.get(entry.external_id)
+            if record is None:
+                missing.append(entry.external_id)
+                hydrated.append(entry)
+                continue
+            abstract = _clean(record.get("abstract"))
+            doi = _clean(record.get("doi"))
+            pdf_url = _clean(record.get("pdf_url")) or entry.pdf_url
+            field_source = str(record.get("_source") or "aaai_oai")
+            abstract_source = (
+                "crossref_registry:message.abstract"
+                if field_source == "crossref"
+                else "aaai_oai:oai_dc:dc.description"
+            )
+            if _abstract_suspicious(abstract) and pdf_url:
+                pdf_abstract, body_hash = self._aaai_pdf_abstract(
+                    entry.external_id, pdf_url
+                )
+                abstract = pdf_abstract
+                extra_hashes.append(body_hash)
+                abstract_source = "aaai_official_pdf:first_page_abstract"
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            if abstract:
+                provenance["abstract"] = abstract_source
+            if doi:
+                provenance["doi"] = (
+                    "crossref_registry:message.DOI"
+                    if field_source == "crossref"
+                    else "aaai_oai:oai_dc:dc.identifier"
+                )
+            if pdf_url:
+                provenance["pdf_url"] = (
+                    "crossref_registry:message.link.application/pdf"
+                    if field_source == "crossref" and record.get("pdf_url")
+                    else "aaai_oai:oai_dc:dc.relation"
+                    if field_source == "aaai_oai" and record.get("pdf_url")
+                    else "aaai_ojs:issue_html:pdf_galley"
+                )
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract or entry.abstract,
+                    doi=doi or entry.doi,
+                    pdf_url=pdf_url,
+                    metadata={
+                        **entry.metadata,
+                        "field_provenance": provenance,
+                    },
+                )
+            )
+        if missing:
+            raise ProviderRequestError(
+                f"AAAI OAI snapshot is missing {len(missing)} census article ID(s): "
+                f"{', '.join(missing[:3])}"
+            )
+        return Stage1HydrationResult(
+            tuple(hydrated),
+            (*oai_hashes, *extra_hashes),
+            (*oai_hashes, *extra_hashes),
+            self._aaai_warnings,
+        )
+
+    def _aaai_records_for(
+        self, year: int, entries: Sequence[SourceEntry]
+    ) -> tuple[dict[str, Mapping[str, Any]], tuple[str, ...]]:
+        hashes: list[str] = []
+        with self._aaai_lock:
+            records = self._aaai_records
+            required = {entry.external_id for entry in entries}
+            if required - set(records):
+                cursor = "*"
+                while cursor:
+                    response = self.transport.fetch_metadata(
+                        "crossref",
+                        "https://api.crossref.org/journals/2374-3468/works?"
+                        + urlencode(
+                            {
+                                "filter": (
+                                    f"from-pub-date:{year}-01-01,"
+                                    f"until-pub-date:{year}-12-31"
+                                ),
+                                "rows": 1000,
+                                "cursor": cursor,
+                                "select": "DOI,title,abstract,link,published",
+                            }
+                        ),
+                        api_version="crossref-aaai-year-enrichment-v1",
+                        request_key=f"{year}:{sha256(cursor.encode()).hexdigest()[:12]}",
+                    )
+                    hashes.append(sha256(response.body).hexdigest())
+                    page, cursor = _aaai_crossref_page(response.body)
+                    for article_id, record in page.items():
+                        records[article_id] = _prefer_complete_record(
+                            records.get(article_id), record
+                        )
+            missing = sorted(required - set(records))
+            for article_id in missing:
+                response = self.transport.fetch_metadata(
+                    "aaai_ojs",
+                    "https://ojs.aaai.org/index.php/AAAI/oai?"
+                    + urlencode(
+                        {
+                            "verb": "GetRecord",
+                            "metadataPrefix": "oai_dc",
+                            "identifier": f"oai:ojs.aaai.org:article/{article_id}",
+                        }
+                    ),
+                    api_version="aaai-oai-pmh-getrecord-oai-dc-v1",
+                    request_key=article_id,
+                )
+                digest = sha256(response.body).hexdigest()
+                hashes.append(digest)
+                page, _ = _aaai_oai_page(response.body)
+                record = page.get(article_id)
+                if record is None:
+                    raise ProviderRequestError(
+                        f"AAAI OAI GetRecord omitted census article/{article_id}"
+                    )
+                records[article_id] = record
+        return records, tuple(hashes)
+
+    def _aaai_pdf_abstract(self, article_id: str, pdf_url: str) -> tuple[str, str]:
+        response = self.transport.fetch_metadata(
+            "aaai_ojs",
+            pdf_url,
+            api_version="aaai-official-pdf-abstract-fallback-v1",
+            request_key=f"abstract:{article_id}",
+        )
+        if not response.body.startswith(b"%PDF-"):
+            raise ProviderRequestError(
+                f"AAAI article/{article_id} abstract fallback is not a PDF"
+            )
+        abstract = _aaai_first_page_abstract(response.body)
+        if not abstract:
+            raise ProviderRequestError(
+                f"AAAI article/{article_id} official PDF has no extractable abstract"
+            )
+        return abstract, sha256(response.body).hexdigest()
+
+    def _iclr(
+        self, year: int, entries: Sequence[SourceEntry]
+    ) -> Stage1HydrationResult:
+        if year == 2016:
+            return self._iclr_2016(entries)
+        if 2017 <= year <= 2025:
+            return self._iclr_openreview(year, entries)
+        raise ProviderRequestError(f"ICLR official enrichment has no route for {year}")
+
+    def _iclr_2016(self, entries: Sequence[SourceEntry]) -> Stage1HydrationResult:
+        by_arxiv: dict[str, SourceEntry] = {}
+        for entry in entries:
+            arxiv_id = _arxiv_id(entry)
+            if not arxiv_id:
+                raise ProviderRequestError(
+                    f"ICLR 2016 DBLP record has no arXiv edition: {entry.external_id}"
+                )
+            by_arxiv[arxiv_id] = entry
+        summaries: dict[str, str] = {}
+        hashes: list[str] = []
+        for chunk in _chunks(tuple(by_arxiv), 40):
+            url = "https://export.arxiv.org/api/query?" + urlencode(
+                {"id_list": ",".join(chunk), "max_results": len(chunk)}
+            )
+            response = self.transport.fetch_metadata(
+                "arxiv",
+                url,
+                api_version="arxiv-atom-iclr-enrichment-v1",
+                request_key=sha256("|".join(chunk).encode()).hexdigest(),
+            )
+            digest = sha256(response.body).hexdigest()
+            hashes.append(digest)
+            summaries.update(_arxiv_atom_summaries(response.body))
+        hydrated = []
+        for arxiv_id, entry in by_arxiv.items():
+            abstract = summaries.get(arxiv_id)
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            if abstract:
+                provenance["abstract"] = "arxiv_atom:summary"
+            provenance["doi"] = "iclr_proceedings:not_assigned_by_venue"
+            provenance["pdf_url"] = "arxiv:public_pdf"
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract,
+                    arxiv_id=arxiv_id,
+                    pdf_url=f"https://arxiv.org/pdf/{quote(arxiv_id, safe='.')}",
+                    metadata={
+                        **entry.metadata,
+                        "field_status_overrides": {"doi": "legitimately_absent"},
+                        "doi_availability": "not_assigned_by_venue",
+                        "field_provenance": provenance,
+                    },
+                )
+            )
+        return Stage1HydrationResult(
+            tuple(hydrated), tuple(hashes), tuple(hashes)
+        )
+
+    def _iclr_openreview(
+        self, year: int, entries: Sequence[SourceEntry]
+    ) -> Stage1HydrationResult:
+        by_forum: dict[str, SourceEntry] = {}
+        for entry in entries:
+            forum_id = _openreview_id(entry)
+            if forum_id is None and year == 2023 and entry.external_id == "conf/iclr/AndersonCD23":
+                forum_id = "zzqBoIFOQ1"
+            if forum_id is None:
+                raise ProviderRequestError(
+                    f"ICLR {year} DBLP record has no OpenReview forum ID: {entry.external_id}"
+                )
+            if forum_id in by_forum:
+                raise ProviderRequestError(f"duplicate ICLR OpenReview forum ID: {forum_id}")
+            by_forum[forum_id] = entry
+
+        abstracts: dict[str, str] = {}
+        abstract_sources: dict[str, str] = {}
+        hashes: list[str] = []
+        openreview_error: Exception | None = None
+        try:
+            for url in _openreview_queries(year):
+                offset = 0
+                while True:
+                    page_url = f"{url}&limit=1000&offset={offset}"
+                    response = self.transport.fetch_metadata(
+                        "openreview",
+                        page_url,
+                        api_version="openreview-notes-iclr-enrichment-v1",
+                        request_key=f"{year}:{offset}:{sha256(url.encode()).hexdigest()[:12]}",
+                    )
+                    digest = sha256(response.body).hexdigest()
+                    hashes.append(digest)
+                    try:
+                        payload = json.loads(response.body)
+                    except json.JSONDecodeError as error:
+                        raise ProviderRequestError("OpenReview enrichment is not JSON") from error
+                    notes = payload.get("notes") if isinstance(payload, Mapping) else None
+                    if not isinstance(notes, list):
+                        raise ProviderRequestError("OpenReview enrichment has no notes list")
+                    for note in notes:
+                        if not isinstance(note, Mapping):
+                            continue
+                        forum_id = str(note.get("forum") or note.get("id") or "")
+                        content = note.get("content")
+                        if forum_id and isinstance(content, Mapping):
+                            abstract = _openreview_value(content.get("abstract"))
+                            if abstract:
+                                abstracts[forum_id] = str(abstract).strip()
+                                abstract_sources[forum_id] = (
+                                    "openreview:note.content.abstract"
+                                )
+                    if len(notes) < 1000:
+                        break
+                    offset += len(notes)
+        except Exception as error:
+            openreview_error = error
+
+        if set(by_forum) - set(abstracts) and year in {2018, 2019}:
+            official, page_hashes = self._iclr_legacy_virtual_snapshot(year)
+            hashes.extend(page_hashes)
+            for forum_id, record in official.items():
+                if forum_id in by_forum and record.get("abstract"):
+                    abstracts.setdefault(forum_id, str(record["abstract"]))
+                    abstract_sources.setdefault(
+                        forum_id, "iclr_virtual:poster.abstract"
+                    )
+
+        if set(by_forum) - set(abstracts) and year in {2020, 2021, 2022, 2023, 2024, 2025}:
+            by_id, by_title, body_hash = self._iclr_virtual_snapshot(year)
+            hashes.append(body_hash)
+            for forum_id, entry in by_forum.items():
+                record = by_id.get(forum_id) or by_title.get(_normalize_title(entry.title))
+                if record is None:
+                    record = _unique_fuzzy_title_match(entry, tuple(by_title.values()))
+                if record and record.get("abstract"):
+                    abstracts.setdefault(forum_id, str(record["abstract"]))
+                    abstract_sources.setdefault(
+                        forum_id, "iclr_virtual:bulk_json.abstract"
+                    )
+
+        still_missing = sorted(set(by_forum) - set(abstracts))
+        if still_missing:
+            arxiv_abstracts, arxiv_hashes = self._iclr_arxiv_title_fallback(
+                tuple((forum_id, by_forum[forum_id]) for forum_id in still_missing)
+            )
+            hashes.extend(arxiv_hashes)
+            for forum_id, abstract in arxiv_abstracts.items():
+                abstracts[forum_id] = abstract
+                abstract_sources[forum_id] = "arxiv_atom:title_matched_summary"
+
+        missing = sorted(set(by_forum) - set(abstracts))
+        context = f"; OpenReview error={openreview_error}" if openreview_error else ""
+        warning = (
+            f"ICLR {year} enrichment lacks {len(missing)} abstract(s): "
+            f"{', '.join(missing[:3])}{context}"
+            if missing
+            else None
+        )
+        hydrated = []
+        for forum_id, entry in by_forum.items():
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            if forum_id in abstract_sources:
+                provenance["abstract"] = abstract_sources[forum_id]
+            provenance.update(
+                {
+                    "doi": "iclr_proceedings:not_assigned_by_venue",
+                    "pdf_url": "openreview:pdf_endpoint",
+                }
+            )
+            overrides = dict(entry.metadata.get("field_status_overrides") or {})
+            overrides["doi"] = "legitimately_absent"
+            if forum_id not in abstracts:
+                overrides["abstract"] = "enrichment_failed"
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstracts.get(forum_id),
+                    landing_url=f"https://openreview.net/forum?id={quote(forum_id, safe='')}",
+                    pdf_url=f"https://openreview.net/pdf?id={quote(forum_id, safe='')}",
+                    metadata={
+                        **entry.metadata,
+                        "openreview_forum_id": forum_id,
+                        "field_status_overrides": overrides,
+                        "doi_availability": "not_assigned_by_venue",
+                        "field_provenance": provenance,
+                    },
+                )
+            )
+        return Stage1HydrationResult(
+            tuple(hydrated),
+            tuple(hashes),
+            tuple(hashes),
+            (warning,) if warning else (),
+        )
+
+    def _iclr_arxiv_title_fallback(
+        self, entries: Sequence[tuple[str, SourceEntry]]
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        output: dict[str, str] = {}
+        hashes: list[str] = []
+        for chunk in _chunks(tuple(range(len(entries))), 10):
+            query = " OR ".join(
+                f'ti:"{entries[index][1].title.replace(chr(34), "")}"'
+                for index in chunk
+            )
+            response = self.transport.fetch_metadata(
+                "arxiv",
+                "https://export.arxiv.org/api/query?"
+                + urlencode(
+                    {
+                        "search_query": query,
+                        "start": 0,
+                        "max_results": max(10, len(chunk) * 3),
+                    }
+                ),
+                api_version="arxiv-atom-iclr-title-fallback-v1",
+                request_key=sha256(query.encode()).hexdigest(),
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            records = _arxiv_atom_records(response.body)
+            by_title = {
+                _normalize_title(record["title"]): record
+                for record in records
+                if record.get("title") and record.get("abstract")
+            }
+            for index in chunk:
+                forum_id, entry = entries[index]
+                record = by_title.get(_normalize_title(entry.title))
+                if record is not None:
+                    output[forum_id] = str(record["abstract"])
+        return output, tuple(hashes)
+
+    def _iclr_virtual_snapshot(
+        self, year: int
+    ) -> tuple[
+        dict[str, Mapping[str, Any]],
+        dict[str, Mapping[str, Any]],
+        str,
+    ]:
+        url = f"https://iclr.cc/static/virtual/data/iclr-{year}-orals-posters.json"
+        response = self.transport.fetch_metadata(
+            "iclr_official",
+            url,
+            api_version="iclr-virtual-json-v1",
+            request_key=str(year),
+        )
+        try:
+            payload = json.loads(response.body)
+        except json.JSONDecodeError as error:
+            raise ProviderRequestError("ICLR virtual snapshot is not JSON") from error
+        results = payload.get("results") if isinstance(payload, Mapping) else None
+        if not isinstance(results, list):
+            raise ProviderRequestError("ICLR virtual snapshot has no results list")
+        by_id: dict[str, Mapping[str, Any]] = {}
+        by_title: dict[str, Mapping[str, Any]] = {}
+        for record in results:
+            if not isinstance(record, Mapping) or not record.get("name"):
+                continue
+            key = _normalize_title(str(record["name"]))
+            forum_id = _virtual_openreview_id(record)
+            if forum_id:
+                prior = by_id.get(forum_id)
+                if prior is None or (
+                    not prior.get("abstract") and record.get("abstract")
+                ):
+                    by_id[forum_id] = record
+            prior_title = by_title.get(key)
+            if prior_title is None or (
+                not prior_title.get("abstract") and record.get("abstract")
+            ):
+                by_title[key] = record
+            # A highlighted oral can duplicate the accepted-poster event with a
+            # synthetic event ID and slightly edited abstract.  Forum-ID joins
+            # remain authoritative; ambiguous title fallback is disabled.
+            elif _virtual_openreview_id(prior_title) != forum_id:
+                by_title.pop(key, None)
+        return by_id, by_title, sha256(response.body).hexdigest()
+
+    def _iclr_legacy_virtual_snapshot(
+        self, year: int
+    ) -> tuple[dict[str, Mapping[str, Any]], tuple[str, ...]]:
+        index_url = f"https://iclr.cc/virtual/{year}/papers.html?filter=titles"
+        index = self.transport.fetch_metadata(
+            "iclr_official",
+            index_url,
+            api_version="iclr-legacy-virtual-index-v1",
+            request_key=str(year),
+        )
+        poster_paths = tuple(
+            dict.fromkeys(
+                match.group(1)
+                for match in re.finditer(
+                    rf'href=["\'](/virtual/{year}/poster/\d+)["\']',
+                    index.body.decode("utf-8", errors="replace"),
+                    re.I,
+                )
+            )
+        )
+        if not poster_paths:
+            raise ProviderRequestError(f"ICLR {year} virtual index has no poster links")
+        output: dict[str, Mapping[str, Any]] = {}
+        hashes = [sha256(index.body).hexdigest()]
+        for path in poster_paths:
+            response = self.transport.fetch_metadata(
+                "iclr_official",
+                "https://iclr.cc" + path,
+                api_version="iclr-legacy-virtual-poster-v1",
+                request_key=path.rsplit("/", 1)[-1],
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            record = _legacy_virtual_poster(response.body)
+            if record is not None:
+                output[str(record["forum_id"])] = record
+        return output, tuple(hashes)
+
+
+def _aaai_oai_page(body: bytes) -> tuple[dict[str, Mapping[str, Any]], str | None]:
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as error:
+        raise ProviderRequestError("AAAI OAI response is malformed XML") from error
+    error_node = root.find("./oai:error", _OAI_NS)
+    if error_node is not None:
+        raise ProviderRequestError(f"AAAI OAI error: {_clean(error_node.text)}")
+    output: dict[str, Mapping[str, Any]] = {}
+    for record in root.findall(".//oai:record", _OAI_NS):
+        identifier = record.findtext("./oai:header/oai:identifier", namespaces=_OAI_NS) or ""
+        match = re.fullmatch(r"oai:ojs\.aaai\.org:article/(\d+)", identifier.strip())
+        if not match:
+            continue
+        values = lambda name: [
+            _clean(node.text)
+            for node in record.findall(f".//dc:{name}", _OAI_NS)
+            if _clean(node.text)
+        ]
+        identifiers = values("identifier")
+        relations = values("relation")
+        doi = next((value.casefold() for value in identifiers if value.startswith("10.")), None)
+        pdf_url = next(
+            (
+                value
+                for value in relations
+                if re.search(r"/article/(?:view|download)/\d+/\d+", value)
+            ),
+            None,
+        )
+        descriptions = values("description")
+        output[match.group(1)] = {
+            "abstract": descriptions[0] if descriptions else None,
+            "doi": doi,
+            "pdf_url": pdf_url,
+            "_source": "aaai_oai",
+        }
+    token = root.findtext(".//oai:resumptionToken", namespaces=_OAI_NS)
+    return output, _clean(token)
+
+
+def _aaai_crossref_page(
+    body: bytes,
+) -> tuple[dict[str, Mapping[str, Any]], str | None]:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProviderRequestError("AAAI Crossref enrichment is not JSON") from error
+    message = payload.get("message") if isinstance(payload, Mapping) else None
+    items = message.get("items") if isinstance(message, Mapping) else None
+    if not isinstance(items, list):
+        raise ProviderRequestError("AAAI Crossref enrichment has no items list")
+    output: dict[str, Mapping[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        doi = _clean(item.get("DOI"))
+        match = re.search(r"\.([0-9]+)$", doi or "")
+        if not match:
+            continue
+        abstract = _clean(re.sub(r"<[^>]+>", " ", str(item.get("abstract") or "")))
+        links = item.get("link") if isinstance(item.get("link"), list) else []
+        pdf_url = next(
+            (
+                _clean(link.get("URL"))
+                for link in links
+                if isinstance(link, Mapping)
+                and str(link.get("content-type") or "").casefold() == "application/pdf"
+            ),
+            None,
+        )
+        output[match.group(1)] = {
+            "abstract": abstract,
+            "doi": doi.casefold() if doi else None,
+            "pdf_url": pdf_url,
+            "_source": "crossref",
+        }
+    next_cursor = _clean(message.get("next-cursor")) if isinstance(message, Mapping) else None
+    if len(items) < 1000:
+        next_cursor = None
+    return output, next_cursor
+
+
+def _records_conflict(
+    left: Mapping[str, Any], right: Mapping[str, Any]
+) -> bool:
+    return any(
+        left.get(field) and right.get(field) and left[field] != right[field]
+        for field in ("doi", "pdf_url")
+    )
+
+
+def _prefer_complete_record(
+    prior: Mapping[str, Any] | None, current: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    if prior is None:
+        return current
+    output = dict(prior)
+    replaced = False
+    for field in ("abstract", "doi", "pdf_url"):
+        value = current.get(field)
+        if value and (
+            not output.get(field)
+            or (field == "abstract" and len(str(value)) > len(str(output[field])))
+        ):
+            output[field] = value
+            replaced = True
+    if replaced:
+        output["_source"] = current.get("_source", output.get("_source"))
+    return output
+
+
+def _abstract_suspicious(value: str | None) -> bool:
+    if value is None:
+        return True
+    return value[:1].islower()
+
+
+def _aaai_first_page_abstract(body: bytes) -> str | None:
+    try:
+        from pypdf import PdfReader
+
+        first_page = PdfReader(BytesIO(body)).pages[0].extract_text() or ""
+    except Exception as error:
+        raise ProviderRequestError("AAAI official PDF text extraction failed") from error
+    lines = [line.strip() for line in first_page.splitlines()]
+    start = next(
+        (index + 1 for index, line in enumerate(lines) if line.casefold() == "abstract"),
+        None,
+    )
+    if start is None:
+        start = next(
+            (
+                index + 1
+                for index, line in enumerate(lines)
+                if "@" in line
+            ),
+            None,
+        )
+    if start is None:
+        return None
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if re.fullmatch(r"(?:\d+\s+)?Introduction", lines[index], re.I)
+        ),
+        None,
+    )
+    if end is None:
+        return None
+    return _clean(" ".join(lines[start:end]))
+
+
+def _arxiv_atom_summaries(body: bytes) -> dict[str, str]:
+    return {
+        str(record["arxiv_id"]): str(record["abstract"])
+        for record in _arxiv_atom_records(body)
+    }
+
+
+def _arxiv_atom_records(body: bytes) -> tuple[Mapping[str, str], ...]:
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as error:
+        raise ProviderRequestError("arXiv Atom enrichment is malformed XML") from error
+    output: list[Mapping[str, str]] = []
+    for entry in root.findall(f"./{_ATOM}entry"):
+        identifier = entry.findtext(f"./{_ATOM}id") or ""
+        match = re.search(r"arxiv\.org/abs/([^?#]+)", identifier, re.I)
+        summary = _clean(entry.findtext(f"./{_ATOM}summary"))
+        title = _clean(entry.findtext(f"./{_ATOM}title"))
+        if match and summary and title:
+            output.append(
+                {
+                    "arxiv_id": re.sub(r"v\d+$", "", match.group(1)),
+                    "title": title,
+                    "abstract": summary,
+                }
+            )
+    return tuple(output)
+
+
+def _openreview_queries(year: int) -> tuple[str, ...]:
+    if year == 2017:
+        prefix = f"ICLR.cc/{year}/conference/-/"
+        api = "https://api.openreview.net/notes?invitation="
+        names = ("submission", "Submission")
+    elif year <= 2023:
+        prefix = f"ICLR.cc/{year}/Conference/-/"
+        api = "https://api.openreview.net/notes?invitation="
+        names = ("Blind_Submission", "Submission", "submission")
+    else:
+        return (
+            "https://api2.openreview.net/notes?"
+            + urlencode({"content.venueid": f"ICLR.cc/{year}/Conference"}),
+        )
+    return tuple(api + quote(prefix + name, safe="") for name in names)
+
+
+def _openreview_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return value.get("value", value.get("values"))
+    return value
+
+
+def _openreview_id(entry: SourceEntry) -> str | None:
+    candidates = [entry.landing_url, *entry.metadata.get("electronic_editions", ())]
+    for value in candidates:
+        if not value:
+            continue
+        parts = urlsplit(str(value))
+        if parts.netloc.casefold().endswith("openreview.net"):
+            identifier = parse_qs(parts.query).get("id", [None])[0]
+            if identifier:
+                return str(identifier)
+    return None
+
+
+def _virtual_openreview_id(record: Mapping[str, Any]) -> str | None:
+    candidates: list[Any] = [record.get("paper_url"), record.get("paper_pdf_url")]
+    eventmedia = record.get("eventmedia")
+    if isinstance(eventmedia, list):
+        candidates.extend(
+            value.get("uri")
+            for value in eventmedia
+            if isinstance(value, Mapping)
+        )
+    for value in candidates:
+        if not value:
+            continue
+        parts = urlsplit(str(value))
+        if parts.netloc.casefold().endswith("openreview.net"):
+            identifier = parse_qs(parts.query).get("id", [None])[0]
+            if identifier:
+                return str(identifier)
+    return None
+
+
+def _legacy_virtual_poster(body: bytes) -> Mapping[str, Any] | None:
+    text = body.decode("utf-8", errors="replace")
+    forum = re.search(
+        r'href=["\']https://openreview\.net/(?:forum|pdf)\?id=([^"\'&]+)',
+        text,
+        re.I,
+    )
+    abstract = re.search(
+        r'<div\s+class=["\']abstract-text-inner["\'][^>]*>(.*?)</div>',
+        text,
+        re.I | re.S,
+    )
+    if forum is None or abstract is None:
+        return None
+    abstract_text = re.sub(r"<[^>]+>", " ", abstract.group(1))
+    abstract_text = _clean(
+        abstract_text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    )
+    if not abstract_text:
+        return None
+    return {"forum_id": forum.group(1), "abstract": abstract_text}
+
+
+def _unique_fuzzy_title_match(
+    entry: SourceEntry,
+    records: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    target = _normalize_title(entry.title)
+    scored = sorted(
+        (
+            SequenceMatcher(None, target, _normalize_title(str(record.get("name") or ""))).ratio(),
+            str(record.get("name") or ""),
+            record,
+        )
+        for record in records
+        if record.get("name") and record.get("abstract")
+    )
+    if not scored:
+        return None
+    best_score, _, best = scored[-1]
+    second_score = scored[-2][0] if len(scored) > 1 else 0.0
+    if best_score >= 0.92 and best_score - second_score >= 0.02:
+        return best
+    return None
+
+
+def _arxiv_id(entry: SourceEntry) -> str | None:
+    candidates = [entry.arxiv_id, entry.landing_url, *entry.metadata.get("electronic_editions", ())]
+    for value in candidates:
+        match = re.search(r"(?:arxiv\.org/abs/|arxiv:)([^?#]+)", str(value or ""), re.I)
+        if match:
+            return re.sub(r"v\d+$", "", match.group(1)).rstrip("/")
+    return None
+
+
+def _clean(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    return text or None
+
+
+def _normalize_title(value: str) -> str:
+    value = value.casefold().replace("ℓ", "l").replace("∞", "infinity")
+    return "".join(character for character in value if character.isalnum())
+
+
+def _chunks(values: Sequence[Any], size: int) -> tuple[tuple[Any, ...], ...]:
+    return tuple(tuple(values[index : index + size]) for index in range(0, len(values), size))

@@ -15,7 +15,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
 from .canonical import canonical_json
@@ -137,6 +137,25 @@ class Stage1Result:
 AdapterFactory = Callable[[VenueDescriptor], VenueAdapter]
 
 
+@dataclass(frozen=True, slots=True)
+class Stage1HydrationResult:
+    """Field-enriched entries plus an independent enrichment audit trail."""
+
+    entries: tuple[SourceEntry, ...]
+    response_hashes: tuple[str, ...] = ()
+    request_hashes: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+class Stage1FieldHydrator(Protocol):
+    def hydrate(
+        self,
+        descriptor: VenueDescriptor,
+        year: int,
+        entries: Sequence[SourceEntry],
+    ) -> Stage1HydrationResult: ...
+
+
 @dataclass(slots=True)
 class CensusCapturingAdapter:
     """Attach transport-native census data without changing provider ABI.
@@ -180,6 +199,7 @@ def collect_stage1_metadata(
     adapter_factory: AdapterFactory,
     catalog: ManifestCatalog | None = None,
     run_id: str | None = None,
+    field_hydrator: Stage1FieldHydrator | None = None,
 ) -> Stage1Result:
     """Collect every requested venue/year and return deterministic metadata.
 
@@ -219,6 +239,7 @@ def collect_stage1_metadata(
                 resolved_catalog,
                 adapter_factory,
                 resolved_run_id,
+                field_hydrator,
             ): (venue_id, year)
             for venue_id, year in jobs
         }
@@ -328,6 +349,7 @@ def _collect_unit(
     catalog: ManifestCatalog,
     adapter_factory: AdapterFactory,
     run_id: str,
+    field_hydrator: Stage1FieldHydrator | None,
 ) -> tuple[tuple[Mapping[str, Any], ...], Stage1UnitReceipt]:
     venue = catalog.venue(venue_id)
     held_years = venue.get("provider_params", {}).get("held_years", [])
@@ -450,6 +472,58 @@ def _collect_unit(
         reasons.append(f"primary parser rejected {parser_rejected} record(s)")
     if duplicates:
         reasons.append(f"duplicate official external IDs: {', '.join(duplicates)}")
+
+    hydration_response_hashes: tuple[str, ...] = ()
+    hydration_request_hashes: tuple[str, ...] = ()
+    hydration_warnings: tuple[str, ...] = ()
+    enrichment_name = descriptor.parameters.get("field_enrichment")
+    enrichment_required = bool(descriptor.parameters.get("field_enrichment_required"))
+    primary_proven = not reasons
+    if field_hydrator is not None and enrichment_name and unique and primary_proven:
+        try:
+            hydration = field_hydrator.hydrate(
+                descriptor,
+                year,
+                tuple(unique.values()),
+            )
+            hydrated_by_id = {entry.external_id: entry for entry in hydration.entries}
+            if set(hydrated_by_id) != set(unique):
+                missing = sorted(set(unique) - set(hydrated_by_id))
+                extra = sorted(set(hydrated_by_id) - set(unique))
+                raise ValueError(
+                    "hydrator changed the membership set: "
+                    f"missing={missing[:3]}, extra={extra[:3]}"
+                )
+            unique = hydrated_by_id
+            hydration_response_hashes = hydration.response_hashes
+            hydration_request_hashes = hydration.request_hashes
+            hydration_warnings = hydration.warnings
+        except Exception as error:
+            hydration_warnings = (
+                f"{enrichment_name}: {type(error).__name__}: {error}",
+            )
+            unique = {
+                external_id: _mark_enrichment_failed(entry, str(enrichment_name))
+                for external_id, entry in unique.items()
+            }
+            if enrichment_required:
+                reasons.append(f"required field enrichment {enrichment_name} failed")
+    if enrichment_required and enrichment_name and primary_proven:
+        unresolved = [
+            entry.external_id
+            for entry in unique.values()
+            if entry.abstract in (None, "")
+            or entry.pdf_url in (None, "")
+            or (
+                entry.doi in (None, "")
+                and dict(entry.metadata.get("field_status_overrides") or {}).get("doi")
+                != "legitimately_absent"
+            )
+        ]
+        if unresolved:
+            reasons.append(
+                f"required field enrichment left {len(unresolved)} unresolved record(s)"
+            )
     terminal = bool(batches) and batches[-1].next_cursor is None
     if not terminal:
         reasons.append("terminal cursor was not reached")
@@ -458,7 +532,7 @@ def _collect_unit(
         for batch in batches
         for value in (batch.raw_response_artifact_hash,)
         if value
-    )
+    ) + hydration_response_hashes
     if any(not batch.raw_response_artifact_hash for batch in batches):
         reasons.append("one or more response artifact hashes are missing")
     request_hashes = tuple(
@@ -466,13 +540,16 @@ def _collect_unit(
         for batch in batches
         for item in batch.request_audit
         if item.get("response_sha256")
-    )
+    ) + hydration_request_hashes
     field_coverage = {
         field: sum(_field_present(entry, field) for entry in unique.values())
         for field in _OUTPUT_FIELDS
     }
     provider_warnings = tuple(
-        dict.fromkeys(warning for batch in batches for warning in batch.warnings)
+        dict.fromkeys(
+            [warning for batch in batches for warning in batch.warnings]
+            + list(hydration_warnings)
+        )
     )
     records = tuple(
         _record_document(entry, venue, venue_id, year, batches)
@@ -550,12 +627,44 @@ def _record_document(
         },
         "source_metadata": metadata,
     }
+    overrides = metadata.get("field_status_overrides")
+    overrides = overrides if isinstance(overrides, Mapping) else {}
+    allowed_statuses = {
+        "present",
+        "legitimately_absent",
+        "unavailable_at_primary",
+        "enrichment_failed",
+    }
     for field in _OUTPUT_FIELDS:
         value = values.get(field)
-        values["field_status"][field] = "present" if value not in (None, "", [], ()) else "unavailable_at_primary"
+        if value not in (None, "", [], ()):
+            values["field_status"][field] = "present"
+        else:
+            override = str(overrides.get(field) or "")
+            values["field_status"][field] = (
+                override if override in allowed_statuses else "unavailable_at_primary"
+            )
+    field_provenance = metadata.get("field_provenance")
+    if isinstance(field_provenance, Mapping):
+        values["provenance"]["fields"] = dict(field_provenance)
     if values["year"] is None:
         values["year"] = year
     return values
+
+
+def _mark_enrichment_failed(entry: SourceEntry, enricher: str) -> SourceEntry:
+    overrides = dict(entry.metadata.get("field_status_overrides") or {})
+    for field in ("abstract", "doi", "pdf_url"):
+        if getattr(entry, field) in (None, "") and field not in overrides:
+            overrides[field] = "enrichment_failed"
+    return replace(
+        entry,
+        metadata={
+            **entry.metadata,
+            "field_status_overrides": overrides,
+            "field_enrichment_error_provider": enricher,
+        },
+    )
 
 
 def _consistent_integer(

@@ -3,5 +3,9 @@ venue_id: aaai
 name: AAAI Conference on Artificial Intelligence
 venue_type: conference
 primary_provider: aaai_ojs
-provider_params: {journal: AAAI, traverse_all_issues: true}
+provider_params:
+  journal: AAAI
+  traverse_all_issues: true
+  field_enrichment: aaai_oai
+  field_enrichment_required: true
 official_url: https://aaai.org/conference/aaai/
