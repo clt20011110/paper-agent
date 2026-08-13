@@ -37,6 +37,12 @@ exact manifest URL explicitly when your use is authorized:
 paper-agent stage1 collect ... \
   --accept-terms eda_proceedings:dac_program=https://www.dac.com/ \
   --accept-terms eda_proceedings:acm_dl=https://www.acm.org/publications/policies/terms-of-use
+
+# Nature article-page metadata is also terms-gated:
+paper-agent stage1 collect \
+  --venue nature_biotechnology --year-from 2024 --year-to 2024 \
+  --accept-terms nature_articles=https://www.nature.com/info/tandc.html \
+  --contact operator@example.org --output build/stage1/nbt-2024.jsonl
 ```
 
 The provider key and URL must exactly match the installed manifest; the flag
@@ -77,7 +83,11 @@ non-empty. Each venue-year receipt records pagination termination, the source
 census, parser raw/rejected/explicitly-excluded counts, stable-ID duplicates,
 field coverage, and
 response hashes. Missing abstracts or DOIs remain null with an explicit field
-status; they are never synthesized.
+status and field-level provenance; they are never synthesized. For example,
+Nature publisher document types such as corrections, news, and podcasts can be
+marked `legitimately_absent/not_applicable_to_document_type` when the descriptor
+contains an explicit allow-list; an unclassified missing abstract remains
+`unavailable_at_primary` and blocks strict publication.
 
 Metadata enrichment failures do not invalidate a membership census when the
 declared official container itself supplies a reconciled paper count. They are

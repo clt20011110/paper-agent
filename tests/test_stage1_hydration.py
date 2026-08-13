@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+from http.client import IncompleteRead
 from io import BytesIO
 import tarfile
 
@@ -10,6 +11,7 @@ from paper_agent.stage1_hydration import (
     _legacy_virtual_poster,
     _ijcai_detail,
     _pmlr_frontmatter_snapshot,
+    _pmlr_detail,
     _neurips_export_records,
     _neurips_detail_abstract,
     _neurips_crossref_page,
@@ -21,6 +23,7 @@ from paper_agent.stage1_hydration import (
     _cvf_detail,
     _cvf_virtual_records,
     _eda_semantic_scholar_batch,
+    _openalex_abstract,
     _eda_publisher_pdf_url,
     _europe_pmc_doi_records,
     _journal_publisher_pdf_url,
@@ -75,11 +78,49 @@ def test_eda_semantic_scholar_batch_joins_abstract_and_oa_pdf_by_doi() -> None:
         "10.1145/123.456": {
             "abstract": "Officially indexed abstract.",
             "pdf_url": "https://arxiv.org/pdf/1234.5678",
+            "abstract_source": "semantic_scholar:doi_batch.abstract",
         }
     }
     assert _eda_publisher_pdf_url("10.1145/123.456") == (
         "https://dl.acm.org/doi/pdf/10.1145/123.456"
     )
+
+
+def test_openalex_abstract_reconstructs_inverted_index() -> None:
+    assert _openalex_abstract({"official": [2], "Exact": [0], "abstract": [1]}) == (
+        "Exact abstract official"
+    )
+
+
+def test_openalex_title_fallback_requires_exact_doi_and_title() -> None:
+    class Transport:
+        def fetch_metadata(self, provider, url, **kwargs):
+            assert provider == "openalex"
+            return type(
+                "Response",
+                (),
+                {
+                    "body": b'''{"results":[
+                      {"doi":"https://doi.org/10.1145/123.456",
+                       "title":"Auditable Molecular Generation",
+                       "abstract_inverted_index":{"official":[2],"Exact":[0],"abstract":[1]}},
+                      {"doi":"https://doi.org/10.1145/other",
+                       "title":"Auditable Molecular Generation",
+                       "abstract_inverted_index":{"wrong":[0]}}
+                    ]}'''
+                },
+            )()
+
+    entry = SourceEntry("dblp_toc", "conf/dac/Auditable24", "Auditable Molecular Generation", doi="10.1145/123.456")
+    entry_result, record, body_hash, error = OfficialStage1FieldHydrator(Transport())._openalex_title_record_safe(entry)
+
+    assert entry_result is entry
+    assert record == {
+        "abstract": "Exact abstract official",
+        "abstract_source": "openalex:works.search.abstract_inverted_index",
+    }
+    assert body_hash
+    assert error is None
 
 
 def test_europe_pmc_doi_batch_extracts_abstract_and_open_pdf() -> None:
@@ -234,6 +275,65 @@ pdf: https://raw.githubusercontent.com/mlresearch/v235/main/assets/audit24a/audi
             "pdf": "https://raw.githubusercontent.com/mlresearch/v235/main/assets/audit24a/audit24a.pdf",
         }
     }
+
+
+def test_pmlr_detail_extracts_official_abstract() -> None:
+    assert _pmlr_detail(
+        b'''<div id="abstract">An <em>official</em> &amp; complete abstract.</div>'''
+    ) == {
+        "abstract": "An official & complete abstract.",
+        "abstract_source": "pmlr_official_detail:abstract",
+    }
+
+
+def test_pmlr_detail_fallback_preserves_primary_pdf_after_bulk_failure() -> None:
+    class Transport:
+        def fetch_metadata(self, provider, url, **kwargs):
+            if "codeload.github.com" in url:
+                raise IncompleteRead(b"partial", 100)
+            return type(
+                "Response",
+                (),
+                {"body": b'<div id="abstract">Detail abstract.</div>'},
+            )()
+
+    entry = SourceEntry(
+        "pmlr",
+        "v235/audit24a",
+        "Auditable Metadata",
+        landing_url="https://proceedings.mlr.press/v235/audit24a.html",
+        pdf_url="https://proceedings.mlr.press/v235/audit24a/audit24a.pdf",
+    )
+    result = OfficialStage1FieldHydrator(Transport())._pmlr((entry,))
+
+    assert result.entries[0].abstract == "Detail abstract."
+    assert result.entries[0].pdf_url == entry.pdf_url
+    assert result.warnings
+
+
+def test_pmlr_detail_fallback_can_skip_large_bulk_snapshot() -> None:
+    class Transport:
+        def fetch_metadata(self, provider, url, **kwargs):
+            assert "codeload.github.com" not in url
+            return type(
+                "Response",
+                (),
+                {"body": b'<div id="abstract">Detail abstract.</div>'},
+            )()
+
+    entry = SourceEntry(
+        "pmlr",
+        "v238/audit24a",
+        "Auditable Metadata",
+        landing_url="https://proceedings.mlr.press/v238/audit24a.html",
+        pdf_url="https://proceedings.mlr.press/v238/audit24a/audit24a.pdf",
+    )
+    result = OfficialStage1FieldHydrator(Transport())._pmlr(
+        (entry,), skip_bulk_snapshot=True
+    )
+
+    assert result.entries[0].abstract == "Detail abstract."
+    assert result.entries[0].pdf_url == entry.pdf_url
 
 
 def test_neurips_export_keeps_duplicate_titles_for_ambiguous_join_detection() -> None:

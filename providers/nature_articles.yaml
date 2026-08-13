@@ -3,7 +3,7 @@ provider: nature_articles
 distribution: paper-agent
 version: 2.0.0a0
 entry_point: paper_agent.stage1_hydration:OfficialStage1FieldHydrator
-artifact_sha256: 05bc882009e76a503c40daa38597c28085b750497f59b11c532d67b7dc37b539
+artifact_sha256: 8cc0925172550bf2f29dbe07b0485096a2fb85d03a7233d371c8c3b843a25fa0
 enabled: true
 builtin: true
 authority: official

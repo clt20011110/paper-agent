@@ -153,6 +153,11 @@ class ProviderRuntime:
     provider-global within the process rather than worker-local.
     """
 
+    # A provider can advertise an hours-long Retry-After window when a public
+    # quota is exhausted.  A batch metadata run must fail fast and leave the
+    # item resumable instead of parking every worker for that entire window.
+    _MAX_RETRY_AFTER_SECONDS = 30.0
+
     def __init__(
         self,
         policies: Mapping[str, ProviderRuntimePolicy],
@@ -324,6 +329,11 @@ class ProviderRuntime:
                 return send()
             except RetryableProviderError as error:
                 if attempt + 1 == policy.retry_attempts:
+                    raise
+                if (
+                    error.retry_after is not None
+                    and error.retry_after > self._MAX_RETRY_AFTER_SECONDS
+                ):
                     raise
                 self._sleeper(self._retry_delay(error, attempt, policy))
         raise AssertionError("retry loop always returns or raises")

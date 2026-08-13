@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from hashlib import sha256
 from html import unescape
+from http.client import IncompleteRead
 from io import BytesIO
 import json
 import re
@@ -24,7 +25,7 @@ from xml.etree import ElementTree
 import yaml
 
 from .domain import SourceEntry
-from .provider_runtime import ProviderRequestError
+from .provider_runtime import CircuitOpenError, ProviderPolicyDenied, ProviderRequestError
 from .providers.api import VenueDescriptor
 from .stage1 import Stage1HydrationResult
 
@@ -61,7 +62,12 @@ class OfficialStage1FieldHydrator:
         if name == "ijcai_official":
             return self._ijcai(year, entries)
         if name == "pmlr_official_snapshot":
-            return self._pmlr(entries)
+            return self._pmlr(
+                entries,
+                skip_bulk_snapshot=bool(
+                    descriptor.parameters.get("pmlr_detail_fallback_only")
+                ),
+            )
         if name == "neurips_official_export":
             return self._neurips(year, entries)
         if name == "jmlr_official_rss":
@@ -91,7 +97,17 @@ class OfficialStage1FieldHydrator:
                 "abstract_legitimately_absent_document_types", ()
             )
         }
-        records, hashes = self._europe_pmc_doi_batches(entries)
+        warnings: list[str] = []
+        europe_entries = tuple(
+            entry
+            for entry in entries
+            if (
+                not entry.abstract
+                and not _matches_any(entry.title, optional_patterns)
+            )
+            or not entry.pdf_url
+        )
+        records, hashes = self._europe_pmc_doi_batches(europe_entries, warnings)
         unresolved = tuple(
             entry
             for entry in entries
@@ -101,7 +117,6 @@ class OfficialStage1FieldHydrator:
                 (records.get(str(entry.doi or "").casefold()) or {}).get("abstract")
             )
         )
-        warnings: list[str] = []
         if unresolved:
             try:
                 fallback, fallback_hashes = self._semantic_scholar_doi_batches(
@@ -242,26 +257,36 @@ class OfficialStage1FieldHydrator:
         )
 
     def _europe_pmc_doi_batches(
-        self, entries: Sequence[SourceEntry]
+        self,
+        entries: Sequence[SourceEntry],
+        warnings: list[str] | None = None,
     ) -> tuple[dict[str, Mapping[str, Any]], list[str]]:
         output: dict[str, Mapping[str, Any]] = {}
         hashes: list[str] = []
         for page_number, chunk in enumerate(_chunks(tuple(entry for entry in entries if entry.doi), 100)):
             query = " OR ".join(f'DOI:"{entry.doi}"' for entry in chunk)
-            response = self.transport.fetch_metadata(
-                "europe_pmc",
-                "https://www.ebi.ac.uk/europepmc/webservices/rest/search?"
-                + urlencode(
-                    {
-                        "query": query,
-                        "format": "json",
-                        "resultType": "core",
-                        "pageSize": len(chunk),
-                    }
-                ),
-                api_version="europe-pmc-journal-doi-batch-v1",
-                request_key=f"page:{page_number}:{sha256(query.encode()).hexdigest()[:16]}",
-            )
+            try:
+                response = self.transport.fetch_metadata(
+                    "europe_pmc",
+                    "https://www.ebi.ac.uk/europepmc/webservices/rest/search?"
+                    + urlencode(
+                        {
+                            "query": query,
+                            "format": "json",
+                            "resultType": "core",
+                            "pageSize": len(chunk),
+                        }
+                    ),
+                    api_version="europe-pmc-journal-doi-batch-v1",
+                    request_key=f"page:{page_number}:{sha256(query.encode()).hexdigest()[:16]}",
+                )
+            except ProviderRequestError as error:
+                if warnings is None:
+                    raise
+                warnings.append(
+                    f"Europe PMC batch {page_number} unavailable: {error}"
+                )
+                continue
             hashes.append(sha256(response.body).hexdigest())
             output.update(_europe_pmc_doi_records(response.body))
         return output, hashes
@@ -291,7 +316,14 @@ class OfficialStage1FieldHydrator:
         return records, hashes
 
     def _eda(self, entries: Sequence[SourceEntry]) -> Stage1HydrationResult:
-        records, hashes = self._semantic_scholar_doi_batches(entries, "eda")
+        records: dict[str, Mapping[str, Any]] = {}
+        hashes: list[str] = []
+        warnings: list[str] = []
+        try:
+            records, s2_hashes = self._semantic_scholar_doi_batches(entries, "eda")
+            hashes.extend(s2_hashes)
+        except ProviderRequestError as error:
+            warnings.append(f"Semantic Scholar fallback unavailable: {error}")
 
         missing_abstract_entries = tuple(
             entry
@@ -299,17 +331,41 @@ class OfficialStage1FieldHydrator:
             if not _clean((records.get(str(entry.doi or "").casefold()) or {}).get("abstract"))
         )
         if missing_abstract_entries:
-            arxiv_records, arxiv_hashes = self._arxiv_title_fallback(
-                missing_abstract_entries, "eda"
-            )
-            hashes.extend(arxiv_hashes)
-            for external_id, record in arxiv_records.items():
-                entry = next(
-                    value for value in missing_abstract_entries
-                    if value.external_id == external_id
+            try:
+                openalex_records, openalex_hashes = self._openalex_title_fallback(
+                    missing_abstract_entries, "eda"
                 )
-                doi = str(entry.doi or "").casefold()
-                records[doi] = {**records.get(doi, {}), **record}
+                hashes.extend(openalex_hashes)
+                for external_id, record in openalex_records.items():
+                    entry = next(
+                        value for value in missing_abstract_entries
+                        if value.external_id == external_id
+                    )
+                    doi = str(entry.doi or "").casefold()
+                    records[doi] = {**records.get(doi, {}), **record}
+            except ProviderRequestError as error:
+                warnings.append(f"OpenAlex fallback unavailable: {error}")
+
+        missing_abstract_entries = tuple(
+            entry
+            for entry in entries
+            if not _clean((records.get(str(entry.doi or "").casefold()) or {}).get("abstract"))
+        )
+        if missing_abstract_entries:
+            try:
+                arxiv_records, arxiv_hashes = self._arxiv_title_fallback(
+                    missing_abstract_entries, "eda"
+                )
+                hashes.extend(arxiv_hashes)
+                for external_id, record in arxiv_records.items():
+                    entry = next(
+                        value for value in missing_abstract_entries
+                        if value.external_id == external_id
+                    )
+                    doi = str(entry.doi or "").casefold()
+                    records[doi] = {**records.get(doi, {}), **record}
+            except ProviderRequestError as error:
+                warnings.append(f"arXiv fallback unavailable: {error}")
 
         hydrated: list[SourceEntry] = []
         missing: list[str] = []
@@ -324,11 +380,15 @@ class OfficialStage1FieldHydrator:
             provenance = dict(entry.metadata.get("field_provenance") or {})
             if abstract:
                 provenance["abstract"] = (
-                    "arxiv_atom:title_matched_summary"
-                    if record and str(record.get("pdf_url") or "").startswith(
-                        "https://arxiv.org/pdf/"
+                    str(record.get("abstract_source"))
+                    if record and record.get("abstract_source")
+                    else (
+                        "arxiv_atom:title_matched_summary"
+                        if record and str(record.get("pdf_url") or "").startswith(
+                            "https://arxiv.org/pdf/"
+                        )
+                        else "semantic_scholar:doi_batch.abstract"
                     )
-                    else "semantic_scholar:doi_batch.abstract"
                 )
             if pdf_url:
                 provenance["pdf_url"] = (
@@ -346,15 +406,99 @@ class OfficialStage1FieldHydrator:
                     metadata={**entry.metadata, "field_provenance": provenance},
                 )
             )
-        warnings = (
-            (
+        if missing:
+            warnings.append(
                 f"EDA DOI batch lacks abstract/PDF for {len(missing)} census record(s): "
                 f"{', '.join(missing[:3])}"
-            ),
-        ) if missing else ()
+            )
         return Stage1HydrationResult(
-            tuple(hydrated), tuple(hashes), tuple(hashes), warnings
+            tuple(hydrated), tuple(hashes), tuple(hashes), tuple(warnings)
         )
+
+    def _openalex_title_fallback(
+        self, entries: Sequence[SourceEntry], scope: str
+    ) -> tuple[dict[str, Mapping[str, str | None]], tuple[str, ...]]:
+        records: dict[str, Mapping[str, str | None]] = {}
+        hashes: list[str] = []
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = tuple(
+                executor.map(
+                    self._openalex_title_record_safe,
+                    tuple(entries),
+                )
+            )
+        errors: list[str] = []
+        for entry, record, body_hash, error in results:
+            if body_hash:
+                hashes.append(body_hash)
+            if record is not None:
+                records[entry.external_id] = record
+            if error:
+                errors.append(error)
+        if errors and not records:
+            raise ProviderRequestError(
+                f"{scope} OpenAlex title fallback failed: {errors[0]}"
+            )
+        return records, tuple(hashes)
+
+    def _openalex_title_record_safe(
+        self, entry: SourceEntry
+    ) -> tuple[SourceEntry, Mapping[str, str | None] | None, str | None, str | None]:
+        doi = _normalize_doi(entry.doi)
+        if not doi:
+            return entry, None, None, None
+        try:
+            response = self.transport.fetch_metadata(
+                "openalex",
+                "https://api.openalex.org/works?"
+                + urlencode(
+                    {
+                        "search": entry.title,
+                        "per-page": 25,
+                        "select": "doi,title,abstract_inverted_index",
+                    }
+                ),
+                api_version="openalex-eda-title-fallback-v1",
+                request_key=entry.external_id,
+            )
+            payload = json.loads(response.body)
+            results = payload.get("results") if isinstance(payload, Mapping) else None
+            match = next(
+                (
+                    value
+                    for value in results
+                    if isinstance(value, Mapping)
+                    and _normalize_doi(value.get("doi")) == doi
+                    and _normalize_title(str(value.get("title") or ""))
+                    == _normalize_title(entry.title)
+                ),
+                None,
+            ) if isinstance(results, list) else None
+            record = (
+                {
+                    "abstract": _openalex_abstract(
+                        match.get("abstract_inverted_index")
+                    ),
+                    "abstract_source": "openalex:works.search.abstract_inverted_index",
+                }
+                if match is not None
+                else None
+            )
+            return (
+                entry,
+                record if record and record.get("abstract") else None,
+                sha256(response.body).hexdigest(),
+                None,
+            )
+        except (
+            CircuitOpenError,
+            ProviderPolicyDenied,
+            ProviderRequestError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            return entry, None, None, f"OpenAlex title fallback for {entry.external_id}: {error}"
 
     def _arxiv_title_fallback(
         self, entries: Sequence[SourceEntry], scope: str
@@ -867,7 +1011,12 @@ class OfficialStage1FieldHydrator:
                 output[title] = doi
         return output, tuple(hashes)
 
-    def _pmlr(self, entries: Sequence[SourceEntry]) -> Stage1HydrationResult:
+    def _pmlr(
+        self,
+        entries: Sequence[SourceEntry],
+        *,
+        skip_bulk_snapshot: bool = False,
+    ) -> Stage1HydrationResult:
         volumes = {
             entry.external_id.split("/", 1)[0]
             for entry in entries
@@ -875,36 +1024,71 @@ class OfficialStage1FieldHydrator:
         }
         records: dict[str, Mapping[str, Any]] = {}
         hashes: list[str] = []
+        warnings: list[str] = []
         for volume in sorted(volumes):
-            response = self.transport.fetch_metadata(
-                "pmlr",
-                f"https://codeload.github.com/mlresearch/{volume}/tar.gz/refs/heads/gh-pages",
-                api_version="pmlr-official-github-frontmatter-v1",
-                request_key=volume,
-            )
-            hashes.append(sha256(response.body).hexdigest())
-            records.update(_pmlr_frontmatter_snapshot(response.body, volume))
+            if skip_bulk_snapshot:
+                warnings.append(
+                    f"PMLR {volume} bulk snapshot skipped by descriptor detail fallback policy"
+                )
+                continue
+            try:
+                response = self.transport.fetch_metadata(
+                    "pmlr",
+                    f"https://codeload.github.com/mlresearch/{volume}/tar.gz/refs/heads/gh-pages",
+                    api_version="pmlr-official-github-frontmatter-v1",
+                    request_key=volume,
+                )
+                hashes.append(sha256(response.body).hexdigest())
+                records.update(_pmlr_frontmatter_snapshot(response.body, volume))
+            except (ProviderRequestError, IncompleteRead, OSError, TimeoutError) as error:
+                warnings.append(f"PMLR {volume} bulk snapshot unavailable: {error}")
+
+        detail_entries = tuple(
+            entry
+            for entry in entries
+            if not _clean((records.get(entry.external_id) or {}).get("abstract"))
+            and entry.landing_url
+        )
+        if detail_entries:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                detail_results = tuple(
+                    executor.map(self._pmlr_detail_record_safe, detail_entries)
+                )
+            for entry, record, body_hash, error in detail_results:
+                if body_hash:
+                    hashes.append(body_hash)
+                if record:
+                    records[entry.external_id] = record
+                if error:
+                    warnings.append(error)
 
         hydrated: list[SourceEntry] = []
         missing: list[str] = []
         for entry in entries:
             record = records.get(entry.external_id)
             abstract = _clean(record.get("abstract")) if record else entry.abstract
-            pdf_url = _clean(record.get("pdf")) if record else entry.pdf_url
+            pdf_url = (
+                (_clean(record.get("pdf")) if record else None)
+                or entry.pdf_url
+            )
             if not abstract or not pdf_url:
                 missing.append(entry.external_id)
             provenance = dict(entry.metadata.get("field_provenance") or {})
             if abstract:
                 provenance["abstract"] = (
-                    "pmlr_official_github:frontmatter.abstract"
-                    if record
-                    else "pmlr_primary:legacy_abstract"
+                    str(record.get("abstract_source"))
+                    if record and record.get("abstract_source")
+                    else (
+                        "pmlr_official_github:frontmatter.abstract"
+                        if record
+                        else "pmlr_primary:legacy_abstract"
+                    )
                 )
             provenance["doi"] = "pmlr_frontmatter:not_assigned_by_venue"
             if pdf_url:
                 provenance["pdf_url"] = (
                     "pmlr_official_github:frontmatter.pdf"
-                    if record
+                    if record and record.get("pdf")
                     else "pmlr_primary:official_pdf"
                 )
             overrides = dict(entry.metadata.get("field_status_overrides") or {})
@@ -923,11 +1107,37 @@ class OfficialStage1FieldHydrator:
                 )
             )
         if missing:
-            raise ProviderRequestError(
-                f"PMLR official snapshot lacks abstract/PDF for {len(missing)} "
+            warnings.append(
+                f"PMLR official sources lack abstract/PDF for {len(missing)} "
                 f"census record(s): {', '.join(missing[:3])}"
             )
-        return Stage1HydrationResult(tuple(hydrated), tuple(hashes), tuple(hashes))
+        return Stage1HydrationResult(
+            tuple(hydrated), tuple(hashes), tuple(hashes), tuple(warnings)
+        )
+
+    def _pmlr_detail_record_safe(
+        self, entry: SourceEntry
+    ) -> tuple[SourceEntry, Mapping[str, str | None] | None, str | None, str | None]:
+        try:
+            response = self.transport.fetch_metadata(
+                "pmlr",
+                str(entry.landing_url),
+                api_version="pmlr-official-paper-detail-v1",
+                request_key=entry.external_id,
+            )
+            return (
+                entry,
+                _pmlr_detail(response.body),
+                sha256(response.body).hexdigest(),
+                None,
+            )
+        except (ProviderRequestError, IncompleteRead, OSError, TimeoutError) as error:
+            return (
+                entry,
+                None,
+                None,
+                f"PMLR detail unavailable for {entry.external_id}: {error}",
+            )
 
     def _ijcai(
         self, year: int, entries: Sequence[SourceEntry]
@@ -1529,6 +1739,25 @@ def _pmlr_frontmatter_snapshot(
     if not output:
         raise ProviderRequestError("PMLR official snapshot contained no frontmatter records")
     return output
+
+
+def _pmlr_detail(body: bytes) -> Mapping[str, str | None]:
+    text = body.decode("utf-8", errors="replace")
+    abstract = re.search(
+        r'<div\s+id=["\']abstract["\'][^>]*>(.*?)</div>',
+        text,
+        re.I | re.S,
+    )
+    return {
+        "abstract": (
+            _clean(
+                unescape(re.sub(r"<[^>]+>", " ", abstract.group(1)))
+            )
+            if abstract is not None
+            else None
+        ),
+        "abstract_source": "pmlr_official_detail:abstract" if abstract else None,
+    }
 
 
 def _jmlr_rss_records(body: bytes) -> dict[str, Mapping[str, str | None]]:
@@ -2152,8 +2381,36 @@ def _eda_semantic_scholar_batch(body: bytes) -> dict[str, Mapping[str, str | Non
             output[doi.casefold()] = {
                 "abstract": _clean(record.get("abstract")),
                 "pdf_url": pdf_url,
+                "abstract_source": (
+                    "semantic_scholar:doi_batch.abstract"
+                    if _clean(record.get("abstract"))
+                    else None
+                ),
             }
     return output
+
+
+def _openalex_abstract(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    words: list[tuple[int, str]] = []
+    for word, positions in value.items():
+        if not isinstance(positions, list):
+            continue
+        for position in positions:
+            try:
+                words.append((int(position), str(word)))
+            except (TypeError, ValueError):
+                continue
+    return _clean(" ".join(word for _, word in sorted(words)))
+
+
+def _normalize_doi(value: Any) -> str | None:
+    text = _clean(value)
+    if not text:
+        return None
+    text = re.sub(r"^https?://doi\.org/", "", text, flags=re.I)
+    return text.casefold()
 
 
 def _europe_pmc_doi_records(body: bytes) -> dict[str, Mapping[str, str | None]]:

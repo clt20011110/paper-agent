@@ -8,6 +8,7 @@ provider_params:
   volume_resolution: official_link
   field_enrichment: pmlr_official_snapshot
   field_enrichment_required: true
+  pmlr_detail_fallback_only: true
 official_url: https://aistats.org/
 proceedings_url: https://proceedings.mlr.press/
 date_range: {start: 2016-01-01, end: 2025-12-31}

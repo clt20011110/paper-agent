@@ -9,7 +9,7 @@ builtin: true
 authority: scholarly_graph
 roles: [search, citation, metadata_enricher, metadata_verifier, oa_resolver]
 capabilities: [stable_id, metadata, abstract, date_filter, references, citations, oa_locations, bulk_snapshot]
-authentication: {required: true, credential_envs: {api_key: OPENALEX_API_KEY}}
+authentication: {required: false, credential_envs: {api_key: OPENALEX_API_KEY}}
 rate_limit: {global_qps: 5, max_concurrency: 4, cache_ttl_seconds: 3600}
 terms: {data_use: permitted, url: https://developers.openalex.org/}
 independence_group: openalex

@@ -3,5 +3,21 @@ venue_id: nature_biotechnology
 name: Nature Biotechnology
 venue_type: journal
 primary_provider: crossref_serial
-provider_params: {journal_slug: nbt, registry_issn: 1087-0156, issns: [1087-0156, 1546-1696], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true, publisher_abstract_source: nature_article_html}
+provider_params:
+  journal_slug: nbt
+  registry_issn: 1087-0156
+  issns: [1087-0156, 1546-1696]
+  article_types: [journal-article]
+  field_enrichment: crossref_scholarly_graph
+  field_enrichment_required: true
+  publisher_abstract_source: nature_article_html
+  abstract_legitimately_absent_document_types:
+    - News in Brief
+    - Research Highlight
+    - Author Correction
+    - Correspondence
+    - Podcast
+    - News
+    - Publisher Correction
+    - Data Page
 official_url: https://www.nature.com/nbt/

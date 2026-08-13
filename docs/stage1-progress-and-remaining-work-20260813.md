@@ -1,6 +1,6 @@
 # Stage 1 当前进展与剩余工作
 
-更新日期：2026-08-13  
+更新日期：2026-08-14  
 范围：独立 Stage 1 接口、2016–2025 venue membership census、标题/作者/摘要/DOI/PDF URL 等字段补全。  
 不在本文范围：PDF 实际下载与授权（Stage 3）、论文语义筛选（Stage 2）、Luna/Sol 分析与综述（Stage 4/4b）。
 
@@ -14,7 +14,7 @@ Stage 1 的“收录论文集合是否完整”与“每条论文的字段是否
 | 独立接口 | 已完成 | 可输入一个或多个 venue 和年份范围，输出 JSONL metadata 与审计 receipt；无需进入 Stage 2–4 |
 | 可扩展 provider/descriptor 架构 | 已完成 | 新增同平台 venue 主要通过 YAML descriptor；官方来源、注册表和补全来源按角色解耦 |
 | 基础字段输出 | 已完成 | 标题、作者、日期、venue、landing URL、DOI、PDF URL、摘要及逐字段状态/provenance 均有统一结构 |
-| 全部 venue × 2016–2025 字段全覆盖 | 未完成 | 已完成若干代表年份的严格验证，但不能据此宣称全部 35 个 venue 的十年摘要/DOI/PDF 均已补齐 |
+| 全部 venue × 2016–2025 字段全覆盖 | 未完成 | membership 已闭合；字段矩阵仍有 ICLR 2017、ICCAD 2024、Science 2024 及尚未留证的期刊年份缺口 |
 
 核心原则保持不变：找不到的字段不伪造；确实不存在的 DOI/摘要以 `legitimately_absent` 加证据表达；辅助 enrichment 失败不得改变 primary membership 集合。
 
@@ -101,11 +101,17 @@ result = collect_stage1_metadata(
 | COLING/LREC-COLING 2024 | 1,567 | 1,567 | 1,567 未注册 | 1,567 | complete |
 | CVPR 2024 | 2,716 | 2,716 | 2,715 + 1 未注册 | 2,716 | complete |
 | ICCV 2025 | 2,701 | 2,701 | 2,700 + 1 未注册 | 2,701 | complete |
-| DAC 2024 | 370 | 369，缺 1 | 370 | 370 | incomplete |
-| ICCAD 2024 | 239 | 234，缺 5 | 239 | 239 | incomplete |
+| DAC 2024 | 370 | 370 | 370 | 370 | complete；OpenAlex 精确 DOI/标题回填 1 条 |
+| ICCAD 2024 | 239 | 234 | 239 | 239 | incomplete；5 条受 ACM Cloudflare、Semantic Scholar 429、OpenAlex 配额影响 |
 | JCIM 2024 | 805 | 740 + 65 不适用 | 805 | 805 | complete |
 | Nature Machine Intelligence 2024 | 184 | 166 + 18 不适用 | 184 | 184 | complete |
-| Angewandte Chemie 2024 | 5,170 | 最佳实测 4,817 + 353 不适用 | 5,170 | 5,170 | 规则已验证；严格重跑因上游超时未完成 |
+| Angewandte Chemie 2024 | 5,170 | 4,817 + 353 不适用 | 5,170 | 5,170 | complete；Europe PMC 批次失败可恢复 |
+| COLT 2024 | 169 | 169 | 169 不分配 | 169 | complete |
+| CoRL 2024 | 264 | 264 | 264 不分配 | 264 | complete |
+| EMNLP 2024 | 1,447 | 1,447 | 1,447 | 1,447 | complete |
+| NAACL 2024 | 632 | 632 | 632 | 632 | complete |
+| UAI 2024 | 201 | 201 | 201 不分配 | 201 | complete |
+| AISTATS 2024 | 547 | 547 | 547 不分配 | 547 | recovery complete; bulk snapshot interrupted |
 | Science 2024 | 2,039 | 1,741，缺 298 | 2,039 | 2,039 | incomplete |
 
 “不分配/未注册/不适用”均保存为 null + `legitimately_absent`，不是填入虚构 DOI 或摘要。
@@ -115,7 +121,7 @@ result = collect_stage1_metadata(
 - AAAI：Crossref 年度批量 DOI join；OJS OAI-PMH 回填；极少数 OJS 无完整摘要时确定性解析官方 PDF 首页。
 - ICLR：现代年份使用官网年度 virtual JSON 批量摘要和 OpenReview PDF；DOI 按主办方实际不分配处理。2017 受无人值守 OpenReview challenge 影响，仍缺 28 个摘要。
 - IJCAI：2017+ 用 Crossref prefix 年度游标批量 join；2016 用官方 legacy 页面；PDF 为官网公开链接。
-- PMLR：每个 volume 使用单个官方 GitHub frontmatter 快照，适合大规模并行，不逐篇抓详情页。
+- PMLR：优先使用每个 volume 的官方 GitHub frontmatter 快照；若大压缩包发生 `IncompleteRead`，保留 primary 的官方 PDF/landing URL，并以受控并发逐篇读取官方详情页补摘要，不改变 membership。
 - NeurIPS：官网年度 JSON 批量摘要；2022+ 通过 Crossref 年度注册表补 DOI；历史不分配 DOI 的年份如实标记。
 - ACL family：pinned Anthology XML + 年度 `10.18653` 注册表；只对残余摘要读取官方 PDF 首页。
 - CVF：年度 Open Access 索引给 PDF；新年份用官网 virtual JSON 批量摘要；DBLP 年度快照 + Crossref 残余审计补 DOI。
@@ -135,16 +141,16 @@ result = collect_stage1_metadata(
 ### P0：关闭已知字段缺口
 
 1. ICLR 2017：补齐 28/198 个摘要，或取得可审计的官方“无摘要/不可用”证据。不得绕过 OpenReview challenge。
-2. DAC 2024：补齐 1 个摘要；ICCAD 2024：补齐 5 个摘要。
+2. ICCAD 2024：补齐 5 个摘要，或取得逐条可审计的官方“无摘要/不可用”证据；DAC 2024 已在 2026-08-14 receipt 中闭合。
 3. Science 2024：处理 298 个缺摘要记录。当前无人值守访问遇到 Cloudflare challenge；应优先寻找 AAAS 可批量使用的官方 metadata/export，而不是浏览器逐篇抓取或绕过挑战。
-4. Angewandte 2024：解决 Europe PMC 偶发 read timeout，完成一次严格、可重复的 complete receipt。建议增加批次级恢复/重试与部分结果持久化，而不是重复整年。
+4. Angewandte 2024：已通过批次级告警与恢复完成严格 receipt；后续将批次响应持久化，减少网络波动时的重复请求。
 
 ### P1：完成 35 个 venue 的代表年份字段矩阵
 
 以下 venue 已完成十年 membership，但尚无本文所需的代表年份严格字段验收记录，或尚未在统一验收表中留证：
 
-- 会议：AISTATS、COLT、CoRL、EMNLP、NAACL、UAI。它们复用 PMLR/ACL family，预计主要是验收工作，但仍需真实 strict receipt 证明。
-- 期刊：ACS Central Science、Cell、Chemical Science、JACS、JCTC、Nature Biomedical Engineering、Nature Biotechnology、Nature Catalysis、Nature Chemistry、Nature Communications、Nature Computational Science、Nature Synthesis、TCAD。
+- 会议：AISTATS、COLT、CoRL、EMNLP、NAACL、UAI 的 2024 代表年份均有真实 complete receipt；AISTATS 通过 descriptor 级 detail fallback 跳过约 1 GB bulk snapshot，547 篇逐篇官方详情摘要与 primary PDF URL 全部恢复。
+- 期刊：ACS Central Science、Cell、Chemical Science、JCTC、Nature Biomedical Engineering、Nature Catalysis、Nature Chemistry、Nature Communications、Nature Computational Science、Nature Synthesis、TCAD；JACS 2024 已有代表性 receipt，但仍有 172 条摘要缺口。
 
 每个 venue 至少选择一个高产年份做全量严格运行，并将记录数、摘要、DOI、PDF URL、legitimately absent 分类和 receipt hash 写入统一验收文档。
 
@@ -166,6 +172,7 @@ result = collect_stage1_metadata(
 3. 避免对已由 title/document type 证明摘要不适用的条目调用辅助 API。
 4. 对 publisher HTML fallback 设置 venue 级开关；仅在批量元数据不足时启用。
 5. 增加大年份并行 soak，验证 QPS、连接池、缓存和恢复行为，而不只验证功能正确性。
+6. 对超过 30 秒的 Retry-After 直接返回可恢复错误，避免公共配额耗尽时把整个批处理挂起数小时；短暂退避仍按 provider policy 执行。
 
 ### P4：文档与发布收尾
 
@@ -184,8 +191,8 @@ result = collect_stage1_metadata(
 
 ## 6. 建议执行顺序
 
-1. 修复 journal batch 的可恢复性，完成 Angewandte 2024 strict receipt。
-2. 关闭 DAC/ICCAD 共 6 个摘要缺口。
+1. 将 journal DOI batch 和 PMLR detail fallback 的成功响应持久化，减少重试成本。
+2. 在 OpenAlex 配额恢复或取得授权 Semantic Scholar/ACM 访问后关闭 ICCAD 5 个摘要缺口；DAC 已关闭。
 3. 为 Science 找可批量、可审计的官方 metadata 路径；找不到时保持 incomplete。
 4. 跑 6 个未留证会议的代表年份 strict matrix。
 5. 跑 13 个未留证期刊的代表年份 strict matrix。
@@ -197,4 +204,3 @@ result = collect_stage1_metadata(
 - 字段补全验收：`docs/acceptance/stage1-field-enrichment-20260813.md`
 - 独立接口说明：`docs/stage1-standalone.md`
 - 总体规格与验收清单：`task.md`
-

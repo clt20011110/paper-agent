@@ -135,6 +135,26 @@ def test_retry_after_is_honored_before_retry() -> None:
     assert current() == 3
 
 
+def test_extreme_retry_after_fails_fast_for_batch_safety() -> None:
+    current = Clock()
+    client = runtime(
+        ProviderRuntimePolicy("crossref", retry_attempts=2),
+        clock=current,
+    )
+
+    with pytest.raises(RetryableProviderError, match="limited"):
+        client.request(
+            "crossref",
+            query_hash="q",
+            cursor=None,
+            api_version="v1",
+            send=lambda: (_ for _ in ()).throw(
+                RetryableProviderError("limited", retry_after=31)
+            ),
+        )
+    assert current() == 0
+
+
 def test_credentials_return_availability_without_retaining_secret_values() -> None:
     class DeclaredOnly(dict[str, str]):
         reads: list[str] = []
