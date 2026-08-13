@@ -15,6 +15,8 @@ unresolved.
 | IJCAI 2016 | IJCAI proceedings | 651 | 651 | 651 legitimately absent | 651 | complete |
 | IJCAI 2024 | IJCAI proceedings | 1,048 | 1,048 | 1,048 | 1,048 | complete |
 | ICML 2024 | PMLR volume 235 | 2,610 | 2,610 | 2,610 legitimately absent | 2,610 | complete |
+| NeurIPS 2016 | NeurIPS proceedings | 569 | 569 | 569 legitimately absent | 569 | complete |
+| NeurIPS 2024 | NeurIPS proceedings | 4,493 | 4,493 | 4,493 | 4,493 | complete |
 
 AAAI used Crossref year pagination for the bulk registry join and official OJS
 OAI-PMH `GetRecord` as the article-ID fallback.  OJS records 5591 and 6915 lack
@@ -46,6 +48,14 @@ decompressed metadata archive rather than 2,610 detail-page requests.  PMLR
 frontmatter does not assign article DOI; those fields are preserved as null
 with `legitimately_absent/not_assigned_by_venue`, never synthesized.
 
+NeurIPS uses the conference's public annual JSON export to batch-join abstracts
+by normalized title.  For 2016, only three legacy title variants required an
+official detail-page fallback.  The 2016–2021 proceedings do not expose article
+DOIs, while 2022 onward registers them: 2024 used ten cursor-paged Crossref
+prefix pages and exact proceedings-container/title joins, with one official
+`citation_doi` fallback for a registry title variant.  All 4,493 records retain
+the public proceedings PDF URL.
+
 Representative live artifacts were written outside the repository:
 
 - `/tmp/stage1-aaai-2020-enriched.jsonl.receipt.json`
@@ -56,6 +66,8 @@ Representative live artifacts were written outside the repository:
 - `/tmp/stage1-ijcai-2016-enriched.receipt.json`
 - `/tmp/stage1-ijcai-2024-enriched.jsonl.receipt.json`
 - `/tmp/stage1-icml-2024-enriched.receipt.json`
+- `/tmp/stage1-neurips-2016-enriched.receipt.json`
+- `/tmp/stage1-neurips-2024-enriched.receipt.json`
 
 Automated regression command:
 

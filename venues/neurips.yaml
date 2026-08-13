@@ -3,5 +3,8 @@ venue_id: neurips
 name: Conference on Neural Information Processing Systems
 venue_type: conference
 primary_provider: neurips_proceedings
-provider_params: {series: NeurIPS}
+provider_params:
+  series: NeurIPS
+  field_enrichment: neurips_official_export
+  field_enrichment_required: true
 official_url: https://neurips.cc/

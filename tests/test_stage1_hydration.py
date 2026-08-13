@@ -9,6 +9,9 @@ from paper_agent.stage1_hydration import (
     _legacy_virtual_poster,
     _ijcai_detail,
     _pmlr_frontmatter_snapshot,
+    _neurips_export_records,
+    _neurips_detail_abstract,
+    _neurips_crossref_page,
     _virtual_openreview_id,
 )
 
@@ -105,3 +108,31 @@ pdf: https://raw.githubusercontent.com/mlresearch/v235/main/assets/audit24a/audi
             "pdf": "https://raw.githubusercontent.com/mlresearch/v235/main/assets/audit24a/audit24a.pdf",
         }
     }
+
+
+def test_neurips_export_keeps_duplicate_titles_for_ambiguous_join_detection() -> None:
+    records = _neurips_export_records(b'''[
+      {"type":"Poster","name":"Same Paper","abstract":"One","virtualsite_url":"/1"},
+      {"type":"Poster","name":"Same Paper","abstract":"Two","virtualsite_url":"/2"},
+      {"type":"Tutorial","name":"Ignored","abstract":"Not a paper"}
+    ]''')
+
+    assert [record["abstract"] for record in records["samepaper"]] == ["One", "Two"]
+
+
+def test_neurips_detail_extracts_official_abstract_fallback() -> None:
+    assert _neurips_detail_abstract(
+        b'<p class="paper-abstract"><p>A &amp; B <em>official</em> abstract.</p>'
+    ) == "A & B official abstract."
+
+
+def test_neurips_crossref_page_filters_exact_proceedings_container() -> None:
+    body = b'''{"message":{"items":[
+      {"DOI":"10.52202/079017-0001","title":["Auditable Paper"],
+       "container-title":["Advances in Neural Information Processing Systems 37"]},
+      {"DOI":"10.52202/other","title":["Other"],"container-title":["Other"]}
+    ],"next-cursor":"next"}}'''
+
+    assert _neurips_crossref_page(
+        body, "Advances in Neural Information Processing Systems 37"
+    ) == ({"auditablepaper": "10.52202/079017-0001"}, None)

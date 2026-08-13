@@ -62,7 +62,162 @@ class OfficialStage1FieldHydrator:
             return self._ijcai(year, entries)
         if name == "pmlr_official_snapshot":
             return self._pmlr(entries)
+        if name == "neurips_official_export":
+            return self._neurips(year, entries)
         raise ValueError(f"unknown Stage 1 field enrichment: {name}")
+
+    def _neurips(
+        self, year: int, entries: Sequence[SourceEntry]
+    ) -> Stage1HydrationResult:
+        if year >= 2020:
+            export = self.transport.fetch_metadata(
+                "neurips_proceedings",
+                f"https://neurips.cc/static/virtual/data/neurips-{year}-orals-posters.json",
+                api_version="neurips-official-static-poster-json-v1",
+                request_key=str(year),
+            )
+            form = None
+        else:
+            form, export = self.transport.fetch_form_export(
+                "neurips_proceedings",
+                f"https://neurips.cc/Downloads/{year}",
+                form_values={
+                    "format": "5",
+                    "posters": "on",
+                    "resource": "0",
+                    "submitaction": "Download Data",
+                },
+                api_version="neurips-official-poster-json-v1",
+                request_key=str(year),
+            )
+        by_title = _neurips_export_records(export.body)
+        hashes = (
+            [sha256(form.body).hexdigest(), sha256(export.body).hexdigest()]
+            if form is not None
+            else [sha256(export.body).hexdigest()]
+        )
+        dois: dict[str, str] = {}
+        if year >= 2022:
+            dois, registry_hashes = self._neurips_doi_registry(year)
+            hashes.extend(registry_hashes)
+        hydrated: list[SourceEntry] = []
+        missing: list[str] = []
+        ambiguous: list[str] = []
+        for entry in entries:
+            candidates = by_title.get(_normalize_title(entry.title), ())
+            if not candidates:
+                fuzzy = _unique_fuzzy_title_match(
+                    entry,
+                    tuple(record for values in by_title.values() for record in values),
+                )
+                candidates = (fuzzy,) if fuzzy is not None else ()
+            abstracts = {str(record["abstract"]) for record in candidates}
+            need_detail_abstract = len(abstracts) != 1
+            doi = dois.get(_normalize_title(entry.title)) or entry.doi
+            need_detail_doi = year >= 2022 and not doi
+            detail_fields: Mapping[str, Any] = {}
+            if need_detail_abstract or need_detail_doi:
+                response = self.transport.fetch_metadata(
+                    "neurips_proceedings",
+                    str(entry.landing_url),
+                    api_version="neurips-paper-detail-abstract-v1",
+                    request_key=entry.external_id,
+                )
+                hashes.append(sha256(response.body).hexdigest())
+                detail_fields = _neurips_detail(response.body)
+            if need_detail_abstract:
+                abstract = _clean(detail_fields.get("abstract")) or entry.abstract
+                if not abstract:
+                    (ambiguous if candidates else missing).append(entry.external_id)
+            else:
+                abstract = next(iter(abstracts))
+            doi = doi or _clean(detail_fields.get("doi"))
+            provenance = dict(entry.metadata.get("field_provenance") or {})
+            if abstract:
+                provenance["abstract"] = "neurips_official_export:poster.abstract"
+            if doi:
+                provenance["doi"] = (
+                    "neurips_proceedings:citation_doi"
+                    if detail_fields.get("doi")
+                    else "crossref_registry:message.DOI"
+                )
+            elif year <= 2021:
+                provenance["doi"] = (
+                    "neurips_2016_2021_proceedings:not_assigned_by_venue"
+                )
+            provenance["pdf_url"] = "neurips_proceedings:public_pdf"
+            overrides = dict(entry.metadata.get("field_status_overrides") or {})
+            if year <= 2021:
+                overrides["doi"] = "legitimately_absent"
+            hydrated.append(
+                replace(
+                    entry,
+                    abstract=abstract,
+                    doi=doi,
+                    metadata={
+                        **entry.metadata,
+                        "field_status_overrides": overrides,
+                        "doi_availability": (
+                            "not_assigned_by_venue" if year <= 2021 else None
+                        ),
+                        "field_provenance": provenance,
+                    },
+                )
+            )
+        if missing or ambiguous:
+            raise ProviderRequestError(
+                f"NeurIPS official export title join has {len(missing)} missing and "
+                f"{len(ambiguous)} ambiguous census record(s)"
+            )
+        return Stage1HydrationResult(
+            tuple(hydrated),
+            tuple(hashes),
+            tuple(hashes),
+        )
+
+    def _neurips_doi_registry(
+        self, year: int
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        container = f"Advances in Neural Information Processing Systems {year - 1987}"
+        output: dict[str, str] = {}
+        hashes: list[str] = []
+        cursor = "*"
+        page_number = 0
+        while cursor:
+            response = self.transport.fetch_metadata(
+                "crossref",
+                "https://api.crossref.org/works?"
+                + urlencode(
+                    {
+                        "filter": (
+                            f"from-pub-date:{year}-01-01,"
+                            f"until-pub-date:{year}-12-31,prefix:10.52202"
+                        ),
+                        "rows": 1000,
+                        "cursor": cursor,
+                        "select": "DOI,title,container-title",
+                    }
+                ),
+                api_version="crossref-neurips-year-enrichment-v1",
+                # Crossref deep cursors can remain byte-identical while their
+                # server-side session advances. Page number prevents replaying
+                # the first cached response forever.
+                request_key=(
+                    f"{year}:{page_number}:"
+                    f"{sha256(cursor.encode()).hexdigest()[:12]}"
+                ),
+            )
+            hashes.append(sha256(response.body).hexdigest())
+            page, cursor = _neurips_crossref_page(response.body, container)
+            page_number += 1
+            for title, doi in page.items():
+                prior = output.get(title)
+                if prior is not None and prior != doi:
+                    raise ProviderRequestError(
+                        f"NeurIPS registry title maps to conflicting DOI: {title}"
+                    )
+                output[title] = doi
+        return output, tuple(hashes)
 
     def _pmlr(self, entries: Sequence[SourceEntry]) -> Stage1HydrationResult:
         volumes = {
@@ -728,6 +883,90 @@ def _pmlr_frontmatter_snapshot(
     return output
 
 
+def _neurips_export_records(
+    body: bytes,
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProviderRequestError("NeurIPS official export is not JSON") from error
+    if isinstance(payload, Mapping):
+        payload = payload.get("results")
+    if not isinstance(payload, list):
+        raise ProviderRequestError("NeurIPS official export is not a record list")
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for record in payload:
+        if not isinstance(record, Mapping):
+            continue
+        event_type = record.get("type") or record.get("eventtype")
+        if event_type not in {"Poster", "Oral"}:
+            continue
+        title = _clean(record.get("name"))
+        abstract = _clean(record.get("abstract"))
+        if title and abstract:
+            grouped.setdefault(_normalize_title(title), []).append(
+                {**record, "abstract": abstract}
+            )
+    if not grouped:
+        raise ProviderRequestError("NeurIPS official export contains no poster abstracts")
+    return {key: tuple(values) for key, values in grouped.items()}
+
+
+def _neurips_detail(body: bytes) -> Mapping[str, str | None]:
+    text = body.decode("utf-8", errors="replace")
+    match = re.search(
+        r'<p\s+class=["\']paper-abstract["\'][^>]*>(.*?)</p>\s*(?:</p>)?',
+        text,
+        re.I | re.S,
+    )
+    doi = re.search(
+        r'<meta\s+name=["\']citation_doi["\']\s+content=["\']([^"\']+)',
+        text,
+        re.I,
+    )
+    return {
+        "abstract": (
+            _clean(unescape(re.sub(r"<[^>]+>", " ", match.group(1))))
+            if match is not None
+            else None
+        ),
+        "doi": doi.group(1).casefold() if doi is not None else None,
+    }
+
+
+def _neurips_detail_abstract(body: bytes) -> str | None:
+    return _clean(_neurips_detail(body).get("abstract"))
+
+
+def _neurips_crossref_page(
+    body: bytes, container: str
+) -> tuple[dict[str, str], str | None]:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProviderRequestError("NeurIPS Crossref enrichment is not JSON") from error
+    message = payload.get("message") if isinstance(payload, Mapping) else None
+    items = message.get("items") if isinstance(message, Mapping) else None
+    if not isinstance(items, list):
+        raise ProviderRequestError("NeurIPS Crossref enrichment has no items list")
+    output: dict[str, str] = {}
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        containers = item.get("container-title")
+        if not isinstance(containers, list) or container not in containers:
+            continue
+        title = item.get("title")
+        title = title[0] if isinstance(title, list) and title else title
+        doi = _clean(item.get("DOI"))
+        if title and doi:
+            output[_normalize_title(str(title))] = doi.casefold()
+    cursor = _clean(message.get("next-cursor")) if isinstance(message, Mapping) else None
+    if len(items) < 1000:
+        cursor = None
+    return output, cursor
+
+
 def _aaai_oai_page(body: bytes) -> tuple[dict[str, Mapping[str, Any]], str | None]:
     try:
         root = ElementTree.fromstring(body)
@@ -1089,7 +1328,7 @@ def _unique_fuzzy_title_match(
     records: Sequence[Mapping[str, Any]],
 ) -> Mapping[str, Any] | None:
     target = _normalize_title(entry.title)
-    scored = sorted(
+    scored = list(
         (
             SequenceMatcher(None, target, _normalize_title(str(record.get("name") or ""))).ratio(),
             str(record.get("name") or ""),
@@ -1098,6 +1337,7 @@ def _unique_fuzzy_title_match(
         for record in records
         if record.get("name") and record.get("abstract")
     )
+    scored.sort(key=lambda item: (item[0], item[1]))
     if not scored:
         return None
     best_score, _, best = scored[-1]
@@ -1124,6 +1364,8 @@ def _clean(value: Any) -> str | None:
 
 
 def _normalize_title(value: str) -> str:
+    value = unescape(value)
+    value = re.sub(r"\\[A-Za-z]+", "", value)
     value = value.casefold().replace("ℓ", "l").replace("∞", "infinity")
     return "".join(character for character in value if character.isalnum())
 

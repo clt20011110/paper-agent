@@ -13,6 +13,7 @@ import gzip
 from hashlib import sha256
 import json
 import os
+import re
 from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
@@ -296,6 +297,52 @@ class ControlledHTTPTransport:
             request_key=request_key,
         )
 
+    def fetch_form_export(
+        self,
+        provider: str,
+        url: str,
+        *,
+        form_values: Mapping[str, str],
+        api_version: str,
+        request_key: str,
+    ) -> tuple[CachedResponse, CachedResponse]:
+        """Submit a public same-origin CSRF form as one audited transaction.
+
+        This is intentionally narrower than a generic browser or POST API: the
+        token must be present in the fetched HTML, is returned as the standard
+        Django cookie, and the POST target is the exact same URL.
+        """
+
+        form = self._fetch(
+            provider,
+            url,
+            api_version=f"{api_version}:form",
+            request_key=f"{request_key}:form",
+        )
+        token_match = re.search(
+            br'name=["\']csrfmiddlewaretoken["\']\s+value=["\']([^"\']+)',
+            form.body,
+            re.I,
+        )
+        if token_match is None:
+            raise ProviderRequestError(f"{provider}: public export form has no CSRF token")
+        token = token_match.group(1).decode("ascii")
+        values = {**form_values, "csrfmiddlewaretoken": token}
+        exported = self._fetch(
+            provider,
+            url,
+            api_version=f"{api_version}:export",
+            request_key=f"{request_key}:export",
+            method="POST",
+            body=urlencode(values).encode("ascii"),
+            extra_headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Cookie": f"csrftoken={token}",
+                "Referer": url,
+            },
+        )
+        return form, exported
+
     def _operation(
         self, provider: str, operation: str, parameters: Mapping[str, Any]
     ) -> tuple[Mapping[str, Any], tuple[bytes, ...]]:
@@ -531,6 +578,9 @@ class ControlledHTTPTransport:
         *,
         api_version: str | None = None,
         request_key: str | None = None,
+        method: str = "GET",
+        body: bytes | None = None,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> CachedResponse:
         credentials = self._credentials(provider)
         request_url = _with_request_credentials(provider, url, credentials)
@@ -540,7 +590,7 @@ class ControlledHTTPTransport:
         query_hash = sha256(
             (
                 json.dumps(
-                    {"url": audit_url, "request_key": request_key},
+                    {"url": audit_url, "request_key": request_key, "method": method},
                     sort_keys=True,
                 )
                 if request_key is not None
@@ -598,6 +648,9 @@ class ControlledHTTPTransport:
                         request_url,
                         provider,
                         credentials,
+                        method=method,
+                        body=body,
+                        extra_headers=extra_headers,
                         cache_key=(
                             f"{request_url}#paper-agent-request-key={request_key}"
                             if request_key is not None
@@ -640,12 +693,16 @@ class ControlledHTTPTransport:
         credentials: Mapping[str, str],
         *,
         cache_key: str | None = None,
+        method: str = "GET",
+        body: bytes | None = None,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> CachedResponse:
         headers = {
             "Accept": "application/json, application/xml;q=0.9, text/html;q=0.8",
             "Accept-Encoding": "gzip",
             "User-Agent": str(self.user_agent),
         }
+        headers.update(dict(extra_headers or {}))
         if provider == "semantic_scholar" and credentials.get("api_key"):
             headers["x-api-key"] = credentials["api_key"]
         if provider == "cell_press" and credentials.get("api_key"):
@@ -656,7 +713,7 @@ class ControlledHTTPTransport:
             headers["If-None-Match"] = cached.etag
         if cached and cached.last_modified:
             headers["If-Modified-Since"] = cached.last_modified
-        request = Request(url, headers=headers)
+        request = Request(url, data=body, headers=headers, method=method)
         try:
             with self.opener(request, timeout=self.timeout_seconds) as response:
                 body = response.read()
