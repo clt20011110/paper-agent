@@ -36,6 +36,19 @@ _OAI_NS = {
 }
 _ATOM = "{http://www.w3.org/2005/Atom}"
 
+# Metadata enrichment is best-effort after the primary census has been
+# reconciled.  These failures must remain visible as warnings, but they must
+# not discard the frozen membership set or prevent the next fallback source
+# from running.
+_RECOVERABLE_PROVIDER_ERRORS = (
+    CircuitOpenError,
+    ProviderPolicyDenied,
+    ProviderRequestError,
+    IncompleteRead,
+    OSError,
+    TimeoutError,
+)
+
 
 @dataclass(slots=True)
 class OfficialStage1FieldHydrator:
@@ -125,7 +138,7 @@ class OfficialStage1FieldHydrator:
                 hashes.extend(fallback_hashes)
                 for doi, record in fallback.items():
                     records[doi] = {**records.get(doi, {}), **record}
-            except ProviderRequestError as error:
+            except _RECOVERABLE_PROVIDER_ERRORS as error:
                 warnings.append(f"Semantic Scholar fallback unavailable: {error}")
         unresolved = tuple(
             entry
@@ -162,7 +175,7 @@ class OfficialStage1FieldHydrator:
                         )
                         doi = str(entry.doi or "").casefold()
                         records[doi] = {**records.get(doi, {}), **record}
-                except ProviderRequestError as error:
+                except _RECOVERABLE_PROVIDER_ERRORS as error:
                     warnings.append(f"arXiv fallback unavailable: {error}")
         hydrated: list[SourceEntry] = []
         missing_abstracts: list[str] = []
@@ -297,7 +310,7 @@ class OfficialStage1FieldHydrator:
                     api_version="europe-pmc-journal-doi-batch-v1",
                     request_key=f"page:{page_number}:{sha256(query.encode()).hexdigest()[:16]}",
                 )
-            except ProviderRequestError as error:
+            except _RECOVERABLE_PROVIDER_ERRORS as error:
                 if warnings is None:
                     raise
                 warnings.append(
@@ -339,7 +352,7 @@ class OfficialStage1FieldHydrator:
         try:
             records, s2_hashes = self._semantic_scholar_doi_batches(entries, "eda")
             hashes.extend(s2_hashes)
-        except ProviderRequestError as error:
+        except _RECOVERABLE_PROVIDER_ERRORS as error:
             warnings.append(f"Semantic Scholar fallback unavailable: {error}")
 
         missing_abstract_entries = tuple(
@@ -360,7 +373,7 @@ class OfficialStage1FieldHydrator:
                     )
                     doi = str(entry.doi or "").casefold()
                     records[doi] = {**records.get(doi, {}), **record}
-            except ProviderRequestError as error:
+            except _RECOVERABLE_PROVIDER_ERRORS as error:
                 warnings.append(f"OpenAlex fallback unavailable: {error}")
 
         missing_abstract_entries = tuple(
@@ -381,7 +394,7 @@ class OfficialStage1FieldHydrator:
                     )
                     doi = str(entry.doi or "").casefold()
                     records[doi] = {**records.get(doi, {}), **record}
-            except ProviderRequestError as error:
+            except _RECOVERABLE_PROVIDER_ERRORS as error:
                 warnings.append(f"arXiv fallback unavailable: {error}")
 
         hydrated: list[SourceEntry] = []
@@ -511,6 +524,9 @@ class OfficialStage1FieldHydrator:
             CircuitOpenError,
             ProviderPolicyDenied,
             ProviderRequestError,
+            IncompleteRead,
+            OSError,
+            TimeoutError,
             json.JSONDecodeError,
             TypeError,
             ValueError,

@@ -58,6 +58,14 @@ PRIMARY = {
     "nature_biomedical_engineering": "crossref_serial",
     "cell": "crossref_serial",
     "science": "crossref_serial",
+    "tmlr": "openreview",
+    "tpami": "crossref_serial",
+    "date": "dblp_toc",
+    "aspdac": "dblp_toc",
+    "ispd": "dblp_toc",
+    "todaes": "crossref_serial",
+    "tvlsi": "crossref_serial",
+    "jssc": "crossref_serial",
 }
 
 FALLBACKS = {
@@ -96,6 +104,14 @@ FALLBACKS = {
     "nature_biomedical_engineering": ["springer_nature", "crossref", "pubmed", "europe_pmc"],
     "cell": ["cell_press", "crossref", "pubmed", "europe_pmc", "semantic_scholar", "openalex"],
     "science": ["aaas_science", "crossref", "pubmed", "europe_pmc", "semantic_scholar", "openalex"],
+    "tmlr": ["crossref", "semantic_scholar", "openalex"],
+    "tpami": ["ieee_xplore", "crossref", "semantic_scholar", "openalex"],
+    "date": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
+    "aspdac": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
+    "ispd": ["ieee_xplore", "crossref", "dblp", "semantic_scholar", "openalex"],
+    "todaes": ["crossref", "semantic_scholar", "openalex"],
+    "tvlsi": ["ieee_xplore", "crossref", "semantic_scholar", "openalex"],
+    "jssc": ["ieee_xplore", "crossref", "semantic_scholar", "openalex"],
 }
 
 
@@ -435,6 +451,11 @@ def test_frozen_journal_identifiers_and_venue_constraints() -> None:
         "cell": ("cell", ["0092-8674"]),
         "science": ("science", ["0036-8075", "1095-9203"]),
         "tcad": ("ieee-tcad", ["0278-0070"]),
+        "tmlr": ("tmlr", ["2835-8856"]),
+        "tpami": ("ieee-tpami", ["0162-8828", "1939-3539"]),
+        "todaes": ("todaes", ["1084-4309", "1557-7309"]),
+        "tvlsi": ("ieee-tvlsi", ["1063-8210", "1557-9999"]),
+        "jssc": ("ieee-jssc", ["0018-9200", "1558-173X"]),
     }
     for venue_id, (slug, issns) in expected_journals.items():
         journal = catalog.acceptance(venue_id)["journal"]

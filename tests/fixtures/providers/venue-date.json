@@ -1,0 +1,1 @@
+{"fixture_venue_id":"date","entries":[{"external_id":"conf/date/Test24","venue_id":"date","title":"DATE 2024 DBLP TOC Fixture","authors":["Ada Lovelace"],"doi":"10.1145/fixture.date","publication_date":"2024-01-01","year":2024,"venue":"DATE","landing_url":"https://doi.org/10.1145/fixture.date","upstream":"dblp"}],"next_cursor":"date:page-2"}

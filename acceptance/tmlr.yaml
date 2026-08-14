@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: tmlr
+primary_provider: openreview
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-tmlr.json
+fixture_sha256: ac68851e2b7f09e0dd38a7548af03c9b5f515cde344d8d6a0362fbd12e6ebbba
+expected_stable_ids: [tmlr-paper-2024-1]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-openreview-tmlr.json, sha256: 742a970feee677910d3b736665f9aa46f7976bc04155cf0f95437ec6a97e6eef, content_type: application/json, url_contains: "api2.openreview.net/notes?"}
+transport_expected_stable_ids: [tmlr-paper-2024-1]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
+fallbacks: [{provider: crossref, role: search}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+journal: {slug: tmlr, issns: [2835-8856], article_types: [journal-article]}

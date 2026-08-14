@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: jssc
+primary_provider: crossref_serial
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-jssc.json
+fixture_sha256: 117a52ae918de3214276f0143a5a347dd937f15d7efeff4d5a50b9cc78e59ca4
+expected_stable_ids: [10.1109/jssc.2024.000001]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-jssc.json, sha256: 9cdf885b780384fff01f8cc0aa07b8464205cb8db46e89879fd1e721138ec6b5, content_type: application/json, url_contains: api.crossref.org/journals/0018-9200/works}
+transport_expected_stable_ids: [10.1109/jssc.2024.000001]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
+fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: search}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+journal: {slug: ieee-jssc, issns: [0018-9200, 1558-173X], article_types: [journal-article]}

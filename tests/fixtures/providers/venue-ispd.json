@@ -1,0 +1,1 @@
+{"fixture_venue_id":"ispd","entries":[{"external_id":"conf/ispd/Test24","venue_id":"ispd","title":"ISPD 2024 DBLP TOC Fixture","authors":["Ada Lovelace"],"doi":"10.1145/fixture.ispd","publication_date":"2024-01-01","year":2024,"venue":"ISPD","landing_url":"https://doi.org/10.1145/fixture.ispd","upstream":"dblp"}],"next_cursor":"ispd:page-2"}

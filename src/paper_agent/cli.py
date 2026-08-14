@@ -90,6 +90,7 @@ from .stage1 import (
     write_stage1_result,
 )
 from .stage1_hydration import OfficialStage1FieldHydrator
+from .stage1_matrix import build_stage1_field_matrix, write_stage1_field_matrix
 from .search_execution import execute_search_plan, resolve_runtime_providers, seed_input
 from .stage2_search import (
     Stage2ReleaseError,
@@ -379,6 +380,27 @@ def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         help="publish records even when the receipt cannot prove completeness",
     )
+    stage1_matrix = stage1_commands.add_parser(
+        "matrix",
+        help="audit every venue/year cell against persisted Stage 1 receipts",
+    )
+    stage1_matrix.add_argument("--venue", action="append", default=[])
+    stage1_matrix.add_argument("--year-from", type=int, default=2016)
+    stage1_matrix.add_argument("--year-to", type=int, default=2025)
+    stage1_matrix.add_argument(
+        "--receipt",
+        action="append",
+        default=[],
+        type=Path,
+        help="receipt JSON path; may be repeated",
+    )
+    stage1_matrix.add_argument(
+        "--receipts-root",
+        type=Path,
+        help="recursively discover *.receipt.json below this directory",
+    )
+    stage1_matrix.add_argument("--output", required=True, type=Path)
+    stage1_matrix.add_argument("--markdown-output", type=Path)
     filter_command = subcommands.add_parser(
         "filter", help="screen canonical papers with an approved local Stage 2 release"
     )
@@ -998,6 +1020,8 @@ def main(
         )
     if args.command == "stage1" and args.stage1_command == "collect":
         return _finish(args, _stage1_collect(args))
+    if args.command == "stage1" and args.stage1_command == "matrix":
+        return _finish(args, _stage1_matrix(args))
     if args.command == "filter":
         return _finish(args, _filter(args))
     if (
@@ -3752,6 +3776,32 @@ def _stage1_collect(args: argparse.Namespace) -> dict[str, Any]:
         "output": str(published.output_path),
         "receipt": str(published.receipt_path),
         "metadata_sha256": published.receipt.metadata_sha256,
+    }
+
+
+def _stage1_matrix(args: argparse.Namespace) -> dict[str, Any]:
+    matrix = build_stage1_field_matrix(
+        tuple(args.receipt),
+        receipts_root=args.receipts_root,
+        venue_ids=tuple(args.venue) or None,
+        year_from=args.year_from,
+        year_to=args.year_to,
+    )
+    write_stage1_field_matrix(
+        matrix,
+        output_path=args.output,
+        markdown_path=args.markdown_output,
+    )
+    summary = dict(matrix["summary"])
+    return {
+        "command": "stage1.matrix",
+        "status": matrix["status"],
+        "matrix_sha256": matrix["matrix_sha256"],
+        "output": str(args.output),
+        "markdown_output": (
+            str(args.markdown_output) if args.markdown_output is not None else None
+        ),
+        "summary": summary,
     }
 
 

@@ -30,6 +30,24 @@ The default is fail-closed. The receipt is always written to
 venue-year is proven complete. `--allow-incomplete` is an explicit diagnostic
 escape hatch; its receipt and command status remain `incomplete`.
 
+Audit a decade (or a selected range) from persisted receipts:
+
+```bash
+paper-agent stage1 matrix \
+  --year-from 2016 --year-to 2025 \
+  --receipts-root /path/to/stage1-receipts \
+  --output build/stage1/field-matrix.json \
+  --markdown-output build/stage1/field-matrix.md
+```
+
+The matrix enumerates every catalog `venue × year` cell. A cell without a
+receipt is `missing_receipt`; provider failures and unresolved enrichment stay
+`failed`/`unproven`; out-of-range or non-held years are `not_applicable`.
+Equally strong receipts with different census or audit fingerprints become
+`conflict` instead of being silently deduplicated. The command exits with a
+non-zero status unless every cell is `complete` or `not_applicable`, and the
+JSON records each input receipt path and SHA-256.
+
 Sources whose manifests declare reviewable terms remain fail-closed. Accept an
 exact manifest URL explicitly when your use is authorized:
 

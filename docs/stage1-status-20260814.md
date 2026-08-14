@@ -6,13 +6,14 @@
 
 ## 结论先行
 
-Stage 1 已经具备可独立运行和审计的生产骨架，但还没有达到“35 个 venue 在 2016–2025 每一篇论文的字段全部闭合”的最终门槛。
+Stage 1 已经具备可独立运行和审计的生产骨架，但还没有达到“目录内每个 venue 在 2016–2025 每一篇论文的字段全部闭合”的最终门槛。
 
-- **论文集合（membership）已闭合**：目录中的 35 个 venue、2016–2025 全部适用年份均完成 terminal cursor、稳定 ID 去重和 parser 收支校验；共 374,784 条唯一记录。
+- **原有论文集合（membership）已闭合**：此前 35 个 venue、2016–2025 全部适用年份均完成 terminal cursor、稳定 ID 去重和 parser 收支校验；共 374,784 条唯一记录。新接入的 8 个 venue 已完成 manifest/fixture contract，但尚未把 fixture 当作 live decade census 证据。
 - **独立接口已完成**：可以输入一个或多个 venue、起止年份，输出 JSONL metadata 和 receipt；默认 fail-closed，不会把缺字段的结果误标为 complete。
 - **可扩展架构已完成**：venue descriptor、provider manifest、primary census 和 enrichment provider 已解耦；新增同类来源主要通过 YAML descriptor 扩展。
 - **代表年份字段验收大部分已完成**：会议类已有多组真实 complete receipt；部分 EDA、期刊和历史 ICLR/Science 仍有明确缺口。
-- **无人值守回归已通过**：完整 pytest 回归通过；本次更新随当前分支提交发布。
+- **无人值守回归已通过**：完整 pytest 回归通过；本次工作区变更在最终回归后提交并推送到当前分支。
+- **全目录字段矩阵审计接口已完成**：`stage1 matrix` 会枚举每个 venue×year，显式报告 `complete`、`not_applicable`、`missing_receipt`、`failed`、`unproven` 和 `conflict`，并绑定输入 receipt 哈希。
 
 因此，当前可以把 Stage 1 当作“可用的独立 metadata census 接口”使用；不能把整个十年字段矩阵宣称为已完成。
 
@@ -56,7 +57,7 @@ result = collect_stage1_metadata(request, catalog=catalog,
 
 ### 1.2 当前 venue 目录与来源架构
 
-当前目录共 35 个 venue：17 个会议、18 个期刊。
+当前目录共 43 个 venue：20 个会议、23 个期刊。新增的 8 个目录项为 TMLR、TPAMI、DATE、ASP-DAC、ISPD、TODAES、TVLSI、JSSC；它们已接入现有 Crossref serial/DBLP TOC 通用适配器并通过离线及受控 transport fixture contract。
 
 - 会议：AAAI、ACL、AISTATS、COLING、COLT、CoRL、CVPR、DAC、EMNLP、ICCAD、ICCV、ICLR、ICML、IJCAI、NAACL、NeurIPS、UAI。
 - 期刊：ACS Central Science、Angewandte Chemie、Cell、Chemical Science、JACS、JCIM、JCTC、JMLR、Nature Biomedical Engineering、Nature Biotechnology、Nature Catalysis、Nature Chemistry、Nature Communications、Nature Computational Science、Nature Machine Intelligence、Nature Synthesis、Science、TCAD。
@@ -72,13 +73,14 @@ PMLR 已支持 bulk frontmatter 失败时的逐篇官方 detail fallback；期�
 
 ## 2. 十年 membership 验收
 
-统一证据：[`docs/acceptance/stage1-decade-census-20260812.json`](acceptance/stage1-decade-census-20260812.json)。
+统一证据：[`docs/acceptance/stage1-decade-census-20260812.json`](acceptance/stage1-decade-census-20260812.json)（仅覆盖接入新 venue 前的 35 个 venue）。新增矩阵审计的本机运行证据见 `/private/tmp/stage1-field-matrix-20260814-v4.json`，其 machine hash 为 `1fd8599da7330099ea81edf4f8a2ca9c37c5a16ba94fd2a1f40940fa0ffbaed4`。
 
 | 门禁 | 当前结果 | 说明 |
 |---|---:|---|
-| venue 数量 | 35/35 | 所有目录 venue 都有 primary adapter/descriptor |
+| 已有 decade census venue 数量 | 35/35 | 新增 8 个 venue 尚未完成 live decade census |
+| 当前目录 venue 数量 | 43 | 20 个会议、23 个期刊；全部有 descriptor/acceptance |
 | 适用年份 | 2016–2025 | 每个适用 `venue × year` 到达 terminal cursor |
-| 唯一记录 | 374,784 | 全局稳定 ID 无重复 |
+| 已验证唯一记录 | 374,784 | 仅对应已完成的 35-venue census |
 | parser 收支 | 完整 | raw、rejected、explicitly excluded 可审计 |
 | 字段全覆盖 | 未完成 | membership 完整不等于摘要/DOI/PDF 全部存在 |
 
@@ -150,6 +152,20 @@ ICLR 2017 的官方 OpenReview 页面在已登录浏览器中可见，并不等�
 
 每个 venue 至少需要一个高产年份的全量 strict run，并将记录数、摘要、DOI、PDF、legitimately absent 分类、receipt hash 写入统一验收矩阵；Cell/TCAD 的 2024 代表年份已跑过，但仍保持 incomplete。
 
+新增目录的第一轮真实联网验证如下；fixture contract 通过不等于下表的 live 结果：
+
+| 新 venue/year | membership | 字段结果 | receipt |
+|---|---:|---|---|
+| DATE 2024 | 379/379 | 333 摘要，340 条摘要/PDF enrichment 未闭合 | `/private/tmp/stage1-date-2024-live.receipt.json` |
+| ASP-DAC 2024 | 157/157 | 155 摘要，133 条字段未闭合 | `/private/tmp/stage1-aspdac-ispd-2024-live.receipt.json` |
+| ISPD 2024 | 49/49 | 49/49 complete | 同上 |
+| ISPD 2016–2025 | 355/355（10/10 年） | 2021–2023、2025 complete；其余年份因 timeout/429 或明确缺口保持 incomplete | `/private/tmp/stage1-ispd-2016-2025-live.receipt.json` |
+| TMLR 2024 | 0（OpenReview challenge） | Crossref 404 已排除；已切换官方 `TMLR/-/Submission` rolling invitation，当前无人值守 API 返回 challenge | `/private/tmp/stage1-tmlr-2024-openreview.receipt.json` |
+| TPAMI 2024 | 739/739 | 737 摘要，739 DOI/作者/PDF；2 条摘要仍未闭合 | `/private/tmp/stage1-tpami-2024-live.receipt.json` |
+| TODAES 2024 | 99/99 | 98 摘要、99 DOI/PDF；Europe PMC/后备批次超时导致 1 条未闭合 | `/private/tmp/stage1-todaes-tvlsi-jssc-2024-live.receipt.json` |
+| TVLSI 2024 | 269/269 | 232 作者、269 DOI；辅助批次超时，摘要/PDF 大量未闭合 | 同上 |
+| JSSC 2024 | 409/409 | 347 作者、409 DOI；辅助批次超时，摘要/PDF 未闭合 | 同上 |
+
 ### P2：2016–2025 全字段矩阵
 
 代表年份完成后，还需按全部适用 `venue × year` 跑十年字段矩阵。每个单元必须同时满足：
@@ -159,11 +175,12 @@ ICLR 2017 的官方 OpenReview 页面在已登录浏览器中可见，并不等�
 3. 摘要、DOI、PDF URL 要么 present，要么有来源证据的 `legitimately_absent`；
 4. terminal cursor、parser 收支、provenance、请求/响应 hash 完整；
 5. 429/timeout 可断点恢复，不要求从头重跑整年；
-6. 输出机器可读总矩阵，至少区分 `complete`、`incomplete`、`not_applicable`。
+6. 使用 `paper-agent stage1 matrix` 输出机器可读总矩阵，至少区分 `complete`、`incomplete`、`not_applicable`、`missing_receipt` 和 `conflict`；当前 43-venue 运行结果为 202 complete、36 not_applicable、29 conflict、33 failed、10 unproven、120 missing_receipt。
 
 ### P3/P4：可靠性和发布收尾
 
 - 持久化 journal DOI batch 的每个批次响应，支持失败批次重试。
+- Europe PMC、Semantic Scholar、OpenAlex 和 arXiv 的超时/断路器错误现在会降级为可审计 warning，并继续尝试后备源；primary membership 不会因 enrichment 单点失败而丢失。
 - 分 provider 统计成功率、429、timeout、重试次数和配额状态。
 - 已由 document type 证明摘要不适用的条目不再调用辅助 API。
 - 为 publisher HTML fallback 设置 venue 级开关和明确条款门禁。

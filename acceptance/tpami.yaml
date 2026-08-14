@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: tpami
+primary_provider: crossref_serial
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-tpami.json
+fixture_sha256: 3e948e559578418999c3a48c509c630f422eb11e7cff7f2bc5bf184644da174d
+expected_stable_ids: [10.1109/tpami.2024.000001]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-tpami.json, sha256: ba0215b76d43168972014df687e92ee19c74858fb6b0f5ecfce236d71e772185, content_type: application/json, url_contains: api.crossref.org/journals/0162-8828/works}
+transport_expected_stable_ids: [10.1109/tpami.2024.000001]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
+fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: search}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+journal: {slug: ieee-tpami, issns: [0162-8828, 1939-3539], article_types: [journal-article]}

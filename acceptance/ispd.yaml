@@ -1,0 +1,13 @@
+schema_version: "2"
+venue_id: ispd
+primary_provider: dblp_toc
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-ispd.json
+fixture_sha256: b427a4b00f22b0d3ee69f6dc7d5bc717d5f5a7b41176014a75055c58022880f2
+expected_stable_ids: [conf/ispd/Test24]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/http-venue-dblp-ispd.xml, sha256: 6211eca0ffe54f91257c6417dc94feed14fff12c9ff8976c3a129c5eb5e93967, content_type: application/xml, url_contains: dblp.uni-trier.de/db/conf/ispd/ispd2024.xml}
+transport_expected_stable_ids: [conf/ispd/Test24]
+required_fields: [stable_id, metadata, date_filter]
+required_capabilities: [stable_id, metadata, date_filter]
+fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: search}, {provider: dblp, role: metadata_enricher}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]

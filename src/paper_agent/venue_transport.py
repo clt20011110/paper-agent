@@ -1742,16 +1742,20 @@ def _openreview_entry(note: Mapping[str, Any], venue_id: str, year: int) -> dict
     authors = _openreview_value(content.get("authors") or note.get("authors")) or []
     venue = _openreview_value(content.get("venue") or note.get("venue")) or venue_id
     decision = _openreview_value(content.get("decision") or note.get("decision"))
+    doi = _openreview_value(content.get("doi") or content.get("DOI") or note.get("doi"))
+    pdf = _openreview_value(content.get("pdf") or content.get("pdf_url") or note.get("pdf_url"))
     return {
         "external_id": str(note["id"]),
         "title": str(title),
         "authors": authors,
         "abstract": _openreview_value(content.get("abstract") or note.get("abstract")),
+        "doi": str(doi) if doi else None,
         "publication_date": publication_date,
         "year": year,
         "venue": venue,
         "decision": decision,
         "landing_url": f"https://openreview.net/forum?id={quote(str(note['id']), safe='')}",
+        "pdf_url": _absolute("https://openreview.net", str(pdf)) if pdf else None,
         "content": dict(content),
     }
 

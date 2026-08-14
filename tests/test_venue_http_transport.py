@@ -839,6 +839,36 @@ def test_openreview_resolves_v2_venueid_and_maps_value_wrappers_and_cursor() -> 
     ]
 
 
+def test_openreview_maps_pdf_and_doi_values_from_note_content() -> None:
+    transport, opener = _transport({
+        "api2.openreview.net/notes": (
+            "http-venue-openreview-tmlr.json",
+            "application/json",
+        ),
+    })
+    descriptor = VenueDescriptor(
+        1,
+        "tmlr",
+        "openreview",
+        "openreview",
+        {
+            "invitation": "TMLR/-/Submission",
+            "api_version": "v2",
+            "accepted_venue_ids": ["TMLR"],
+            "accepted_decision_required": False,
+            "page_size": 10,
+        },
+    )
+    batch = create_builtin("openreview", transport).discover(
+        descriptor,
+        CrawlWindow(year=2024, date_from="2024-01-01", date_to="2024-12-31"),
+    )
+
+    assert batch.entries[0].pdf_url == (
+        "https://openreview.net/pdf?id=tmlr-paper-2024-1"
+    )
+
+
 def test_openreview_dynamic_resolution_rejects_legacy_group_without_exact_invitation() -> None:
     class LegacyGroupOpener:
         def __call__(self, request, timeout):

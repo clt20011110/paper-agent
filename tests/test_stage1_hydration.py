@@ -4,6 +4,7 @@ import gzip
 from http.client import IncompleteRead
 from io import BytesIO
 import tarfile
+from types import SimpleNamespace
 
 from paper_agent.stage1_hydration import (
     OfficialStage1FieldHydrator,
@@ -85,6 +86,61 @@ def test_eda_semantic_scholar_batch_joins_abstract_and_oa_pdf_by_doi() -> None:
     assert _eda_publisher_pdf_url("10.1145/123.456") == (
         "https://dl.acm.org/doi/pdf/10.1145/123.456"
     )
+
+
+def test_eda_timeout_keeps_membership_and_records_recoverable_warnings() -> None:
+    class Transport:
+        def fetch_json_batch(self, provider, url, **kwargs):
+            assert provider == "semantic_scholar"
+            raise TimeoutError("scholarly graph timed out")
+
+        def fetch_metadata(self, provider, url, **kwargs):
+            assert provider in {"openalex", "arxiv"}
+            raise TimeoutError(f"{provider} timed out")
+
+    entry = SourceEntry(
+        "dblp_toc",
+        "conf/date/Timeout24",
+        "A Timeout-Tolerant EDA Paper",
+        doi="10.1145/123.456",
+        pdf_url="https://example.org/paper.pdf",
+    )
+    result = OfficialStage1FieldHydrator(Transport())._eda((entry,))
+
+    assert [item.external_id for item in result.entries] == [entry.external_id]
+    assert result.entries[0].abstract is None
+    assert any("Semantic Scholar fallback unavailable" in warning for warning in result.warnings)
+    assert any("OpenAlex fallback unavailable" in warning for warning in result.warnings)
+    assert any("arXiv fallback unavailable" in warning for warning in result.warnings)
+
+
+def test_crossref_europe_pmc_timeout_continues_to_semantic_scholar() -> None:
+    class Transport:
+        def fetch_metadata(self, provider, url, **kwargs):
+            assert provider == "europe_pmc"
+            raise TimeoutError("Europe PMC timed out")
+
+        def fetch_json_batch(self, provider, url, **kwargs):
+            assert provider == "semantic_scholar"
+            return SimpleNamespace(
+                body=b'''[{"paperId":"p1","externalIds":{"DOI":"10.1021/example"},
+                    "abstract":"Fallback abstract.",
+                    "openAccessPdf":{"url":"https://example.org/fallback.pdf"}}]'''
+            )
+
+    entry = SourceEntry(
+        "crossref_serial",
+        "10.1021/example",
+        "A Fallback Journal Paper",
+        doi="10.1021/example",
+    )
+    result = OfficialStage1FieldHydrator(Transport())._crossref_journal(
+        SimpleNamespace(parameters={}), (entry,)
+    )
+
+    assert result.entries[0].abstract == "Fallback abstract."
+    assert result.entries[0].pdf_url == "https://example.org/fallback.pdf"
+    assert any("Europe PMC batch 0 unavailable" in warning for warning in result.warnings)
 
 
 def test_openalex_abstract_reconstructs_inverted_index() -> None:

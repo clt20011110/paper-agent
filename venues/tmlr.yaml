@@ -1,0 +1,13 @@
+schema_version: "1"
+venue_id: tmlr
+name: Transactions on Machine Learning Research
+venue_type: journal
+primary_provider: openreview
+provider_params:
+  venue_group: TMLR
+  invitation: TMLR/-/Submission
+  api_version: v2
+  accepted_venue_ids: [TMLR]
+  accepted_decision_required: true
+official_url: https://www.jmlr.org/tmlr/
+date_range: {start: 2022-01-01, end: 2025-12-31}

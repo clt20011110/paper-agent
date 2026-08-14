@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: tvlsi
+primary_provider: crossref_serial
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-tvlsi.json
+fixture_sha256: fda09845be03faaa4890b8793504a6f155a6e1b343bb35d0d65c79523763537c
+expected_stable_ids: [10.1109/tvlsi.2024.000001]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-tvlsi.json, sha256: 5f5a5cedb79c254d689290aceb24bcb142aae8eab544df30306b096e0420a2a0, content_type: application/json, url_contains: api.crossref.org/journals/1063-8210/works}
+transport_expected_stable_ids: [10.1109/tvlsi.2024.000001]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
+fallbacks: [{provider: ieee_xplore, role: metadata_enricher}, {provider: crossref, role: search}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+journal: {slug: ieee-tvlsi, issns: [1063-8210, 1557-9999], article_types: [journal-article]}

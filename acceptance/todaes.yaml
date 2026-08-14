@@ -1,0 +1,14 @@
+schema_version: "2"
+venue_id: todaes
+primary_provider: crossref_serial
+test_window: {start: 2024-01-01, end: 2024-12-31}
+fixture_path: tests/fixtures/providers/venue-todaes.json
+fixture_sha256: 18a523ff5cade330f2a0cd954a5bc70f709683844c102a2b76566aa0cd5ffa63
+expected_stable_ids: [10.1145/todaes.2024.000001]
+transport_fixture_routes:
+  - {path: tests/fixtures/providers/acceptance-native-crossref-serial-todaes.json, sha256: 553d5efe70ef349cc2c493ef501df8b689497ba84ca9f9fb2807d929818f0b12, content_type: application/json, url_contains: api.crossref.org/journals/1084-4309/works}
+transport_expected_stable_ids: [10.1145/todaes.2024.000001]
+required_fields: [stable_id, metadata, abstract, date_filter]
+required_capabilities: [stable_id, metadata, abstract, date_filter]
+fallbacks: [{provider: crossref, role: search}, {provider: semantic_scholar, role: metadata_enricher}, {provider: openalex, role: metadata_enricher}]
+journal: {slug: todaes, issns: [1084-4309, 1557-7309], article_types: [journal-article]}
