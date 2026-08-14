@@ -1,0 +1,65 @@
+"""Import-boundary tests for the isolated Stage 1 package."""
+
+import ast
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def _package_root() -> Path:
+    return Path(__file__).resolve().parents[3] / "src" / "paper_agent_next"
+
+
+def _is_old_package(module: str | None) -> bool:
+    return module == "paper_agent" or bool(module and module.startswith("paper_agent."))
+
+
+def test_new_package_does_not_import_old_package() -> None:
+    package_root = _package_root()
+    violations: list[str] = []
+
+    for path in sorted(package_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if _is_old_package(alias.name):
+                        violations.append(f"{path}:{node.lineno}: import {alias.name}")
+            elif isinstance(node, ast.ImportFrom) and _is_old_package(node.module):
+                violations.append(f"{path}:{node.lineno}: from {node.module} import ...")
+
+    assert not violations, "\n".join(violations)
+
+
+def test_importing_models_does_not_load_old_package_in_isolated_subprocess() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    source_root = repo_root / "src"
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH")
+    paths = [str(source_root)]
+    if existing_pythonpath:
+        paths.extend(part for part in existing_pythonpath.split(os.pathsep) if part)
+    env["PYTHONPATH"] = os.pathsep.join(paths)
+    code = """
+import sys
+import paper_agent_next.models
+
+old_modules = sorted(
+    name for name in sys.modules
+    if name == 'paper_agent' or name.startswith('paper_agent.')
+)
+if old_modules:
+    print('old package modules loaded: ' + ', '.join(old_modules), file=sys.stderr)
+    raise SystemExit(1)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
