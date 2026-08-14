@@ -119,6 +119,22 @@ venue-year 的定义如下：
 5. 每个原始条目都必须归入 included paper、excluded non-paper item、duplicate occurrence 或 rejected parse item；
 6. 不得存在未解释的静默丢失。
 
+**规则 A：rejected parse item 必须阻止 complete。**
+
+- `rejected parse item` 表示 adapter 无法可靠判断或解析该原始条目；
+- `rejected parse item` 可以被保留在运行统计和诊断输出中；
+- 任何尚未解决的 `rejected parse item` 都必须使 `membership_complete` 为 false；
+- 只有该条目后来被可靠地重新分类为 included paper、excluded non-paper item 或 duplicate occurrence，才算解决；
+- 不得仅因为 `rejected parse item` 已被计数，就把它视为 membership 已闭合。
+
+**规则 B：适用 venue-year 的空结果需要明确证明。**
+
+- 对于 `not_applicable` 年份，继续使用独立的 `not_applicable` 状态；
+- 对于被 catalog 判定为适用的 venue-year，如果 included paper 数量为零，只有 authoritative source 明确证明该年份的正式论文总数确实为零时，`membership_complete` 才可以为 true；
+- 明确证明可以是 source 声明的 expected total = 0，或语义等价的 authoritative empty census；
+- 普通空 HTTP 响应、空搜索结果、空 HTML selector 结果、缺少 total 的空列表，都不得被视为零论文证明；
+- 无法证明时 `membership_complete` 必须为 false。
+
 ### metadata_complete
 
 只有以下条件对每一篇 included paper 都成立时，`metadata_complete` 才能为 true：
