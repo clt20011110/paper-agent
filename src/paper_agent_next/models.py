@@ -19,6 +19,12 @@ __all__ = [
     "FieldSources",
     "PaperRecord",
     "IssueRecord",
+    "RunStatus",
+    "SourceTotalScope",
+    "RunCounts",
+    "SourceTotal",
+    "Pagination",
+    "RunRecord",
 ]
 
 SCHEMA_VERSION = 1
@@ -112,6 +118,23 @@ def _validate_optional_url(value: object, field: str) -> None:
         raise ContractError(f"{field}: must be a valid absolute HTTP or HTTPS URL")
     if parsed.username is not None or parsed.password is not None:
         raise ContractError(f"{field}: must not contain username or password")
+
+
+def _require_bool(value: object, field: str) -> None:
+    if not isinstance(value, bool):
+        raise ContractError(f"{field}: must be a bool")
+
+
+def _require_nonnegative_int(value: object, field: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ContractError(f"{field}: must be a non-negative integer")
+
+
+def _validate_text_tuple(value: object, field: str) -> None:
+    if not isinstance(value, tuple):
+        raise ContractError(f"{field}: must be a tuple")
+    for index, item in enumerate(value):
+        _require_text(item, f"{field}[{index}]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,4 +346,196 @@ class IssueRecord:
             "missing_fields": [field.value for field in self.missing_fields],
             "reason_codes": list(self.reason_codes),
             "message": self.message,
+        }
+
+
+class RunStatus(StrEnum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class SourceTotalScope(StrEnum):
+    RAW_ITEMS = "raw_items"
+    INCLUDED_PAPERS = "included_papers"
+
+
+@dataclass(frozen=True, slots=True)
+class RunCounts:
+    raw_items: int
+    included_papers: int
+    complete_papers: int
+    incomplete_papers: int
+    excluded_non_papers: int
+    duplicate_occurrences: int
+    parse_rejects: int
+    issue_records: int
+
+    def __post_init__(self) -> None:
+        for field in (
+            "raw_items",
+            "included_papers",
+            "complete_papers",
+            "incomplete_papers",
+            "excluded_non_papers",
+            "duplicate_occurrences",
+            "parse_rejects",
+            "issue_records",
+        ):
+            _require_nonnegative_int(getattr(self, field), field)
+        if self.raw_items != self.included_papers + self.excluded_non_papers + self.duplicate_occurrences + self.parse_rejects:
+            raise ContractError("raw_items: count equation mismatch")
+        if self.included_papers != self.complete_papers + self.incomplete_papers:
+            raise ContractError("included_papers: count equation mismatch")
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "raw_items": self.raw_items,
+            "included_papers": self.included_papers,
+            "complete_papers": self.complete_papers,
+            "incomplete_papers": self.incomplete_papers,
+            "excluded_non_papers": self.excluded_non_papers,
+            "duplicate_occurrences": self.duplicate_occurrences,
+            "parse_rejects": self.parse_rejects,
+            "issue_records": self.issue_records,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTotal:
+    value: int
+    scope: SourceTotalScope
+
+    def __post_init__(self) -> None:
+        _require_nonnegative_int(self.value, "value")
+        if not isinstance(self.scope, SourceTotalScope):
+            raise ContractError("scope: must be a SourceTotalScope")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"value": self.value, "scope": self.scope.value}
+
+
+@dataclass(frozen=True, slots=True)
+class Pagination:
+    pages_fetched: int
+    terminal_reached: bool
+    source_total: SourceTotal | None
+
+    def __post_init__(self) -> None:
+        _require_nonnegative_int(self.pages_fetched, "pages_fetched")
+        _require_bool(self.terminal_reached, "terminal_reached")
+        if self.source_total is not None and not isinstance(self.source_total, SourceTotal):
+            raise ContractError("source_total: must be a SourceTotal or None")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "pages_fetched": self.pages_fetched,
+            "terminal_reached": self.terminal_reached,
+            "source_total": None if self.source_total is None else self.source_total.to_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RunRecord:
+    status: RunStatus
+    venue_id: str
+    venue_name: str
+    venue_type: VenueType
+    year: int
+    source_name: str | None
+    membership_complete: bool
+    metadata_complete: bool
+    complete: bool
+    counts: RunCounts
+    pagination: Pagination | None
+    warnings: tuple[str, ...]
+    errors: tuple[str, ...]
+
+    schema_version: ClassVar[int] = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, RunStatus):
+            raise ContractError("status: must be a RunStatus")
+        _require_text(self.venue_id, "venue_id")
+        _require_text(self.venue_name, "venue_name")
+        if not isinstance(self.venue_type, VenueType):
+            raise ContractError("venue_type: must be a VenueType")
+        _require_year(self.year)
+        _require_text(self.source_name, "source_name", allow_none=True)
+        _require_bool(self.membership_complete, "membership_complete")
+        _require_bool(self.metadata_complete, "metadata_complete")
+        _require_bool(self.complete, "complete")
+        if not isinstance(self.counts, RunCounts):
+            raise ContractError("counts: must be a RunCounts")
+        if self.pagination is not None and not isinstance(self.pagination, Pagination):
+            raise ContractError("pagination: must be a Pagination or None")
+        _validate_text_tuple(self.warnings, "warnings")
+        _validate_text_tuple(self.errors, "errors")
+        if self.complete != (self.membership_complete and self.metadata_complete):
+            raise ContractError("complete: must equal membership_complete AND metadata_complete")
+        if self.counts.incomplete_papers > 0 and self.metadata_complete:
+            raise ContractError("metadata_complete: incomplete_papers requires false")
+        if self.counts.parse_rejects > 0 and self.membership_complete:
+            raise ContractError("membership_complete: parse_rejects requires false")
+        if self.counts.issue_records > 0 and self.complete:
+            raise ContractError("complete: issue_records requires false")
+        if self.membership_complete:
+            if self.pagination is None:
+                raise ContractError("pagination: required for membership_complete")
+            if not self.pagination.terminal_reached:
+                raise ContractError("pagination: terminal_reached required for membership_complete")
+            if self.source_name is None:
+                raise ContractError("source_name: required for membership_complete")
+            if self.pagination.source_total is not None:
+                expected = (
+                    self.counts.raw_items
+                    if self.pagination.source_total.scope is SourceTotalScope.RAW_ITEMS
+                    else self.counts.included_papers
+                )
+                if self.pagination.source_total.value != expected:
+                    raise ContractError("source_total: does not match counts")
+        if self.status is RunStatus.COMPLETE:
+            if not self.membership_complete or not self.metadata_complete or not self.complete:
+                raise ContractError("status: complete requires all completeness fields true")
+            if self.counts.incomplete_papers or self.counts.parse_rejects or self.counts.issue_records:
+                raise ContractError("status: complete requires zero incomplete, parse reject, and issue counts")
+            if self.errors:
+                raise ContractError("errors: must be empty for complete status")
+            if self.pagination is None or not self.pagination.terminal_reached:
+                raise ContractError("pagination: terminal required for complete status")
+            if self.source_name is None:
+                raise ContractError("source_name: required for complete status")
+        elif self.complete:
+            raise ContractError("complete: only complete status may be true")
+        if self.status is RunStatus.PARTIAL and not self.counts.issue_records and not self.errors:
+            raise ContractError("status: partial requires issue_records or errors")
+        if self.status is RunStatus.FAILED and not self.errors:
+            raise ContractError("errors: required for failed status")
+        if self.status is RunStatus.NOT_APPLICABLE:
+            if self.membership_complete or self.metadata_complete or self.complete:
+                raise ContractError("status: not_applicable requires incomplete run")
+            if self.pagination is not None:
+                raise ContractError("pagination: must be None for not_applicable")
+            if self.errors:
+                raise ContractError("errors: must be empty for not_applicable")
+            if any(self.counts.to_dict().values()):
+                raise ContractError("counts: must be zero for not_applicable")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "status": self.status.value,
+            "venue_id": self.venue_id,
+            "venue_name": self.venue_name,
+            "venue_type": self.venue_type.value,
+            "year": self.year,
+            "source_name": self.source_name,
+            "membership_complete": self.membership_complete,
+            "metadata_complete": self.metadata_complete,
+            "complete": self.complete,
+            "counts": self.counts.to_dict(),
+            "pagination": None if self.pagination is None else self.pagination.to_dict(),
+            "warnings": list(self.warnings),
+            "errors": list(self.errors),
         }
