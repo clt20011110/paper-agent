@@ -410,6 +410,74 @@ def test_run_record_rejects_failed_without_error() -> None:
         )
 
 
+def test_failed_rejects_membership_complete_true() -> None:
+    with pytest.raises(ContractError, match="status|membership_complete"):
+        _run(
+            status=RunStatus.FAILED,
+            membership_complete=True,
+            metadata_complete=False,
+            complete=False,
+            counts=_counts(
+                raw_items=1,
+                included_papers=0,
+                complete_papers=0,
+                excluded_non_papers=1,
+            ),
+            pagination=Pagination(1, True, SourceTotal(1, SourceTotalScope.RAW_ITEMS)),
+            errors=("membership failure",),
+        )
+
+
+def test_failed_rejects_metadata_complete_true() -> None:
+    with pytest.raises(ContractError, match="status|metadata_complete"):
+        _run(
+            status=RunStatus.FAILED,
+            membership_complete=False,
+            metadata_complete=True,
+            complete=False,
+            counts=_counts(raw_items=0, included_papers=0, complete_papers=0),
+            pagination=None,
+            errors=("metadata failure",),
+        )
+
+
+def test_failed_rejects_complete_papers() -> None:
+    with pytest.raises(ContractError, match="complete_papers"):
+        _run(
+            status=RunStatus.FAILED,
+            membership_complete=False,
+            metadata_complete=False,
+            complete=False,
+            counts=_counts(),
+            errors=("failed after papers",),
+        )
+
+
+def test_failed_preserves_nonzero_diagnostic_counts() -> None:
+    record = _run(
+        status=RunStatus.FAILED,
+        membership_complete=False,
+        metadata_complete=False,
+        complete=False,
+        counts=_counts(
+            raw_items=1,
+            included_papers=0,
+            complete_papers=0,
+            incomplete_papers=0,
+            excluded_non_papers=0,
+            duplicate_occurrences=0,
+            parse_rejects=1,
+            issue_records=1,
+        ),
+        pagination=Pagination(1, False, None),
+        errors=("authoritative membership failed",),
+    )
+
+    assert record.counts.raw_items == 1
+    assert record.counts.parse_rejects == 1
+    assert record.counts.issue_records == 1
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

@@ -510,8 +510,13 @@ class RunRecord:
             raise ContractError("complete: only complete status may be true")
         if self.status is RunStatus.PARTIAL and not self.counts.issue_records and not self.errors:
             raise ContractError("status: partial requires issue_records or errors")
-        if self.status is RunStatus.FAILED and not self.errors:
-            raise ContractError("errors: required for failed status")
+        if self.status is RunStatus.FAILED:
+            if self.membership_complete or self.metadata_complete or self.complete:
+                raise ContractError("status: failed requires all completeness fields false")
+            if self.counts.complete_papers:
+                raise ContractError("complete_papers: must be zero for failed status")
+            if not self.errors:
+                raise ContractError("errors: required for failed status")
         if self.status is RunStatus.NOT_APPLICABLE:
             if self.membership_complete or self.metadata_complete or self.complete:
                 raise ContractError("status: not_applicable requires incomplete run")
