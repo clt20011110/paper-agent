@@ -32,6 +32,15 @@ def _paper(
     field_sources=None,
     **overrides,
 ):
+    if field_sources is None:
+        field_sources = FieldSources(
+            "proceedings",
+            "proceedings",
+            "proceedings",
+            "proceedings" if doi is not None else None,
+            "proceedings" if landing_url is not None else None,
+            "proceedings" if pdf_url is not None else None,
+        )
     values = {
         "venue_id": "example-conf",
         "venue_name": "Example Conference",
@@ -46,15 +55,7 @@ def _paper(
         "landing_url": landing_url,
         "pdf_url": pdf_url,
         "access_status": access_status,
-        "field_sources": field_sources
-        or FieldSources(
-            "proceedings",
-            "proceedings",
-            "proceedings",
-            doi,
-            "proceedings" if landing_url is not None else None,
-            "proceedings" if pdf_url is not None else None,
-        ),
+        "field_sources": field_sources,
     }
     values.update(overrides)
     return PaperRecord(**values)
@@ -206,6 +207,7 @@ def test_paper_record_serializes_exact_schema_and_nested_sources() -> None:
         "landing_url",
         "pdf_url",
     ]
+    assert serialized["field_sources"]["doi"] == "proceedings"
     assert not hasattr(record, "__dict__")
     with pytest.raises(FrozenInstanceError):
         record.title = "other"
@@ -234,6 +236,11 @@ def test_paper_record_serializes_exact_schema_and_nested_sources() -> None:
 def test_paper_record_rejects_invalid_normalization_and_types(kwargs) -> None:
     with pytest.raises(ContractError):
         _paper(**kwargs)
+
+
+def test_paper_record_rejects_silent_title_normalization() -> None:
+    with pytest.raises(ContractError, match="title"):
+        _paper(title=" Title ")
 
 
 @pytest.mark.parametrize(
@@ -330,6 +337,16 @@ def test_parse_reject_allows_empty_optional_fields_and_authors() -> None:
 
     assert issue.authors == ()
     assert issue.to_dict()["source_name"] is None
+
+
+def test_issue_record_rejects_string_missing_field() -> None:
+    with pytest.raises(ContractError, match="missing_fields"):
+        _issue(missing_fields=("title",))
+
+
+def test_paper_helper_does_not_replace_falsey_invalid_field_sources() -> None:
+    with pytest.raises(ContractError, match="field_sources"):
+        _paper(field_sources={})
 
 
 @pytest.mark.parametrize(
