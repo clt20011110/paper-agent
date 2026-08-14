@@ -275,7 +275,7 @@ primary source 的非空字段默认不得被 enricher 覆盖；enricher 默认�
 
 字段规则：`schema_version` 是固定为 1 的 integer；`issue_kind` 只允许 `incomplete_paper`、`parse_reject`、`identity_conflict`、`field_conflict`；`venue_id` 是非空 canonical ID；`year` 是请求的四位数 integer；`source_name` 是 string 或 null，已知 authoritative source 时必须非 null；`source_id` 是 string 或 null，无可靠 ID 时可为 null；`source_locator` 是用于定位原始条目、页面、cursor 或来源记录的 string 或 null，不得含密码、cookie、token 或学校认证信息且不得用作 complete paper identity；`title` 是 normalized string 或 null；`authors` 是 normalized string array，无法解析时可以为空数组但不得为 null；`abstract` 是 normalized string 或 null；`doi` 是 normalized bare DOI 或 null；`landing_url` 是绝对 HTTP/HTTPS URL 或 null；`missing_fields` 是 string array，只允许 `title`、`authors`、`abstract`、`access_locator`，可以为空；`reason_codes` 是非空 snake_case string array，至少一个机器可读原因；`message` 是非空 human-readable string。
 
-`reason_codes` 示例包括 `missing_abstract`、`missing_authors`、`no_verified_pdf_or_doi`、`parse_failed`、`cursor_cycle`、`identity_conflict`、`doi_conflict`、`field_conflict`。incomplete included paper 必须有对应 issue；每个 unresolved parse item 必须有对应 `parse_reject` issue；excluded non-paper item 不进入 `issues.jsonl`，只进入 `run.json` 统计。不得写入任意 raw_metadata catch-all 或完整原始 provider response；message 也不得包含 credential、cookie 或 token。
+`reason_codes` 示例包括 `missing_abstract`、`missing_authors`、`no_verified_pdf_or_doi`、`parse_failed`、`identity_conflict`、`doi_conflict`、`field_conflict`。incomplete included paper 必须有对应 issue；每个 unresolved parse item 必须有对应 `parse_reject` issue；excluded non-paper item 不进入 `issues.jsonl`，只进入 `run.json` 统计。不得写入任意 raw_metadata catch-all 或完整原始 provider response；message 也不得包含 credential、cookie 或 token。
 
 issue_kind 到 completeness 的强制映射为：
 
@@ -366,7 +366,7 @@ paper-agent collect \
 | 0 | status 为 complete 或 not_applicable |
 | 2 | CLI 参数、catalog、输出目录前置条件错误 |
 | 3 | status 为 partial |
-| 4 | status 为 failed |
+| 4 | 已成功发布 run.json 且 status = failed；或不可恢复的运行时或 artifact publication failure，导致无法形成有效 run.json |
 
 exit code 4 表示以下任一情况：已成功发布 `run.json` 且 `status = failed`；或发生不可恢复的运行时或 artifact publication failure，导致无法形成有效 `run.json`。参数、catalog 和运行前输出目录前置条件错误使用 2；partial 使用 3；complete/not_applicable 使用 0。exit code 0 不代表一定产生论文；not_applicable 使用 0 但 run.json.status 必须明确；不得因 papers.jsonl 有部分有效论文就把 partial 改为 0。
 
