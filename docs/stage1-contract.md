@@ -1,6 +1,6 @@
 # Stage 1 metadata collection contract
 
-本文是 Stage 1-only 重构的规范性产品契约。后续实现和测试必须遵守本文。本阶段不定义 Python 类、JSON schema、CLI 退出码或 adapter API；这些内容将在后续小任务中定义。本文定义目标，不声明当前实现已经满足本文。
+本文是规范性外部产品契约，后续实现和测试必须遵守本文。本文已经定义 complete paper JSON representation、issue JSON representation、run JSON representation、output artifacts、run status、CLI 参数和退出码；仍不定义 Python 类、正式 JSON Schema 文件、adapter/enricher API 或内部实现细节。JSON representation 已定义不等于正式 JSON Schema 文件已定义。不得声明当前代码已经实现本文。
 
 ## 1. Goal
 
@@ -180,7 +180,9 @@ schema version 1 的顶层字段恰好为：`schema_version`、`venue_id`、`ven
 
 `doi` 非 null 时必须是小写 normalized bare DOI，不得包含 `https://doi.org/`、`http://doi.org/`、`http://dx.doi.org/`、`doi:` 或前后空白。有 verified direct PDF 时 DOI 可以为 null；没有 verified direct PDF 时 DOI 不得为 null。本任务不定义完整 DOI 正则表达式或 normalization 代码。
 
-`landing_url` 非 null 时必须是论文官方或 authoritative source 的绝对 HTTP/HTTPS 落地页；它不等于 direct PDF，不得被写入 `pdf_url` 作为替代。`pdf_url` 非 null 时必须是实际验证通过后的最终 direct PDF URL；未验证候选、登录页、SSO 页面、付费墙页面、DOI landing page、CAPTCHA 页面和 HTML 错误页都不得写入。本任务不定义具体 PDF probe 算法。
+`landing_url` 非 null 时必须是论文官方或 authoritative source 的绝对 HTTP/HTTPS 落地页；它不等于 direct PDF，不得被写入 `pdf_url` 作为替代。`pdf_url` 是调用者未来应再次请求的稳定 URL；系统必须已用普通匿名 HTTP 客户端、允许正常跟随重定向并取得 PDF 内容验证它。它可以是稳定的重定向入口，不要求等于最终 response URL；应优先保存稳定、canonical、可重复使用的候选 URL。不得保存短期签名 CDN URL、认证 token、session credential 或预期很快失效的最终重定向 URL；未验证候选、登录页、SSO 页面、付费墙页面、DOI landing page、CAPTCHA 页面和 HTML 错误页都不得写入。本任务不定义具体 PDF probe 算法。
+
+如果匿名请求当前能取得 PDF，但唯一可保存地址是短期临时 URL，该候选不得作为 durable direct PDF 输出；没有稳定 direct PDF 时，有 DOI 则使用 `doi_only`，没有 DOI 则该论文 incomplete。`field_sources.pdf_url` 记录稳定 URL 候选的来源，不是通用 probe 实现名称。
 
 `access_status` 的真值表为：
 
@@ -235,7 +237,7 @@ schema version 1 使用保守规范化：必须清理格式噪声，但不得改
 
 ### URL normalization
 
-`landing_url` 和 `pdf_url` 必须是绝对 HTTP/HTTPS URL，禁止用户名或密码；去除首尾空白，fragment 可以移除，query string 只有服务实际需要时才能保留。`pdf_url` 必须使用 probe 最终验证通过的 URL；不得通过给 `landing_url` 拼接 `.pdf`、`/pdf` 或类似后缀猜测 PDF。
+`landing_url` 和 `pdf_url` 必须是绝对 HTTP/HTTPS URL，禁止用户名或密码；去除首尾空白，fragment 可以移除，query string 只有服务实际需要时才能保留。`pdf_url` 必须使用已验证且可重复使用的稳定 URL 候选，不表示最终 response URL；不得通过给 `landing_url` 拼接 `.pdf`、`/pdf` 或类似后缀猜测 PDF，也不得保存短期最终重定向 URL。
 
 ## 9. Identity, deduplication, and enrichment
 
@@ -261,7 +263,7 @@ primary source 的非空字段默认不得被 enricher 覆盖；enricher 默认�
 
 ## 10. Output artifacts
 
-第一版一次运行输出到一个目录，目录中固定包含 `papers.jsonl`、`issues.jsonl`、`run.json`。只要输出目录已成功创建并进入运行阶段，这三个文件必须全部存在，允许 JSONL 文件为空。
+第一版一次运行输出到一个目录，目录中固定包含 `papers.jsonl`、`issues.jsonl`、`run.json`。对任何成功完成原子发布的 run outcome，正式输出目录必须包含这三个文件，允许 JSONL 文件为空；`run.json` 最后发布，只有最终 `run.json` 存在时调用者才可认为该 run 已正式发布。
 
 ### papers.jsonl
 
@@ -269,11 +271,26 @@ primary source 的非空字段默认不得被 enricher 覆盖；enricher 默认�
 
 ### issues.jsonl
 
-`issues.jsonl` 的每行必须始终包含且只包含以下顶层字段：`schema_version`、`issue_kind`、`venue_id`、`year`、`source_name`、`source_id`、`source_locator`、`title`、`authors`、`abstract`、`doi`、`landing_url`、`missing_fields`、`reason_codes`、`message`。
+`issues.jsonl` 只包含运行结束时仍未解决的 blocking issues；每行必须始终包含且只包含以下顶层字段：`schema_version`、`issue_kind`、`venue_id`、`year`、`source_name`、`source_id`、`source_locator`、`title`、`authors`、`abstract`、`doi`、`landing_url`、`missing_fields`、`reason_codes`、`message`。
 
 字段规则：`schema_version` 是固定为 1 的 integer；`issue_kind` 只允许 `incomplete_paper`、`parse_reject`、`identity_conflict`、`field_conflict`；`venue_id` 是非空 canonical ID；`year` 是请求的四位数 integer；`source_name` 是 string 或 null，已知 authoritative source 时必须非 null；`source_id` 是 string 或 null，无可靠 ID 时可为 null；`source_locator` 是用于定位原始条目、页面、cursor 或来源记录的 string 或 null，不得含密码、cookie、token 或学校认证信息且不得用作 complete paper identity；`title` 是 normalized string 或 null；`authors` 是 normalized string array，无法解析时可以为空数组但不得为 null；`abstract` 是 normalized string 或 null；`doi` 是 normalized bare DOI 或 null；`landing_url` 是绝对 HTTP/HTTPS URL 或 null；`missing_fields` 是 string array，只允许 `title`、`authors`、`abstract`、`access_locator`，可以为空；`reason_codes` 是非空 snake_case string array，至少一个机器可读原因；`message` 是非空 human-readable string。
 
 `reason_codes` 示例包括 `missing_abstract`、`missing_authors`、`no_verified_pdf_or_doi`、`parse_failed`、`cursor_cycle`、`identity_conflict`、`doi_conflict`、`field_conflict`。incomplete included paper 必须有对应 issue；每个 unresolved parse item 必须有对应 `parse_reject` issue；excluded non-paper item 不进入 `issues.jsonl`，只进入 `run.json` 统计。不得写入任意 raw_metadata catch-all 或完整原始 provider response；message 也不得包含 credential、cookie 或 token。
+
+issue_kind 到 completeness 的强制映射为：
+
+| issue_kind | completeness effect |
+|---|---|
+| `incomplete_paper` | `metadata_complete` 必须为 false |
+| `parse_reject` | `membership_complete` 必须为 false |
+| `identity_conflict` | `membership_complete` 必须为 false |
+| `field_conflict` | `metadata_complete` 必须为 false |
+
+任何 issue record 都必须使至少一个 completeness boolean 为 false，因此 `issue_records > 0 => complete = false`，不得出现两个 completeness boolean 都为 true 且 `issue_records > 0`。可靠解决的身份或字段差异不得继续作为 issue record，可以作为 warning；warning 不改变 completeness。DOI conflict 按 field conflict 处理，可靠解决前必须使 `metadata_complete` 为 false。
+
+### Blocking diagnostics
+
+Paper-level blockers 必须进入 `issues.jsonl`：incomplete paper、unresolved parse item、identity conflict、field/DOI conflict。Run-level membership blockers 必须进入 `run.json.errors`，不得伪造成 paper issue：cursor cycle、terminal cursor 未到达、authoritative request 中断、source total mismatch、parser census mismatch、applicable empty result 缺少 authoritative zero proof，以及其他无法绑定到单条论文的 membership failure。
 
 以下是缺少 abstract 但保留其他已取得字段的语法有效 `incomplete_paper` 示例：
 
@@ -303,7 +320,7 @@ primary source 的非空字段默认不得被 enricher 覆盖；enricher 默认�
 
 ### Atomic publication
 
-每个文件必须先写到同一输出目录中的临时文件，完成写入后使用原子 replace，且 `run.json` 必须最后发布。调用者只有看到最终 `run.json` 后才可以认为运行结束；不得先发布 status=complete 的 run.json 再继续写 papers.jsonl。中途中断留下的临时文件不属于正式输出。第一版不得覆盖已有正式输出文件：若目标目录已经包含 papers.jsonl、issues.jsonl 或 run.json 任一文件，命令必须在运行前失败；第一版不提供 `--force`。
+每个文件必须先写到同一输出目录中的临时文件，完成写入后使用原子 replace，且 `run.json` 必须最后发布。调用者只有看到最终 `run.json` 后才可以认为运行结束；不得先发布 status=complete 的 run.json 再继续写 papers.jsonl。中途中断留下的临时文件不属于正式输出。若写临时文件、flush、replace 或发布 run.json 失败，命令退出码为 4，不保证存在有效 run.json，也不得声称已发布 status=failed 的 run；实现应 best-effort 清理本次创建的临时文件，但不得删除或覆盖运行前已有的用户文件。若失败留下不完整正式文件，下一次运行仍按已有文件前置条件拒绝，由用户明确清理；第一版不提供 `--force`。
 
 ## 11. Run status and statistics
 
@@ -313,7 +330,7 @@ primary source 的非空字段默认不得被 enricher 覆盖；enricher 默认�
 
 ### partial
 
-partial 表示已经取得部分可信结果或诊断，但 membership_complete 或 metadata_complete 至少一个为 false。`papers.jsonl` 可以包含完整论文，`issues.jsonl` 必须解释未完成论文或 parse reject，complete 必须 false，且不得对用户显示为完整成功。必填摘要缺失、无 direct PDF 且无 DOI、cursor cycle、expected total mismatch、unresolved parse reject、identity conflict、enrichment 导致必填字段缺失，或 primary membership 有部分有效结果但请求中途中断，都必须是 partial。
+partial 表示已经取得部分可信结果或诊断，但 membership_complete 或 metadata_complete 至少一个为 false。`papers.jsonl` 可以包含完整论文，`issues.jsonl` 必须解释未完成论文或 parse reject，complete 必须 false，且不得对用户显示为完整成功。partial 必须满足 `issue_records > 0 OR errors 非空`；可以同时有 issue records 和 errors，errors 可以非空。warnings 只用于非阻塞信息，单独存在不得使 run 变成 partial，也不得替代 blocking issue 或 error。必填摘要缺失、无 direct PDF 且无 DOI、cursor cycle、expected total mismatch、unresolved parse reject、identity conflict、enrichment 导致必填字段缺失，或 primary membership 有部分有效结果但请求中途中断，都必须是 partial。
 
 ### failed
 
@@ -321,7 +338,7 @@ failed 表示无法取得可信 authoritative membership 集合，或 primary ad
 
 ### not_applicable
 
-not_applicable 表示 venue catalog 明确证明该 venue 在请求年份不存在、未举办、尚未创刊或已经终止；不得访问 provider，counts 全部为 0，pagination 为 null，三个 completeness boolean 均为 false，status 为 not_applicable。这不是“权威证明论文总数为零”的 applicable empty census；有明确 total=0 证明的 applicable empty census 可以是 complete，二者必须严格区分。
+not_applicable 表示 venue catalog 明确证明该 venue 在请求年份不存在、未举办、尚未创刊或已经终止；不得访问 provider，counts 全部为 0，pagination 为 null，三个 completeness boolean 均为 false，errors 必须为空，status 为 not_applicable。这不是“权威证明论文总数为零”的 applicable empty census；有明确 total=0 证明的 applicable empty census 可以是 complete，二者必须严格区分。
 
 ## 12. Command-line contract
 
@@ -351,7 +368,7 @@ paper-agent collect \
 | 3 | status 为 partial |
 | 4 | status 为 failed |
 
-输出目录创建失败使用 exit code 2 或 4：路径或已有文件前置条件错误用 2，运行过程中发生文件系统失败用 4。exit code 0 不代表一定产生论文；not_applicable 使用 0 但 run.json.status 必须明确。partial 必须用 3，failed 必须用 4；不得因 papers.jsonl 有部分有效论文就把 partial 改为 0。
+exit code 4 表示以下任一情况：已成功发布 `run.json` 且 `status = failed`；或发生不可恢复的运行时或 artifact publication failure，导致无法形成有效 `run.json`。参数、catalog 和运行前输出目录前置条件错误使用 2；partial 使用 3；complete/not_applicable 使用 0。exit code 0 不代表一定产生论文；not_applicable 使用 0 但 run.json.status 必须明确；不得因 papers.jsonl 有部分有效论文就把 partial 改为 0。
 
 ## 13. Non-goals
 
