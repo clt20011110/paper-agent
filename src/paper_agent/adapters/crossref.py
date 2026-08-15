@@ -20,6 +20,28 @@ _ROWS = 1000
 _ISSN_PATTERN = re.compile(r"[0-9]{4}-[0-9]{3}[0-9X]\Z")
 _SOURCE_KEYS = frozenset({"issn"})
 _MISSING = object()
+_EXPLICIT_NON_PAPER_TITLES_BY_VENUE = {
+    "acm transactions on design automation of electronic systems": frozenset(
+        {
+            "Introduction to the Special Issue on Embedded System Software/Tools".casefold(),
+        }
+    ),
+    "ieee transactions on very large scale integration (vlsi) systems": frozenset(
+        {"IEEE Foundation - Reflecting on 50 Years of Impact".casefold()}
+    ),
+    "ieee journal of solid-state circuits": frozenset(
+        {
+            "IEEE JOURNAL OF SOLID-STATE CIRCUITS".casefold(),
+            "IEEE Journal of Solid-State Circuits Information for Authors".casefold(),
+            "Information For Authors".casefold(),
+            "Together, we are advancing technology".casefold(),
+            "Introducing IEEE Collabratec".casefold(),
+            "TechRxiv".casefold(),
+            "TechRxiv: Share Your Preprint Research with the World!".casefold(),
+            "New Associate Editor".casefold(),
+        }
+    ),
+}
 
 
 class _PageFailure(Exception):
@@ -186,6 +208,10 @@ def _is_explicit_non_paper_title(title: str, venue_name: str, year: int) -> bool
         volume = title[len(index_prefix) :]
         if volume and all("0" <= character <= "9" for character in volume):
             return True
+
+    venue_titles = _EXPLICIT_NON_PAPER_TITLES_BY_VENUE.get(venue_name.casefold(), ())
+    if title.casefold() in venue_titles:
+        return True
 
     return (
         title.startswith("Guest Editorial")

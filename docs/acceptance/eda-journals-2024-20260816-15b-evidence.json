@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "acceptance": "stage1-15B.1",
+  "contract": "docs/stage1-contract.md",
+  "baseline_commit": "5403efeca1dbae52b7554d86a5ab057e2e9782fc",
+  "live_test": {
+    "test": "tests/stage1/live/test_eda_journals_live.py::test_eda_journals_2024_live_acceptance",
+    "result": "passed",
+    "pytest_summary": "1 passed in 290.87s (0:04:50)",
+    "output_root": "/tmp/paper-agent-eda-journals-2024-uvZkOF",
+    "fresh_empty_output_root": true,
+    "assertions": [
+      "all four runs have status=complete, membership_complete=true, metadata_complete=true, and complete=true",
+      "all four runs have errors=[], warnings=[], and issues.jsonl with zero records",
+      "raw_items is the Crossref source total and the count conservation identity holds",
+      "every included paper has a non-empty abstract, normalized DOI, and either a direct PDF URL or doi_only status",
+      "the observed venue-specific non-paper titles are absent from included papers"
+    ]
+  },
+  "source_count_note": {
+    "provided_jssc_expectation": {
+      "raw_items": 409,
+      "included_papers": 338,
+      "excluded_non_papers": 71,
+      "complete_papers": 338
+    },
+    "observed_jssc_count": {
+      "raw_items": 409,
+      "included_papers": 334,
+      "excluded_non_papers": 75,
+      "complete_papers": 334
+    },
+    "explanation": "The current JSSC Crossref page contains 34 occurrences of the explicitly observed non-paper titles. The prior 30 incomplete records covered only 30 of them; four additional records titled New Associate Editor had previously been enriched as complete. The title-layer rule excludes all exact observed non-paper titles, so retaining the four records would violate 15B.1.",
+    "not_a_doi_filter": true
+  },
+  "observed_non_paper_titles": {
+    "todaes": [
+      "Introduction to the Special Issue on Embedded System Software/Tools"
+    ],
+    "tvlsi": [
+      "IEEE Foundation - Reflecting on 50 Years of Impact"
+    ],
+    "jssc": [
+      "IEEE JOURNAL OF SOLID-STATE CIRCUITS",
+      "IEEE Journal of Solid-State Circuits Information for Authors",
+      "Information For Authors",
+      "Together, we are advancing technology",
+      "Introducing IEEE Collabratec",
+      "TechRxiv",
+      "TechRxiv: Share Your Preprint Research with the World!",
+      "New Associate Editor"
+    ]
+  },
+  "runs": [
+    {
+      "venue": "tcad",
+      "year": 2024,
+      "status": "complete",
+      "membership_complete": true,
+      "metadata_complete": true,
+      "complete": true,
+      "counts": {
+        "raw_items": 429,
+        "included_papers": 392,
+        "complete_papers": 392,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 37,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0
+      },
+      "pagination": {
+        "pages_fetched": 1,
+        "terminal_reached": true,
+        "source_total": {
+          "value": 429,
+          "scope": "raw_items"
+        }
+      },
+      "errors": [],
+      "warnings": [],
+      "artifacts": [
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/tcad-2024/run.json",
+          "sha256": "017390cf0f3eeea91c9feac750c65bdfa1ad6137b88b4eddcc8a17f564288e17"
+        },
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/tcad-2024/papers.jsonl",
+          "sha256": "233ded39f1fb4038b614a537d2578b9aa4a80e93615e0d57e26dafc412c4a61f"
+        },
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/tcad-2024/issues.jsonl",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "venue": "todaes",
+      "year": 2024,
+      "status": "complete",
+      "membership_complete": true,
+      "metadata_complete": true,
+      "complete": true,
+      "counts": {
+        "raw_items": 99,
+        "included_papers": 98,
+        "complete_papers": 98,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 1,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0
+      },
+      "pagination": {
+        "pages_fetched": 1,
+        "terminal_reached": true,
+        "source_total": {
+          "value": 99,
+          "scope": "raw_items"
+        }
+      },
+      "errors": [],
+      "warnings": [],
+      "artifacts": [
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/todaes-2024/run.json",
+          "sha256": "aefc43b8901daa056fbf6f9b6a1a2d27a0af1aecc36dda2daf5af52728d890f7"
+        },
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/todaes-2024/papers.jsonl",
+          "sha256": "92cccb05a8750f3988424888daee8d4d9f4f96e0d96b657c8656a8318b46c245"
+        },
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/todaes-2024/issues.jsonl",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "venue": "tvlsi",
+      "year": 2024,
+      "status": "complete",
+      "membership_complete": true,
+      "metadata_complete": true,
+      "complete": true,
+      "counts": {
+        "raw_items": 269,
+        "included_papers": 230,
+        "complete_papers": 230,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 39,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0
+      },
+      "pagination": {
+        "pages_fetched": 1,
+        "terminal_reached": true,
+        "source_total": {
+          "value": 269,
+          "scope": "raw_items"
+        }
+      },
+      "errors": [],
+      "warnings": [],
+      "artifacts": [
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/tvlsi-2024/run.json",
+          "sha256": "d9b1a136011776605e584c70fb8eb04c504475a8339adb119bb5e46388075006"
+        },
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/tvlsi-2024/papers.jsonl",
+          "sha256": "ac0484dccf89945fe128d357e624f884444338ca3053e864b1c52a2f53fad4bf"
+        },
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/tvlsi-2024/issues.jsonl",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "venue": "jssc",
+      "year": 2024,
+      "status": "complete",
+      "membership_complete": true,
+      "metadata_complete": true,
+      "complete": true,
+      "counts": {
+        "raw_items": 409,
+        "included_papers": 334,
+        "complete_papers": 334,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 75,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0
+      },
+      "pagination": {
+        "pages_fetched": 1,
+        "terminal_reached": true,
+        "source_total": {
+          "value": 409,
+          "scope": "raw_items"
+        }
+      },
+      "errors": [],
+      "warnings": [],
+      "artifacts": [
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/jssc-2024/run.json",
+          "sha256": "6d7c4c63c948d6a0b5ea303643430009ca924f2235ae7a6b230291a47d014cbe"
+        },
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/jssc-2024/papers.jsonl",
+          "sha256": "e879643eac3dcf2adc890db0c7ffa3901b29813314f328644d3d732c96eda704"
+        },
+        {
+          "path": "/tmp/paper-agent-eda-journals-2024-uvZkOF/jssc-2024/issues.jsonl",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    }
+  ]
+}

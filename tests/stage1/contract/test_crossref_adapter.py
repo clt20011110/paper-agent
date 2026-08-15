@@ -220,6 +220,68 @@ def test_explicit_crossref_non_paper_evidence_preserves_near_miss_research_items
     assert len(client.calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("venue_name", "title"),
+    [
+        (
+            "ACM Transactions on Design Automation of Electronic Systems",
+            "Introduction to the Special Issue on Embedded System Software/Tools",
+        ),
+        (
+            "IEEE Transactions on Very Large Scale Integration (VLSI) Systems",
+            "IEEE Foundation - Reflecting on 50 Years of Impact",
+        ),
+        (
+            "IEEE Journal of Solid-State Circuits",
+            "IEEE JOURNAL OF SOLID-STATE CIRCUITS",
+        ),
+        (
+            "IEEE Journal of Solid-State Circuits",
+            "IEEE Journal of Solid-State Circuits Information for Authors",
+        ),
+        ("IEEE Journal of Solid-State Circuits", "Information For Authors"),
+        (
+            "IEEE Journal of Solid-State Circuits",
+            "Together, we are advancing technology",
+        ),
+        ("IEEE Journal of Solid-State Circuits", "Introducing IEEE Collabratec"),
+        ("IEEE Journal of Solid-State Circuits", "TechRxiv"),
+        (
+            "IEEE Journal of Solid-State Circuits",
+            "TechRxiv: Share Your Preprint Research with the World!",
+        ),
+        ("IEEE Journal of Solid-State Circuits", "New Associate Editor"),
+    ],
+)
+def test_observed_non_paper_titles_are_exact_and_case_insensitive(
+    venue_name: str, title: str
+) -> None:
+    exact_item = _base_item()
+    exact_item["title"] = [title.swapcase()]
+    near_miss_item = _base_item()
+    near_miss_item["DOI"] = "10.5555/observed.near-miss"
+    near_miss_item["title"] = [f"{title} with research context"]
+
+    payload = _fixture("page-full.json")
+    message = payload["message"]
+    assert isinstance(message, dict)
+    message["total-results"] = 2
+    message["items"] = [exact_item, near_miss_item]
+    message.pop("next-cursor")
+    client = QueueTextClient([_response(payload)])
+
+    result = CrossrefSerialAdapter().collect(
+        replace(_spec(), name=venue_name), YEAR, client
+    )
+
+    assert [paper.title for paper in result.papers] == [
+        f"{title} with research context"
+    ]
+    assert result.excluded_non_papers == 1
+    assert result.parse_rejects == ()
+    assert result.raw_items == 2
+
+
 def test_duplicate_occurrence_and_identity_conflict_preserve_first_paper() -> None:
     client = QueueTextClient([_response(_fixture("duplicate-conflict.json"))])
 
