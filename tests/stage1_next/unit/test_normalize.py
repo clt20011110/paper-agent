@@ -149,6 +149,20 @@ def test_unmatched_angle_brackets_are_preserved_but_matched_tags_are_removed(
     assert normalize_module.normalize_text(value) == expected
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ('<img src="x">Figure', "Figure"),
+        ("A<hr>B", "A B"),
+        ("<p>First<p>Second", "First Second"),
+        ("<li>One<li>Two", "One Two"),
+        ("<div>Text", "Text"),
+    ],
+)
+def test_standalone_html_markup_is_removed_without_losing_boundaries(value, expected) -> None:
+    assert normalize_module.normalize_text(value) == expected
+
+
 @pytest.mark.parametrize("value", [True, 7, b"text", ["text"]])
 def test_text_non_string_values_raise_contract_error(value) -> None:
     with pytest.raises(ContractError):
