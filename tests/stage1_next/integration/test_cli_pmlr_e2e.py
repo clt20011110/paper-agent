@@ -15,7 +15,7 @@ VOLUME_URL = "https://proceedings.mlr.press/v235/"
 ADA_URL = "https://proceedings.mlr.press/v235/lovelace24a.html"
 TURING_URL = "https://proceedings.mlr.press/v235/turing24a.html"
 RAW_ADA_PDF = "https://raw.githubusercontent.com/mlresearch/v235/main/assets/lovelace24a/lovelace24a.pdf"
-SITE_ADA_PDF = "https://proceedings.mlr.press/v235/lovelace24a.pdf"
+SITE_ADA_PDF = "http://proceedings.mlr.press/v235/lovelace24a.pdf"
 CONTACT = "integration@example.org"
 
 

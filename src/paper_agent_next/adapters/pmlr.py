@@ -209,21 +209,17 @@ def _official_landing_url(base_url: str, href: str) -> str | None:
     return absolute
 
 
-def _source_native_pdf_url(
-    base_url: str, href: str, volume: str, slug: str
-) -> str | None:
+def _source_native_pdf_url(href: str, volume: str, slug: str) -> str | None:
     if not href or any(character.isspace() for character in href):
         return None
     try:
-        absolute = urljoin(base_url, href)
-        parsed = urlsplit(absolute)
+        parsed = urlsplit(href)
         hostname = parsed.hostname
         parsed.port
     except (TypeError, ValueError):
         return None
     if (
-        parsed.scheme != "https"
-        or hostname is None
+        hostname is None
         or parsed.username is not None
         or parsed.password is not None
         or parsed.port is not None
@@ -232,15 +228,17 @@ def _source_native_pdf_url(
     ):
         return None
     if (
-        hostname.casefold() == "raw.githubusercontent.com"
+        parsed.scheme == "https"
+        and hostname.casefold() == "raw.githubusercontent.com"
         and parsed.path == f"/mlresearch/{volume}/main/assets/{slug}/{slug}.pdf"
     ):
-        return absolute
+        return href
     if (
-        hostname.casefold() == _PMLR_HOST
+        parsed.scheme in {"http", "https"}
+        and hostname.casefold() == _PMLR_HOST
         and parsed.path == f"/{volume}/{slug}.pdf"
     ):
-        return absolute
+        return href
     return None
 
 
@@ -327,7 +325,7 @@ class PmlrAdapter:
             source_id, landing_url, slug = landing_candidates[0]
             pdf_candidates: list[str] = []
             for href in raw.hrefs:
-                candidate = _source_native_pdf_url(volume_url, href, volume, slug)
+                candidate = _source_native_pdf_url(href, volume, slug)
                 if candidate is not None:
                     pdf_candidates.append(candidate)
             pdf_candidates = list(dict.fromkeys(pdf_candidates))
