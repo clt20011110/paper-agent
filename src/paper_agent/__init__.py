@@ -1,3 +1,1 @@
-"""Paper Agent v2 core package."""
-
-__version__ = "2.0.0a0"
+"""Standalone Stage 1 paper collection contract package."""

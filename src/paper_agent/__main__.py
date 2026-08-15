@@ -1,4 +1,5 @@
-from .cli import entrypoint
+from .cli import main
 
 
-raise SystemExit(entrypoint())
+if __name__ == "__main__":
+    raise SystemExit(main())
