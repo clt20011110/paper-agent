@@ -100,6 +100,7 @@ def _paper(source_id: str = "paper-1", **overrides) -> CollectedPaper:
         "title": "A paper title",
         "authors": ("Ada Lovelace",),
         "abstract": "A paper abstract.",
+        "doi": None,
         "landing_url": f"https://example.test/{source_id}",
         "pdf_candidates": (f"https://example.test/{source_id}.pdf",),
     }
@@ -226,6 +227,7 @@ def test_complete_paper_preserves_identity_and_uses_direct_pdf_field_sources() -
         title=" <p>A Paper &amp; Title</p> ",
         authors=(" Ada Lovelace ",),
         abstract="<div> An abstract. </div>",
+        doi="https://doi.org/10.1234/EXAMPLE.1",
         pdf_candidates=(candidate,),
     )
     result = _result(
@@ -244,7 +246,7 @@ def test_complete_paper_preserves_identity_and_uses_direct_pdf_field_sources() -
     assert record.title == "A Paper & Title"
     assert record.authors == ("Ada Lovelace",)
     assert record.abstract == "An abstract."
-    assert record.doi is None
+    assert record.doi == "10.1234/example.1"
     assert record.landing_url == paper.landing_url
     assert record.pdf_url == candidate
     assert record.access_status is AccessStatus.DIRECT_PDF
@@ -252,7 +254,7 @@ def test_complete_paper_preserves_identity_and_uses_direct_pdf_field_sources() -
         "title": "authoritative",
         "authors": "authoritative",
         "abstract": "authoritative",
-        "doi": None,
+        "doi": "authoritative",
         "landing_url": "authoritative",
         "pdf_url": "authoritative",
     }
@@ -273,6 +275,48 @@ def test_complete_paper_preserves_identity_and_uses_direct_pdf_field_sources() -
     }
     assert outcome.run.pagination == result.pagination
     assert outcome.run.errors == ()
+
+
+def test_valid_doi_without_verified_pdf_is_complete_doi_only() -> None:
+    paper = _paper(
+        "doi-only",
+        doi=" DOI:10.1234/DOI.1 ",
+        pdf_candidates=(),
+    )
+
+    outcome = _collect(
+        _result(
+            (paper,),
+            raw_items=1,
+            pagination=Pagination(1, True, SourceTotal(1, SourceTotalScope.RAW_ITEMS)),
+        )
+    )
+
+    assert outcome.issues == ()
+    record = outcome.papers[0]
+    assert record.doi == "10.1234/doi.1"
+    assert record.pdf_url is None
+    assert record.access_status is AccessStatus.DOI_ONLY
+    assert record.field_sources.to_dict()["doi"] == "authoritative"
+    assert record.field_sources.to_dict()["pdf_url"] is None
+    assert outcome.run.status is RunStatus.COMPLETE
+    assert outcome.run.complete is True
+
+
+@pytest.mark.parametrize("doi", [None, "not-a-doi"], ids=["missing", "invalid"])
+def test_missing_or_invalid_doi_without_verified_pdf_is_incomplete(doi: str | None) -> None:
+    paper = _paper("no-access", doi=doi, pdf_candidates=())
+
+    outcome = _collect(_result((paper,), raw_items=1))
+
+    assert outcome.papers == ()
+    assert len(outcome.issues) == 1
+    issue = outcome.issues[0]
+    assert issue.doi is None
+    assert issue.missing_fields == (MissingField.ACCESS_LOCATOR,)
+    assert issue.reason_codes == ("no_verified_pdf_or_doi",)
+    assert outcome.run.status is RunStatus.PARTIAL
+    assert outcome.run.complete is False
 
 
 def test_normalized_title_repeated_abstract_is_incomplete() -> None:

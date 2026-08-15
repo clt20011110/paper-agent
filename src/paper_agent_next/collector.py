@@ -19,7 +19,7 @@ from .models import (
     RunStatus,
     SourceTotalScope,
 )
-from .normalize import normalize_text
+from .normalize import normalize_doi, normalize_text
 
 __all__ = ["CollectionOutcome", "collect_venue_year"]
 
@@ -116,13 +116,14 @@ def collect_venue_year(
         abstract = normalize_text(paper.abstract)
         if title is not None and abstract is not None and title == abstract:
             abstract = None
-        access = resolve_access(paper.pdf_candidates, None, http_client)
+        doi = normalize_doi(paper.doi)
+        access = resolve_access(paper.pdf_candidates, doi, http_client)
 
         if (
             title is not None
             and authors
             and abstract is not None
-            and access.access_status is AccessStatus.DIRECT_PDF
+            and access.access_status in {AccessStatus.DIRECT_PDF, AccessStatus.DOI_ONLY}
         ):
             papers.append(
                 PaperRecord(
@@ -135,7 +136,7 @@ def collect_venue_year(
                     title=title,
                     authors=authors,
                     abstract=abstract,
-                    doi=None,
+                    doi=doi,
                     landing_url=paper.landing_url,
                     pdf_url=access.pdf_url,
                     access_status=access.access_status,
@@ -143,9 +144,9 @@ def collect_venue_year(
                         title=result.source_name,
                         authors=result.source_name,
                         abstract=result.source_name,
-                        doi=None,
+                        doi=result.source_name if doi is not None else None,
                         landing_url=result.source_name,
-                        pdf_url=result.source_name,
+                        pdf_url=result.source_name if access.pdf_url is not None else None,
                     ),
                 )
             )
@@ -162,7 +163,7 @@ def collect_venue_year(
         if abstract is None:
             missing_fields.append(MissingField.ABSTRACT)
             reason_codes.append("missing_abstract")
-        if access.access_status is not AccessStatus.DIRECT_PDF:
+        if access.access_status not in {AccessStatus.DIRECT_PDF, AccessStatus.DOI_ONLY}:
             missing_fields.append(MissingField.ACCESS_LOCATOR)
             reason_codes.append(access.reason_code)
         issues.append(
@@ -176,7 +177,7 @@ def collect_venue_year(
                 title=title,
                 authors=authors,
                 abstract=abstract,
-                doi=None,
+                doi=doi,
                 landing_url=paper.landing_url,
                 missing_fields=tuple(missing_fields),
                 reason_codes=tuple(reason_codes),

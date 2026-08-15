@@ -259,6 +259,7 @@ def test_collection_result_rejects_census_mismatch_and_mutable_collections() -> 
         title=None,
         authors=(),
         abstract=None,
+        doi=None,
         landing_url="https://proceedings.mlr.press/v1/paper.html",
         pdf_candidates=(),
     )

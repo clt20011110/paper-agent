@@ -33,6 +33,7 @@ class CollectedPaper:
     title: str | None
     authors: tuple[str, ...]
     abstract: str | None
+    doi: str | None
     landing_url: str
     pdf_candidates: tuple[str, ...]
 
@@ -46,6 +47,8 @@ class CollectedPaper:
             _require_text(author, f"authors[{index}]")
         if self.abstract is not None:
             _require_text(self.abstract, "abstract")
+        if self.doi is not None:
+            _require_text(self.doi, "doi")
         _require_text(self.landing_url, "landing_url")
         if not isinstance(self.pdf_candidates, tuple):
             raise ContractError("pdf_candidates: must be a tuple")

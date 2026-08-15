@@ -334,6 +334,7 @@ class PmlrAdapter:
                 title=raw.title,
                 authors=raw.authors,
                 abstract=None,
+                doi=None,
                 landing_url=landing_url,
                 pdf_candidates=tuple(pdf_candidates),
             )
@@ -345,11 +346,13 @@ class PmlrAdapter:
                 prior.title,
                 prior.authors,
                 prior.landing_url,
+                prior.doi,
                 prior.pdf_candidates,
             ) == (
                 candidate.title,
                 candidate.authors,
                 candidate.landing_url,
+                candidate.doi,
                 candidate.pdf_candidates,
             ):
                 duplicate_occurrences += 1
