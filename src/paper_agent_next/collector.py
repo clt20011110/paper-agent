@@ -114,6 +114,8 @@ def collect_venue_year(
             if (author := normalize_text(raw_author)) is not None
         )
         abstract = normalize_text(paper.abstract)
+        if title is not None and abstract is not None and title == abstract:
+            abstract = None
         access = resolve_access(paper.pdf_candidates, None, http_client)
 
         if (

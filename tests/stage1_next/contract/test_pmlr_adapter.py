@@ -19,7 +19,7 @@ RAW_ADA_PDF = "https://raw.githubusercontent.com/mlresearch/v235/main/assets/lov
 
 
 class FakeTextClient:
-    def __init__(self, responses: dict[str, str]) -> None:
+    def __init__(self, responses: dict[str, str | BaseException]) -> None:
         self.responses = responses
         self.calls: list[str] = []
 
@@ -29,7 +29,10 @@ class FakeTextClient:
             raise AssertionError(f"unexpected offline URL: {url}")
         if url.casefold().endswith(".pdf"):
             raise AssertionError("the adapter must not request PDF bytes")
-        return self.responses[url]
+        response = self.responses[url]
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 def _fixture(name: str) -> str:
@@ -82,6 +85,27 @@ def test_collects_authoritative_membership_and_reconciles_every_occurrence() -> 
         + result.duplicate_occurrences
         + len(result.parse_rejects)
     )
+    assert result.pagination == Pagination(1, True, None)
+    assert client.calls == [VOLUME_URL, ADA_URL, TURING_URL]
+
+
+def test_detail_collection_error_keeps_paper_and_continues_membership() -> None:
+    client = _client(details={ADA_URL: CollectionError("detail request failed")})
+
+    result = PmlrAdapter().collect(load_venue_spec("icml"), 2024, client)
+
+    assert [paper.source_id for paper in result.papers] == [
+        "v235/lovelace24a",
+        "v235/turing24a",
+    ]
+    ada, turing = result.papers
+    assert ada.title == "Reliable Small Models & Graphs"
+    assert ada.authors == ("Ada Lovelace", "Grace Hopper")
+    assert ada.abstract is None
+    assert ada.landing_url == ADA_URL
+    assert ada.pdf_candidates == (RAW_ADA_PDF,)
+    assert turing.abstract == "Parallel inference reduces latency. It also preserves & checks accuracy."
+    assert result.raw_items == 5
     assert result.pagination == Pagination(1, True, None)
     assert client.calls == [VOLUME_URL, ADA_URL, TURING_URL]
 

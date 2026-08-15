@@ -364,11 +364,17 @@ class PmlrAdapter:
         papers = []
         for source_id in ordered_ids:
             candidate = included_by_id[source_id]
-            detail_parser = _PmlrHtmlParser("detail")
-            detail_parser.feed(_read_html(http_client, candidate.landing_url))
-            detail_parser.close()
-            detail_parser.finish()
-            papers.append(replace(candidate, abstract=detail_parser.abstract))
+            try:
+                detail_html = _read_html(http_client, candidate.landing_url)
+            except CollectionError:
+                abstract = None
+            else:
+                detail_parser = _PmlrHtmlParser("detail")
+                detail_parser.feed(detail_html)
+                detail_parser.close()
+                detail_parser.finish()
+                abstract = detail_parser.abstract
+            papers.append(replace(candidate, abstract=abstract))
 
         return CollectionResult(
             source_name=self.source_name,

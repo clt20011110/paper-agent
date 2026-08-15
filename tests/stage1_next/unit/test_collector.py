@@ -75,7 +75,7 @@ class FixtureResponse:
 
 
 class PmlrFixtureOpener:
-    def __init__(self, responses: dict[str, bytes]) -> None:
+    def __init__(self, responses: dict[str, bytes | BaseException]) -> None:
         self.responses = responses
         self.calls: list[tuple[object, float]] = []
         self.responses_seen: list[FixtureResponse] = []
@@ -85,10 +85,13 @@ class PmlrFixtureOpener:
         url = request.full_url
         if url not in self.responses:
             raise AssertionError(f"unexpected offline URL: {url}")
+        response = self.responses[url]
+        if isinstance(response, BaseException):
+            raise response
         content_type = "application/pdf" if url == RAW_ADA_PDF else "text/html; charset=utf-8"
-        response = FixtureResponse(self.responses[url], content_type)
-        self.responses_seen.append(response)
-        return response
+        fixture_response = FixtureResponse(response, content_type)
+        self.responses_seen.append(fixture_response)
+        return fixture_response
 
 
 def _paper(source_id: str = "paper-1", **overrides) -> CollectedPaper:
@@ -270,6 +273,73 @@ def test_complete_paper_preserves_identity_and_uses_direct_pdf_field_sources() -
     }
     assert outcome.run.pagination == result.pagination
     assert outcome.run.errors == ()
+
+
+def test_normalized_title_repeated_abstract_is_incomplete() -> None:
+    candidate = "https://example.test/repeated.pdf"
+    paper = _paper(
+        "repeated",
+        title="<p> Repeated Title </p>",
+        abstract="<div>Repeated   Title</div>",
+        pdf_candidates=(candidate,),
+    )
+
+    outcome = _collect(
+        _result(
+            (paper,),
+            raw_items=1,
+            pagination=Pagination(1, True, SourceTotal(1, SourceTotalScope.RAW_ITEMS)),
+        ),
+        _pdf_client(candidate),
+    )
+
+    assert outcome.papers == ()
+    assert len(outcome.issues) == 1
+    issue = outcome.issues[0]
+    assert issue.missing_fields == (MissingField.ABSTRACT,)
+    assert issue.reason_codes == ("missing_abstract",)
+    assert issue.title == "Repeated Title"
+    assert issue.abstract is None
+    assert outcome.run.counts.to_dict() == {
+        "raw_items": 1,
+        "included_papers": 1,
+        "complete_papers": 0,
+        "incomplete_papers": 1,
+        "excluded_non_papers": 0,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 1,
+    }
+    assert outcome.run.membership_complete is True
+    assert outcome.run.metadata_complete is False
+    assert outcome.run.complete is False
+    assert outcome.run.status is RunStatus.PARTIAL
+
+
+def test_nonidentical_normalized_abstract_remains_complete() -> None:
+    candidate = "https://example.test/normal.pdf"
+    paper = _paper(
+        "normal",
+        title="Repeated Title",
+        abstract="repeated title",
+        pdf_candidates=(candidate,),
+    )
+
+    outcome = _collect(
+        _result(
+            (paper,),
+            raw_items=1,
+            pagination=Pagination(1, True, SourceTotal(1, SourceTotalScope.RAW_ITEMS)),
+        ),
+        _pdf_client(candidate),
+    )
+
+    assert len(outcome.papers) == 1
+    assert outcome.issues == ()
+    assert outcome.papers[0].abstract == "repeated title"
+    assert outcome.run.counts.complete_papers == 1
+    assert outcome.run.status is RunStatus.COMPLETE
+    assert outcome.run.complete is True
 
 
 def test_normalization_keeps_author_order_duplicates_and_distinct_source_membership() -> None:
@@ -579,3 +649,85 @@ def test_real_pmlr_caller_is_complete_vertical_slice_without_network_or_files(mo
     assert opener.responses_seen[-1].read_limits == [4096]
     assert all(passed_timeout == 6.5 for _, passed_timeout in opener.calls)
     assert tuple(tmp_path.iterdir()) == output_before
+
+
+def test_real_pmlr_detail_failure_is_partial_with_membership_preserved(monkeypatch) -> None:
+    volume = f"""\
+    <html><body>
+      <div class="paper">
+        <p class="title">Failed Detail</p>
+        <span class="authors"><a>Ada Lovelace</a></span>
+        <a href="lovelace24a.html">abs</a>
+        <a href="{RAW_ADA_PDF}">Download PDF</a>
+      </div>
+      <div class="paper">
+        <p class="title">Later Detail</p>
+        <span class="authors"><a>Alan Turing</a></span>
+        <a href="turing24a.html">abs</a>
+      </div>
+    </body></html>
+    """
+    responses = {
+        VOLUME_URL: volume.encode(),
+        ADA_URL: CollectionError("detail request failed"),
+        TURING_URL: (FIXTURES / "turing24a.html").read_bytes(),
+        RAW_ADA_PDF: b"%PDF-1.7\n" + b"x" * 10000,
+    }
+    opener = PmlrFixtureOpener(responses)
+    monkeypatch.setattr(http_module, "urlopen", opener)
+
+    outcome = collect_venue_year(
+        load_venue_spec("icml"),
+        2024,
+        PmlrAdapter(),
+        HttpClient("collector@example.org", 6.5),
+    )
+
+    assert outcome.papers == ()
+    assert outcome.run.status is RunStatus.PARTIAL
+    assert outcome.run.status is not RunStatus.FAILED
+    assert outcome.run.membership_complete is True
+    assert outcome.run.metadata_complete is False
+    assert outcome.run.complete is False
+    assert outcome.run.counts.to_dict() == {
+        "raw_items": 2,
+        "included_papers": 2,
+        "complete_papers": 0,
+        "incomplete_papers": 2,
+        "excluded_non_papers": 0,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 2,
+    }
+    failed_detail = outcome.issues[0]
+    assert failed_detail.source_id == "v235/lovelace24a"
+    assert failed_detail.missing_fields == (MissingField.ABSTRACT,)
+    assert failed_detail.reason_codes == ("missing_abstract",)
+    assert [request.full_url for request, _ in opener.calls] == [
+        VOLUME_URL,
+        ADA_URL,
+        TURING_URL,
+        RAW_ADA_PDF,
+    ]
+
+
+def test_real_pmlr_volume_failure_remains_failed(monkeypatch) -> None:
+    opener = PmlrFixtureOpener({VOLUME_URL: CollectionError("volume request failed")})
+    monkeypatch.setattr(http_module, "urlopen", opener)
+
+    outcome = collect_venue_year(
+        load_venue_spec("icml"),
+        2024,
+        PmlrAdapter(),
+        HttpClient("collector@example.org", 6.5),
+    )
+
+    assert outcome.papers == ()
+    assert outcome.issues == ()
+    assert outcome.run.status is RunStatus.FAILED
+    assert outcome.run.membership_complete is False
+    assert outcome.run.metadata_complete is False
+    assert outcome.run.complete is False
+    assert outcome.run.counts.raw_items == 0
+    assert outcome.run.errors == ("authoritative membership collection failed",)
+    assert [request.full_url for request, _ in opener.calls] == [VOLUME_URL]
