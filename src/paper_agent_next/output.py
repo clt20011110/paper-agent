@@ -9,7 +9,7 @@ from typing import Sequence
 from .errors import ContractError, InputError, PublicationError
 from .models import IssueRecord, PaperRecord, RunRecord
 
-__all__ = ["publish_artifacts"]
+__all__ = ["prepare_output_dir", "publish_artifacts"]
 
 
 _ARTIFACT_NAMES = ("papers.jsonl", "issues.jsonl", "run.json")
@@ -74,7 +74,7 @@ def _sorted_papers(papers: Sequence[PaperRecord]) -> tuple[PaperRecord, ...]:
     )
 
 
-def _prepare_output_dir(output_dir: Path) -> None:
+def prepare_output_dir(output_dir: Path) -> None:
     try:
         if os.path.lexists(output_dir):
             if not output_dir.is_dir():
@@ -151,7 +151,7 @@ def publish_artifacts(
     )
 
     output_dir = Path(output_dir)
-    _prepare_output_dir(output_dir)
+    prepare_output_dir(output_dir)
 
     unpublished: list[Path] = []
     try:

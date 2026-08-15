@@ -89,3 +89,38 @@ def test_collector_does_not_import_concrete_adapters_output_loading_cli_or_old_p
                 violations.append(f"{collector_path}:{node.lineno}: forbidden layer import {module}")
 
     assert not violations, "\n".join(violations)
+
+
+def test_cli_has_no_static_concrete_adapter_old_package_or_loading_import() -> None:
+    cli_path = _package_root() / "cli.py"
+    tree = ast.parse(cli_path.read_text(encoding="utf-8"), filename=str(cli_path))
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [("." * node.level) + (node.module or "")]
+        else:
+            continue
+        for module in modules:
+            relative = module.lstrip(".")
+            if _is_old_package(module) or relative == "loading":
+                violations.append(f"{cli_path}:{node.lineno}: forbidden import {module}")
+            elif relative.startswith("adapters.") and relative != "adapters.base":
+                violations.append(f"{cli_path}:{node.lineno}: concrete adapter import {module}")
+
+    assert not violations, "\n".join(violations)
+
+
+def test_main_module_only_imports_cli_main() -> None:
+    main_path = _package_root() / "__main__.py"
+    tree = ast.parse(main_path.read_text(encoding="utf-8"), filename=str(main_path))
+    imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
+
+    assert len(imports) == 1
+    import_node = imports[0]
+    assert isinstance(import_node, ast.ImportFrom)
+    assert import_node.level == 1
+    assert import_node.module == "cli"
+    assert [alias.name for alias in import_node.names] == ["main"]

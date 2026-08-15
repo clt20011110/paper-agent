@@ -266,6 +266,46 @@ def test_contract_validation_happens_before_directory_creation(tmp_path: Path) -
     assert not venue_dir.exists()
 
 
+def test_prepare_output_dir_is_public_and_idempotent_for_clean_directories(tmp_path: Path) -> None:
+    assert output_module.__all__ == ["prepare_output_dir", "publish_artifacts"]
+    output_dir = tmp_path / "clean"
+
+    output_module.prepare_output_dir(output_dir)
+    output_module.prepare_output_dir(output_dir)
+
+    assert output_dir.is_dir()
+    assert list(output_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("artifact_name", ["papers.jsonl", "issues.jsonl", "run.json"])
+def test_prepare_output_dir_rejects_existing_formal_artifacts(
+    tmp_path: Path, artifact_name: str
+) -> None:
+    output_dir = tmp_path / artifact_name
+    output_dir.mkdir()
+    (output_dir / artifact_name).write_bytes(b"keep")
+
+    with pytest.raises(InputError):
+        output_module.prepare_output_dir(output_dir)
+
+
+def test_publish_artifacts_reuses_public_prepare_output_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "published"
+    calls: list[Path] = []
+    real_prepare = output_module.prepare_output_dir
+
+    def recording_prepare(path: Path) -> None:
+        calls.append(path)
+        real_prepare(path)
+
+    monkeypatch.setattr(output_module, "prepare_output_dir", recording_prepare)
+    output_module.publish_artifacts(output_dir, [], [], _complete_run())
+
+    assert calls == [output_dir]
+
+
 def test_existing_artifact_and_non_directory_are_input_errors_without_overwrite(
     tmp_path: Path,
 ) -> None:
