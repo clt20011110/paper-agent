@@ -9,7 +9,7 @@ from paper_agent_next.catalog import load_venue_spec
 from paper_agent_next.collector import collect_venue_year
 from paper_agent_next.enrichers.base import EnrichmentPatch, FrozenPaper
 from paper_agent_next.errors import ContractError, EnrichmentError
-from paper_agent_next.models import Pagination, SourceIdentity
+from paper_agent_next.models import MissingField, Pagination, SourceIdentity
 from paper_agent_next.http import PrefixResponse
 
 
@@ -110,6 +110,33 @@ def test_semantic_scholar_batches_at_fixed_500_and_matches_doi_not_position() ->
     assert first_patch.abstract == "Abstract 0"
 
 
+@pytest.mark.parametrize(
+    "response_doi",
+    ["10.1234/EXAMPLE.1", "DOI:10.1234/EXAMPLE.1"],
+    ids=["case-insensitive", "doi-prefix"],
+)
+def test_semantic_scholar_normalizes_response_doi_before_exact_binding(
+    response_doi: str,
+) -> None:
+    from paper_agent_next.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    papers = (
+        _view("paper-1", doi="10.1234/example.1"),
+        _view("paper-2", doi="10.1234/example.2"),
+    )
+    response = [
+        _s2_result("DOI:10.1234/EXAMPLE.2", abstract="Abstract 2"),
+        _s2_result(response_doi, abstract="Abstract 1"),
+    ]
+
+    patches = SemanticScholarEnricher().enrich(papers, _JsonClient([response]))
+
+    assert {
+        patch.identity.source_id: patch.abstract
+        for patch in patches
+    } == {"paper-1": "Abstract 1", "paper-2": "Abstract 2"}
+
+
 def test_semantic_scholar_null_no_result_and_no_doi_do_not_request() -> None:
     from paper_agent_next.enrichers.semantic_scholar import SemanticScholarEnricher
 
@@ -134,14 +161,45 @@ def test_semantic_scholar_null_no_result_and_no_doi_do_not_request() -> None:
         [{"externalIds": {"DOI": "10.1234/example.1"}}, {"externalIds": {"DOI": "10.1234/example.1"}}],
         [{"externalIds": {"DOI": "10.1234/example.1"}, "abstract": 3}],
         [{"externalIds": {"DOI": "10.1234/example.1"}, "openAccessPdf": []}],
+        [{"externalIds": {"DOI": "not-a-doi"}}],
     ],
-    ids=["wrong-root", "wrong-count", "doi-mismatch", "duplicate", "bad-abstract", "bad-pdf"],
+    ids=[
+        "wrong-root",
+        "wrong-count",
+        "doi-mismatch",
+        "duplicate",
+        "bad-abstract",
+        "bad-pdf",
+        "invalid-doi",
+    ],
 )
 def test_semantic_scholar_bad_schema_is_typed_failure(response: object) -> None:
     from paper_agent_next.enrichers.semantic_scholar import SemanticScholarEnricher
 
     with pytest.raises(EnrichmentError):
         SemanticScholarEnricher().enrich((_view(),), _JsonClient([response]))
+
+
+def test_semantic_scholar_strips_nonempty_open_access_pdf_url() -> None:
+    from paper_agent_next.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    patches = SemanticScholarEnricher().enrich(
+        (_view(),),
+        _JsonClient(
+            [
+                [
+                    _s2_result(
+                        "10.1234/example.1",
+                        abstract=None,
+                        url="  https://example.test/paper.pdf  ",
+                    )
+                ]
+            ]
+        ),
+    )
+
+    assert patches[0].abstract is None
+    assert patches[0].pdf_candidates == ("https://example.test/paper.pdf",)
 
 
 class _Adapter:
@@ -172,6 +230,15 @@ class _PrefixClient:
         return self.responses.get(url, PrefixResponse("text/html", b"login"))
 
 
+class _SemanticScholarClient(_PrefixClient):
+    def __init__(self, batch: list[object], responses: dict[str, PrefixResponse]) -> None:
+        super().__init__(responses)
+        self.batch = batch
+
+    def post_json(self, url: str, payload: object) -> object:
+        return self.batch
+
+
 class _PatchingEnricher:
     source_name = "enricher"
 
@@ -186,7 +253,12 @@ class _PatchingEnricher:
         return (self.patch,)
 
 
-def _collected(*, abstract: str | None, doi: str | None = None) -> CollectedPaper:
+def _collected(
+    *,
+    abstract: str | None,
+    doi: str | None = None,
+    pdf_candidates: tuple[str, ...] = ("https://primary.test/paper.pdf",),
+) -> CollectedPaper:
     return CollectedPaper(
         source_id="paper-1",
         title="A paper title",
@@ -194,7 +266,7 @@ def _collected(*, abstract: str | None, doi: str | None = None) -> CollectedPape
         abstract=abstract,
         doi=doi,
         landing_url="https://example.test/paper-1",
-        pdf_candidates=("https://primary.test/paper.pdf",),
+        pdf_candidates=pdf_candidates,
     )
 
 
@@ -254,6 +326,62 @@ def test_collector_never_overwrites_primary_abstract() -> None:
     assert outcome.papers[0].abstract == "Primary abstract"
     assert outcome.papers[0].field_sources.abstract == "primary"
     assert outcome.run.complete is True
+
+
+def test_collector_discards_enriched_abstract_that_normalizes_to_title() -> None:
+    patch = EnrichmentPatch(
+        _identity(),
+        abstract="<div> A paper   title </div>",
+    )
+    enricher = _PatchingEnricher(patch)
+    client = _PrefixClient(
+        {"https://primary.test/paper.pdf": PrefixResponse("application/pdf", b"%PDF-1.7")}
+    )
+
+    outcome = collect_venue_year(
+        load_venue_spec("dac"),
+        2024,
+        _Adapter(_collected(abstract=None)),
+        client,  # type: ignore[arg-type]
+        enrichers=(enricher,),
+    )
+
+    assert outcome.papers == ()
+    assert len(outcome.issues) == 1
+    issue = outcome.issues[0]
+    assert issue.source_name == "primary"
+    assert issue.abstract is None
+    assert issue.missing_fields == (MissingField.ABSTRACT,)
+    assert issue.reason_codes == ("missing_abstract",)
+    assert outcome.run.complete is False
+
+
+def test_semantic_scholar_pdf_candidate_is_stripped_before_access_verification() -> None:
+    from paper_agent_next.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    candidate = "https://enricher.test/paper.pdf"
+    client = _SemanticScholarClient(
+        [
+            _s2_result(
+                "10.1234/example.1",
+                abstract="Enriched abstract",
+                url=f"  {candidate}  ",
+            )
+        ],
+        {candidate: PrefixResponse("application/pdf", b"%PDF-1.7")},
+    )
+
+    outcome = collect_venue_year(
+        load_venue_spec("dac"),
+        2024,
+        _Adapter(_collected(abstract=None, doi="10.1234/example.1", pdf_candidates=())),
+        client,  # type: ignore[arg-type]
+        enrichers=(SemanticScholarEnricher(),),
+    )
+
+    assert outcome.run.complete is True
+    assert outcome.papers[0].pdf_url == candidate
+    assert client.calls == [candidate]
 
 
 @pytest.mark.parametrize("kind", ["unknown", "duplicate", "failure"])

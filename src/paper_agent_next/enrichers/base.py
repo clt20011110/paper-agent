@@ -3,14 +3,11 @@
 from dataclasses import dataclass
 from typing import Protocol
 
-from ..errors import ContractError, EnrichmentError
+from ..errors import ContractError
 from ..models import SourceIdentity
 
 __all__ = [
-    "EnrichmentError",
     "FrozenPaper",
-    "FrozenPaperView",
-    "PaperView",
     "EnrichmentPatch",
     "JsonHttpClient",
     "MetadataEnricher",
@@ -54,10 +51,6 @@ class FrozenPaper:
         _require_text(self.doi, "doi", allow_none=True)
         _require_text(self.landing_url, "landing_url", allow_none=True)
         _require_text_tuple(self.pdf_candidates, "pdf_candidates")
-
-
-FrozenPaperView = FrozenPaper
-PaperView = FrozenPaper
 
 
 @dataclass(frozen=True, slots=True)

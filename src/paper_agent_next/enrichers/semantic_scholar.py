@@ -3,7 +3,7 @@
 from collections.abc import Iterable
 
 from ..errors import ContractError, EnrichmentError
-from ..normalize import normalize_text
+from ..normalize import normalize_doi, normalize_text
 from .base import EnrichmentPatch, FrozenPaper, JsonHttpClient
 
 __all__ = ["SemanticScholarEnricher"]
@@ -77,8 +77,11 @@ class SemanticScholarEnricher:
                 external_ids = item.get("externalIds")
                 if not isinstance(external_ids, dict):
                     raise _schema_error("result item has no externalIds object")
-                response_doi = external_ids.get("DOI")
-                if not isinstance(response_doi, str) or response_doi not in papers_by_doi:
+                raw_response_doi = external_ids.get("DOI")
+                if not isinstance(raw_response_doi, str):
+                    raise _schema_error("result DOI does not match a requested DOI")
+                response_doi = normalize_doi(raw_response_doi)
+                if response_doi is None or response_doi not in papers_by_doi:
                     raise _schema_error("result DOI does not match a requested DOI")
                 if response_doi in seen_response_dois:
                     raise _schema_error("result contains a duplicate DOI")
@@ -98,7 +101,7 @@ class SemanticScholarEnricher:
                     if raw_url is not None and not isinstance(raw_url, str):
                         raise _schema_error("openAccessPdf.url has the wrong type")
                     if isinstance(raw_url, str) and raw_url.strip():
-                        pdf_url = raw_url
+                        pdf_url = raw_url.strip()
 
                 if abstract is None and pdf_url is None:
                     continue

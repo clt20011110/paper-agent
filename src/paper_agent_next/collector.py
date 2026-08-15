@@ -224,8 +224,10 @@ def collect_venue_year(
             paper_index = identity_index[patch.identity]
             view = views[paper_index]
             if patch.abstract is not None and view.abstract is None:
-                view = replace(view, abstract=patch.abstract)
-                abstract_sources[paper_index] = source_name
+                abstract = normalize_text(patch.abstract)
+                if abstract is not None and abstract != normalize_text(view.title):
+                    view = replace(view, abstract=abstract)
+                    abstract_sources[paper_index] = source_name
 
             ordered_candidates = list(view.pdf_candidates)
             sources = candidate_sources[paper_index]
