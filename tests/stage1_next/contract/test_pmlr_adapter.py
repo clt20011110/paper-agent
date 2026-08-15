@@ -122,7 +122,7 @@ def test_source_native_pdf_candidate_requires_exact_identity_and_explicit_href()
         <p class="links">
           <a href="exact24a.html">abs</a>
           <a href="{pdf_url}">Download PDF</a>
-          <a href="{site_pdf_url}">Download PDF</a>
+          <a href="exact24a.pdf">Download PDF</a>
           <a href="https://raw.githubusercontent.com/mlresearch/v235/main/assets/other24a/exact24a.pdf">mismatched slug</a>
           <a href="https://raw.githubusercontent.com/other/repo/v235/main/assets/exact24a/exact24a.pdf">other repo</a>
           <a href="https://raw.githubusercontent.com/mlresearch/v234/main/assets/exact24a/exact24a.pdf">mismatched volume</a>
