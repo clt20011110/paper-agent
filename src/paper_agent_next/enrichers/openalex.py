@@ -23,7 +23,7 @@ class _Work:
     doi: str | None
     display_name: str | None
     publication_year: int | None
-    first_author_names: tuple[str | None, ...]
+    first_author_names: tuple[str, ...]
     abstract: str | None
     pdf_candidates: tuple[str, ...]
 
@@ -137,25 +137,23 @@ def _work_from_result(value: object) -> _Work:
     else:
         raise _schema_error("result authorships is not a list or null")
 
-    first_author_names: list[str | None] = []
+    first_author_names: list[str] = []
     for authorship in authorships:
         if not isinstance(authorship, dict):
             raise _schema_error("result authorship is not an object")
         author_position = authorship.get("author_position")
         if not isinstance(author_position, str):
             raise _schema_error("result author_position is not a string")
-        if author_position != "first":
-            continue
-        author = authorship.get("author")
-        if author is None:
-            first_author_names.append(None)
-            continue
-        if not isinstance(author, dict):
-            raise _schema_error("result author is not an object or null")
-        raw_author_name = author.get("display_name")
-        if raw_author_name is not None and not isinstance(raw_author_name, str):
-            raise _schema_error("result author display_name is not a string or null")
-        first_author_names.append(normalize_text(raw_author_name))
+        if "raw_author_name" not in authorship:
+            raise _schema_error("result authorship raw_author_name is missing")
+        raw_author_name = authorship["raw_author_name"]
+        if not isinstance(raw_author_name, str):
+            raise _schema_error("result authorship raw_author_name is not a string")
+        author_name = normalize_text(raw_author_name)
+        if author_name is None:
+            raise _schema_error("result authorship raw_author_name is empty")
+        if author_position == "first":
+            first_author_names.append(author_name)
 
     abstract = _abstract_from_index(value.get("abstract_inverted_index"))
     candidates: list[str] = []
@@ -259,13 +257,13 @@ class OpenAlexEnricher:
             paper_by_doi[normalized_doi] = paper
 
         for batch in _batches(tuple(requested_dois)):
-            filter_value = "|".join(
-                f"doi:https://doi.org/{doi}" for doi in batch
+            filter_value = "doi:" + "|".join(
+                f"https://doi.org/{doi}" for doi in batch
             )
             url = _works_url(
                 (
                     ("filter", filter_value),
-                    ("per-page", "100"),
+                    ("per_page", "100"),
                     ("select", _SELECT),
                 )
             )
@@ -307,7 +305,7 @@ class OpenAlexEnricher:
                 (
                     ("search.exact", key[0]),
                     ("filter", f"publication_year:{key[1]}"),
-                    ("per-page", "100"),
+                    ("per_page", "100"),
                     ("select", _SELECT),
                 )
             )

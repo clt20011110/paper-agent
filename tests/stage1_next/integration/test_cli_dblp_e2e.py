@@ -17,7 +17,7 @@ S2_URL = (
 OPENALEX_URL = (
     "https://api.openalex.org/works?"
     "filter=doi%3Ahttps%3A%2F%2Fdoi.org%2F10.1145%2Fpartial.dac"
-    "&per-page=100"
+    "&per_page=100"
     "&select=id%2Cdoi%2Cdisplay_name%2Cpublication_year%2Cauthorships%2C"
     "abstract_inverted_index%2Cbest_oa_location%2Cprimary_location"
 )

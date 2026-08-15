@@ -104,17 +104,23 @@ def _work(
     title: str = "A paper",
     year: int | None = 2024,
     author: str = "Ada Lovelace",
+    raw_author_name: str | None = None,
     abstract_index: object = None,
     best_pdf: object = None,
     primary_pdf: object = None,
 ) -> dict[str, object]:
+    raw_author_name = author if raw_author_name is None else raw_author_name
     return {
         "id": "https://openalex.org/W1",
         "doi": doi,
         "display_name": title,
         "publication_year": year,
         "authorships": [
-            {"author_position": "first", "author": {"display_name": author}}
+            {
+                "author_position": "first",
+                "raw_author_name": raw_author_name,
+                "author": {"display_name": author},
+            }
         ],
         "abstract_inverted_index": abstract_index,
         "best_oa_location": None if best_pdf is None else {"pdf_url": best_pdf},
@@ -139,8 +145,8 @@ def test_doi_batch_uses_encoded_filter_and_binds_reordered_results_by_normalized
     assert len(client.calls) == 1
     query = parse_qs(urlsplit(client.calls[0]).query)
     assert query == {
-        "filter": ["doi:https://doi.org/10.1234/one|doi:https://doi.org/10.1234/two"],
-        "per-page": ["100"],
+        "filter": ["doi:https://doi.org/10.1234/one|https://doi.org/10.1234/two"],
+        "per_page": ["100"],
         "select": [SELECT],
     }
 
@@ -222,7 +228,7 @@ def test_strict_metadata_match_adds_abstract_doi_and_stable_pdf_candidates() -> 
     query = parse_qs(urlsplit(client.calls[0]).query)
     assert query["search.exact"] == ["Metadata exact paper"]
     assert query["filter"] == ["publication_year:2024"]
-    assert query["per-page"] == ["100"]
+    assert query["per_page"] == ["100"]
     assert query["select"] == [SELECT]
 
 
@@ -264,6 +270,47 @@ def test_strict_metadata_rejects_single_candidate_without_all_three_exact_fields
     client = _JsonClient([_response([work])])
 
     assert OpenAlexEnricher().enrich((_view("paper"),), client) == ()
+
+
+@pytest.mark.parametrize(
+    ("raw_author_name", "matches"),
+    [("Ada Lovelace", True), ("Grace Hopper", False)],
+    ids=["raw-author-match", "raw-author-mismatch"],
+)
+def test_strict_metadata_uses_raw_author_name_over_canonical_author_name(
+    raw_author_name: str,
+    matches: bool,
+) -> None:
+    work = _work(
+        "10.5555/raw-author",
+        author="A. Lovelace",
+        raw_author_name=raw_author_name,
+        abstract_index={"abstract": [0]},
+    )
+    client = _JsonClient([_response([work])])
+
+    patches = OpenAlexEnricher().enrich((_view("paper"),), client)
+
+    assert bool(patches) is matches
+
+
+@pytest.mark.parametrize(
+    "invalid_raw_author",
+    [None, 42, "  "],
+    ids=["missing", "wrong-type", "empty"],
+)
+def test_strict_metadata_rejects_invalid_raw_author_name(
+    invalid_raw_author: object,
+) -> None:
+    work = _work("10.5555/invalid-raw-author")
+    if invalid_raw_author is None:
+        del work["authorships"][0]["raw_author_name"]  # type: ignore[index]
+    else:
+        work["authorships"][0]["raw_author_name"] = invalid_raw_author  # type: ignore[index]
+    client = _JsonClient([_response([work])])
+
+    with pytest.raises(EnrichmentError):
+        OpenAlexEnricher().enrich((_view("paper"),), client)
 
 
 @pytest.mark.parametrize(
