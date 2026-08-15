@@ -15,6 +15,7 @@ VOLUME_URL = "https://proceedings.mlr.press/v235/"
 ADA_URL = "https://proceedings.mlr.press/v235/lovelace24a.html"
 TURING_URL = "https://proceedings.mlr.press/v235/turing24a.html"
 RAW_ADA_PDF = "https://raw.githubusercontent.com/mlresearch/v235/main/assets/lovelace24a/lovelace24a.pdf"
+SITE_ADA_PDF = "https://proceedings.mlr.press/v235/lovelace24a.pdf"
 CONTACT = "integration@example.org"
 
 
@@ -59,7 +60,7 @@ def _complete_responses() -> dict[str, tuple[bytes, str]]:
     return {
         VOLUME_URL: _fixture_response("volume-v235-complete.html"),
         ADA_URL: _fixture_response("lovelace24a.html"),
-        RAW_ADA_PDF: (b"%PDF-1.7 offline fixture", "application/pdf"),
+        SITE_ADA_PDF: (b"%PDF-1.7 offline fixture", "application/pdf"),
     }
 
 
@@ -109,7 +110,7 @@ def _assert_http_trace(
         for _, _, request in opener.calls
     )
     for url in expected_urls:
-        expected_limit = 4096 if url == RAW_ADA_PDF else None
+        expected_limit = 4096 if url in {RAW_ADA_PDF, SITE_ADA_PDF} else None
         assert opener.response_by_url[url].read_limits == [expected_limit]
 
 
@@ -171,7 +172,7 @@ def test_cli_pmlr_complete_publishes_verified_paper_atomically(
 
     assert cli.main(_collect_args(output_dir)) == 0
 
-    _assert_http_trace(opener, [VOLUME_URL, ADA_URL, RAW_ADA_PDF])
+    _assert_http_trace(opener, [VOLUME_URL, ADA_URL, SITE_ADA_PDF])
     assert replacements == ["papers.jsonl", "issues.jsonl", "run.json"]
     _assert_artifacts(output_dir)
     assert capsys.readouterr().err == ""
@@ -189,7 +190,7 @@ def test_cli_pmlr_complete_publishes_verified_paper_atomically(
         "abstract": "Reliable small models & graphs for reproducible experiments.",
         "doi": None,
         "landing_url": ADA_URL,
-        "pdf_url": RAW_ADA_PDF,
+        "pdf_url": SITE_ADA_PDF,
         "access_status": "direct_pdf",
         "field_sources": {
             "title": "pmlr",

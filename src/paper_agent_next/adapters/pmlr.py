@@ -221,16 +221,24 @@ def _source_native_pdf_url(href: str, volume: str, slug: str) -> str | None:
     if (
         parsed.scheme != "https"
         or hostname is None
-        or hostname.casefold() != "raw.githubusercontent.com"
         or parsed.username is not None
         or parsed.password is not None
         or parsed.port is not None
         or parsed.query
         or parsed.fragment
-        or parsed.path != f"/mlresearch/{volume}/main/assets/{slug}/{slug}.pdf"
     ):
         return None
-    return href
+    if (
+        hostname.casefold() == "raw.githubusercontent.com"
+        and parsed.path == f"/mlresearch/{volume}/main/assets/{slug}/{slug}.pdf"
+    ):
+        return href
+    if (
+        hostname.casefold() == _PMLR_HOST
+        and parsed.path == f"/{volume}/{slug}.pdf"
+    ):
+        return href
+    return None
 
 
 class PmlrAdapter:

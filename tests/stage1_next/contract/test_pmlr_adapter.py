@@ -89,6 +89,7 @@ def test_collects_authoritative_membership_and_reconciles_every_occurrence() -> 
 def test_source_native_pdf_candidate_requires_exact_identity_and_explicit_href() -> None:
     landing_url = "https://proceedings.mlr.press/v235/exact24a.html"
     pdf_url = "https://raw.githubusercontent.com/mlresearch/v235/main/assets/exact24a/exact24a.pdf"
+    site_pdf_url = "https://proceedings.mlr.press/v235/exact24a.pdf"
     volume = f"""\
     <html><body>
       <div class="paper">
@@ -97,12 +98,17 @@ def test_source_native_pdf_candidate_requires_exact_identity_and_explicit_href()
         <p class="links">
           <a href="exact24a.html">abs</a>
           <a href="{pdf_url}">Download PDF</a>
+          <a href="{site_pdf_url}">Download PDF</a>
           <a href="https://raw.githubusercontent.com/mlresearch/v235/main/assets/other24a/exact24a.pdf">mismatched slug</a>
           <a href="https://raw.githubusercontent.com/other/repo/v235/main/assets/exact24a/exact24a.pdf">other repo</a>
           <a href="https://raw.githubusercontent.com/mlresearch/v234/main/assets/exact24a/exact24a.pdf">mismatched volume</a>
           <a href="https://raw.githubusercontent.com/mlresearch/v235/main/assets/exact24a/other.pdf">mismatched path</a>
           <a href="{pdf_url}?token=secret">query</a>
           <a href="{pdf_url}#fragment">fragment</a>
+          <a href="https://proceedings.mlr.press/v234/exact24a.pdf">mismatched volume</a>
+          <a href="https://proceedings.mlr.press/v235/other24a.pdf">mismatched slug</a>
+          <a href="{site_pdf_url}?token=secret">query</a>
+          <a href="{site_pdf_url}#fragment">fragment</a>
         </p>
       </div>
     </body></html>
@@ -116,7 +122,7 @@ def test_source_native_pdf_candidate_requires_exact_identity_and_explicit_href()
 
     assert len(result.papers) == 1
     assert result.papers[0].source_id == "v235/exact24a"
-    assert result.papers[0].pdf_candidates == (pdf_url,)
+    assert result.papers[0].pdf_candidates == (pdf_url, site_pdf_url)
     assert result.parse_rejects == ()
     assert client.calls == [VOLUME_URL, landing_url]
 
