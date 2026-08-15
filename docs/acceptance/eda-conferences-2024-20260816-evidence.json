@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "venue": "dac",
+      "year": 2024,
+      "status": "complete",
+      "counts": {
+        "raw_items": 371,
+        "included_papers": 370,
+        "complete_papers": 370,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 1,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0
+      },
+      "warnings": []
+    },
+    {
+      "venue": "iccad",
+      "year": 2024,
+      "status": "complete",
+      "counts": {
+        "raw_items": 240,
+        "included_papers": 239,
+        "complete_papers": 239,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 1,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0
+      },
+      "warnings": []
+    },
+    {
+      "venue": "date",
+      "year": 2024,
+      "status": "complete",
+      "counts": {
+        "raw_items": 380,
+        "included_papers": 379,
+        "complete_papers": 379,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 1,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0
+      },
+      "warnings": []
+    },
+    {
+      "venue": "aspdac",
+      "year": 2024,
+      "status": "complete",
+      "counts": {
+        "raw_items": 158,
+        "included_papers": 157,
+        "complete_papers": 157,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 1,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0
+      },
+      "warnings": []
+    },
+    {
+      "venue": "ispd",
+      "year": 2024,
+      "status": "complete",
+      "counts": {
+        "raw_items": 50,
+        "included_papers": 49,
+        "complete_papers": 49,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 1,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0
+      },
+      "warnings": []
+    }
+  ]
+}

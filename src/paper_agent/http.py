@@ -62,7 +62,10 @@ class HttpClient:
             response = urlopen(request, timeout=self._timeout)
         except HTTPError as error:
             error.close()
-            raise EnrichmentError(f"http: POST {url} returned HTTP {error.code}") from error
+            raise EnrichmentError(
+                f"http: POST {url} returned HTTP {error.code}",
+                status_code=error.code,
+            ) from error
         except (URLError, TimeoutError, OSError, ValueError) as error:
             raise EnrichmentError(f"http: POST {url} failed") from error
 
@@ -72,7 +75,10 @@ class HttpClient:
                 getcode = getattr(response, "getcode", None)
                 status = getcode() if callable(getcode) else None
             if isinstance(status, int) and status >= 400:
-                raise EnrichmentError(f"http: POST {url} returned HTTP {status}")
+                raise EnrichmentError(
+                    f"http: POST {url} returned HTTP {status}",
+                    status_code=status,
+                )
 
             try:
                 response_body = response.read()
@@ -111,7 +117,10 @@ class HttpClient:
             response = urlopen(request, timeout=self._timeout)
         except HTTPError as error:
             error.close()
-            raise EnrichmentError(f"http: GET {url} returned HTTP {error.code}") from error
+            raise EnrichmentError(
+                f"http: GET {url} returned HTTP {error.code}",
+                status_code=error.code,
+            ) from error
         except (URLError, TimeoutError, OSError, ValueError) as error:
             raise EnrichmentError(f"http: GET {url} failed") from error
 
@@ -121,7 +130,10 @@ class HttpClient:
                 getcode = getattr(response, "getcode", None)
                 status = getcode() if callable(getcode) else None
             if isinstance(status, int) and status >= 400:
-                raise EnrichmentError(f"http: GET {url} returned HTTP {status}")
+                raise EnrichmentError(
+                    f"http: GET {url} returned HTTP {status}",
+                    status_code=status,
+                )
 
             try:
                 response_body = response.read()

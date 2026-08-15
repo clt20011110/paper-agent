@@ -25,6 +25,10 @@ class CollectionError(Stage1Error):
 class EnrichmentError(Stage1Error):
     """Failure at an explicitly configured metadata enrichment boundary."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class ContractError(Stage1Error):
     """Violation of a Stage 1 data contract."""

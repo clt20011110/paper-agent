@@ -1,7 +1,7 @@
 """Strict residual metadata enrichment through the OpenAlex works API."""
 
 from dataclasses import dataclass
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from ..errors import ContractError, EnrichmentError
 from ..normalize import normalize_doi, normalize_text
@@ -11,7 +11,6 @@ __all__ = ["OpenAlexEnricher"]
 
 
 _WORKS_URL = "https://api.openalex.org/works"
-_BATCH_SIZE = 100
 _SELECT = (
     "id,doi,display_name,publication_year,authorships,"
     "abstract_inverted_index,best_oa_location,primary_location"
@@ -32,15 +31,16 @@ def _schema_error(message: str) -> EnrichmentError:
     return EnrichmentError(f"openalex: invalid works response ({message})")
 
 
-def _batches(values: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
-    return tuple(
-        values[start : start + _BATCH_SIZE]
-        for start in range(0, len(values), _BATCH_SIZE)
-    )
-
-
 def _works_url(parameters: tuple[tuple[str, str], ...]) -> str:
     return f"{_WORKS_URL}?{urlencode(parameters)}"
+
+
+def _singleton_url(doi: str) -> str:
+    return f"{_WORKS_URL}/doi:{quote(doi, safe='/')}?{urlencode((('select', _SELECT),))}"
+
+
+def _is_not_found(error: EnrichmentError) -> bool:
+    return error.status_code == 404
 
 
 def _response_results(
@@ -256,33 +256,22 @@ class OpenAlexEnricher:
             requested_dois.append(normalized_doi)
             paper_by_doi[normalized_doi] = paper
 
-        for batch in _batches(tuple(requested_dois)):
-            filter_value = "doi:" + "|".join(
-                f"https://doi.org/{doi}" for doi in batch
-            )
-            url = _works_url(
-                (
-                    ("filter", filter_value),
-                    ("per_page", "100"),
-                    ("select", _SELECT),
-                )
-            )
-            response = http_client.get_json(url)
-            results = _response_results(response, truncated_is_error=True)
-            if results is None:
-                raise _schema_error("DOI batch results are truncated")
+        for normalized_doi in requested_dois:
+            try:
+                response = http_client.get_json(_singleton_url(normalized_doi))
+            except EnrichmentError as error:
+                if _is_not_found(error):
+                    continue
+                raise
 
-            seen_response_dois: set[str] = set()
-            for result in results:
-                work = _work_from_result(result)
-                if work.doi is None or work.doi not in batch:
-                    raise _schema_error("result DOI does not match the requested batch")
-                if work.doi in seen_response_dois:
-                    raise _schema_error("result contains a duplicate DOI")
-                seen_response_dois.add(work.doi)
-                patch = _patch_for_work(paper_by_doi[work.doi], work, include_doi=False)
-                if patch is not None:
-                    patches.append(patch)
+            work = _work_from_result(response)
+            if work.doi != normalized_doi:
+                raise _schema_error("singleton result DOI does not match the request")
+            patch = _patch_for_work(
+                paper_by_doi[normalized_doi], work, include_doi=False
+            )
+            if patch is not None:
+                patches.append(patch)
 
         strict_keys: list[tuple[str, int, str] | None] = [
             _strict_key(paper) for paper in papers

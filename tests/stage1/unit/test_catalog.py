@@ -62,6 +62,14 @@ def test_public_surface_and_icml_fields() -> None:
     assert dict(spec.source_for_year(2015)) == {"series": "ICML", "volume": "v37"}
 
 
+@pytest.mark.parametrize("venue_id", ["dac", "iccad", "date", "aspdac", "ispd"])
+def test_eda_venue_specs_run_openalex_before_semantic_scholar(venue_id: str) -> None:
+    assert load_venue_spec(venue_id).enrichers == (
+        "enrichers.openalex:OpenAlexEnricher",
+        "enrichers.semantic_scholar:SemanticScholarEnricher",
+    )
+
+
 def test_venue_spec_is_frozen_slotted_and_nested_values_are_read_only() -> None:
     spec = load_venue_spec("icml")
 

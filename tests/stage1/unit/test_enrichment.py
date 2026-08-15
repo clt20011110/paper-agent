@@ -1,6 +1,7 @@
 """Offline contract coverage for the minimal Stage 1 enrichment boundary."""
 
 from dataclasses import FrozenInstanceError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -9,7 +10,7 @@ from paper_agent.catalog import load_venue_spec
 from paper_agent.collector import collect_venue_year
 from paper_agent.enrichers.base import EnrichmentPatch, FrozenPaper
 from paper_agent.errors import ContractError, EnrichmentError
-from paper_agent.models import MissingField, Pagination, SourceIdentity
+from paper_agent.models import MissingField, Pagination, RunStatus, SourceIdentity
 from paper_agent.http import PrefixResponse
 
 
@@ -66,13 +67,62 @@ class _JsonClient:
 
     def post_json(self, url: str, payload: object) -> object:
         self.calls.append((url, payload))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+class _MatchClient(_JsonClient):
+    def __init__(
+        self,
+        batch_responses: list[object],
+        match_responses: list[object],
+    ) -> None:
+        super().__init__(batch_responses)
+        self.match_responses = list(match_responses)
+        self.match_calls: list[str] = []
+
+    def get_json(self, url: str) -> object:
+        self.match_calls.append(url)
+        return self.match_responses.pop(0)
 
 
 def _s2_result(doi: str, *, abstract: str | None = "An abstract.", url: str | None = None) -> dict[str, object]:
     return {
         "abstract": abstract,
         "externalIds": {"DOI": doi},
+        "openAccessPdf": None if url is None else {"url": url},
+    }
+
+
+def _dblp_view(
+    source_id: str = "conf/date/SunNHZZ24",
+    *,
+    source_name: str = "dblp",
+    title: str | None = "Exact paper title",
+    doi: str | None = "10.1234/example.1",
+) -> FrozenPaper:
+    return FrozenPaper(
+        identity=SourceIdentity("date", 2024, source_name, source_id),
+        title=title,
+        authors=("Ada Lovelace",),
+        abstract=None,
+        doi=doi,
+        landing_url=f"https://dblp.org/rec/{source_id}",
+        pdf_candidates=(),
+    )
+
+
+def _s2_match_result(
+    source_id: object,
+    *,
+    abstract: object = "Matched abstract.",
+    url: object = None,
+) -> dict[str, object]:
+    return {
+        "externalIds": {"DBLP": source_id},
+        "abstract": abstract,
         "openAccessPdf": None if url is None else {"url": url},
     }
 
@@ -200,6 +250,123 @@ def test_semantic_scholar_strips_nonempty_open_access_pdf_url() -> None:
 
     assert patches[0].abstract is None
     assert patches[0].pdf_candidates == ("https://example.test/paper.pdf",)
+
+
+def test_semantic_scholar_search_match_uses_exact_dblp_id_and_does_not_patch_doi() -> None:
+    from paper_agent.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    paper = _dblp_view(title="Exact   paper title")
+    client = _MatchClient(
+        [[None]],
+        [
+            {
+                "data": [
+                    _s2_match_result(
+                        paper.identity.source_id,
+                        abstract="Matched abstract.",
+                        url="  https://example.test/matched.pdf  ",
+                    )
+                ]
+            }
+        ],
+    )
+
+    patches = SemanticScholarEnricher().enrich((paper,), client)
+
+    assert len(patches) == 1
+    assert patches[0].identity == paper.identity
+    assert patches[0].abstract == "Matched abstract."
+    assert patches[0].doi is None
+    assert patches[0].pdf_candidates == ("https://example.test/matched.pdf",)
+    query = parse_qs(urlsplit(client.match_calls[0]).query)
+    assert query == {
+        "query": ["Exact paper title"],
+        "fields": ["externalIds,abstract,openAccessPdf"],
+    }
+
+
+def test_semantic_scholar_search_match_without_exact_dblp_id_has_no_patch() -> None:
+    from paper_agent.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    paper = _dblp_view()
+    client = _MatchClient(
+        [[None]],
+        [{"data": [_s2_match_result("conf/date/other", abstract="Wrong paper")] }],
+    )
+
+    assert SemanticScholarEnricher().enrich((paper,), client) == ()
+    assert len(client.match_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"data": [_s2_match_result("conf/date/SunNHZZ24"), _s2_match_result("conf/date/SunNHZZ24")]},
+        {"data": "not-a-list"},
+        {"data": [{"externalIds": [], "abstract": None, "openAccessPdf": None}]},
+        {"data": [_s2_match_result("conf/date/SunNHZZ24", abstract=3)]},
+        {"data": [_s2_match_result("conf/date/SunNHZZ24", url=3)]},
+    ],
+    ids=["duplicate-exact", "wrong-data", "bad-external-ids", "bad-abstract", "bad-pdf"],
+)
+def test_semantic_scholar_search_match_schema_failures_are_typed(
+    response: object,
+) -> None:
+    from paper_agent.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    paper = _dblp_view()
+    client = _MatchClient([[None]], [response])
+
+    with pytest.raises(EnrichmentError):
+        SemanticScholarEnricher().enrich((paper,), client)
+
+
+def test_semantic_scholar_batch_patch_does_not_call_search_match() -> None:
+    from paper_agent.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    paper = _dblp_view()
+    client = _MatchClient(
+        [[_s2_result("10.1234/example.1", abstract="Batch abstract.")]],
+        [],
+    )
+
+    patches = SemanticScholarEnricher().enrich((paper,), client)
+
+    assert patches[0].abstract == "Batch abstract."
+    assert client.match_calls == []
+
+
+def test_semantic_scholar_all_invalid_doi_batch_is_residual_for_dblp_match() -> None:
+    from paper_agent.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    paper = _dblp_view()
+    client = _MatchClient(
+        [EnrichmentError("no valid paper ids", status_code=400)],
+        [{"data": [_s2_match_result(paper.identity.source_id)]}],
+    )
+
+    patches = SemanticScholarEnricher().enrich((paper,), client)
+
+    assert patches[0].abstract == "Matched abstract."
+    assert len(client.match_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("source_name", "title"),
+    [("primary", "Exact paper title"), ("dblp", None)],
+    ids=["non-dblp", "missing-title"],
+)
+def test_semantic_scholar_search_match_requires_dblp_identity_and_title(
+    source_name: str,
+    title: str | None,
+) -> None:
+    from paper_agent.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    paper = _dblp_view(source_name=source_name, title=title)
+    client = _MatchClient([[None]], [])
+
+    assert SemanticScholarEnricher().enrich((paper,), client) == ()
+    assert client.match_calls == []
 
 
 class _Adapter:
@@ -429,3 +596,59 @@ def test_invalid_or_failed_enrichment_preserves_membership_and_is_partial(kind: 
     assert outcome.run.complete is False
     assert len(outcome.run.errors) == 1
     assert "secret" not in " ".join(outcome.run.errors)
+
+
+def test_failed_enricher_becomes_warning_when_a_later_enricher_completes_all_papers() -> None:
+    class FailingEnricher:
+        source_name = "semantic_scholar"
+
+        def enrich(self, papers, http_client):
+            raise EnrichmentError("temporary provider failure")
+
+    class FillingEnricher:
+        source_name = "openalex"
+
+        def enrich(self, papers, http_client):
+            return (EnrichmentPatch(papers[0].identity, abstract="Recovered abstract"),)
+
+    outcome = collect_venue_year(
+        load_venue_spec("dac"),
+        2024,
+        _Adapter(_collected(abstract=None, doi="10.1234/example.1")),
+        _PrefixClient({}),  # type: ignore[arg-type]
+        enrichers=(FailingEnricher(), FillingEnricher()),
+    )
+
+    assert outcome.run.status is RunStatus.COMPLETE
+    assert outcome.run.metadata_complete is True
+    assert outcome.run.complete is True
+    assert outcome.run.warnings == ("enrichment semantic_scholar failed",)
+    assert outcome.run.errors == ()
+    assert outcome.issues == ()
+    assert outcome.papers[0].abstract == "Recovered abstract"
+
+
+def test_failed_enricher_remains_blocking_when_required_fields_stay_missing() -> None:
+    class FailingEnricher:
+        source_name = "semantic_scholar"
+
+        def enrich(self, papers, http_client):
+            raise EnrichmentError("temporary provider failure")
+
+    outcome = collect_venue_year(
+        load_venue_spec("dac"),
+        2024,
+        _Adapter(_collected(abstract=None, doi=None, pdf_candidates=())),
+        _PrefixClient({}),  # type: ignore[arg-type]
+        enrichers=(FailingEnricher(),),
+    )
+
+    assert outcome.run.status is RunStatus.PARTIAL
+    assert outcome.run.metadata_complete is False
+    assert outcome.run.complete is False
+    assert outcome.run.warnings == ()
+    assert outcome.run.errors == ("enrichment semantic_scholar failed",)
+    assert outcome.issues[0].missing_fields == (
+        MissingField.ABSTRACT,
+        MissingField.ACCESS_LOCATOR,
+    )

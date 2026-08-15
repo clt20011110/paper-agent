@@ -30,7 +30,10 @@ class _JsonClient:
 
     def get_json(self, url: str) -> object:
         self.calls.append(url)
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 class _CollectionClient(_JsonClient):
@@ -128,60 +131,69 @@ def _work(
     }
 
 
-def test_doi_batch_uses_encoded_filter_and_binds_reordered_results_by_normalized_doi() -> None:
+def test_doi_singletons_use_bare_doi_select_and_strictly_bind_each_response() -> None:
     papers = (
         _view("one", doi="10.1234/one"),
         _view("two", title="Second paper", doi="10.1234/two"),
     )
-    client = _JsonClient([_fixture("doi-reordered.json")])
+    client = _JsonClient(
+        [
+            _work("10.1234/ONE", abstract_index={"first": [0]}),
+            _work(
+                "DOI:10.1234/two",
+                title="Second paper",
+                abstract_index={"second": [0]},
+            ),
+        ]
+    )
 
     patches = OpenAlexEnricher().enrich(papers, client)
 
     assert {patch.identity.source_id: patch.abstract for patch in patches} == {
-        "one": "first abstract",
-        "two": "second abstract",
+        "one": "first",
+        "two": "second",
     }
     assert all(patch.doi is None for patch in patches)
-    assert len(client.calls) == 1
-    query = parse_qs(urlsplit(client.calls[0]).query)
-    assert query == {
-        "filter": ["doi:https://doi.org/10.1234/one|https://doi.org/10.1234/two"],
-        "per_page": ["100"],
-        "select": [SELECT],
-    }
+    assert [urlsplit(url).path for url in client.calls] == [
+        "/works/doi:10.1234/one",
+        "/works/doi:10.1234/two",
+    ]
+    assert [parse_qs(urlsplit(url).query) for url in client.calls] == [
+        {"select": [SELECT]},
+        {"select": [SELECT]},
+    ]
 
 
-def test_doi_batch_missing_result_is_a_normal_no_match() -> None:
+def test_doi_singleton_404_is_a_normal_no_match_and_later_dois_still_run() -> None:
     papers = (
         _view("one", doi="10.1234/one"),
-        _view("two", doi="10.1234/two"),
+        _view("two", title="Second paper", doi="10.1234/two"),
     )
-    result = _work("10.1234/one", abstract_index={"only": [0]})
-    client = _JsonClient([_response([result])])
+    client = _JsonClient(
+        [
+            EnrichmentError("not indexed", status_code=404),
+            _work("10.1234/two", title="Second paper", abstract_index={"only": [0]}),
+        ]
+    )
 
     patches = OpenAlexEnricher().enrich(papers, client)
 
-    assert [patch.identity.source_id for patch in patches] == ["one"]
-    assert client.calls
+    assert [patch.identity.source_id for patch in patches] == ["two"]
+    assert len(client.calls) == 2
 
 
 @pytest.mark.parametrize(
     "result",
     [
         _work("10.1234/unknown"),
-        [_work("10.1234/one"), _work("10.1234/one")],
         _work("not-a-doi"),
     ],
-    ids=["unknown-doi", "duplicate-doi", "malformed-doi"],
+    ids=["unknown-doi", "malformed-doi"],
 )
-def test_doi_batch_unknown_duplicate_and_malformed_doi_are_typed_failures(
+def test_doi_singleton_unknown_and_malformed_doi_are_typed_failures(
     result: object,
 ) -> None:
-    if isinstance(result, list):
-        response = _response(result)
-    else:
-        response = _response([result])
-    client = _JsonClient([response])
+    client = _JsonClient([result])
 
     with pytest.raises(EnrichmentError):
         OpenAlexEnricher().enrich(
@@ -190,12 +202,17 @@ def test_doi_batch_unknown_duplicate_and_malformed_doi_are_typed_failures(
         )
 
 
-def test_doi_batch_truncation_is_a_typed_failure() -> None:
-    client = _JsonClient(
-        [_response([_work("10.1234/one")], count=2)]
-    )
+def test_doi_singleton_requires_a_direct_work_object() -> None:
+    client = _JsonClient([_response([_work("10.1234/one")])])
 
     with pytest.raises(EnrichmentError):
+        OpenAlexEnricher().enrich((_view("one", doi="10.1234/one"),), client)
+
+
+def test_doi_singleton_non_404_http_failure_is_not_skipped() -> None:
+    client = _JsonClient([EnrichmentError("rate limited", status_code=429)])
+
+    with pytest.raises(EnrichmentError, match="rate limited"):
         OpenAlexEnricher().enrich((_view("one", doi="10.1234/one"),), client)
 
 
@@ -366,7 +383,7 @@ def test_malformed_abstract_inverted_index_is_a_typed_failure(
     abstract_index: object,
 ) -> None:
     client = _JsonClient(
-        [_response([_work("10.1234/one", abstract_index=abstract_index)])]
+        [_work("10.1234/one", abstract_index=abstract_index)]
     )
 
     with pytest.raises(EnrichmentError):
@@ -375,7 +392,7 @@ def test_malformed_abstract_inverted_index_is_a_typed_failure(
 
 def test_work_with_no_new_values_does_not_return_an_empty_patch() -> None:
     client = _JsonClient(
-        [_response([_work("10.1234/one", abstract_index=None)])]
+        [_work("10.1234/one", abstract_index=None)]
     )
 
     assert OpenAlexEnricher().enrich((_view("one", doi="10.1234/one"),), client) == ()

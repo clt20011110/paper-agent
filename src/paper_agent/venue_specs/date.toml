@@ -3,7 +3,7 @@ id = "date"
 name = "Design, Automation and Test in Europe Conference"
 venue_type = "conference"
 adapter = "adapters.dblp:DblpTocAdapter"
-enrichers = ["enrichers.semantic_scholar:SemanticScholarEnricher", "enrichers.openalex:OpenAlexEnricher"]
+enrichers = ["enrichers.openalex:OpenAlexEnricher", "enrichers.semantic_scholar:SemanticScholarEnricher"]
 start_year = 2016
 end_year = 2025
 

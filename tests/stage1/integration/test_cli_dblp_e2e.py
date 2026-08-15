@@ -15,11 +15,13 @@ S2_URL = (
     "?fields=abstract,externalIds,openAccessPdf"
 )
 OPENALEX_URL = (
-    "https://api.openalex.org/works?"
-    "filter=doi%3Ahttps%3A%2F%2Fdoi.org%2F10.1145%2Fpartial.dac"
-    "&per_page=100"
-    "&select=id%2Cdoi%2Cdisplay_name%2Cpublication_year%2Cauthorships%2C"
+    "https://api.openalex.org/works/doi:10.1145/partial.dac?"
+    "select=id%2Cdoi%2Cdisplay_name%2Cpublication_year%2Cauthorships%2C"
     "abstract_inverted_index%2Cbest_oa_location%2Cprimary_location"
+)
+MATCH_URL = (
+    "https://api.semanticscholar.org/graph/v1/paper/search/match?"
+    "query=DAC+2024+partial+fixture&fields=externalIds%2Cabstract%2CopenAccessPdf"
 )
 CONTACT = "integration@example.org"
 
@@ -54,7 +56,7 @@ class _FixtureOpener:
         self.bodies.append(request.data)
         content_type = (
             "application/json; charset=utf-8"
-            if request.full_url in {S2_URL, OPENALEX_URL}
+            if request.full_url in {S2_URL, OPENALEX_URL, MATCH_URL}
             else "text/xml; charset=utf-8"
         )
         response = _Response(self.responses_by_url[request.full_url], content_type)
@@ -72,6 +74,7 @@ def test_cli_dblp_s2_and_openalex_no_result_keeps_doi_and_reports_missing_abstra
             TOC_URL: FIXTURE.read_bytes(),
             S2_URL: no_result.read_bytes(),
             OPENALEX_URL: openalex_no_result.read_bytes(),
+            MATCH_URL: b'{"data":[]}',
         }
     )
     monkeypatch.setattr(http_module, "urlopen", opener)
@@ -92,8 +95,9 @@ def test_cli_dblp_s2_and_openalex_no_result_keeps_doi_and_reports_missing_abstra
     )
 
     assert exit_code == 3
-    assert opener.calls == [TOC_URL, S2_URL, OPENALEX_URL]
+    assert opener.calls == [TOC_URL, OPENALEX_URL, S2_URL, MATCH_URL]
     assert opener.bodies == [
+        None,
         None,
         b'{"ids":["DOI:10.1145/partial.dac"]}',
         None,
@@ -137,11 +141,18 @@ def test_cli_dblp_s2_and_openalex_no_result_keeps_doi_and_reports_missing_abstra
     assert issues[0]["reason_codes"] == ["missing_abstract"]
 
 
-def test_cli_dblp_s2_abstract_completes_as_doi_only_without_openalex_request(
+def test_cli_dblp_openalex_no_result_s2_abstract_completes_as_doi_only(
     tmp_path: Path, monkeypatch
 ) -> None:
     abstract_fixture = Path(__file__).parents[1] / "fixtures" / "semantic_scholar" / "dblp-abstract.json"
-    opener = _FixtureOpener({TOC_URL: FIXTURE.read_bytes(), S2_URL: abstract_fixture.read_bytes()})
+    openalex_no_result = Path(__file__).parents[1] / "fixtures" / "openalex" / "dblp-no-result.json"
+    opener = _FixtureOpener(
+        {
+            TOC_URL: FIXTURE.read_bytes(),
+            OPENALEX_URL: openalex_no_result.read_bytes(),
+            S2_URL: abstract_fixture.read_bytes(),
+        }
+    )
     monkeypatch.setattr(http_module, "urlopen", opener)
     output_dir = tmp_path / "dac-2024-complete"
 
@@ -159,8 +170,8 @@ def test_cli_dblp_s2_abstract_completes_as_doi_only_without_openalex_request(
         ]
     ) == 0
 
-    assert opener.calls == [TOC_URL, S2_URL]
-    assert opener.bodies == [None, b'{"ids":["DOI:10.1145/partial.dac"]}']
+    assert opener.calls == [TOC_URL, OPENALEX_URL, S2_URL]
+    assert opener.bodies == [None, None, b'{"ids":["DOI:10.1145/partial.dac"]}']
     run = json.loads((output_dir / "run.json").read_text(encoding="utf-8"))
     assert run["status"] == "complete"
     assert run["metadata_complete"] is True
@@ -176,15 +187,13 @@ def test_cli_dblp_s2_abstract_completes_as_doi_only_without_openalex_request(
     assert papers[0]["field_sources"]["abstract"] == "semantic_scholar"
 
 
-def test_cli_dblp_s2_no_result_openalex_exact_completes_as_doi_only(
+def test_cli_dblp_openalex_exact_completes_without_semantic_scholar_request(
     tmp_path: Path, monkeypatch
 ) -> None:
-    s2_no_result = Path(__file__).parents[1] / "fixtures" / "semantic_scholar" / "dblp-no-result.json"
     openalex_exact = Path(__file__).parents[1] / "fixtures" / "openalex" / "dblp-exact.json"
     opener = _FixtureOpener(
         {
             TOC_URL: FIXTURE.read_bytes(),
-            S2_URL: s2_no_result.read_bytes(),
             OPENALEX_URL: openalex_exact.read_bytes(),
         }
     )
@@ -205,12 +214,8 @@ def test_cli_dblp_s2_no_result_openalex_exact_completes_as_doi_only(
         ]
     ) == 0
 
-    assert opener.calls == [TOC_URL, S2_URL, OPENALEX_URL]
-    assert opener.bodies == [
-        None,
-        b'{"ids":["DOI:10.1145/partial.dac"]}',
-        None,
-    ]
+    assert opener.calls == [TOC_URL, OPENALEX_URL]
+    assert opener.bodies == [None, None]
     run = json.loads((output_dir / "run.json").read_text(encoding="utf-8"))
     assert run["status"] == "complete"
     papers = [
@@ -254,11 +259,11 @@ def test_cli_dblp_s2_failure_preserves_membership_and_is_partial(
     ) == 3
 
     run = json.loads((output_dir / "run.json").read_text(encoding="utf-8"))
-    assert opener.calls == [TOC_URL, S2_URL, OPENALEX_URL]
+    assert opener.calls == [TOC_URL, OPENALEX_URL, S2_URL]
     assert opener.bodies == [
         None,
-        b'{"ids":["DOI:10.1145/partial.dac"]}',
         None,
+        b'{"ids":["DOI:10.1145/partial.dac"]}',
     ]
     assert run["membership_complete"] is True
     assert run["metadata_complete"] is False

@@ -201,7 +201,7 @@ def collect_venue_year(
         doi_sources.append(result.source_name)
 
     identity_index = {view.identity: index for index, view in enumerate(views)}
-    enrichment_errors: list[str] = []
+    enrichment_failures: list[str] = []
     field_conflict_indexes: set[int] = set()
     for enricher in enrichers:
         source_name = getattr(enricher, "source_name", None)
@@ -218,14 +218,14 @@ def collect_venue_year(
         try:
             raw_patches = enrich(tuple(views), http_client)
         except EnrichmentError:
-            enrichment_errors.append(f"enrichment {source_name} failed")
+            enrichment_failures.append(f"enrichment {source_name} failed")
             continue
 
         patches_for_enricher, validation_error = _validate_patches(
             raw_patches, identity_index
         )
         if validation_error is not None:
-            enrichment_errors.append(f"enrichment {source_name} {validation_error}")
+            enrichment_failures.append(f"enrichment {source_name} {validation_error}")
             continue
 
         for patch in patches_for_enricher:
@@ -380,19 +380,20 @@ def collect_venue_year(
         errors.append("source total does not match collected counts")
     if counts.included_papers == 0 and not zero_paper_proof:
         errors.append("applicable venue-year has no authoritative zero-paper proof")
-    errors.extend(enrichment_errors)
-
     membership_complete = (
         result.pagination.terminal_reached
         and not result.parse_rejects
         and total_matches
         and zero_paper_proof
     )
-    metadata_complete = (
-        counts.incomplete_papers == 0
-        and not enrichment_errors
-        and not field_conflict_indexes
-    )
+    enrichment_is_blocking = counts.incomplete_papers > 0
+    if enrichment_is_blocking:
+        errors.extend(enrichment_failures)
+        warnings: list[str] = []
+    else:
+        warnings = list(enrichment_failures)
+
+    metadata_complete = counts.incomplete_papers == 0 and not field_conflict_indexes
     complete = membership_complete and metadata_complete
     run = RunRecord(
         status=RunStatus.COMPLETE if complete else RunStatus.PARTIAL,
@@ -406,7 +407,7 @@ def collect_venue_year(
         complete=complete,
         counts=counts,
         pagination=result.pagination,
-        warnings=(),
+        warnings=tuple(warnings),
         errors=tuple(errors),
     )
     return CollectionOutcome(tuple(papers), tuple(issues), run)

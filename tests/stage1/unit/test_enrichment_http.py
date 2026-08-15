@@ -83,6 +83,7 @@ def test_post_json_http_read_failures_are_typed(monkeypatch) -> None:
     with pytest.raises(EnrichmentError) as caught:
         HttpClient("researcher@example.org", 1.0).post_json("https://example.test", {})
     assert caught.value.__cause__ is error
+    assert caught.value.status_code == 429
     assert error.fp is not None and error.fp.closed
 
     class _ReadFailure(_Response):
