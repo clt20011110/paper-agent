@@ -320,7 +320,7 @@ def test_repeated_cursor_keeps_received_page_without_following_cycle() -> None:
 
 def test_second_page_transport_failure_returns_partial_membership() -> None:
     first = _full_page()
-    client = QueueTextClient([_response(first), OSError("connection reset")])
+    client = QueueTextClient([_response(first), CollectionError("connection reset")])
 
     result = CrossrefSerialAdapter().collect(_spec(), YEAR, client)
 
@@ -333,13 +333,32 @@ def test_second_page_transport_failure_returns_partial_membership() -> None:
 
 
 def test_first_page_transport_failure_raises_collection_error_with_cause() -> None:
-    client = QueueTextClient([OSError("connection reset")])
+    client = QueueTextClient([CollectionError("connection reset")])
 
     with pytest.raises(CollectionError) as raised:
         CrossrefSerialAdapter().collect(_spec(), YEAR, client)
 
     assert raised.value.__cause__ is not None
     assert len(client.calls) == 1
+
+
+def test_first_page_unexpected_assertion_error_propagates() -> None:
+    client = QueueTextClient([AssertionError("adapter bug")])
+
+    with pytest.raises(AssertionError, match="adapter bug"):
+        CrossrefSerialAdapter().collect(_spec(), YEAR, client)
+
+    assert len(client.calls) == 1
+
+
+def test_second_page_unexpected_assertion_error_is_not_silent_partial() -> None:
+    first = _full_page()
+    client = QueueTextClient([_response(first), AssertionError("adapter bug")])
+
+    with pytest.raises(AssertionError, match="adapter bug"):
+        CrossrefSerialAdapter().collect(_spec(), YEAR, client)
+
+    assert len(client.calls) == 2
 
 
 @pytest.mark.parametrize(

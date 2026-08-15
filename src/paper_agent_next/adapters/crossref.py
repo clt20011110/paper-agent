@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import re
 from urllib.parse import quote, urlencode, urlunsplit
 
 from ..catalog import VenueSpec
-from ..errors import CollectionError
+from ..errors import CollectionError, InputError
 from ..models import Pagination, SourceTotal, SourceTotalScope
 from ..normalize import normalize_doi, normalize_text
 from .base import CollectedPaper, CollectionResult, ParseReject, TextHttpClient
@@ -44,13 +43,11 @@ class _Page:
 def _source_issn(venue_spec: VenueSpec, year: int) -> str:
     try:
         source = venue_spec.source_for_year(year)
-    except Exception as error:
+    except InputError as error:
         raise CollectionError(
             "crossref_serial: could not resolve venue source parameters"
         ) from error
 
-    if not isinstance(source, Mapping):
-        raise CollectionError("crossref_serial: source parameters must be a mapping")
     unknown = sorted(set(source) - _SOURCE_KEYS)
     if unknown:
         raise CollectionError(
@@ -94,7 +91,7 @@ def _decode_page(response: object, url: str) -> _Page:
         raise _PageFailure(f"crossref_serial: response for {url} was not text")
     try:
         payload = json.loads(response)
-    except (TypeError, ValueError) as error:
+    except json.JSONDecodeError as error:
         raise _PageFailure(f"crossref_serial: invalid JSON response from {url}") from error
 
     if not isinstance(payload, dict):
@@ -124,7 +121,7 @@ def _decode_page(response: object, url: str) -> _Page:
 def _fetch_page(http_client: TextHttpClient, url: str) -> _Page:
     try:
         response = http_client.get_text(url)
-    except Exception as error:
+    except CollectionError as error:
         raise _PageFailure(f"crossref_serial: GET {url} failed") from error
     return _decode_page(response, url)
 
