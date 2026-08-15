@@ -2,14 +2,14 @@
 
 import argparse
 from collections.abc import Sequence
-import importlib
 from pathlib import Path
 import sys
 
 from .catalog import load_venue_spec
-from .collector import collect_venue_year
+from .collector import collect_venue_year, not_applicable_outcome
 from .errors import InputError, PublicationError, Stage1Error
 from .http import HttpClient
+from .loading import load_adapter, load_enrichers
 from .models import RunStatus
 from .output import prepare_output_dir, publish_artifacts
 
@@ -67,24 +67,29 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_adapter(adapter_path: str) -> object:
-    module_name, _, attribute_name = adapter_path.partition(":")
-    try:
-        module = importlib.import_module(f"paper_agent_next.{module_name}")
-        adapter_factory = getattr(module, attribute_name)
-        if not callable(adapter_factory):
-            raise TypeError("configured adapter is not callable")
-        return adapter_factory()
-    except (ImportError, AttributeError, TypeError) as error:
-        raise InputError("could not load configured adapter") from error
-
-
 def _collect(args: argparse.Namespace) -> int:
     venue_spec = load_venue_spec(args.venue)
     prepare_output_dir(args.output)
-    adapter = _load_adapter(venue_spec.adapter)
+    not_applicable = not_applicable_outcome(venue_spec, args.year)
+    if not_applicable is not None:
+        publish_artifacts(
+            args.output,
+            not_applicable.papers,
+            not_applicable.issues,
+            not_applicable.run,
+        )
+        return _EXIT_CODES[not_applicable.run.status]
+
+    adapter = load_adapter(venue_spec.adapter)
+    enrichers = load_enrichers(venue_spec.enrichers)
     http_client = HttpClient(args.contact, 30.0)
-    outcome = collect_venue_year(venue_spec, args.year, adapter, http_client)
+    outcome = collect_venue_year(
+        venue_spec,
+        args.year,
+        adapter,
+        http_client,
+        enrichers=enrichers,
+    )
     publish_artifacts(args.output, outcome.papers, outcome.issues, outcome.run)
     return _EXIT_CODES[outcome.run.status]
 

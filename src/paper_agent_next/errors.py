@@ -4,6 +4,7 @@ __all__ = [
     "Stage1Error",
     "InputError",
     "CollectionError",
+    "EnrichmentError",
     "ContractError",
     "PublicationError",
 ]
@@ -19,6 +20,10 @@ class InputError(Stage1Error):
 
 class CollectionError(Stage1Error):
     """Failure while collecting source membership."""
+
+
+class EnrichmentError(Stage1Error):
+    """Failure at an explicitly configured metadata enrichment boundary."""
 
 
 class ContractError(Stage1Error):

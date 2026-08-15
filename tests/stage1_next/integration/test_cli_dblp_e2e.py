@@ -10,14 +10,18 @@ from paper_agent_next import http as http_module
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "dblp" / "partial.xml"
 TOC_URL = "https://dblp.org/db/conf/dac/dac2024.xml"
+S2_URL = (
+    "https://api.semanticscholar.org/graph/v1/paper/batch"
+    "?fields=abstract,externalIds,openAccessPdf"
+)
 CONTACT = "integration@example.org"
 
 
 class _Response:
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, content_type: str) -> None:
         self.body = body
         self.headers = Message()
-        self.headers["Content-Type"] = "text/xml; charset=utf-8"
+        self.headers["Content-Type"] = content_type
         self.closed = False
         self.read_limits: list[int | None] = []
 
@@ -30,25 +34,30 @@ class _Response:
 
 
 class _FixtureOpener:
-    def __init__(self, url: str, body: bytes) -> None:
-        self.url = url
-        self.body = body
+    def __init__(self, responses: dict[str, bytes]) -> None:
+        self.responses_by_url = responses
         self.calls: list[str] = []
         self.responses: list[_Response] = []
 
     def __call__(self, request, *, timeout: float) -> _Response:
         assert timeout == 30.0
-        assert request.full_url == self.url
+        assert request.full_url in self.responses_by_url
         self.calls.append(request.full_url)
-        response = _Response(self.body)
+        content_type = (
+            "application/json; charset=utf-8"
+            if request.full_url == S2_URL
+            else "text/xml; charset=utf-8"
+        )
+        response = _Response(self.responses_by_url[request.full_url], content_type)
         self.responses.append(response)
         return response
 
 
-def test_cli_keeps_doi_and_reports_only_missing_abstract_for_dblp_partial_run(
+def test_cli_dblp_s2_no_result_keeps_doi_and_reports_missing_abstract(
     tmp_path: Path, monkeypatch
 ) -> None:
-    opener = _FixtureOpener(TOC_URL, FIXTURE.read_bytes())
+    no_result = Path(__file__).parents[1] / "fixtures" / "semantic_scholar" / "dblp-no-result.json"
+    opener = _FixtureOpener({TOC_URL: FIXTURE.read_bytes(), S2_URL: no_result.read_bytes()})
     monkeypatch.setattr(http_module, "urlopen", opener)
     output_dir = tmp_path / "dac-2024"
 
@@ -67,8 +76,9 @@ def test_cli_keeps_doi_and_reports_only_missing_abstract_for_dblp_partial_run(
     )
 
     assert exit_code == 3
-    assert opener.calls == [TOC_URL]
+    assert opener.calls == [TOC_URL, S2_URL]
     assert opener.responses[0].read_limits == [None]
+    assert opener.responses[1].read_limits == [None]
 
     run = json.loads((output_dir / "run.json").read_text(encoding="utf-8"))
     assert run["status"] == "partial"
@@ -106,13 +116,82 @@ def test_cli_keeps_doi_and_reports_only_missing_abstract_for_dblp_partial_run(
     assert issues[0]["reason_codes"] == ["missing_abstract"]
 
 
+def test_cli_dblp_s2_abstract_completes_as_doi_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    abstract_fixture = Path(__file__).parents[1] / "fixtures" / "semantic_scholar" / "dblp-abstract.json"
+    opener = _FixtureOpener({TOC_URL: FIXTURE.read_bytes(), S2_URL: abstract_fixture.read_bytes()})
+    monkeypatch.setattr(http_module, "urlopen", opener)
+    output_dir = tmp_path / "dac-2024-complete"
+
+    assert cli.main(
+        [
+            "collect",
+            "--venue",
+            "dac",
+            "--year",
+            "2024",
+            "--output",
+            str(output_dir),
+            "--contact",
+            CONTACT,
+        ]
+    ) == 0
+
+    assert opener.calls == [TOC_URL, S2_URL]
+    run = json.loads((output_dir / "run.json").read_text(encoding="utf-8"))
+    assert run["status"] == "complete"
+    assert run["metadata_complete"] is True
+    assert run["complete"] is True
+    assert json.loads((output_dir / "issues.jsonl").read_text(encoding="utf-8") or "null") is None
+    papers = [
+        json.loads(line)
+        for line in (output_dir / "papers.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(papers) == 1
+    assert papers[0]["abstract"] == "This abstract was supplied by Semantic Scholar."
+    assert papers[0]["access_status"] == "doi_only"
+    assert papers[0]["field_sources"]["abstract"] == "semantic_scholar"
+
+
+def test_cli_dblp_s2_failure_preserves_membership_and_is_partial(
+    tmp_path: Path, monkeypatch
+) -> None:
+    failure_fixture = Path(__file__).parents[1] / "fixtures" / "semantic_scholar" / "dblp-bad.json"
+    opener = _FixtureOpener({TOC_URL: FIXTURE.read_bytes(), S2_URL: failure_fixture.read_bytes()})
+    monkeypatch.setattr(http_module, "urlopen", opener)
+    output_dir = tmp_path / "dac-2024-failure"
+
+    assert cli.main(
+        [
+            "collect",
+            "--venue",
+            "dac",
+            "--year",
+            "2024",
+            "--output",
+            str(output_dir),
+            "--contact",
+            CONTACT,
+        ]
+    ) == 3
+
+    run = json.loads((output_dir / "run.json").read_text(encoding="utf-8"))
+    assert run["membership_complete"] is True
+    assert run["metadata_complete"] is False
+    assert run["complete"] is False
+    assert run["errors"] == ["enrichment semantic_scholar failed"]
+    assert json.loads(
+        (output_dir / "issues.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )["source_id"] == "conf/dac/Partial24"
+
+
 def test_cli_marks_empty_applicable_dblp_toc_failed(
     tmp_path: Path, monkeypatch
 ) -> None:
     empty_url = TOC_URL
     opener = _FixtureOpener(
-        empty_url,
-        (Path(__file__).parents[1] / "fixtures" / "dblp" / "empty.xml").read_bytes(),
+        {empty_url: (Path(__file__).parents[1] / "fixtures" / "dblp" / "empty.xml").read_bytes()}
     )
     monkeypatch.setattr(http_module, "urlopen", opener)
     output_dir = tmp_path / "empty-dac-2024"

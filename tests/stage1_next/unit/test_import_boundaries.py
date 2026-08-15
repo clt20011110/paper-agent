@@ -106,7 +106,7 @@ def test_collector_does_not_import_concrete_adapters_output_loading_cli_or_old_p
     assert not violations, "\n".join(violations)
 
 
-def test_cli_has_no_static_concrete_adapter_old_package_or_loading_import() -> None:
+def test_cli_has_no_static_concrete_adapter_or_old_package_import() -> None:
     cli_path = _package_root() / "cli.py"
     tree = ast.parse(cli_path.read_text(encoding="utf-8"), filename=str(cli_path))
     violations: list[str] = []
@@ -120,11 +120,31 @@ def test_cli_has_no_static_concrete_adapter_old_package_or_loading_import() -> N
             continue
         for module in modules:
             relative = module.lstrip(".")
-            if _is_old_package(module) or relative == "loading":
+            if _is_old_package(module):
                 violations.append(f"{cli_path}:{node.lineno}: forbidden import {module}")
             elif relative.startswith("adapters.") and relative != "adapters.base":
                 violations.append(f"{cli_path}:{node.lineno}: concrete adapter import {module}")
 
+    assert not violations, "\n".join(violations)
+
+
+def test_loading_has_no_static_concrete_adapter_or_enricher_import() -> None:
+    loading_path = _package_root() / "loading.py"
+    tree = ast.parse(loading_path.read_text(encoding="utf-8"), filename=str(loading_path))
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [("." * node.level) + (node.module or "")]
+        else:
+            continue
+        for module in modules:
+            relative = module.lstrip(".")
+            if _is_old_package(module):
+                violations.append(f"{loading_path}:{node.lineno}: forbidden import {module}")
+            elif relative.startswith("adapters.") or relative.startswith("enrichers."):
+                violations.append(f"{loading_path}:{node.lineno}: concrete import {module}")
     assert not violations, "\n".join(violations)
 
 

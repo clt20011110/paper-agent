@@ -11,6 +11,7 @@ import pytest
 
 from paper_agent_next import cli
 from paper_agent_next import http as http_module
+from paper_agent_next import loading
 from paper_agent_next.catalog import load_venue_spec
 from paper_agent_next.collector import CollectionOutcome
 from paper_agent_next.errors import CollectionError, InputError, PublicationError
@@ -187,7 +188,8 @@ def test_valid_contact_is_preserved_only_for_the_shared_http_client(
 
     monkeypatch.setattr(cli, "load_venue_spec", lambda venue: spec)
     monkeypatch.setattr(cli, "prepare_output_dir", lambda output: None)
-    monkeypatch.setattr(cli, "_load_adapter", lambda path: adapter)
+    monkeypatch.setattr(cli, "load_adapter", lambda path: adapter)
+    monkeypatch.setattr(cli, "load_enrichers", lambda paths: ())
 
     def fake_http(value: str, timeout: float) -> object:
         calls["http"] = (value, timeout)
@@ -195,8 +197,8 @@ def test_valid_contact_is_preserved_only_for_the_shared_http_client(
 
     monkeypatch.setattr(cli, "HttpClient", fake_http)
 
-    def fake_collect(venue, year, loaded_adapter, http_client):
-        calls["collector"] = (venue, year, loaded_adapter, http_client)
+    def fake_collect(venue, year, loaded_adapter, http_client, *, enrichers):
+        calls["collector"] = (venue, year, loaded_adapter, http_client, enrichers)
         return outcome
 
     monkeypatch.setattr(cli, "collect_venue_year", fake_collect)
@@ -205,7 +207,7 @@ def test_valid_contact_is_preserved_only_for_the_shared_http_client(
 
     assert cli.main(_valid_args(tmp_path / "out", contact=contact)) == 0
     assert calls["http"] == (contact, 30.0)
-    assert calls["collector"] == (spec, 2024, adapter, client)
+    assert calls["collector"] == (spec, 2024, adapter, client, ())
     assert published == [(tmp_path / "out", (), (), outcome.run)]
     assert contact not in json.dumps(outcome.run.to_dict())
 
@@ -230,13 +232,17 @@ def test_composition_order_and_shared_client_are_exact(
         events.append(("loader", path))
         return adapter
 
+    def fake_enricher_loader(paths):
+        events.append(("enrichers", paths))
+        return ()
+
     class FakeHttpClient:
         def __init__(self, contact, timeout):
             events.append(("client", (contact, timeout)))
             client_instances.append(self)
 
-    def fake_collect(venue, year, loaded_adapter, http_client):
-        events.append(("collector", (venue, year, loaded_adapter, http_client)))
+    def fake_collect(venue, year, loaded_adapter, http_client, *, enrichers):
+        events.append(("collector", (venue, year, loaded_adapter, http_client, enrichers)))
         return outcome
 
     def fake_publish(output, papers, issues, run):
@@ -244,7 +250,8 @@ def test_composition_order_and_shared_client_are_exact(
 
     monkeypatch.setattr(cli, "load_venue_spec", fake_catalog)
     monkeypatch.setattr(cli, "prepare_output_dir", fake_preflight)
-    monkeypatch.setattr(cli, "_load_adapter", fake_loader)
+    monkeypatch.setattr(cli, "load_adapter", fake_loader)
+    monkeypatch.setattr(cli, "load_enrichers", fake_enricher_loader)
     monkeypatch.setattr(cli, "HttpClient", FakeHttpClient)
     monkeypatch.setattr(cli, "collect_venue_year", fake_collect)
     monkeypatch.setattr(cli, "publish_artifacts", fake_publish)
@@ -254,13 +261,14 @@ def test_composition_order_and_shared_client_are_exact(
         "catalog",
         "preflight",
         "loader",
+        "enrichers",
         "client",
         "collector",
         "publisher",
     ]
     assert len(client_instances) == 1
-    assert events[4][1][3] is client_instances[0]
-    assert events[5][1] == (tmp_path / "out", outcome.papers, outcome.issues, outcome.run)
+    assert events[5][1][3] is client_instances[0]
+    assert events[6][1] == (tmp_path / "out", outcome.papers, outcome.issues, outcome.run)
 
 
 def test_preflight_input_error_stops_before_loader_client_collector_publisher_or_network(
@@ -276,7 +284,8 @@ def test_preflight_input_error_stops_before_loader_client_collector_publisher_or
         raise InputError("output preflight failed")
 
     monkeypatch.setattr(cli, "prepare_output_dir", fail_preflight)
-    monkeypatch.setattr(cli, "_load_adapter", lambda path: calls.append("loader"))
+    monkeypatch.setattr(cli, "load_adapter", lambda path: calls.append("loader"))
+    monkeypatch.setattr(cli, "load_enrichers", lambda paths: calls.append("enrichers"))
     monkeypatch.setattr(cli, "HttpClient", lambda *args: calls.append("client"))
     monkeypatch.setattr(cli, "collect_venue_year", lambda *args: calls.append("collector"))
     monkeypatch.setattr(cli, "publish_artifacts", lambda *args: calls.append("publisher"))
@@ -305,9 +314,10 @@ def test_status_exit_codes_are_applied_after_publishing(
 
     monkeypatch.setattr(cli, "load_venue_spec", lambda venue: spec)
     monkeypatch.setattr(cli, "prepare_output_dir", lambda output: None)
-    monkeypatch.setattr(cli, "_load_adapter", lambda path: object())
+    monkeypatch.setattr(cli, "load_adapter", lambda path: object())
+    monkeypatch.setattr(cli, "load_enrichers", lambda paths: ())
     monkeypatch.setattr(cli, "HttpClient", lambda contact, timeout: object())
-    monkeypatch.setattr(cli, "collect_venue_year", lambda *args: outcome)
+    monkeypatch.setattr(cli, "collect_venue_year", lambda *args, **kwargs: outcome)
     monkeypatch.setattr(cli, "publish_artifacts", lambda *args: published.append(args))
 
     assert cli.main(_valid_args(tmp_path / status.value)) == expected
@@ -340,7 +350,7 @@ def test_exception_mapping_is_short_and_safe(
 
 
 def test_trusted_loader_loads_current_pmlr_adapter() -> None:
-    adapter = cli._load_adapter("adapters.pmlr:PmlrAdapter")
+    adapter = loading.load_adapter("adapters.pmlr:PmlrAdapter")
 
     assert adapter.__class__.__name__ == "PmlrAdapter"
     assert adapter.__class__.__module__ == "paper_agent_next.adapters.pmlr"
@@ -366,10 +376,10 @@ def test_trusted_loader_errors_have_a_cause_without_scanning_or_leaking(
 
         return SimpleNamespace(PmlrAdapter=constructor)
 
-    monkeypatch.setattr(cli.importlib, "import_module", importer)
+    monkeypatch.setattr(loading.importlib, "import_module", importer)
 
     with pytest.raises(InputError) as raised:
-        cli._load_adapter("adapters.pmlr:PmlrAdapter")
+        loading.load_adapter("adapters.pmlr:PmlrAdapter")
 
     assert calls == ["paper_agent_next.adapters.pmlr"]
     assert isinstance(raised.value.__cause__, (ImportError, AttributeError, TypeError))
@@ -401,3 +411,16 @@ def test_real_not_applicable_composition_publishes_three_artifacts_without_netwo
     run = json.loads((output_dir / "run.json").read_text(encoding="utf-8"))
     assert run["status"] == "not_applicable"
     assert all(value == 0 for value in run["counts"].values())
+
+
+def test_not_applicable_does_not_load_configured_implementations_or_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "load_adapter", lambda path: calls.append("adapter"))
+    monkeypatch.setattr(cli, "load_enrichers", lambda paths: calls.append("enrichers"))
+    monkeypatch.setattr(cli, "HttpClient", lambda *args: calls.append("http"))
+    monkeypatch.setattr(cli, "publish_artifacts", lambda *args: calls.append("publish"))
+
+    assert cli.main(_valid_args(tmp_path / "not-applicable", year="1981")) == 0
+    assert calls == ["publish"]

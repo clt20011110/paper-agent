@@ -50,7 +50,9 @@ def test_eda_specs_use_one_dblp_url_and_preserve_source_metadata(
     result = DblpTocAdapter().collect(spec, 2024, client)
 
     assert spec.adapter == "adapters.dblp:DblpTocAdapter"
-    assert spec.enrichers == ()
+    assert spec.enrichers == (
+        "enrichers.semantic_scholar:SemanticScholarEnricher",
+    )
     assert dict(spec.source_for_year(2024)) == {
         "series": series,
         "exclude_title": exclude_title,
