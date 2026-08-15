@@ -17,7 +17,6 @@ _PMLR_BASE_URL = "https://proceedings.mlr.press/"
 _PMLR_HOST = "proceedings.mlr.press"
 _VOLUME_PATTERN = re.compile(r"v[0-9]+\Z")
 _SLUG_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]*"
-_PREFACE_PATTERN = re.compile(r"\bpreface\b", re.IGNORECASE)
 
 
 def _clean(parts: list[str]) -> str | None:
@@ -188,7 +187,7 @@ def _read_html(http_client: TextHttpClient, url: str) -> str:
     return text
 
 
-def _official_url(base_url: str, href: str) -> str | None:
+def _official_landing_url(base_url: str, href: str) -> str | None:
     if not href or any(character.isspace() for character in href):
         return None
     try:
@@ -208,6 +207,30 @@ def _official_url(base_url: str, href: str) -> str | None:
     ):
         return None
     return absolute
+
+
+def _source_native_pdf_url(href: str, volume: str, slug: str) -> str | None:
+    if not href or any(character.isspace() for character in href):
+        return None
+    try:
+        parsed = urlsplit(href)
+        hostname = parsed.hostname
+        parsed.port
+    except (TypeError, ValueError):
+        return None
+    if (
+        parsed.scheme != "https"
+        or hostname is None
+        or hostname.casefold() != "raw.githubusercontent.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != f"/mlresearch/{volume}/main/assets/{slug}/{slug}.pdf"
+    ):
+        return None
+    return href
 
 
 class PmlrAdapter:
@@ -244,26 +267,23 @@ class PmlrAdapter:
 
         for position, raw in enumerate(volume_parser.papers, start=1):
             locator = f"{volume_url}#paper-{position}"
-            if raw.title is not None and _PREFACE_PATTERN.search(raw.title) is not None:
+            if raw.title is not None and raw.title.casefold() == "preface":
                 excluded_non_papers += 1
                 continue
 
-            landing_candidates: list[tuple[str, str]] = []
-            pdf_candidates: list[str] = []
+            landing_candidates: list[tuple[str, str, str]] = []
             for href in raw.hrefs:
-                absolute = _official_url(volume_url, href)
+                absolute = _official_landing_url(volume_url, href)
                 if absolute is None:
                     continue
                 path = urlsplit(absolute).path
                 landing = path_pattern.fullmatch(path)
                 if landing is not None:
+                    slug = landing.group("slug")
                     landing_candidates.append(
-                        (f"{volume}/{landing.group('slug')}", absolute)
+                        (f"{volume}/{slug}", absolute, slug)
                     )
-                if path.casefold().endswith(".pdf") and path.startswith(volume_prefix):
-                    pdf_candidates.append(absolute)
             landing_candidates = list(dict.fromkeys(landing_candidates))
-            pdf_candidates = list(dict.fromkeys(pdf_candidates))
             if not landing_candidates:
                 reason_code = "missing_landing_url"
                 for href in raw.hrefs:
@@ -281,8 +301,8 @@ class PmlrAdapter:
                     )
                 )
                 continue
-            if len({source_id for source_id, _ in landing_candidates}) != 1 or len(
-                {landing_url for _, landing_url in landing_candidates}
+            if len({source_id for source_id, _, _ in landing_candidates}) != 1 or len(
+                {landing_url for _, landing_url, _ in landing_candidates}
             ) != 1:
                 parse_rejects.append(
                     ParseReject(
@@ -293,7 +313,13 @@ class PmlrAdapter:
                 )
                 continue
 
-            source_id, landing_url = landing_candidates[0]
+            source_id, landing_url, slug = landing_candidates[0]
+            pdf_candidates: list[str] = []
+            for href in raw.hrefs:
+                candidate = _source_native_pdf_url(href, volume, slug)
+                if candidate is not None:
+                    pdf_candidates.append(candidate)
+            pdf_candidates = list(dict.fromkeys(pdf_candidates))
             candidate = CollectedPaper(
                 source_id=source_id,
                 title=raw.title,

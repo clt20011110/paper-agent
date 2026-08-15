@@ -15,6 +15,7 @@ FIXTURES = Path(__file__).parents[1] / "fixtures" / "pmlr"
 VOLUME_URL = "https://proceedings.mlr.press/v235/"
 ADA_URL = "https://proceedings.mlr.press/v235/lovelace24a.html"
 TURING_URL = "https://proceedings.mlr.press/v235/turing24a.html"
+RAW_ADA_PDF = "https://raw.githubusercontent.com/mlresearch/v235/main/assets/lovelace24a/lovelace24a.pdf"
 
 
 class FakeTextClient:
@@ -64,7 +65,7 @@ def test_collects_authoritative_membership_and_reconciles_every_occurrence() -> 
     assert ada.abstract == "Reliable small models & graphs for reproducible experiments."
     assert ada.landing_url == ADA_URL
     assert ada.pdf_candidates == (
-        "https://proceedings.mlr.press/v235/lovelace24a/lovelace24a.pdf",
+        RAW_ADA_PDF,
     )
     assert turing.title == "Parallel Inference"
     assert turing.authors == ("Alan Turing", "Grace Hopper")
@@ -83,6 +84,67 @@ def test_collects_authoritative_membership_and_reconciles_every_occurrence() -> 
     )
     assert result.pagination == Pagination(1, True, None)
     assert client.calls == [VOLUME_URL, ADA_URL, TURING_URL]
+
+
+def test_source_native_pdf_candidate_requires_exact_identity_and_explicit_href() -> None:
+    landing_url = "https://proceedings.mlr.press/v235/exact24a.html"
+    pdf_url = "https://raw.githubusercontent.com/mlresearch/v235/main/assets/exact24a/exact24a.pdf"
+    volume = f"""\
+    <html><body>
+      <div class="paper">
+        <p class="title">Exact PDF Candidate</p>
+        <span class="authors">Ada Lovelace</span>
+        <p class="links">
+          <a href="exact24a.html">abs</a>
+          <a href="{pdf_url}">Download PDF</a>
+          <a href="https://raw.githubusercontent.com/mlresearch/v235/main/assets/other24a/exact24a.pdf">mismatched slug</a>
+          <a href="https://raw.githubusercontent.com/other/repo/v235/main/assets/exact24a/exact24a.pdf">other repo</a>
+          <a href="https://raw.githubusercontent.com/mlresearch/v234/main/assets/exact24a/exact24a.pdf">mismatched volume</a>
+          <a href="https://raw.githubusercontent.com/mlresearch/v235/main/assets/exact24a/other.pdf">mismatched path</a>
+          <a href="{pdf_url}?token=secret">query</a>
+          <a href="{pdf_url}#fragment">fragment</a>
+        </p>
+      </div>
+    </body></html>
+    """
+    client = _client(
+        volume=volume,
+        details={landing_url: '<div id="abstract">An exact candidate.</div>'},
+    )
+
+    result = PmlrAdapter().collect(load_venue_spec("icml"), 2024, client)
+
+    assert len(result.papers) == 1
+    assert result.papers[0].source_id == "v235/exact24a"
+    assert result.papers[0].pdf_candidates == (pdf_url,)
+    assert result.parse_rejects == ()
+    assert client.calls == [VOLUME_URL, landing_url]
+
+
+def test_preface_word_in_research_title_is_not_excluded() -> None:
+    landing_url = "https://proceedings.mlr.press/v235/preface-study24a.html"
+    volume = """\
+    <html><body>
+      <div class="paper">
+        <p class="title">A Preface to Reliable Learning</p>
+        <span class="authors">Ada Lovelace, &nbsp; Grace Hopper</span>
+        <p class="links"><a href="preface-study24a.html">abs</a></p>
+      </div>
+    </body></html>
+    """
+    client = _client(
+        volume=volume,
+        details={landing_url: '<div id="abstract">Reliable learning abstract.</div>'},
+    )
+
+    result = PmlrAdapter().collect(load_venue_spec("icml"), 2024, client)
+
+    assert [paper.source_id for paper in result.papers] == ["v235/preface-study24a"]
+    assert result.papers[0].title == "A Preface to Reliable Learning"
+    assert result.papers[0].abstract == "Reliable learning abstract."
+    assert result.excluded_non_papers == 0
+    assert result.parse_rejects == ()
+    assert client.calls == [VOLUME_URL, landing_url]
 
 
 def test_conflicting_duplicate_is_a_structured_parse_reject() -> None:
