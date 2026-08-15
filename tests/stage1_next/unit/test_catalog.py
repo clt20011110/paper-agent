@@ -58,6 +58,8 @@ def test_public_surface_and_icml_fields() -> None:
     assert spec.held_years == (1980, 1983, 1985, *range(1987, 2027))
     assert dict(spec.source) == {"series": "ICML"}
     assert dict(spec.year_overrides["2024"]) == {"volume": "v235"}
+    assert dict(spec.year_overrides["2015"]) == {"volume": "v37"}
+    assert dict(spec.source_for_year(2015)) == {"series": "ICML", "volume": "v37"}
 
 
 def test_venue_spec_is_frozen_slotted_and_nested_values_are_read_only() -> None:
