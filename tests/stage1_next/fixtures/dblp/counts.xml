@@ -2,6 +2,11 @@
 <bht key="db/conf/dac/dac2024.bht" title="DAC 2024">
   <dblpcites>
     <r>
+      <proceedings key="conf/dac/dac2024">
+        <title>DAC 2024 Proceedings</title>
+      </proceedings>
+    </r>
+    <r>
       <inproceedings key="conf/dac/Paper24">
         <author>Ada Lovelace</author>
         <title>DAC research paper</title>
@@ -11,7 +16,7 @@
     </r>
     <r>
       <inproceedings key="conf/dac/Frontmatter24">
-        <title>Frontmatter</title>
+        <title>Frontmatter.</title>
         <year>2024</year>
       </inproceedings>
     </r>

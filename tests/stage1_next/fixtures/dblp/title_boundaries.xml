@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bht key="db/conf/dac/dac2024.bht" title="DAC 2024">
+  <h1>DAC 2024</h1>
+  <dblpcites>
+    <r>
+      <inproceedings key="conf/dac/Exact24">
+        <title> FRONTMATTER. </title>
+        <year>2024</year>
+      </inproceedings>
+    </r>
+    <r>
+      <inproceedings key="conf/dac/Casefold24">
+        <title>fRoNtMaTtEr</title>
+        <year>2024</year>
+      </inproceedings>
+    </r>
+    <r>
+      <inproceedings key="conf/dac/Extended24">
+        <title>Frontmatter extra</title>
+        <year>2024</year>
+      </inproceedings>
+    </r>
+    <r>
+      <inproceedings key="conf/dac/DoublePeriod24">
+        <title>Frontmatter..</title>
+        <year>2024</year>
+      </inproceedings>
+    </r>
+    <r>
+      <inproceedings key="conf/dac/Substring24">
+        <title>Some Frontmatter</title>
+        <year>2024</year>
+      </inproceedings>
+    </r>
+  </dblpcites>
+</bht>

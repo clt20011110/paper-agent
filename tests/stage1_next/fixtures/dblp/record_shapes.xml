@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bht key="db/conf/dac/dac2024.bht" title="DAC 2024">
+  <dblpcites>
+    <r />
+    <r>
+      <inproceedings key="conf/dac/First24">
+        <title>First DAC paper</title>
+        <year>2024</year>
+      </inproceedings>
+      <inproceedings key="conf/dac/Second24">
+        <title>Second DAC paper</title>
+        <year>2024</year>
+      </inproceedings>
+    </r>
+    <r>
+      <article key="conf/dac/Article24">
+        <title>Not an inproceedings record</title>
+        <year>2024</year>
+      </article>
+    </r>
+  </dblpcites>
+</bht>

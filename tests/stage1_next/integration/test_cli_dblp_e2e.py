@@ -106,7 +106,7 @@ def test_cli_keeps_doi_and_reports_only_missing_abstract_for_dblp_partial_run(
     assert issues[0]["reason_codes"] == ["missing_abstract"]
 
 
-def test_cli_does_not_mark_an_empty_applicable_dblp_toc_complete(
+def test_cli_marks_empty_applicable_dblp_toc_failed(
     tmp_path: Path, monkeypatch
 ) -> None:
     empty_url = TOC_URL
@@ -129,14 +129,24 @@ def test_cli_does_not_mark_an_empty_applicable_dblp_toc_complete(
             "--contact",
             CONTACT,
         ]
-    ) == 3
+    ) == 4
 
     run = json.loads((output_dir / "run.json").read_text(encoding="utf-8"))
-    assert run["status"] == "partial"
+    assert run["status"] == "failed"
     assert run["membership_complete"] is False
-    assert run["metadata_complete"] is True
+    assert run["metadata_complete"] is False
     assert run["complete"] is False
-    assert run["counts"]["raw_items"] == 0
+    assert run["counts"] == {
+        "raw_items": 0,
+        "included_papers": 0,
+        "complete_papers": 0,
+        "incomplete_papers": 0,
+        "excluded_non_papers": 0,
+        "duplicate_occurrences": 0,
+        "parse_rejects": 0,
+        "issue_records": 0,
+    }
+    assert run["pagination"] is None
     assert run["errors"] == [
-        "applicable venue-year has no authoritative zero-paper proof"
+        "authoritative membership collection failed"
     ]

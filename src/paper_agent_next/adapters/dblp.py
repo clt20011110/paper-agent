@@ -28,18 +28,8 @@ _DOI_PREFIXES = (
 )
 
 
-def _local_name(tag: object) -> str:
-    if not isinstance(tag, str):
-        return ""
-    return tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
-
-
 def _children(element: ElementTree.Element, name: str) -> list[ElementTree.Element]:
-    return [
-        child
-        for child in element
-        if isinstance(child.tag, str) and _local_name(child.tag) == name
-    ]
+    return [child for child in element if child.tag == name]
 
 
 def _element_text(element: ElementTree.Element | None) -> str | None:
@@ -95,24 +85,27 @@ def _read_toc(http_client: TextHttpClient, url: str) -> ElementTree.Element:
 def _raw_records(
     root: ElementTree.Element, url: str
 ) -> tuple[ElementTree.Element, ...]:
-    if _local_name(root.tag) != "bht":
+    if root.tag != "bht":
         raise CollectionError(f"dblp: {url} is not a recognizable DBLP TOC")
 
     root_children = [child for child in root if isinstance(child.tag, str)]
-    citation_nodes = [child for child in root_children if _local_name(child.tag) == "dblpcites"]
-    if len(citation_nodes) != 1 or len(root_children) != 1:
+    if any(child.tag not in {"h1", "h2", "dblpcites"} for child in root_children):
+        raise CollectionError(f"dblp: {url} has an unrecognized TOC structure")
+    citation_nodes = [child for child in root_children if child.tag == "dblpcites"]
+    if not citation_nodes:
         raise CollectionError(f"dblp: {url} has an unrecognized TOC structure")
 
-    citations = citation_nodes[0]
-    citation_children = [child for child in citations if isinstance(child.tag, str)]
-    records = tuple(
-        child for child in citation_children if _local_name(child.tag) == "r"
-    )
-    if len(records) != len(citation_children):
-        raise CollectionError(f"dblp: {url} has unrecognized citation items")
-    if not records and (citations.text or "").strip():
+    records: list[ElementTree.Element] = []
+    for citations in citation_nodes:
+        citation_children = [
+            child for child in citations if isinstance(child.tag, str)
+        ]
+        if any(child.tag != "r" for child in citation_children):
+            raise CollectionError(f"dblp: {url} has unrecognized citation items")
+        records.extend(citation_children)
+    if not records:
         raise CollectionError(f"dblp: {url} has no authoritative zero proof")
-    return records
+    return tuple(records)
 
 
 def _reject(url: str, position: int, reason_code: str, message: str) -> ParseReject:
@@ -135,6 +128,21 @@ def _explicit_doi(value: str | None) -> str | None:
     return normalize_doi(candidate)
 
 
+def _matches_excluded_title(title: str | None, exclude_title: str | None) -> bool:
+    normalized_title = normalize_text(title)
+    normalized_exclude = normalize_text(exclude_title)
+    if normalized_title is None or normalized_exclude is None:
+        return False
+
+    title_key = normalized_title.casefold()
+    exclude_key = normalized_exclude.casefold()
+    return (
+        title_key == exclude_key
+        or title_key.endswith(".") and title_key[:-1] == exclude_key
+        or exclude_key.endswith(".") and exclude_key[:-1] == title_key
+    )
+
+
 def _collect_record(
     raw_item: ElementTree.Element,
     *,
@@ -153,12 +161,14 @@ def _collect_record(
         )
 
     record = record_children[0]
-    if _local_name(record.tag) != "inproceedings":
+    if record.tag == "proceedings":
+        return "exclude", None
+    if record.tag != "inproceedings":
         return "reject", _reject(
             url,
             position,
             "unsupported_record_kind",
-            f"raw citation item contained unsupported record kind {_local_name(record.tag)!r}",
+            f"raw citation item contained unsupported record kind {record.tag!r}",
         )
 
     title_nodes = _children(record, "title")
@@ -205,7 +215,7 @@ def _collect_record(
             f"inproceedings record year {record_year!r} conflicts with requested year {year}",
         )
 
-    if exclude_title is not None and normalize_text(title) == normalize_text(exclude_title):
+    if _matches_excluded_title(title, exclude_title):
         return "exclude", None
 
     doi_values: list[str] = []
