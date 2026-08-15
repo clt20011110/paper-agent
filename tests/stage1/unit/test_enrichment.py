@@ -99,7 +99,7 @@ def _s2_result(doi: str, *, abstract: str | None = "An abstract.", url: str | No
 def _dblp_view(
     source_id: str = "conf/date/SunNHZZ24",
     *,
-    source_name: str = "dblp",
+    source_name: str = "dblp_toc",
     title: str | None = "Exact paper title",
     doi: str | None = "10.1234/example.1",
 ) -> FrozenPaper:
@@ -336,7 +336,7 @@ def test_semantic_scholar_batch_patch_does_not_call_search_match() -> None:
     assert client.match_calls == []
 
 
-def test_semantic_scholar_all_invalid_doi_batch_is_residual_for_dblp_match() -> None:
+def test_semantic_scholar_single_invalid_doi_batch_is_residual_for_dblp_match() -> None:
     from paper_agent.enrichers.semantic_scholar import SemanticScholarEnricher
 
     paper = _dblp_view()
@@ -351,9 +351,27 @@ def test_semantic_scholar_all_invalid_doi_batch_is_residual_for_dblp_match() -> 
     assert len(client.match_calls) == 1
 
 
+def test_semantic_scholar_multi_doi_http_400_is_not_swallowed() -> None:
+    from paper_agent.enrichers.semantic_scholar import SemanticScholarEnricher
+
+    papers = (
+        _dblp_view(doi="10.1234/example.1"),
+        _dblp_view("conf/date/Other24", doi="10.1234/example.2"),
+    )
+    client = _MatchClient(
+        [EnrichmentError("no valid paper ids", status_code=400)],
+        [],
+    )
+
+    with pytest.raises(EnrichmentError, match="no valid paper ids"):
+        SemanticScholarEnricher().enrich(papers, client)
+
+    assert client.match_calls == []
+
+
 @pytest.mark.parametrize(
     ("source_name", "title"),
-    [("primary", "Exact paper title"), ("dblp", None)],
+    [("primary", "Exact paper title"), ("dblp_toc", None)],
     ids=["non-dblp", "missing-title"],
 )
 def test_semantic_scholar_search_match_requires_dblp_identity_and_title(

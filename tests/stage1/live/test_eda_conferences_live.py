@@ -138,9 +138,7 @@ def test_eda_conferences_2024_live_acceptance() -> None:
             pytest.fail("PAPER_AGENT_STAGE1_LIVE_OUTPUT_DIR must be fresh and empty")
 
     failures = []
-    executed = []
     for venue in _VENUES:
-        executed.append(venue)
         output_dir = output_root / f"{venue}-{_YEAR}"
         exit_code = cli.main(
             [
@@ -163,4 +161,3 @@ def test_eda_conferences_2024_live_acceptance() -> None:
 
     if failures:
         pytest.fail("\n".join(failures))
-    assert tuple(executed) == _VENUES

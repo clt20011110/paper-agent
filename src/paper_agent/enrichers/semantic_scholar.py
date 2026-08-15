@@ -17,7 +17,6 @@ _BATCH_URL = (
 _MATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search/match"
 _MATCH_FIELDS = "externalIds,abstract,openAccessPdf"
 _BATCH_SIZE = 500
-_DBLP_SOURCE_NAMES = frozenset({"dblp", "dblp_toc"})
 
 
 def _schema_error(message: str) -> EnrichmentError:
@@ -40,7 +39,7 @@ def _match_url(title: str) -> str:
 
 
 def _match_title(paper: FrozenPaper) -> str | None:
-    if paper.identity.source_name not in _DBLP_SOURCE_NAMES:
+    if paper.identity.source_name != "dblp_toc":
         return None
     return normalize_text(paper.title)
 
@@ -144,10 +143,11 @@ class SemanticScholarEnricher:
                     {"ids": [f"DOI:{doi}" for doi in batch]},
                 )
             except EnrichmentError as error:
-                if error.status_code != 400 or not all(
-                    _match_title(paper) is not None
-                    for doi in batch
-                    for paper in papers_by_doi[doi]
+                if (
+                    error.status_code != 400
+                    or len(batch) != 1
+                    or len(papers_by_doi[batch[0]]) != 1
+                    or _match_title(papers_by_doi[batch[0]][0]) is None
                 ):
                     raise
                 response = [None] * len(batch)
