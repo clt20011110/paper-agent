@@ -1,0 +1,32 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message": {
+    "total-results": 1001,
+    "items": [
+      {
+        "DOI": "10.5555/crossref.first",
+        "type": "journal-article",
+        "ISSN": ["1234-567X", "9999-9999"],
+        "published": {"date-parts": [[2024, 1, 2]]},
+        "title": [" <jats:italic>First &amp; Article</jats:italic> "],
+        "author": [
+          {"name": "  Named Group  ", "given": "Ignored", "family": "Fields"},
+          {"given": "Ada", "family": "Lovelace"},
+          {"family": "Hopper"}
+        ],
+        "abstract": "<jats:abstract><jats:p>First <jats:bold>JATS</jats:bold> abstract.</jats:p></jats:abstract>",
+        "link": [
+          {"content-type": "application/pdf", "URL": " https://publisher.test/first.pdf "},
+          {"content-type": "application/pdf", "URL": "https://publisher.test/first.pdf"},
+          {"content-type": "text/html", "URL": "https://publisher.test/first.html"},
+          {"content-type": "application/pdf", "URL": ""},
+          {"content-type": "application/pdf", "URL": "https://publisher.test/resource.pdf", "resource": "ignored"}
+        ],
+        "resource": {"primary URL": "https://publisher.test/guessed.pdf"},
+        "oa_url": "https://publisher.test/oa.pdf"
+      }
+    ],
+    "next-cursor": "cursor / + ="
+  }
+}

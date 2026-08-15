@@ -1,0 +1,18 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message": {
+    "total-results": 1001,
+    "items": [
+      {
+        "DOI": "10.5555/crossref.second",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Second article"],
+        "abstract": null
+      }
+    ],
+    "next-cursor": "last cursor must not be followed"
+  }
+}

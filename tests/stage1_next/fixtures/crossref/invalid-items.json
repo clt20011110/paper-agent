@@ -1,0 +1,60 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message": {
+    "total-results": 8,
+    "items": [
+      null,
+      {
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Missing DOI"]
+      },
+      {
+        "DOI": "10.5555/crossref.book",
+        "type": "book",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Wrong type"]
+      },
+      {
+        "DOI": "10.5555/crossref.issn",
+        "type": "journal-article",
+        "ISSN": ["9999-9999"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Wrong ISSN"]
+      },
+      {
+        "DOI": "10.5555/crossref.year",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2023]]},
+        "title": ["Wrong year"]
+      },
+      {
+        "DOI": "10.5555/crossref.title",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["One title", "Another title"]
+      },
+      {
+        "DOI": "10.5555/crossref.author",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Bad author"],
+        "author": [{}]
+      },
+      {
+        "DOI": "10.5555/crossref.abstract",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Bad abstract"],
+        "abstract": ["not text"]
+      }
+    ]
+  }
+}

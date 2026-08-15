@@ -1,0 +1,39 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message": {
+    "total-results": 3,
+    "items": [
+      {
+        "DOI": "10.5555/crossref.duplicate",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024, 2, 1]]},
+        "title": ["Stable duplicate"],
+        "author": [{"given": "Ada", "family": "Lovelace"}],
+        "abstract": "Same abstract",
+        "link": [{"content-type": "application/pdf", "URL": "https://publisher.test/duplicate.pdf"}]
+      },
+      {
+        "DOI": "10.5555/crossref.duplicate",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024, 2, 1]]},
+        "title": ["Stable duplicate"],
+        "author": [{"given": "Ada", "family": "Lovelace"}],
+        "abstract": "Same abstract",
+        "link": [{"content-type": "application/pdf", "URL": "https://publisher.test/duplicate.pdf"}]
+      },
+      {
+        "DOI": "10.5555/crossref.duplicate",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024, 2, 1]]},
+        "title": ["Conflicting title"],
+        "author": [{"given": "Ada", "family": "Lovelace"}],
+        "abstract": "Same abstract",
+        "link": [{"content-type": "application/pdf", "URL": "https://publisher.test/duplicate.pdf"}]
+      }
+    ]
+  }
+}
