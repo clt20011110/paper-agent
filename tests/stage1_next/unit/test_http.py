@@ -32,14 +32,16 @@ class FakeResponse:
         self.body = body
         self.read_error = read_error
         self.closed = False
+        self.read_limits: list[int | None] = []
         self.headers = Message()
         if content_type is not None:
             self.headers["Content-Type"] = content_type
 
-    def read(self) -> bytes:
+    def read(self, max_bytes: int | None = None) -> bytes:
+        self.read_limits.append(max_bytes)
         if self.read_error is not None:
             raise self.read_error
-        return self.body
+        return self.body if max_bytes is None else self.body[:max_bytes]
 
     def close(self) -> None:
         self.closed = True
@@ -65,6 +67,107 @@ def test_get_text_passes_get_timeout_and_user_agent_and_closes_response(monkeypa
     assert passed_timeout == timeout
     assert CONTACT in request.get_header("User-agent")
     assert "paper-agent" in request.get_header("User-agent")
+    assert response.closed is True
+
+
+def test_get_prefix_passes_get_timeout_and_user_agent_reads_bound_and_closes_response(
+    monkeypatch,
+) -> None:
+    body = b"%PDF-1.7" + b"x" * 4096
+    response = FakeResponse(body, content_type="application/pdf; version=1.7")
+    calls: list[tuple[object, object]] = []
+
+    def opener(request, *, timeout):
+        calls.append((request, timeout))
+        return response
+
+    monkeypatch.setattr(http_module, "urlopen", opener)
+
+    timeout = 4.25
+    result = HttpClient(CONTACT, timeout).get_prefix(
+        "https://example.test/paper.pdf", 4096
+    )
+
+    assert result.content_type == "application/pdf; version=1.7"
+    assert result.body == body[:4096]
+    assert len(calls) == 1
+    request, passed_timeout = calls[0]
+    assert request.full_url == "https://example.test/paper.pdf"
+    assert request.get_method() == "GET"
+    assert passed_timeout == timeout
+    assert CONTACT in request.get_header("User-agent")
+    assert "paper-agent" in request.get_header("User-agent")
+    assert response.read_limits == [4096]
+    assert response.closed is True
+
+
+def test_get_prefix_preserves_missing_content_type_as_none(monkeypatch) -> None:
+    response = FakeResponse(b"%PDF-1.7")
+    monkeypatch.setattr(http_module, "urlopen", lambda request, *, timeout: response)
+
+    result = HttpClient(CONTACT, 1.0).get_prefix("https://example.test/paper.pdf", 4096)
+
+    assert result.content_type is None
+    assert result.body == b"%PDF-1.7"
+    assert response.closed is True
+
+
+@pytest.mark.parametrize(
+    "max_bytes",
+    [0, -1, True, 1.5, "4096"],
+    ids=["zero", "negative", "bool", "float", "string"],
+)
+def test_get_prefix_rejects_invalid_max_bytes_before_network(monkeypatch, max_bytes) -> None:
+    def opener(request, *, timeout):
+        raise AssertionError("urlopen must not be called")
+
+    monkeypatch.setattr(http_module, "urlopen", opener)
+
+    with pytest.raises(InputError):
+        HttpClient(CONTACT, 1.0).get_prefix("https://example.test/paper.pdf", max_bytes)
+
+
+def test_get_prefix_http_error_becomes_collection_error_and_closes_error(monkeypatch) -> None:
+    error = HTTPError(
+        "https://example.test/paper.pdf",
+        403,
+        "forbidden",
+        Message(),
+        BytesIO(b"error"),
+    )
+    calls = 0
+
+    def opener(request, *, timeout):
+        nonlocal calls
+        calls += 1
+        raise error
+
+    monkeypatch.setattr(http_module, "urlopen", opener)
+
+    with pytest.raises(CollectionError, match="HTTP 403") as caught:
+        HttpClient(CONTACT, 1.0).get_prefix("https://example.test/paper.pdf", 4096)
+
+    assert caught.value.__cause__ is error
+    assert calls == 1
+    assert error.fp is not None and error.fp.closed
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [IncompleteRead(b"partial"), ConnectionResetError("connection reset")],
+    ids=["incomplete-read", "connection-reset"],
+)
+def test_get_prefix_read_failure_becomes_collection_error_and_closes_response(
+    monkeypatch, failure: BaseException
+) -> None:
+    response = FakeResponse(b"ignored", read_error=failure)
+    monkeypatch.setattr(http_module, "urlopen", lambda request, *, timeout: response)
+
+    with pytest.raises(CollectionError) as caught:
+        HttpClient(CONTACT, 1.0).get_prefix("https://example.test/paper.pdf", 4096)
+
+    assert caught.value.__cause__ is failure
+    assert response.read_limits == [4096]
     assert response.closed is True
 
 
