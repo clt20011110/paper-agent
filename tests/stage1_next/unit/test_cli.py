@@ -124,6 +124,8 @@ def test_module_and_collect_help_are_offline_and_expose_only_collect_surface() -
 
     assert root_help.returncode == 0
     assert collect_help.returncode == 0
+    assert root_help.stdout.startswith("usage: paper-agent ")
+    assert collect_help.stdout.startswith("usage: paper-agent collect ")
     assert "collect" in root_help.stdout
     for option in ("--venue", "--year", "--output", "--contact"):
         assert option in collect_help.stdout

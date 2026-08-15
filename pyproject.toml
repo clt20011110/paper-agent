@@ -24,13 +24,14 @@ dev = [
 ]
 
 [project.scripts]
-paper-agent = "paper_agent.cli:entrypoint"
+paper-agent = "paper_agent_next.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 paper_agent = ["storage/migrations/*.sql"]
+paper_agent_next = ["venue_specs/*.toml"]
 
 [tool.setuptools.data-files]
 "share/paper-agent/schemas" = ["schemas/*.json"]

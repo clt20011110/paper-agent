@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 
 def _package_root() -> Path:
@@ -13,6 +14,20 @@ def _package_root() -> Path:
 
 def _is_old_package(module: str | None) -> bool:
     return module == "paper_agent" or bool(module and module.startswith("paper_agent."))
+
+
+def test_stage1_console_entry_point_and_venue_specs_are_packaged() -> None:
+    project = tomllib.loads(
+        (Path(__file__).resolve().parents[3] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert project["project"]["scripts"]["paper-agent"] == "paper_agent_next.cli:main"
+    assert project["tool"]["setuptools"]["package-data"] == {
+        "paper_agent": ["storage/migrations/*.sql"],
+        "paper_agent_next": ["venue_specs/*.toml"],
+    }
 
 
 def test_new_package_does_not_import_old_package() -> None:

@@ -51,7 +51,7 @@ def _parse_contact(value: str) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m paper_agent_next",
+        prog="paper-agent",
         allow_abbrev=False,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

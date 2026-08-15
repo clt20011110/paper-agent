@@ -67,7 +67,7 @@ def test_console_script_uses_the_structured_error_boundary() -> None:
         (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     )
 
-    assert project["project"]["scripts"]["paper-agent"] == "paper_agent.cli:entrypoint"
+    assert project["project"]["scripts"]["paper-agent"] == "paper_agent_next.cli:main"
 
 
 def test_release_assets_use_one_versioned_source_and_wheel_layout() -> None:
