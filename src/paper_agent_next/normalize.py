@@ -1,10 +1,49 @@
 """Pure normalization helpers for the standalone Stage 1 package."""
 
+from html.parser import HTMLParser
+from unicodedata import category, normalize as normalize_unicode
 from urllib.parse import urlsplit
 
 from paper_agent_next.errors import ContractError
 
-__all__ = ["normalize_doi"]
+__all__ = ["normalize_doi", "normalize_text"]
+
+_BLOCK_TAGS = ("br", "p", "div", "li")
+_IGNORED_TAGS = ("script", "style")
+_ZERO_WIDTH_NOISE = "\u200b\ufeff"
+
+
+class _TextParser(HTMLParser):
+    """Collect visible text while dropping markup and raw script/style data."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._ignored_tag: str | None = None
+
+    def handle_data(self, data: str) -> None:
+        if self._ignored_tag is None:
+            self._parts.append(data)
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if self._ignored_tag is not None:
+            return
+
+        local_name = tag.rsplit(":", 1)[-1].lower()
+        if local_name in _IGNORED_TAGS:
+            self._ignored_tag = local_name
+        elif local_name in _BLOCK_TAGS:
+            self._parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        local_name = tag.rsplit(":", 1)[-1].lower()
+        if self._ignored_tag is not None:
+            if local_name == self._ignored_tag:
+                self._ignored_tag = None
+            return
+
+        if local_name in ("p", "div", "li"):
+            self._parts.append(" ")
 
 
 def normalize_doi(value: str | None) -> str | None:
@@ -57,3 +96,29 @@ def normalize_doi(value: str | None) -> str | None:
         return None
 
     return candidate
+
+
+def normalize_text(value: str | None) -> str | None:
+    """Return visible, NFC-normalized text, or ``None`` if no text remains."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ContractError("text must be a string or None")
+
+    parser = _TextParser()
+    parser.feed(value)
+    parser.close()
+
+    cleaned: list[str] = []
+    pending_space = False
+    for character in "".join(parser._parts):
+        if character.isspace() or category(character) == "Cc" or character in _ZERO_WIDTH_NOISE:
+            pending_space = bool(cleaned)
+            continue
+        if pending_space:
+            cleaned.append(" ")
+        cleaned.append(character)
+        pending_space = False
+
+    normalized = normalize_unicode("NFC", "".join(cleaned))
+    return normalized or None
