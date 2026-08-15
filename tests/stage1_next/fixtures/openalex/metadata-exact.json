@@ -1,0 +1,18 @@
+{
+  "meta": {"count": 1, "page": 1, "per_page": 100},
+  "results": [
+    {
+      "id": "https://openalex.org/Wmetadata",
+      "doi": "https://doi.org/10.5555/metadata",
+      "display_name": "Metadata exact paper",
+      "publication_year": 2024,
+      "authorships": [
+        {"author_position": "first", "author": {"display_name": "Ada Lovelace"}},
+        {"author_position": "last", "author": {"display_name": "Grace Hopper"}}
+      ],
+      "abstract_inverted_index": {"metadata": [1], "Exact": [0], "abstract": [2]},
+      "best_oa_location": {"pdf_url": "  https://example.test/openalex.pdf  "},
+      "primary_location": {"pdf_url": "https://example.test/openalex.pdf"}
+    }
+  ]
+}

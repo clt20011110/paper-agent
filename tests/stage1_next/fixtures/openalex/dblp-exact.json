@@ -1,0 +1,22 @@
+{
+  "meta": {"count": 1, "page": 1, "per_page": 100},
+  "results": [
+    {
+      "id": "https://openalex.org/Wpartial",
+      "doi": "https://doi.org/10.1145/partial.dac",
+      "display_name": "DAC 2024 partial fixture",
+      "publication_year": 2024,
+      "authorships": [
+        {"author_position": "first", "author": {"display_name": "Ada Lovelace"}}
+      ],
+      "abstract_inverted_index": {
+        "fixture": [3],
+        "abstract": [1],
+        "OpenAlex": [0],
+        "fills": [2]
+      },
+      "best_oa_location": null,
+      "primary_location": null
+    }
+  ]
+}

@@ -30,6 +30,11 @@ __all__ = [
 ]
 
 
+_DOI_CONFLICT_MESSAGE = (
+    "enrichment DOI conflicts with primary DOI; primary DOI was retained"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class CollectionOutcome:
     papers: tuple[PaperRecord, ...]
@@ -187,14 +192,17 @@ def collect_venue_year(
     views: list[FrozenPaper] = []
     candidate_sources: list[dict[str, str]] = []
     abstract_sources: list[str] = []
+    doi_sources: list[str] = []
     for paper in result.papers:
         view, sources = _initial_view(venue_spec, year, result.source_name, paper)
         views.append(view)
         candidate_sources.append(sources)
         abstract_sources.append(result.source_name)
+        doi_sources.append(result.source_name)
 
     identity_index = {view.identity: index for index, view in enumerate(views)}
     enrichment_errors: list[str] = []
+    field_conflict_indexes: set[int] = set()
     for enricher in enrichers:
         source_name = getattr(enricher, "source_name", None)
         enrich = getattr(enricher, "enrich", None)
@@ -223,6 +231,33 @@ def collect_venue_year(
         for patch in patches_for_enricher:
             paper_index = identity_index[patch.identity]
             view = views[paper_index]
+
+            patch_doi = normalize_doi(patch.doi)
+            if patch_doi is not None:
+                if view.doi is None:
+                    view = replace(view, doi=patch_doi)
+                    doi_sources[paper_index] = source_name
+                elif view.doi != patch_doi and paper_index not in field_conflict_indexes:
+                    field_conflict_indexes.add(paper_index)
+                    issues.append(
+                        IssueRecord(
+                            issue_kind=IssueKind.FIELD_CONFLICT,
+                            venue_id=venue_spec.venue_id,
+                            year=year,
+                            source_name=result.source_name,
+                            source_id=view.identity.source_id,
+                            source_locator=view.landing_url,
+                            title=view.title,
+                            authors=view.authors,
+                            abstract=view.abstract,
+                            doi=view.doi,
+                            landing_url=view.landing_url,
+                            missing_fields=(),
+                            reason_codes=("doi_conflict",),
+                            message=_DOI_CONFLICT_MESSAGE,
+                        )
+                    )
+
             if patch.abstract is not None and view.abstract is None:
                 abstract = normalize_text(patch.abstract)
                 if abstract is not None and abstract != normalize_text(view.title):
@@ -272,7 +307,7 @@ def collect_venue_year(
                         title=result.source_name,
                         authors=result.source_name,
                         abstract=abstract_sources[paper_index],
-                        doi=result.source_name if view.doi is not None else None,
+                        doi=doi_sources[paper_index] if view.doi is not None else None,
                         landing_url=result.source_name if view.landing_url is not None else None,
                         pdf_url=pdf_source,
                     ),
@@ -353,7 +388,11 @@ def collect_venue_year(
         and total_matches
         and zero_paper_proof
     )
-    metadata_complete = counts.incomplete_papers == 0 and not enrichment_errors
+    metadata_complete = (
+        counts.incomplete_papers == 0
+        and not enrichment_errors
+        and not field_conflict_indexes
+    )
     complete = membership_complete and metadata_complete
     run = RunRecord(
         status=RunStatus.COMPLETE if complete else RunStatus.PARTIAL,

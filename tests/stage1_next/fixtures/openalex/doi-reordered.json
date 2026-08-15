@@ -1,0 +1,25 @@
+{
+  "meta": {"count": 2, "page": 1, "per_page": 100},
+  "results": [
+    {
+      "id": "https://openalex.org/W2",
+      "doi": "10.1234/two",
+      "display_name": "Second paper",
+      "publication_year": 2024,
+      "authorships": [],
+      "abstract_inverted_index": {"second": [0], "abstract": [1]},
+      "best_oa_location": null,
+      "primary_location": null
+    },
+    {
+      "id": "https://openalex.org/W1",
+      "doi": "10.1234/one",
+      "display_name": "First paper",
+      "publication_year": 2024,
+      "authorships": [],
+      "abstract_inverted_index": {"first": [0], "abstract": [1]},
+      "best_oa_location": null,
+      "primary_location": null
+    }
+  ]
+}

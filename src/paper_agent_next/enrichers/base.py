@@ -59,19 +59,24 @@ class EnrichmentPatch:
 
     identity: SourceIdentity
     abstract: str | None = None
+    doi: str | None = None
     pdf_candidates: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, SourceIdentity):
             raise ContractError("identity: must be a SourceIdentity")
         _require_text(self.abstract, "abstract", allow_none=True)
+        _require_text(self.doi, "doi", allow_none=True)
         _require_text_tuple(self.pdf_candidates, "pdf_candidates")
-        if self.abstract is None and not self.pdf_candidates:
-            raise ContractError("patch: must contain an abstract or pdf candidate")
+        if self.abstract is None and self.doi is None and not self.pdf_candidates:
+            raise ContractError("patch: must contain an abstract, DOI, or pdf candidate")
 
 
 class JsonHttpClient(Protocol):
     def post_json(self, url: str, payload: object) -> object:
+        ...
+
+    def get_json(self, url: str) -> object:
         ...
 
 

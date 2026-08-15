@@ -52,6 +52,7 @@ def test_eda_specs_use_one_dblp_url_and_preserve_source_metadata(
     assert spec.adapter == "adapters.dblp:DblpTocAdapter"
     assert spec.enrichers == (
         "enrichers.semantic_scholar:SemanticScholarEnricher",
+        "enrichers.openalex:OpenAlexEnricher",
     )
     assert dict(spec.source_for_year(2024)) == {
         "series": series,

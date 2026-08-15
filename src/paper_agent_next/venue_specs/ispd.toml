@@ -3,7 +3,7 @@ id = "ispd"
 name = "International Symposium on Physical Design"
 venue_type = "conference"
 adapter = "adapters.dblp:DblpTocAdapter"
-enrichers = ["enrichers.semantic_scholar:SemanticScholarEnricher"]
+enrichers = ["enrichers.semantic_scholar:SemanticScholarEnricher", "enrichers.openalex:OpenAlexEnricher"]
 start_year = 2016
 end_year = 2025
 

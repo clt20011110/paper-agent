@@ -98,6 +98,55 @@ class HttpClient:
         finally:
             response.close()
 
+    def get_json(self, url: str) -> object:
+        try:
+            request = Request(
+                url,
+                headers={
+                    "User-Agent": self._user_agent,
+                    "Accept": "application/json",
+                },
+                method="GET",
+            )
+            response = urlopen(request, timeout=self._timeout)
+        except HTTPError as error:
+            error.close()
+            raise EnrichmentError(f"http: GET {url} returned HTTP {error.code}") from error
+        except (URLError, TimeoutError, OSError, ValueError) as error:
+            raise EnrichmentError(f"http: GET {url} failed") from error
+
+        try:
+            status = getattr(response, "status", None)
+            if status is None:
+                getcode = getattr(response, "getcode", None)
+                status = getcode() if callable(getcode) else None
+            if isinstance(status, int) and status >= 400:
+                raise EnrichmentError(f"http: GET {url} returned HTTP {status}")
+
+            try:
+                response_body = response.read()
+            except (URLError, TimeoutError, IncompleteRead, OSError, ValueError) as error:
+                raise EnrichmentError(f"http: read {url} failed") from error
+            if not isinstance(response_body, bytes):
+                raise EnrichmentError(f"http: read {url} returned a non-byte body")
+
+            headers = getattr(response, "headers", None)
+            charset = (
+                headers.get_content_charset() or "utf-8"
+                if headers is not None and hasattr(headers, "get_content_charset")
+                else "utf-8"
+            )
+            try:
+                decoded = response_body.decode(charset)
+            except (LookupError, UnicodeError) as error:
+                raise EnrichmentError(f"http: invalid JSON encoding for {url}") from error
+            try:
+                return json.loads(decoded)
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                raise EnrichmentError(f"http: invalid JSON response from {url}") from error
+        finally:
+            response.close()
+
     def get_text(self, url: str) -> str:
         try:
             request = Request(url, headers={"User-Agent": self._user_agent})
