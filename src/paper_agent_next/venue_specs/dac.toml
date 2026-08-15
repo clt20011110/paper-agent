@@ -1,0 +1,12 @@
+schema_version = 1
+id = "dac"
+name = "Design Automation Conference"
+venue_type = "conference"
+adapter = "adapters.dblp:DblpTocAdapter"
+enrichers = []
+start_year = 2016
+end_year = 2025
+
+[source]
+series = "dac"
+exclude_title = "Frontmatter"

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bht key="db/conf/dac/dac2024.bht" title="DAC 2024">
+  <dblpcites>
+    <r>
+      <inproceedings key="conf/dac/Partial24">
+        <author>Ada Lovelace</author>
+        <title>DAC 2024 partial fixture</title>
+        <year>2024</year>
+        <ee>https://doi.org/10.1145/partial.dac</ee>
+        <url>db/conf/dac/dac2024.html#Partial24</url>
+      </inproceedings>
+    </r>
+  </dblpcites>
+</bht>

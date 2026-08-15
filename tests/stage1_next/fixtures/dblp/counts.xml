@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bht key="db/conf/dac/dac2024.bht" title="DAC 2024">
+  <dblpcites>
+    <r>
+      <inproceedings key="conf/dac/Paper24">
+        <author>Ada Lovelace</author>
+        <title>DAC research paper</title>
+        <year>2024</year>
+        <ee>https://doi.org/10.1145/counts.dac</ee>
+      </inproceedings>
+    </r>
+    <r>
+      <inproceedings key="conf/dac/Frontmatter24">
+        <title>Frontmatter</title>
+        <year>2024</year>
+      </inproceedings>
+    </r>
+    <r>
+      <inproceedings key="conf/dac/Paper24">
+        <author>Ada Lovelace</author>
+        <title>DAC research paper</title>
+        <year>2024</year>
+        <ee>https://doi.org/10.1145/counts.dac</ee>
+      </inproceedings>
+    </r>
+    <r>
+      <inproceedings key="conf/dac/Paper24">
+        <author>Ada Lovelace</author>
+        <title>Conflicting DAC research paper</title>
+        <year>2024</year>
+        <ee>https://doi.org/10.1145/counts.dac</ee>
+      </inproceedings>
+    </r>
+    <r>
+      <article key="conf/dac/Article24">
+        <title>Not an inproceedings record</title>
+        <year>2024</year>
+      </article>
+    </r>
+    <r>
+      <inproceedings>
+        <author>Grace Hopper</author>
+        <title>Missing stable key</title>
+        <year>2024</year>
+      </inproceedings>
+    </r>
+    <r>
+      <inproceedings key="conf/dac/WrongYear24">
+        <author>Grace Hopper</author>
+        <title>Wrong year</title>
+        <year>2023</year>
+      </inproceedings>
+    </r>
+    <r>
+      <inproceedings key="conf/dac/DoiConflict24">
+        <author>Grace Hopper</author>
+        <title>Conflicting DOI values</title>
+        <year>2024</year>
+        <ee>https://doi.org/10.1145/one.dac</ee>
+        <ee>https://doi.org/10.1145/two.dac</ee>
+      </inproceedings>
+    </r>
+  </dblpcites>
+</bht>

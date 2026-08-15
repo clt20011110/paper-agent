@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bht key="db/conf/fixture/fixture2024.bht" title="Fixture 2024">
+  <dblpcites>
+    <r>
+      <inproceedings key="conf/fixture/Fixture24">
+        <author>Ada <i>Lovelace</i></author>
+        <editor>Grace Hopper</editor>
+        <title>DBLP <i>inline</i> title &amp; check</title>
+        <year>2024</year>
+        <booktitle>Fixture Conference</booktitle>
+        <ee>https://doi.org/10.1145/Fixture.DAC</ee>
+        <ee>https://dl.acm.org/doi/10.1145/Fixture.DAC</ee>
+        <url>db/conf/fixture/fixture2024.html#Fixture24</url>
+      </inproceedings>
+    </r>
+  </dblpcites>
+</bht>
