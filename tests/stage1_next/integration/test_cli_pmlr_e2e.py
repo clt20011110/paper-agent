@@ -314,7 +314,7 @@ def test_cli_pmlr_partial_publishes_complete_members_and_blockers(
             "landing_url": TURING_URL,
             "missing_fields": ["access_locator"],
             "reason_codes": ["no_verified_pdf_or_doi"],
-            "message": "required metadata or direct PDF access is missing",
+            "message": "required metadata or access locator is missing",
         },
     ]
     papers = _assert_jsonl(output_dir / "papers.jsonl", [expected_paper])

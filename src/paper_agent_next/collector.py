@@ -181,7 +181,7 @@ def collect_venue_year(
                 landing_url=paper.landing_url,
                 missing_fields=tuple(missing_fields),
                 reason_codes=tuple(reason_codes),
-                message="required metadata or direct PDF access is missing",
+                message="required metadata or access locator is missing",
             )
         )
 

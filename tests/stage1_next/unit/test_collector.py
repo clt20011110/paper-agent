@@ -303,7 +303,9 @@ def test_valid_doi_without_verified_pdf_is_complete_doi_only() -> None:
     assert outcome.run.complete is True
 
 
-@pytest.mark.parametrize("doi", [None, "not-a-doi"], ids=["missing", "invalid"])
+@pytest.mark.parametrize(
+    "doi", [None, "", "not-a-doi"], ids=["missing", "empty", "invalid"]
+)
 def test_missing_or_invalid_doi_without_verified_pdf_is_incomplete(doi: str | None) -> None:
     paper = _paper("no-access", doi=doi, pdf_candidates=())
 
@@ -418,6 +420,7 @@ def test_incomplete_issue_has_fixed_field_and_reason_order_and_retains_fields() 
         title=" ",
         authors=(" ",),
         abstract="<div> </div>",
+        doi=" DOI:10.1234/INCOMPLETE.1 ",
         pdf_candidates=(),
     )
 
@@ -433,21 +436,19 @@ def test_incomplete_issue_has_fixed_field_and_reason_order_and_retains_fields() 
     assert issue.title is None
     assert issue.authors == ()
     assert issue.abstract is None
-    assert issue.doi is None
+    assert issue.doi == "10.1234/incomplete.1"
     assert issue.landing_url == paper.landing_url
     assert issue.missing_fields == (
         MissingField.TITLE,
         MissingField.AUTHORS,
         MissingField.ABSTRACT,
-        MissingField.ACCESS_LOCATOR,
     )
     assert issue.reason_codes == (
         "missing_title",
         "missing_authors",
         "missing_abstract",
-        "no_verified_pdf_or_doi",
     )
-    assert issue.message == "required metadata or direct PDF access is missing"
+    assert issue.message == "required metadata or access locator is missing"
     assert outcome.run.metadata_complete is False
 
 
