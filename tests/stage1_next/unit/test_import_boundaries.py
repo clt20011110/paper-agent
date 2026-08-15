@@ -63,3 +63,29 @@ if old_modules:
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_collector_does_not_import_concrete_adapters_output_loading_cli_or_old_package() -> None:
+    collector_path = _package_root() / "collector.py"
+    tree = ast.parse(collector_path.read_text(encoding="utf-8"), filename=str(collector_path))
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            prefix = "." * node.level
+            modules = [prefix + (node.module or "")]
+        else:
+            continue
+
+        for module in modules:
+            relative = module.lstrip(".")
+            if _is_old_package(module):
+                violations.append(f"{collector_path}:{node.lineno}: import {module}")
+            elif relative.startswith("adapters.") and relative != "adapters.base":
+                violations.append(f"{collector_path}:{node.lineno}: concrete adapter import {module}")
+            elif relative in {"output", "loading", "cli"}:
+                violations.append(f"{collector_path}:{node.lineno}: forbidden layer import {module}")
+
+    assert not violations, "\n".join(violations)
