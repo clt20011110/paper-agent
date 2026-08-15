@@ -44,7 +44,7 @@ def _response(payload: object) -> str:
 
 def _spec(source: dict[str, object] | None = None):
     return replace(
-        load_venue_spec("icml"),
+        load_venue_spec("tcad"),
         source=source if source is not None else {"issn": ISSN},
         year_overrides={},
     )
@@ -174,11 +174,11 @@ def test_each_invalid_raw_item_becomes_a_parse_reject() -> None:
     result = CrossrefSerialAdapter().collect(_spec(), YEAR, client)
 
     assert result.papers == ()
+    assert result.excluded_non_papers == 1
     assert result.raw_items == 8
     assert [reject.reason_code for reject in result.parse_rejects] == [
         "item_not_object",
         "missing_doi",
-        "non_journal_article",
         "issn_mismatch",
         "publication_year_mismatch",
         "ambiguous_title",
@@ -186,7 +186,38 @@ def test_each_invalid_raw_item_becomes_a_parse_reject() -> None:
         "invalid_abstract",
     ]
     assert result.pagination.terminal_reached is True
-    assert result.raw_items == len(result.parse_rejects)
+    assert result.raw_items == result.excluded_non_papers + len(result.parse_rejects)
+
+
+def test_explicit_crossref_non_paper_evidence_preserves_near_miss_research_items() -> None:
+    client = QueueTextClient([_response(_fixture("eda-mixed.json"))])
+
+    result = CrossrefSerialAdapter().collect(_spec(), YEAR, client)
+
+    assert [paper.source_id for paper in result.papers] == [
+        "10.5555/eda.research",
+        "10.5555/eda.automatic-correction",
+        "10.5555/eda.index-structure",
+    ]
+    assert result.excluded_non_papers == 9
+    assert result.duplicate_occurrences == 1
+    assert [reject.reason_code for reject in result.parse_rejects] == [
+        "missing_type",
+        "invalid_type",
+        "invalid_issn",
+        "missing_published_date",
+        "invalid_title",
+    ]
+    assert result.raw_items == 18
+    assert result.raw_items == (
+        len(result.papers)
+        + result.excluded_non_papers
+        + result.duplicate_occurrences
+        + len(result.parse_rejects)
+    )
+    assert result.pagination.source_total == SourceTotal(18, SourceTotalScope.RAW_ITEMS)
+    assert result.pagination.terminal_reached is True
+    assert len(client.calls) == 1
 
 
 def test_duplicate_occurrence_and_identity_conflict_preserve_first_paper() -> None:

@@ -1,0 +1,32 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message": {
+    "total-results": 3,
+    "items": [
+      {
+        "DOI": "10.5555/tcad.missing",
+        "type": "journal-article",
+        "ISSN": ["0278-0070"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["A Research Paper Missing Its Abstract"],
+        "author": [{"given": "Ada", "family": "Lovelace"}]
+      },
+      {
+        "DOI": "10.5555/tcad.present",
+        "type": "journal-article",
+        "ISSN": ["0278-0070"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["A Research Paper With Primary Metadata"],
+        "author": [{"name": "Grace Hopper"}],
+        "abstract": "The Crossref abstract is already complete."
+      },
+      {
+        "type": "journal-article",
+        "ISSN": ["0278-0070"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Table of Contents"]
+      }
+    ]
+  }
+}

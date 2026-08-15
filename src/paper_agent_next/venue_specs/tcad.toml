@@ -1,0 +1,10 @@
+schema_version = 1
+id = "tcad"
+name = "IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems"
+venue_type = "journal"
+adapter = "adapters.crossref:CrossrefSerialAdapter"
+enrichers = ["enrichers.semantic_scholar:SemanticScholarEnricher", "enrichers.openalex:OpenAlexEnricher"]
+start_year = 1982
+
+[source]
+issn = "0278-0070"

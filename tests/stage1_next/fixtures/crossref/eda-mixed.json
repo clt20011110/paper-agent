@@ -1,0 +1,125 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message": {
+    "total-results": 18,
+    "items": [
+      {
+        "DOI": "10.5555/eda.research",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Research Article"],
+        "author": [{"given": "Ada", "family": "Lovelace"}],
+        "abstract": "A primary research abstract."
+      },
+      {
+        "DOI": "10.5555/eda.research",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Research Article"],
+        "author": [{"given": "Ada", "family": "Lovelace"}],
+        "abstract": "A primary research abstract."
+      },
+      {
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Table of Contents"]
+      },
+      {
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems Publication Information"]
+      },
+      {
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["ieee transactions on computer-aided design of integrated circuits and systems society information"]
+      },
+      {
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["2024 Index IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems Vol. 12"]
+      },
+      {
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Guest Editorial: Designing for Reliable Systems"]
+      },
+      {
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Correction to A Research Article"]
+      },
+      {
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Corrections to A Research Article"]
+      },
+      {
+        "DOI": "10.5555/eda.automatic-correction",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Automatic Correction in a Timing Analysis Pipeline"],
+        "author": [{"name": "Grace Hopper"}],
+        "abstract": "A study of automatic correction methods."
+      },
+      {
+        "DOI": "10.5555/eda.index-structure",
+        "type": "journal-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Index Structure for Fast Circuit Queries"],
+        "author": [{"name": "Edsger Dijkstra"}],
+        "abstract": "A study of index structures."
+      },
+      {
+        "type": "book",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Book-like Non-paper"]
+      },
+      {
+        "type": "proceedings-article",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Other Typed Non-paper"]
+      },
+      {
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Missing Type"]
+      },
+      {
+        "type": 7,
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]},
+        "title": ["Non-string Type"]
+      },
+      {
+        "type": "book",
+        "published": {"date-parts": [[2024]]},
+        "title": ["Missing ISSN"]
+      },
+      {
+        "type": "book",
+        "ISSN": ["1234-567X"],
+        "title": ["Missing Published Date"]
+      },
+      {
+        "type": "book",
+        "ISSN": ["1234-567X"],
+        "published": {"date-parts": [[2024]]}
+      }
+    ]
+  }
+}

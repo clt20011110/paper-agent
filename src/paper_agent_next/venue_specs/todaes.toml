@@ -1,0 +1,10 @@
+schema_version = 1
+id = "todaes"
+name = "ACM Transactions on Design Automation of Electronic Systems"
+venue_type = "journal"
+adapter = "adapters.crossref:CrossrefSerialAdapter"
+enrichers = ["enrichers.semantic_scholar:SemanticScholarEnricher", "enrichers.openalex:OpenAlexEnricher"]
+start_year = 1996
+
+[source]
+issn = "1084-4309"

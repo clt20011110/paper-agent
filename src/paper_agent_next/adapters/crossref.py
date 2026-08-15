@@ -170,6 +170,30 @@ def _publication_year(item: dict[str, object], year: int) -> None:
         )
 
 
+def _is_explicit_non_paper_title(title: str, venue_name: str, year: int) -> bool:
+    if title == "Table of Contents":
+        return True
+
+    information_titles = {
+        f"{venue_name} Publication Information".casefold(),
+        f"{venue_name} Society Information".casefold(),
+    }
+    if title.casefold() in information_titles:
+        return True
+
+    index_prefix = f"{year} Index {venue_name} Vol. "
+    if title.startswith(index_prefix):
+        volume = title[len(index_prefix) :]
+        if volume and all("0" <= character <= "9" for character in volume):
+            return True
+
+    return (
+        title.startswith("Guest Editorial")
+        or title.startswith("Correction to ")
+        or title.startswith("Corrections to ")
+    )
+
+
 def _authors(item: dict[str, object]) -> tuple[str, ...]:
     raw_authors = item.get("author", _MISSING)
     if raw_authors is _MISSING:
@@ -238,9 +262,37 @@ def _pdf_candidates(item: dict[str, object]) -> tuple[str, ...]:
     return tuple(candidates)
 
 
-def _parse_item(item: object, *, issn: str, year: int) -> CollectedPaper:
+def _parse_item(
+    item: object,
+    *,
+    issn: str,
+    venue_name: str,
+    year: int,
+) -> CollectedPaper | None:
     if not isinstance(item, dict):
         _reject("item_not_object", "Crossref item was not an object")
+
+    raw_type = item.get("type", _MISSING)
+    if raw_type is _MISSING:
+        _reject("missing_type", "item did not provide a type")
+    if not isinstance(raw_type, str):
+        _reject("invalid_type", "item type was not a string")
+
+    raw_issns = item.get("ISSN", _MISSING)
+    if not isinstance(raw_issns, list):
+        _reject("invalid_issn", "item ISSN field was not a string array")
+    if any(not isinstance(value, str) for value in raw_issns):
+        _reject("invalid_issn", "item ISSN array contained a non-string value")
+    if issn not in raw_issns:
+        _reject("issn_mismatch", "item ISSN array did not contain configured ISSN")
+
+    _publication_year(item, year)
+    title = _title(item)
+
+    if raw_type != "journal-article" or _is_explicit_non_paper_title(
+        title, venue_name, year
+    ):
+        return None
 
     raw_doi = item.get("DOI", _MISSING)
     if raw_doi is _MISSING or raw_doi is None:
@@ -253,19 +305,6 @@ def _parse_item(item: object, *, issn: str, year: int) -> CollectedPaper:
     if doi is None:
         _reject("invalid_doi", "item DOI could not be normalized")
 
-    if item.get("type", _MISSING) != "journal-article":
-        _reject("non_journal_article", "item type was not journal-article")
-
-    raw_issns = item.get("ISSN", _MISSING)
-    if not isinstance(raw_issns, list):
-        _reject("invalid_issn", "item ISSN field was not a string array")
-    if any(not isinstance(value, str) for value in raw_issns):
-        _reject("invalid_issn", "item ISSN array contained a non-string value")
-    if issn not in raw_issns:
-        _reject("issn_mismatch", "item ISSN array did not contain configured ISSN")
-
-    _publication_year(item, year)
-    title = _title(item)
     authors = _authors(item)
     abstract = _abstract(item)
     pdf_candidates = _pdf_candidates(item)
@@ -286,18 +325,28 @@ def _consume_items(
     url: str,
     raw_items: int,
     issn: str,
+    venue_name: str,
     year: int,
     papers_by_doi: dict[str, CollectedPaper],
     ordered_dois: list[str],
     parse_rejects: list[ParseReject],
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     duplicate_occurrences = 0
+    excluded_non_papers = 0
     for offset, item in enumerate(items, start=1):
         locator = f"{url}#item-{raw_items + offset}"
         try:
-            paper = _parse_item(item, issn=issn, year=year)
+            paper = _parse_item(
+                item,
+                issn=issn,
+                venue_name=venue_name,
+                year=year,
+            )
         except _ItemReject as error:
             parse_rejects.append(ParseReject(locator, error.reason_code, error.message))
+            continue
+        if paper is None:
+            excluded_non_papers += 1
             continue
 
         prior = papers_by_doi.get(paper.source_id)
@@ -314,7 +363,7 @@ def _consume_items(
                     f"DOI {paper.source_id!r} had conflicting normalized metadata",
                 )
             )
-    return len(items), duplicate_occurrences
+    return len(items), duplicate_occurrences, excluded_non_papers
 
 
 class CrossrefSerialAdapter:
@@ -336,6 +385,7 @@ class CrossrefSerialAdapter:
         ordered_dois: list[str] = []
         parse_rejects: list[ParseReject] = []
         raw_items = 0
+        excluded_non_papers = 0
         duplicate_occurrences = 0
         pages_fetched = 0
         total_results: int | None = None
@@ -375,17 +425,19 @@ class CrossrefSerialAdapter:
                 break
 
             pages_fetched += 1
-            consumed, duplicates = _consume_items(
+            consumed, duplicates, exclusions = _consume_items(
                 page.items,
                 url=url,
                 raw_items=raw_items,
                 issn=issn,
+                venue_name=venue_spec.name,
                 year=year,
                 papers_by_doi=papers_by_doi,
                 ordered_dois=ordered_dois,
                 parse_rejects=parse_rejects,
             )
             raw_items += consumed
+            excluded_non_papers += exclusions
             duplicate_occurrences += duplicates
 
             if raw_items == total_results:
@@ -407,7 +459,7 @@ class CrossrefSerialAdapter:
             source_name=self.source_name,
             papers=tuple(papers_by_doi[doi] for doi in ordered_dois),
             raw_items=raw_items,
-            excluded_non_papers=0,
+            excluded_non_papers=excluded_non_papers,
             duplicate_occurrences=duplicate_occurrences,
             parse_rejects=tuple(parse_rejects),
             pagination=Pagination(
