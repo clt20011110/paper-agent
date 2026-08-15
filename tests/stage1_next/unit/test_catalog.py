@@ -113,6 +113,27 @@ def test_icml_applicability(year: int, expected: bool) -> None:
     assert load_venue_spec("icml").is_applicable(year) is expected
 
 
+@pytest.mark.parametrize("year", [True, False, 999, 10000, 2024.0, "2024", None])
+def test_is_applicable_rejects_invalid_year(year: object) -> None:
+    with pytest.raises(InputError) as caught:
+        load_venue_spec("icml").is_applicable(year)  # type: ignore[arg-type]
+
+    message = str(caught.value)
+    assert "invalid year" in message
+    assert "year must be a non-bool four-digit integer" in message
+
+
+@pytest.mark.parametrize("year", [True, False, 999, 10000, 2024.0, "2024", None])
+def test_source_for_year_rejects_invalid_year(year: object) -> None:
+    with pytest.raises(InputError) as caught:
+        load_venue_spec("icml").source_for_year(year)  # type: ignore[arg-type]
+
+    message = str(caught.value)
+    assert "invalid year" in message
+    assert "year must be a non-bool four-digit integer" in message
+    assert "not applicable" not in message
+
+
 def test_source_for_year_rejects_inapplicable_year() -> None:
     with pytest.raises(InputError, match="not applicable"):
         load_venue_spec("icml").source_for_year(1981)

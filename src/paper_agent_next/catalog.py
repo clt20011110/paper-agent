@@ -54,9 +54,13 @@ def _require_year(value: object, field: str, venue_id: str) -> int:
     return value
 
 
-def _is_applicable_year(year: int, start_year: int, end_year: int | None, held_years: tuple[int, ...] | None) -> bool:
+def _validate_api_year(year: object) -> int:
     if type(year) is not int or not 1000 <= year <= 9999:
-        return False
+        raise InputError("invalid year: year must be a non-bool four-digit integer")
+    return year
+
+
+def _is_applicable_year(year: int, start_year: int, end_year: int | None, held_years: tuple[int, ...] | None) -> bool:
     if year < start_year or (end_year is not None and year > end_year):
         return False
     return held_years is None or year in held_years
@@ -119,17 +123,25 @@ class VenueSpec:
     def is_applicable(self, year: int) -> bool:
         """Return whether *year* is a declared venue year."""
 
-        return _is_applicable_year(year, self.start_year, self.end_year, self.held_years)
+        validated_year = _validate_api_year(year)
+        return _is_applicable_year(
+            validated_year, self.start_year, self.end_year, self.held_years
+        )
 
     def source_for_year(self, year: int) -> Mapping[str, str | int | bool]:
         """Return a read-only copy of base source parameters resolved for *year*."""
 
-        if not self.is_applicable(year):
-            raise InputError(f"venue {self.venue_id!r} is not applicable for year {year!r}")
+        validated_year = _validate_api_year(year)
+        if not _is_applicable_year(
+            validated_year, self.start_year, self.end_year, self.held_years
+        ):
+            raise InputError(
+                f"venue {self.venue_id!r} is not applicable for year {validated_year!r}"
+            )
         resolved = dict(self.source)
-        override = self.year_overrides.get(str(year))
+        override = self.year_overrides.get(str(validated_year))
         if override is None:
-            override = self.year_overrides.get(year)  # type: ignore[arg-type]
+            override = self.year_overrides.get(validated_year)  # type: ignore[arg-type]
         if override is not None:
             resolved.update(override)
         return MappingProxyType(resolved)
