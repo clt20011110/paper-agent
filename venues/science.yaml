@@ -1,7 +1,0 @@
-schema_version: "1"
-venue_id: science
-name: Science
-venue_type: journal
-primary_provider: crossref_serial
-provider_params: {journal_slug: science, registry_issn: 0036-8075, issns: [0036-8075, 1095-9203], article_types: [journal-article], field_enrichment: crossref_scholarly_graph, field_enrichment_required: true}
-official_url: https://www.science.org/journal/science

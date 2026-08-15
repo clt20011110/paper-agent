@@ -42,11 +42,9 @@ jobs:
         run: uv sync --locked --extra dev
       - name: Build wheel
         run: uv build --wheel
-      - name: Bootstrap locked runtime dependencies in an isolated environment
+      - name: Create an isolated wheel environment
         run: |
           uv venv "${{ runner.temp }}/paper-agent-wheel"
-          uv export --locked --no-dev --no-emit-project --output-file "${{ runner.temp }}/runtime-requirements.txt"
-          uv pip install --python "${{ runner.temp }}/paper-agent-wheel/bin/python" --requirements "${{ runner.temp }}/runtime-requirements.txt"
       - name: Install the built project wheel offline
         run: >-
           uv pip install --offline --no-deps

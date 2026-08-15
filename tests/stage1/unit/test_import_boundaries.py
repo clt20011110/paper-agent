@@ -53,9 +53,12 @@ def test_stage1_console_entry_point_and_venue_specs_are_packaged() -> None:
     )
 
     assert project["project"]["scripts"]["paper-agent"] == "paper_agent.cli:main"
-    assert project["tool"]["setuptools"]["package-data"] == {
+    assert project["project"]["dependencies"] == []
+    setuptools = project["tool"]["setuptools"]
+    assert setuptools["package-data"] == {
         "paper_agent": ["venue_specs/*.toml"],
     }
+    assert "data-files" not in setuptools
 
 
 def test_formal_package_does_not_import_legacy_package() -> None:

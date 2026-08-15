@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<collection id="2024.findings">
-  <volume id="acl">
-    <meta><booktitle>Findings of ACL 2024</booktitle><month>August</month><year>2024</year><venue>findings</venue></meta>
-    <paper id="2"><title>Findings Paper</title><author><first>Alan</first><last>Turing</last></author><url>2024.findings-acl.2</url></paper>
-  </volume>
-</collection>

@@ -5,17 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "paper-agent"
 version = "2.0.0a0"
-description = "Recoverable and auditable literature research pipeline"
+description = "Stage 1 venue-year metadata collection"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
-dependencies = [
-    "cryptography>=43,<47",
-    "jsonschema>=4.23,<5",
-    "PyYAML>=6.0,<7",
-    "pypdf>=6,<7",
-    "rfc8785>=0.1.4,<1",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
@@ -31,22 +25,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 paper_agent = ["venue_specs/*.toml"]
-
-[tool.setuptools.data-files]
-"share/paper-agent/schemas" = ["schemas/*.json"]
-"share/paper-agent/providers" = ["providers/*.yaml"]
-"share/paper-agent/venues" = ["venues/*.yaml"]
-"share/paper-agent/acceptance" = ["acceptance/*.yaml"]
-"share/paper-agent/policies" = ["policies/*.yaml"]
-"share/paper-agent/prompts" = ["prompts/*.md"]
-"share/paper-agent/registries" = ["registries/*.yaml"]
-"share/paper-agent/tests/fixtures/providers" = ["tests/fixtures/providers/*"]
-"share/paper-agent/2.0.0a0" = ["example_config.yaml"]
-"share/paper-agent/2.0.0a0/configs" = ["configs/*.yaml", "configs/*.json"]
-"share/paper-agent/2.0.0a0/configs/stage2" = ["configs/stage2/*.json"]
-"share/paper-agent/2.0.0a0/configs/stage2/models" = ["configs/stage2/models/*.json"]
-"share/paper-agent/2.0.0a0/skills/paper-agent" = ["skills/paper-agent/SKILL.md"]
-"share/paper-agent/2.0.0a0/skills/paper-agent/agents" = ["skills/paper-agent/agents/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

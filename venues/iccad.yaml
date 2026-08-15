@@ -1,9 +1,0 @@
-schema_version: "1"
-venue_id: iccad
-name: IEEE/ACM International Conference on Computer-Aided Design
-venue_type: conference
-primary_provider: dblp_toc
-provider_params: {toc_series: iccad, toc_base_urls: [https://dblp.uni-trier.de, https://dblp.org], exclude_titles: [Foreword], field_enrichment: eda_scholarly_graph, field_enrichment_required: true}
-official_url: https://www.iccad.com/
-proceedings_url: https://dblp.org/db/conf/iccad/
-date_range: {start: 2016-01-01, end: 2025-12-31}

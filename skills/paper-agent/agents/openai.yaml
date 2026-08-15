@@ -1,4 +1,0 @@
-interface:
-  display_name: "Paper Agent"
-  short_description: "Run auditable literature research workflows"
-  default_prompt: "Use $paper-agent to plan and run an auditable literature review from my research question."
