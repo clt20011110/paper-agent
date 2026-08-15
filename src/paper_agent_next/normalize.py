@@ -20,6 +20,7 @@ class _TextParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._parts: list[str] = []
         self._ignored_tag: str | None = None
+        self._open_tags: list[tuple[str, int, str]] = []
 
     def handle_data(self, data: str) -> None:
         if self._ignored_tag is None:
@@ -32,8 +33,12 @@ class _TextParser(HTMLParser):
         local_name = tag.rsplit(":", 1)[-1].lower()
         if local_name in _IGNORED_TAGS:
             self._ignored_tag = local_name
-        elif local_name in _BLOCK_TAGS:
+        elif local_name == "br":
             self._parts.append(" ")
+        else:
+            start_index = len(self._parts)
+            self._parts.append(self.get_starttag_text() or f"<{tag}>")
+            self._open_tags.append((tag, start_index, local_name))
 
     def handle_endtag(self, tag: str) -> None:
         local_name = tag.rsplit(":", 1)[-1].lower()
@@ -42,8 +47,16 @@ class _TextParser(HTMLParser):
                 self._ignored_tag = None
             return
 
-        if local_name in ("p", "div", "li"):
-            self._parts.append(" ")
+        for frame_index in range(len(self._open_tags) - 1, -1, -1):
+            open_tag, start_index, start_local_name = self._open_tags[frame_index]
+            if open_tag != tag:
+                continue
+
+            del self._open_tags[frame_index]
+            self._parts[start_index] = " " if start_local_name in _BLOCK_TAGS else ""
+            if start_local_name in ("p", "div", "li"):
+                self._parts.append(" ")
+            return
 
 
 def normalize_doi(value: str | None) -> str | None:

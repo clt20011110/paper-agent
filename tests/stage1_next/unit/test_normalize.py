@@ -133,6 +133,22 @@ def test_text_preserves_content_and_comparison_symbols() -> None:
     assert normalize_module.normalize_text(value) == "中文 Αβ ∑ 2 < 3 > 1 — “Quoted”"
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("x<y and y>z", "x<y and y>z"),
+        ("A<B>C", "A<B>C"),
+        ("x<y && y>z", "x<y && y>z"),
+        ("<foo>bar</foo>", "bar"),
+        ("<jats:p>First</jats:p><p>Second</p>", "First Second"),
+    ],
+)
+def test_unmatched_angle_brackets_are_preserved_but_matched_tags_are_removed(
+    value, expected
+) -> None:
+    assert normalize_module.normalize_text(value) == expected
+
+
 @pytest.mark.parametrize("value", [True, 7, b"text", ["text"]])
 def test_text_non_string_values_raise_contract_error(value) -> None:
     with pytest.raises(ContractError):
